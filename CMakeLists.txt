@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(poryaaaa C CXX)
+project(poryaaaa C CXX OBJC OBJCXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -105,7 +105,7 @@ endif()
 
 # OpenGL
 if(APPLE)
-    target_link_libraries(poryaaaa PRIVATE "-framework OpenGL" "-framework Cocoa")
+    target_link_libraries(poryaaaa PRIVATE "-framework OpenGL" "-framework Cocoa" "-framework CoreVideo")
 elseif(WIN32)
     target_link_libraries(poryaaaa PRIVATE opengl32)
 else()
@@ -119,7 +119,13 @@ elseif(APPLE)
     set_target_properties(poryaaaa PROPERTIES
         BUNDLE TRUE
         BUNDLE_EXTENSION "clap"
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
+    )
+    # MACOSX_BUNDLE_INFO_PLIST only works for MACOSX_BUNDLE (app bundles).
+    # For a generic BUNDLE (.clap), copy Info.plist manually.
+    add_custom_command(TARGET poryaaaa POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
+            "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Info.plist"
     )
 endif()
 
@@ -189,7 +195,7 @@ target_link_libraries(poryaaaa-standalone PRIVATE clap)
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa-standalone PRIVATE m GL X11 Xcursor Xrandr Xext)
 elseif(APPLE)
-    target_link_libraries(poryaaaa-standalone PRIVATE "-framework OpenGL" "-framework Cocoa")
+    target_link_libraries(poryaaaa-standalone PRIVATE "-framework OpenGL" "-framework Cocoa" "-framework CoreVideo")
 elseif(WIN32)
     target_link_libraries(poryaaaa-standalone PRIVATE opengl32 dwmapi -static-libgcc -static-libstdc++)
 endif()
