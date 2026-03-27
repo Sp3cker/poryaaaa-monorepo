@@ -452,10 +452,7 @@ static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
 
     case PUGL_CLOSE:
         gui->wasClosed = true;
-        if (gui->internalTimerActive) {
-            puglStopTimer(gui->view, RENDER_TIMER_ID);
-            gui->internalTimerActive = false;
-        }
+        m4a_gui_stop_internal_timer(gui);
         // gui_log("pugl_event_handler: PUGL_CLOSE");
         if (gui->host) {
             const clap_host_gui_t *hostGui =
@@ -581,10 +578,7 @@ void m4a_gui_destroy(M4AGuiState *gui)
 
 
     /* Stop the internal render timer before tearing down GL/ImGui */
-    if (gui->internalTimerActive) {
-        puglStopTimer(gui->view, RENDER_TIMER_ID);
-        gui->internalTimerActive = false;
-    }
+    m4a_gui_stop_internal_timer(gui);
 
     ImGui::SetCurrentContext(gui->imguiCtx);
 
@@ -666,6 +660,7 @@ bool m4a_gui_show(M4AGuiState *gui)
 bool m4a_gui_hide(M4AGuiState *gui)
 {
     if (!gui || !gui->view) return false;
+    m4a_gui_stop_internal_timer(gui);
     puglHide(gui->view);
     return true;
 }
@@ -781,4 +776,12 @@ void m4a_gui_start_internal_timer(M4AGuiState *gui)
         gui->internalTimerActive = true;
 }
 
+void m4a_gui_stop_internal_timer(M4AGuiState *gui)
+{
+    if (!gui || !gui->view || !gui->internalTimerActive)
+        return;
+
+    puglStopTimer(gui->view, RENDER_TIMER_ID);
+    gui->internalTimerActive = false;
+}
 } /* extern "C" */

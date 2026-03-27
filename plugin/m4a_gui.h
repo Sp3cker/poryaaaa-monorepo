@@ -72,6 +72,11 @@ void m4a_gui_tick(M4AGuiState *gui);
 void m4a_gui_start_internal_timer(M4AGuiState *gui);
 
 /*
+ * Stop the internal Pugl timer if it is active.
+ */
+void m4a_gui_stop_internal_timer(M4AGuiState *gui);
+
+/*
  * Returns true if the GUI window has been closed by the user.
  */
 bool m4a_gui_was_closed(M4AGuiState *gui);
