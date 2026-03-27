@@ -34,8 +34,8 @@ if(WIN32)
 elseif(APPLE)
     set(PUGL_PLATFORM_SOURCES
         ${PUGL_DIR}/src/mac.m
-        ${PUGL_DIR}/src/mac_gl.m
         ${PUGL_DIR}/src/mac_stub.m
+        plugin/metal/pugl_mac_metal.m
     )
 else()
     set(PUGL_PLATFORM_SOURCES
@@ -58,9 +58,13 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
     plugin/imgui_impl_pugl.cpp
 )
+if(APPLE)
+    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+else()
+    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+endif()
 
 # Common source files (shared between plugin and test)
 set(ENGINE_SOURCES
@@ -85,10 +89,16 @@ target_include_directories(poryaaaa PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
+    ${PUGL_DIR}/src
 )
 
 # Build Pugl as a static library (not a DLL) on all platforms
 target_compile_definitions(poryaaaa PRIVATE PUGL_STATIC)
+
+# On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
+if(APPLE)
+    set_source_files_properties(plugin/m4a_gui.cpp PROPERTIES LANGUAGE OBJCXX)
+endif()
 
 # Use C++ linker (required because we mix C and C++ sources)
 set_target_properties(poryaaaa PROPERTIES
@@ -103,9 +113,9 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa PRIVATE m X11 Xcursor Xrandr Xext)
 endif()
 
-# OpenGL
+# Graphics
 if(APPLE)
-    target_link_libraries(poryaaaa PRIVATE "-framework OpenGL" "-framework Cocoa" "-framework CoreVideo")
+    target_link_libraries(poryaaaa PRIVATE "-framework Metal" "-framework QuartzCore" "-framework Cocoa" "-framework CoreVideo")
 elseif(WIN32)
     target_link_libraries(poryaaaa PRIVATE opengl32)
 else()
@@ -183,6 +193,7 @@ target_include_directories(poryaaaa-standalone PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
+    ${PUGL_DIR}/src
 )
 set_target_properties(poryaaaa-standalone PROPERTIES
     LINKER_LANGUAGE CXX
@@ -192,10 +203,15 @@ set_target_properties(poryaaaa-standalone PROPERTIES
 target_compile_definitions(poryaaaa-standalone PRIVATE PUGL_STATIC)
 target_link_libraries(poryaaaa-standalone PRIVATE clap)
 
+# On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
+if(APPLE)
+    set_source_files_properties(plugin/m4a_gui.cpp PROPERTIES LANGUAGE OBJCXX)
+endif()
+
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa-standalone PRIVATE m GL X11 Xcursor Xrandr Xext)
 elseif(APPLE)
-    target_link_libraries(poryaaaa-standalone PRIVATE "-framework OpenGL" "-framework Cocoa" "-framework CoreVideo")
+    target_link_libraries(poryaaaa-standalone PRIVATE "-framework Metal" "-framework QuartzCore" "-framework Cocoa" "-framework CoreVideo")
 elseif(WIN32)
     target_link_libraries(poryaaaa-standalone PRIVATE opengl32 dwmapi -static-libgcc -static-libstdc++)
 endif()

@@ -1626,6 +1626,16 @@ puglUpdate(PuglWorld* world, const double timeout)
       }
 
       [view->impl->drawView displayIfNeeded];
+
+      // For layer-backed views (e.g. Metal), displayIfNeeded may not trigger
+      // drawRect:.  If the view still needs display, dispatch expose directly.
+      if ([view->impl->drawView needsDisplay] &&
+          view->stage == PUGL_VIEW_STAGE_CONFIGURED) {
+        PuglWrapperView* wrapper =
+            (PuglWrapperView*)[view->impl->drawView superview];
+        [wrapper dispatchExpose:[view->impl->drawView bounds]];
+        [view->impl->drawView setNeedsDisplay:NO];
+      }
     }
 
     world->state = startState;

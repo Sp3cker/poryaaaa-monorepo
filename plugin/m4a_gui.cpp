@@ -8,11 +8,17 @@
  */
 
 #include <pugl/pugl.h>
+
+#ifdef __APPLE__
+#include "metal/pugl_mac_metal.h"
+#include "imgui_impl_metal.h"
+#else
 #include <pugl/gl.h>
+#include "imgui_impl_opengl3.h"
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_pugl.h"
-#include "imgui_impl_opengl3.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -62,7 +68,7 @@ struct M4AGuiState {
     const clap_host_t *host;
 
     bool           realized;   /* true after puglRealize succeeds */
-    bool           glInited;   /* true after ImGui_ImplOpenGL3_Init */
+    bool           renderInited; /* true after render backend init */
 
     /* Cached size from PUGL_CONFIGURE */
     uint32_t       cachedWidth;
@@ -346,7 +352,12 @@ static void render_frame(M4AGuiState *gui)
 {
     ImGui::SetCurrentContext(gui->imguiCtx);
 
+#ifdef __APPLE__
+    PuglMetalContext *mtlCtx = (PuglMetalContext *)puglGetContext(gui->view);
+    ImGui_ImplMetal_NewFrame(mtlCtx->renderPassDescriptor);
+#else
     ImGui_ImplOpenGL3_NewFrame();
+#endif
     ImGui_ImplPugl_NewFrame();
     ImGui::NewFrame();
 
@@ -389,11 +400,17 @@ static void render_frame(M4AGuiState *gui)
 
     /* ---- Render ---- */
     ImGui::Render();
+#ifdef __APPLE__
+    ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(),
+                                   mtlCtx->commandBuffer,
+                                   mtlCtx->renderEncoder);
+#else
     glViewport(0, 0, (int)fbW, (int)fbH);
     glClearColor(0.12f, 0.12f, 0.12f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    /* Pugl handles buffer swap */
+#endif
+    /* Pugl handles buffer swap / command buffer commit */
 }
 
 /* ---- Pugl event handler ---- */
@@ -409,23 +426,32 @@ static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
     switch (event->type)
     {
     case PUGL_REALIZE:
-        /* GL context is now current — initialize OpenGL ImGui backend */
-        if (!gui->glInited) {
+        /* Graphics context is now current — initialize render backend */
+        if (!gui->renderInited) {
+#ifdef __APPLE__
+        {
+            PuglMetalContext *ctx = (PuglMetalContext *)puglGetContext(gui->view);
+            ImGui_ImplMetal_Init(ctx->device);
+        }
+#else
             ImGui_ImplOpenGL3_Init("#version 330 core");
-            gui->glInited = true;
-            // gui_log("pugl_event_handler: PUGL_REALIZE, ImGui_ImplOpenGL3_Init done");
+#endif
+            gui->renderInited = true;
         }
         break;
 
     case PUGL_UNREALIZE:
-        /* GL context is current — shut down OpenGL backend if still active.
+        /* Render context is current — shut down render backend if still active.
          * NOTE: puglFreeView() on Windows does NOT dispatch PUGL_UNREALIZE,
          * so the explicit shutdown in m4a_gui_destroy() handles the normal
          * teardown path.  This case handles any other unrealize scenario. */
-        if (gui->glInited) {
+        if (gui->renderInited) {
+#ifdef __APPLE__
+            ImGui_ImplMetal_Shutdown();
+#else
             ImGui_ImplOpenGL3_Shutdown();
-            gui->glInited = false;
-            gui_log("pugl_event_handler: PUGL_UNREALIZE, ImGui_ImplOpenGL3_Shutdown done");
+#endif
+            gui->renderInited = false;
         }
         break;
 
@@ -440,8 +466,7 @@ static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
         break;
 
     case PUGL_EXPOSE:
-        /* GL context active and drawing is allowed */
-        if (gui->glInited)
+        if (gui->renderInited)
             render_frame(gui);
         break;
 
@@ -528,12 +553,16 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
     }
 
     /* Configure the view */
+#ifdef __APPLE__
+    puglSetBackend(gui->view, puglMetalBackend());
+#else
     puglSetBackend(gui->view, puglGlBackend());
     puglSetViewHint(gui->view, PUGL_CONTEXT_API,           PUGL_OPENGL_API);
     puglSetViewHint(gui->view, PUGL_CONTEXT_VERSION_MAJOR, 3);
     puglSetViewHint(gui->view, PUGL_CONTEXT_VERSION_MINOR, 3);
     puglSetViewHint(gui->view, PUGL_CONTEXT_PROFILE,       PUGL_OPENGL_CORE_PROFILE);
     puglSetViewHint(gui->view, PUGL_DOUBLE_BUFFER,         1);
+#endif
     puglSetViewHint(gui->view, PUGL_RESIZABLE,             1);
     puglSetSizeHint(gui->view, PUGL_DEFAULT_SIZE, (PuglSpan)GUI_W, (PuglSpan)GUI_H);
     puglSetSizeHint(gui->view, PUGL_MIN_SIZE,     (PuglSpan)200,   (PuglSpan)150);
@@ -584,14 +613,17 @@ void m4a_gui_destroy(M4AGuiState *gui)
 
     /* puglFreeView() on Windows calls puglFreeViewInternals() which destroys
      * the GL context WITHOUT dispatching PUGL_UNREALIZE first.  Explicitly
-     * enter the GL context and shut down the OpenGL backend before the view
+     * enter the context and shut down the render backend before the view
      * (and its context) are freed. */
-    if (gui->view && gui->glInited) {
+    if (gui->view && gui->renderInited) {
         puglEnterContext(gui->view);
+#ifdef __APPLE__
+        ImGui_ImplMetal_Shutdown();
+#else
         ImGui_ImplOpenGL3_Shutdown();
-        gui->glInited = false;
+#endif
+        gui->renderInited = false;
         puglLeaveContext(gui->view);
-        // gui_log("m4a_gui_destroy: ImGui_ImplOpenGL3_Shutdown done");
     }
 
     ImGui_ImplPugl_Shutdown();
