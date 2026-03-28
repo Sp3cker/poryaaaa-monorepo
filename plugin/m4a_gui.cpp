@@ -18,7 +18,9 @@
 #include <stdio.h>
 #include <time.h>
 
-/* Timer ID for the internal render timer (used when host lacks timer_support) */
+/* Timer ID for the internal render timer 
+    Bitwig does not give the plugin a timer, 
+    so we use a timer from Pugl to drive GUI updates */
 static const uintptr_t RENDER_TIMER_ID = 1;
 
 /* ---- Debug logging ---- */
@@ -87,6 +89,8 @@ struct M4AGuiState {
 
     /* True when the internal pugl render timer is active */
     bool internalTimerActive;
+    M4AGuiTimerCallback internalTimerCallback;
+    void *internalTimerUserData;
 
     /* Voice editor state */
     ToneData *liveVoices;
@@ -442,13 +446,21 @@ static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
     case PUGL_EXPOSE:
         /* GL context active and drawing is allowed */
         if (gui->glInited)
-            render_frame(gui);
+        render_frame(gui);
         break;
-
     case PUGL_TIMER:
-        if (event->timer.id == RENDER_TIMER_ID)
-            m4a_gui_tick(gui);
-        break;
+        if (event->timer.id == RENDER_TIMER_ID) {
+            if (gui->internalTimerCallback)
+            // This is currently just an alias to m4a_plugin.c -> timer_on_timer((const clap_plugin_t *)user_data, 0);
+                gui->internalTimerCallback(gui->internalTimerUserData);
+            else {
+                /* This would happen if the host provided a timer *but* somehow 
+                another Pugl timer started (i dont know how or why or if thats possible)*/
+                gui_log("More than 1 Pugl timer is running. That's odd...");
+                m4a_gui_tick(gui);
+                }
+            }
+            break;
 
     case PUGL_CLOSE:
         gui->wasClosed = true;
@@ -733,6 +745,16 @@ void m4a_gui_tick(M4AGuiState *gui)
         puglObscureView(gui->view);
 
     puglUpdate(gui->world, 0.0);
+}
+
+void m4a_gui_set_internal_timer_callback(M4AGuiState *gui,
+                                          M4AGuiTimerCallback callback,
+                                          void *user_data)
+{
+    if (!gui)
+        return;
+    gui->internalTimerCallback = callback;
+    gui->internalTimerUserData = user_data;
 }
 
 void m4a_gui_set_voice_data(M4AGuiState *gui,
