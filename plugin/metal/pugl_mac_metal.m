@@ -8,6 +8,7 @@
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 
 // --- PuglMetalView ---
 //
@@ -33,20 +34,39 @@
     // continues to call drawRect: normally via setNeedsDisplay/displayIfNeeded.
     self.wantsLayer = YES;
 
-    metalCtx.device       = MTLCreateSystemDefaultDevice();
+    metalCtx.device = MTLCreateSystemDefaultDevice();
+    if (!metalCtx.device) {
+      [self release];
+      return nil;
+    }
+
     metalCtx.commandQueue = [metalCtx.device newCommandQueue];
 
-    metalCtx.metalLayer                = [CAMetalLayer layer];
-    metalCtx.metalLayer.device         = metalCtx.device;
-    metalCtx.metalLayer.pixelFormat    = MTLPixelFormatBGRA8Unorm;
+    metalCtx.metalLayer = [[CAMetalLayer layer] retain];
+    metalCtx.metalLayer.device          = metalCtx.device;
+    metalCtx.metalLayer.pixelFormat     = MTLPixelFormatBGRA8Unorm;
     metalCtx.metalLayer.framebufferOnly = YES;
-    metalCtx.metalLayer.frame          = self.bounds;
-    metalCtx.metalLayer.contentsScale  = self.window.backingScaleFactor ?: 2.0;
+    metalCtx.metalLayer.frame           = self.bounds;
+    metalCtx.metalLayer.contentsScale   = self.window.backingScaleFactor ?: 2.0;
     metalCtx.metalLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
 
     [self.layer addSublayer:metalCtx.metalLayer];
   }
   return self;
+}
+
+- (void)dealloc
+{
+  [metalCtx.metalLayer removeFromSuperlayer];
+  [metalCtx.metalLayer release];
+  [metalCtx.commandQueue release];
+  [metalCtx.device release];
+
+  metalCtx.metalLayer   = nil;
+  metalCtx.commandQueue = nil;
+  metalCtx.device       = nil;
+
+  [super dealloc];
 }
 
 - (void)resizeWithOldSuperviewSize:(NSSize)oldSize
@@ -63,8 +83,24 @@
   metalCtx.metalLayer.frame = self.bounds;
 }
 
+- (void)viewDidMoveToSuperview
+{
+  [super viewDidMoveToSuperview];
+  PuglWrapperView *wrapper = (PuglWrapperView *)[self superview];
+  if (wrapper) {
+    // Ensure the wrapper dispatches PUGL_CONFIGURE before the first
+    // PUGL_EXPOSE.  NSOpenGLView triggers this via its reshape method,
+    // but a plain layer-backed NSView does not.
+    [wrapper setReshaped];
+  }
+}
+
 - (void)drawRect:(NSRect)rect
 {
+  if (!puglview) {
+    return;
+  }
+
   PuglWrapperView *wrapper = (PuglWrapperView *)[self superview];
 
   [wrapper dispatchExpose:rect];
@@ -89,7 +125,10 @@ puglMacMetalCreate(PuglView *view)
   PuglMetalView  *drawView = [PuglMetalView alloc];
 
   drawView->puglview = view;
-  [drawView initWithFrame:[impl->wrapperView bounds]];
+  drawView = [drawView initWithFrame:[impl->wrapperView bounds]];
+  if (!drawView) {
+    return PUGL_CREATE_CONTEXT_FAILED;
+  }
 
   if (view->hints[PUGL_RESIZABLE]) {
     [drawView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
@@ -106,16 +145,24 @@ puglMacMetalDestroy(PuglView *view)
 {
   PuglMetalView *drawView = (PuglMetalView *)view->impl->drawView;
 
-  [drawView->metalCtx.metalLayer removeFromSuperlayer];
-  drawView->metalCtx.renderEncoder       = nil;
-  drawView->metalCtx.commandBuffer       = nil;
-  drawView->metalCtx.currentDrawable     = nil;
-  drawView->metalCtx.renderPassDescriptor = nil;
-  drawView->metalCtx.commandQueue        = nil;
-  drawView->metalCtx.device              = nil;
-  drawView->metalCtx.metalLayer          = nil;
+  // Prevent drawRect: from dispatching events during teardown.
+  drawView->puglview = NULL;
 
+  // Disconnect from AppKit's display system BEFORE releasing the view,
+  // so no pending CATransaction can trigger rendering during teardown.
+  [drawView setNeedsDisplay:NO];
+  [drawView->metalCtx.metalLayer removeFromSuperlayer];
   [drawView removeFromSuperview];
+
+  // Force Core Animation to commit the removal immediately.  Without this,
+  // the layer tree changes are batched and the old CAMetalLayer may still
+  // be accessed during the next CATransaction commit (e.g. if the host
+  // immediately re-creates the plugin).
+  [CATransaction flush];
+
+  // Release the view.  Metal objects are freed in -dealloc, which fires
+  // once AppKit drops its last reference (safe even if a CATransaction
+  // is still retaining the view).
   [drawView release];
 
   view->impl->drawView = nil;
