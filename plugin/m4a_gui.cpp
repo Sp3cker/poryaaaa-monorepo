@@ -486,6 +486,25 @@ static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
         ImGui_ImplPugl_ProcessEvent(event);
         break;
 
+    case PUGL_KEY_PRESS:
+    case PUGL_KEY_RELEASE:
+    {
+        ImGuiIO &io = ImGui::GetIO();
+
+        /* Tells Pugl to not handle spacebar presses *unless* ImGui wants text input
+        See third_party/pugl/mac.m > key_down handler for more details */
+        const PuglMods mods = event->key.state;
+        const bool plainSpace =
+            event->key.key == PUGL_KEY_SPACE &&
+            (mods & (PUGL_MOD_SHIFT | PUGL_MOD_CTRL | PUGL_MOD_ALT | PUGL_MOD_SUPER)) == 0;
+
+        if (gui->isEmbedded && plainSpace && !io.WantTextInput) // in case ur focusing text input
+            return PUGL_UNSUPPORTED;
+
+        ImGui_ImplPugl_ProcessEvent(event);
+        break;
+    }
+
     default:
         /* Forward all other input events to ImGui */
         ImGui_ImplPugl_ProcessEvent(event);
