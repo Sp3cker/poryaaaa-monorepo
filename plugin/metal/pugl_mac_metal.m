@@ -7,8 +7,6 @@
 #include "pugl_mac_metal.h"
 
 #import <Metal/Metal.h>
-// On macOS, an on-screen Metal backend cannot realistically avoid Core Animation entirely.
-//  CAMetalLayer is the presentation surface. So this is now “Metal + AppKit, with the minimum unavoidable Core Animation boundary,
 #import <QuartzCore/CAMetalLayer.h>
 
 // --- PuglMetalView ---
@@ -41,7 +39,7 @@
 
 - (BOOL)wantsUpdateLayer
 {
-  return YES;
+  return NO;
 }
 
 - (CALayer*)makeBackingLayer
@@ -82,7 +80,12 @@
 {
   [super setFrameSize:newSize];
 }
-
+/* Tells AppKit to deliver the first click even when the host window is inactive. */
+- (BOOL)acceptsFirstMouse:(NSEvent*)event
+{
+  (void)event;
+  return YES;
+}
 - (void)viewDidMoveToSuperview
 {
   [super viewDidMoveToSuperview];
@@ -100,11 +103,19 @@
   [super viewDidMoveToWindow];
   if (self.window) {
     metalCtx.metalLayer.contentsScale = self.window.backingScaleFactor;
+    [self setNeedsDisplay:YES];
   }
 }
 
-- (void)updateLayer
+- (void)drawRect:(NSRect)rect
 {
+  [super drawRect:rect];
+}
+
+- (void)viewWillDraw
+{
+  [super viewWillDraw];
+
   if (!puglview) {
     return;
   }
@@ -186,6 +197,9 @@ puglMacMetalEnter(PuglView *view, const PuglExposeEvent *expose)
     }
 
     ctx->commandBuffer = [ctx->commandQueue commandBuffer];
+    if (!ctx->commandBuffer) {
+      return PUGL_FAILURE;
+    }
 
     ctx->renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
     ctx->renderPassDescriptor.colorAttachments[0].texture     = ctx->currentDrawable.texture;
@@ -196,6 +210,9 @@ puglMacMetalEnter(PuglView *view, const PuglExposeEvent *expose)
 
     ctx->renderEncoder =
         [ctx->commandBuffer renderCommandEncoderWithDescriptor:ctx->renderPassDescriptor];
+    if (!ctx->renderEncoder) {
+      return PUGL_FAILURE;
+    }
   }
 
   return PUGL_SUCCESS;

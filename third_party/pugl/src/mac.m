@@ -238,11 +238,6 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   return (PuglWindow*)result;
 }
 
-- (BOOL)acceptsFirstMouse:(NSEvent*)event
-{
-  (void)event;
-  return YES;
-}
 
 - (PuglStatus)dispatchCurrentConfiguration
 {
