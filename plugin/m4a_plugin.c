@@ -8,6 +8,7 @@
 #include <clap/ext/timer-support.h>
 #include <clap/ext/draft/undo.h>
 #include "m4a_plugin.h"
+#include "m4a_params.h"
 #include "m4a_engine.h"
 #include "m4a_channel.h"
 #include "m4a_reverb.h"
@@ -184,6 +185,9 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->activated = false;
     data->gui = NULL;
     data->guiTimerId = CLAP_INVALID_ID;
+    atomic_init(&data->midiActivitySeq, 0);
+    data->guiMidiActivitySeqSeen = 0;
+    m4a_params_init(data);
     /* Load defaults from config file placed next to the .clap */
     load_config_file(data);
     /* Forward the log path into the voicegroup loader so it can emit diagnostics */
@@ -227,6 +231,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
             memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
             memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+            m4a_params_sync_to_engine(data);
         }
     }
 
@@ -294,6 +299,7 @@ static void plugin_reset(const clap_plugin_t *plugin)
 
 static void process_midi_event(M4APluginData *data, const uint8_t *msg)
 {
+    atomic_fetch_add(&data->midiActivitySeq, 1);
     uint8_t status = msg[0] & 0xF0;
     uint8_t channel = msg[0] & 0x0F;
 
@@ -310,6 +316,9 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg)
         m4a_engine_note_off(&data->engine, channel, msg[1]);
         break;
     case 0xC0: /* Program Change */
+        /* Keep the CLAP param mirror in sync even when the source of truth is
+         * an incoming MIDI program-change rather than host automation. */
+        m4a_params_set_program(data, channel, msg[1]);
         m4a_engine_program_change(&data->engine, channel, msg[1]);
         break;
     case 0xB0: /* Control Change */
@@ -326,6 +335,7 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg)
 
 static void process_clap_note_event(M4APluginData *data, const clap_event_note_t *ev)
 {
+    atomic_fetch_add(&data->midiActivitySeq, 1);
     int channel = ev->channel >= 0 ? ev->channel : 0;
     if (channel >= MAX_TRACKS) channel = 0;
 
@@ -387,6 +397,9 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
                     process_midi_event(data, midiEv->data);
                     break;
                 }
+                case CLAP_EVENT_PARAM_VALUE:
+                    m4a_params_process_event(data, (const clap_event_param_value_t *)hdr);
+                    break;
                 }
             }
             eventIdx++;
@@ -479,6 +492,7 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
     uint8_t analogFilterByte = data->analogFilter ? 1 : 0;
     if (stream->write(stream, &analogFilterByte, 1) != 1) return false;
     if (stream->write(stream, &data->maxPcmChannels, 1) != 1) return false;
+    if (!m4a_params_state_save(data, stream)) return false;
 
     return true;
 }
@@ -518,6 +532,7 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
     if (maxChannelsByte < 1) maxChannelsByte = 1;
     if (maxChannelsByte > MAX_PCM_CHANNELS) maxChannelsByte = MAX_PCM_CHANNELS;
     data->maxPcmChannels = maxChannelsByte;
+    m4a_params_state_load(data, stream);
 
     if (data->activated) {
         /* Only reload voicegroup if the project root or name actually changed */
@@ -541,6 +556,7 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
         data->engine.analogFilter = data->analogFilter;
         data->engine.maxPcmChannels = data->maxPcmChannels;
         m4a_reverb_set_amount(&data->engine.reverb, data->reverbAmount);
+        m4a_params_sync_to_engine(data);
     }
 
     /* Push restored values into the GUI so it reflects the loaded state */
@@ -597,6 +613,12 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
      * so an external driver can call on_timer to pump the GUI. */
     if (data->guiTimerId != CLAP_INVALID_ID && timer_id != data->guiTimerId)
         return;
+
+    unsigned int midiSeq = atomic_load(&data->midiActivitySeq);
+    if (midiSeq != data->guiMidiActivitySeqSeen) {
+        data->guiMidiActivitySeqSeen = midiSeq;
+        m4a_gui_pulse_midi_activity(data->gui);
+    }
 
     /* Render one GUI frame */
     m4a_gui_tick(data->gui);
@@ -920,6 +942,7 @@ static const void *plugin_get_extension(const clap_plugin_t *plugin, const char 
 {
     if (strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)   return &s_audio_ports;
     if (strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)    return &s_note_ports;
+    if (strcmp(id, CLAP_EXT_PARAMS) == 0)        return m4a_params_extension();
     if (strcmp(id, CLAP_EXT_STATE) == 0)          return &s_state;
     if (strcmp(id, CLAP_EXT_GUI) == 0)            return &s_gui;
     if (strcmp(id, CLAP_EXT_TIMER_SUPPORT) == 0)  return &s_timer_support;

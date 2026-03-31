@@ -98,6 +98,12 @@ bool m4a_gui_was_closed(M4AGuiState *gui);
 void m4a_gui_update_settings(M4AGuiState *gui, const M4AGuiSettings *settings);
 
 /*
+ * Extend the GUI's MIDI activity indicator pulse.
+ * Must be called from the main thread.
+ */
+void m4a_gui_pulse_midi_activity(M4AGuiState *gui);
+
+/*
  * Poll for user-initiated changes. Returns true if any setting changed.
  * If true, *out is filled with the new settings.
  * *reload_voicegroup is set to true if the user pressed "Reload".

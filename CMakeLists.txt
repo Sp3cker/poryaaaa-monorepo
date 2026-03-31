@@ -78,6 +78,7 @@ set(ENGINE_SOURCES
 # ---- CLAP Plugin ----
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
+    plugin/m4a_params.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
@@ -183,6 +184,7 @@ target_link_libraries(poryaaaa_unit_tests PRIVATE m)
 # ---- Standalone (clap-wrapper) ----
 add_executable(poryaaaa-standalone
     plugin/m4a_plugin.c
+    plugin/m4a_params.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
