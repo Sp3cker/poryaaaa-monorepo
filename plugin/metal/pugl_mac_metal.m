@@ -7,14 +7,11 @@
 #include "pugl_mac_metal.h"
 
 #import <Metal/Metal.h>
+// On macOS, an on-screen Metal backend cannot realistically avoid Core Animation entirely.
+//  CAMetalLayer is the presentation surface. So this is now “Metal + AppKit, with the minimum unavoidable Core Animation boundary,
 #import <QuartzCore/CAMetalLayer.h>
-#import <QuartzCore/CATransaction.h>
 
 // --- PuglMetalView ---
-//
-// A plain NSView (NOT layer-hosting) whose drawRect: drives the Pugl expose
-// event.  A CAMetalLayer is attached as a sublayer so Metal rendering
-// composites on top without interfering with AppKit's display machinery.
 
 @interface PuglMetalView : NSView
 @end
@@ -29,11 +26,6 @@
 {
   self = [super initWithFrame:frame];
   if (self) {
-    // Enable layer backing so we can attach a Metal sublayer.
-    // We do NOT override makeBackingLayer or wantsUpdateLayer, so AppKit
-    // continues to call drawRect: normally via setNeedsDisplay/displayIfNeeded.
-    self.wantsLayer = YES;
-
     metalCtx.device = MTLCreateSystemDefaultDevice();
     if (!metalCtx.device) {
       [self release];
@@ -41,23 +33,32 @@
     }
 
     metalCtx.commandQueue = [metalCtx.device newCommandQueue];
-
-    metalCtx.metalLayer = [[CAMetalLayer layer] retain];
-    metalCtx.metalLayer.device          = metalCtx.device;
-    metalCtx.metalLayer.pixelFormat     = MTLPixelFormatBGRA8Unorm;
-    metalCtx.metalLayer.framebufferOnly = YES;
-    metalCtx.metalLayer.frame           = self.bounds;
-    metalCtx.metalLayer.contentsScale   = self.window.backingScaleFactor ?: 2.0;
-    metalCtx.metalLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-
-    [self.layer addSublayer:metalCtx.metalLayer];
+    self.wantsLayer = YES;
+    self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
   }
   return self;
 }
 
+- (BOOL)wantsUpdateLayer
+{
+  return YES;
+}
+
+- (CALayer*)makeBackingLayer
+{
+  CAMetalLayer* const layer = [CAMetalLayer layer];
+  layer.device = metalCtx.device;
+  layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+  layer.framebufferOnly = YES;
+  layer.contentsScale = self.window ? self.window.backingScaleFactor : 1.0;
+
+  [metalCtx.metalLayer release];
+  metalCtx.metalLayer = [layer retain];
+  return layer;
+}
+
 - (void)dealloc
 {
-  [metalCtx.metalLayer removeFromSuperlayer];
   [metalCtx.metalLayer release];
   [metalCtx.commandQueue release];
   [metalCtx.device release];
@@ -80,7 +81,6 @@
 - (void)setFrameSize:(NSSize)newSize
 {
   [super setFrameSize:newSize];
-  metalCtx.metalLayer.frame = self.bounds;
 }
 
 - (void)viewDidMoveToSuperview
@@ -95,15 +95,22 @@
   }
 }
 
-- (void)drawRect:(NSRect)rect
+- (void)viewDidMoveToWindow
+{
+  [super viewDidMoveToWindow];
+  if (self.window) {
+    metalCtx.metalLayer.contentsScale = self.window.backingScaleFactor;
+  }
+}
+
+- (void)updateLayer
 {
   if (!puglview) {
     return;
   }
 
   PuglWrapperView *wrapper = (PuglWrapperView *)[self superview];
-
-  [wrapper dispatchExpose:rect];
+  [wrapper dispatchExpose:self.bounds];
 }
 
 - (void)viewDidChangeBackingProperties
@@ -145,24 +152,11 @@ puglMacMetalDestroy(PuglView *view)
 {
   PuglMetalView *drawView = (PuglMetalView *)view->impl->drawView;
 
-  // Prevent drawRect: from dispatching events during teardown.
+  // Prevent updateLayer from dispatching events during teardown.
   drawView->puglview = NULL;
 
-  // Disconnect from AppKit's display system BEFORE releasing the view,
-  // so no pending CATransaction can trigger rendering during teardown.
   [drawView setNeedsDisplay:NO];
-  [drawView->metalCtx.metalLayer removeFromSuperlayer];
   [drawView removeFromSuperview];
-
-  // Force Core Animation to commit the removal immediately.  Without this,
-  // the layer tree changes are batched and the old CAMetalLayer may still
-  // be accessed during the next CATransaction commit (e.g. if the host
-  // immediately re-creates the plugin).
-  [CATransaction flush];
-
-  // Release the view.  Metal objects are freed in -dealloc, which fires
-  // once AppKit drops its last reference (safe even if a CATransaction
-  // is still retaining the view).
   [drawView release];
 
   view->impl->drawView = nil;

@@ -28,69 +28,27 @@ typedef NSUInteger NSEventSubtype;
 typedef NSUInteger NSWindowStyleMask;
 #endif
 
-typedef struct {
-  const char* uti;
-  const char* mimeType;
-} Datatype;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED < 101200
+#  define NSEventModifierFlagShift NSShiftKeyMask
+#  define NSEventModifierFlagControl NSControlKeyMask
+#  define NSEventModifierFlagOption NSAlternateKeyMask
+#  define NSEventModifierFlagCommand NSCommandKeyMask
+#endif
 
-#define NUM_DATATYPES 16
+#if __MAC_OS_X_VERSION_MAX_ALLOWED < 101200
+#  define NSWindowStyleMaskClosable NSClosableWindowMask
+#  define NSWindowStyleMaskTitled NSTitledWindowMask
+#  define NSWindowStyleMaskMiniaturizable NSMiniaturizableWindowMask
+#  define NSWindowStyleMaskResizable NSResizableWindowMask
+#  define NSWindowStyleMaskFullScreen NSFullScreenWindowMask
+#endif
 
-static const Datatype datatypes[NUM_DATATYPES + 1] = {
-  {"com.apple.pasteboard.promised-file-url", "text/uri-list"},
-  {"org.7-zip.7-zip-archive", "application/x-7z-compressed"},
-  {"org.gnu.gnu-zip-tar-archive", "application/tar+gzip"},
-  {"public.7z-archive", "application/x-7z-compressed"},
-  {"public.cpio-archive", "application/x-cpio"},
-  {"public.deb-archive", "application/vnd.debian.binary-package"},
-  {"public.file-url", "text/uri-list"},
-  {"public.html", "text/html"},
-  {"public.png", "image/png"},
-  {"public.rar-archive", "application/x-rar-compressed"},
-  {"public.rpm-archive", "application/x-rpm"},
-  {"public.rtf", "text/rtf"},
-  {"public.url", "text/uri-list"},
-  {"public.utf8-plain-text", "text/plain"},
-  {"public.utf8-tab-separated-values-text", "text/tab-separated-values"},
-  {"public.xz-archive", "application/x-xz"},
-  {NULL, NULL},
-};
+#if __MAC_OS_X_VERSION_MAX_ALLOWED < 101400
+#  define NSViewNoIntrinsicMetric NSViewNoInstrinsicMetric
+#endif
 
-static NSString*
-mimeTypeForUti(const NSString* const uti)
-{
-  const char* const utiString = [uti UTF8String];
-
-  // First try internal map to override types the system won't convert sensibly
-  for (const Datatype* datatype = datatypes; datatype->uti; ++datatype) {
-    if (!strcmp(utiString, datatype->uti)) {
-      return [NSString stringWithUTF8String:datatype->mimeType];
-    }
-  }
-
-  // Try to get the MIME type from the system
-  return (NSString*)CFBridgingRelease(UTTypeCopyPreferredTagWithClass(
-    (__bridge CFStringRef)uti, kUTTagClassMIMEType));
-}
-
-static NSString*
-utiForMimeType(const NSString* const mimeType)
-{
-  const char* const mimeTypeString = [mimeType UTF8String];
-
-  // First try internal map to override types the system won't convert sensibly
-  for (const Datatype* datatype = datatypes; datatype->mimeType; ++datatype) {
-    if (!strcmp(mimeTypeString, datatype->mimeType)) {
-      return [NSString stringWithUTF8String:datatype->uti];
-    }
-  }
-
-  // Try to get the UTI from the system
-  CFStringRef uti = UTTypeCreatePreferredIdentifierForTag(
-    kUTTagClassMIMEType, (__bridge CFStringRef)mimeType, NULL);
-
-  return (uti && UTTypeIsDynamic(uti)) ? (NSString*)CFBridgingRelease(uti)
-                                       : NULL;
-}
+#define PUGL_TEXT_MIME_TYPE @"text/plain"
+#define PUGL_TEXT_PASTEBOARD_TYPE NSPasteboardTypeString
 
 static NSRect
 rectToScreen(const NSScreen* screen, NSRect rect)
@@ -121,10 +79,54 @@ viewScreen(const PuglView* view)
            : [NSScreen mainScreen];
 }
 
+static double
+screenScaleFactor(const NSScreen* const screen)
+{
+  const double scaleFactor = screen ? [screen backingScaleFactor] : 1.0;
+  return (scaleFactor > 0.0) ? scaleFactor : 1.0;
+}
+
+static double
+viewScaleFactor(const PuglView* const view)
+{
+  return screenScaleFactor(viewScreen(view));
+}
+
+static NSRect
+desktopFrame(void)
+{
+  NSRect frame     = NSZeroRect;
+  bool   haveFrame = false;
+
+  for (NSScreen* screen in [NSScreen screens]) {
+    const NSRect screenFrame = [screen frame];
+    frame                    = haveFrame ? NSUnionRect(frame, screenFrame)
+                                         : screenFrame;
+    haveFrame                = true;
+  }
+
+  return haveFrame ? frame : [[NSScreen mainScreen] frame];
+}
+
+static NSPoint
+eventRootLocation(const NSEvent* const event)
+{
+  NSWindow* const window = [event window];
+
+  return window ? [window convertPointToScreen:[event locationInWindow]]
+                : [NSEvent mouseLocation];
+}
+
+static double
+rootY(const NSPoint rootLocation)
+{
+  return NSMaxY(desktopFrame()) - rootLocation.y;
+}
+
 static NSRect
 nsRectToPoints(const PuglView* view, const NSRect rect)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeRect(rect.origin.x / scaleFactor,
                     rect.origin.y / scaleFactor,
@@ -135,7 +137,7 @@ nsRectToPoints(const PuglView* view, const NSRect rect)
 static NSRect
 nsRectFromPoints(const PuglView* view, const NSRect rect)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeRect(rect.origin.x * scaleFactor,
                     rect.origin.y * scaleFactor,
@@ -146,7 +148,7 @@ nsRectFromPoints(const PuglView* view, const NSRect rect)
 static NSPoint
 nsPointFromPoints(const PuglView* view, const NSPoint point)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakePoint(point.x * scaleFactor, point.y * scaleFactor);
 }
@@ -154,7 +156,7 @@ nsPointFromPoints(const PuglView* view, const NSPoint point)
 static NSSize
 sizePoints(PuglView* view, const PuglSpan width, const PuglSpan height)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeSize(width / scaleFactor, height / scaleFactor);
 }
@@ -208,9 +210,16 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   return puglDispatchEvent(view, &configureEvent);
 }
 
+@interface PuglWindow ()
+
+- (void)setRetainedDelegate:(id<NSWindowDelegate>)delegate;
+
+@end
+
 @implementation PuglWindow {
 @public
-  PuglView* puglview;
+  PuglView*                puglview;
+  id<NSWindowDelegate> retainedDelegate;
 }
 
 - (id)initWithContentRect:(NSRect)contentRect
@@ -229,13 +238,19 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   return (PuglWindow*)result;
 }
 
+- (BOOL)acceptsFirstMouse:(NSEvent*)event
+{
+  (void)event;
+  return YES;
+}
+
 - (PuglStatus)dispatchCurrentConfiguration
 {
   if (puglview->stage < PUGL_VIEW_STAGE_REALIZED) {
     return PUGL_SUCCESS;
   }
 
-  const NSRect screenFramePt = [[NSScreen mainScreen] frame];
+  const NSRect screenFramePt = desktopFrame();
   const NSRect screenFramePx = nsRectFromPoints(puglview, screenFramePt);
   const NSRect framePt       = [self frame];
   const NSRect contentPt     = [self contentRectForFrameRect:framePt];
@@ -289,6 +304,23 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   }
 }
 
+- (void)setRetainedDelegate:(id<NSWindowDelegate>)delegate
+{
+  [self setDelegate:delegate];
+
+  if (retainedDelegate != delegate) {
+    [retainedDelegate release];
+    retainedDelegate = [delegate retain];
+  }
+}
+
+- (void)dealloc
+{
+  [self setDelegate:nil];
+  [retainedDelegate release];
+  [super dealloc];
+}
+
 @end
 
 @implementation PuglWrapperView {
@@ -306,7 +338,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (void)dispatchExpose:(NSRect)rect
 {
-  const double scaleFactor = [[NSScreen mainScreen] backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(puglview);
 
   if (reshaped) {
     if (puglview->impl->window) {
@@ -344,7 +376,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
   return puglIsValidArea(defaultSize)
            ? sizePoints(puglview, defaultSize.width, defaultSize.height)
-           : NSMakeSize(NSViewNoInstrinsicMetric, NSViewNoInstrinsicMetric);
+           : NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
 }
 
 - (BOOL)isFlipped
@@ -367,10 +399,10 @@ getModifiers(const NSEvent* const ev)
 {
   const NSEventModifierFlags modifierFlags = [ev modifierFlags];
 
-  return (((modifierFlags & NSShiftKeyMask) ? PUGL_MOD_SHIFT : 0) |
-          ((modifierFlags & NSControlKeyMask) ? PUGL_MOD_CTRL : 0) |
-          ((modifierFlags & NSAlternateKeyMask) ? PUGL_MOD_ALT : 0) |
-          ((modifierFlags & NSCommandKeyMask) ? PUGL_MOD_SUPER : 0) |
+  return (((modifierFlags & NSEventModifierFlagShift) ? PUGL_MOD_SHIFT : 0) |
+          ((modifierFlags & NSEventModifierFlagControl) ? PUGL_MOD_CTRL : 0) |
+          ((modifierFlags & NSEventModifierFlagOption) ? PUGL_MOD_ALT : 0) |
+          ((modifierFlags & NSEventModifierFlagCommand) ? PUGL_MOD_SUPER : 0) |
           ((modifierFlags & (1U << 16U)) ? PUGL_MOD_CAPS_LOCK : 0));
 }
 
@@ -468,9 +500,10 @@ keySymToSpecial(const NSEvent* const ev)
     [trackingArea release];
   }
 
-  const int opts = (NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved |
-                    NSTrackingActiveAlways);
-  trackingArea   = [[NSTrackingArea alloc] initWithRect:[self bounds]
+  const NSTrackingAreaOptions opts =
+    (NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved |
+     NSTrackingActiveAlways);
+  trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
                                               options:opts
                                                 owner:self
                                              userInfo:nil];
@@ -488,7 +521,7 @@ static void
 handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 {
   const NSPoint           wloc = [view eventLocation:event];
-  const NSPoint           rloc = [NSEvent mouseLocation];
+  const NSPoint           rloc = eventRootLocation(event);
   const PuglCrossingEvent ev   = {
     type,
     0U,
@@ -496,7 +529,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     getModifiers(event),
     PUGL_CROSSING_NORMAL,
   };
@@ -529,7 +562,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 - (void)mouseMoved:(NSEvent*)event
 {
   const NSPoint         wloc = [self eventLocation:event];
-  const NSPoint         rloc = [NSEvent mouseLocation];
+  const NSPoint         rloc = eventRootLocation(event);
   const PuglMotionEvent ev   = {
     PUGL_MOTION,
     0U,
@@ -537,7 +570,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     getModifiers(event),
   };
 
@@ -564,7 +597,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 - (void)mouseDown:(NSEvent*)event
 {
   const NSPoint         wloc = [self eventLocation:event];
-  const NSPoint         rloc = [NSEvent mouseLocation];
+  const NSPoint         rloc = eventRootLocation(event);
   const PuglButtonEvent ev   = {
     PUGL_BUTTON_PRESS,
     0U,
@@ -572,7 +605,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     getModifiers(event),
     (uint32_t)[event buttonNumber],
   };
@@ -585,7 +618,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 - (void)mouseUp:(NSEvent*)event
 {
   const NSPoint         wloc = [self eventLocation:event];
-  const NSPoint         rloc = [NSEvent mouseLocation];
+  const NSPoint         rloc = eventRootLocation(event);
   const PuglButtonEvent ev   = {
     PUGL_BUTTON_RELEASE,
     0U,
@@ -593,7 +626,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     getModifiers(event),
     (uint32_t)[event buttonNumber],
   };
@@ -626,7 +659,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 - (void)scrollWheel:(NSEvent*)event
 {
   const NSPoint wloc = [self eventLocation:event];
-  const NSPoint rloc = [NSEvent mouseLocation];
+  const NSPoint rloc = eventRootLocation(event);
 
   double dx = -[event scrollingDeltaX];
   double dy = [event scrollingDeltaY];
@@ -652,7 +685,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     getModifiers(event),
     dir,
     dx,
@@ -671,7 +704,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
   }
 
   const NSPoint   wloc  = [self eventLocation:event];
-  const NSPoint   rloc  = [NSEvent mouseLocation];
+  const NSPoint   rloc  = eventRootLocation(event);
   const PuglKey   spec  = keySymToSpecial(event);
   const NSString* chars = [event charactersIgnoringModifiers];
   const char*     str   = [[chars lowercaseString] UTF8String];
@@ -684,7 +717,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     puglFilterMods(getModifiers(event), spec),
     [event keyCode],
     (code != 0xFFFD) ? code : 0,
@@ -708,7 +741,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 - (void)keyUp:(NSEvent*)event
 {
   const NSPoint   wloc  = [self eventLocation:event];
-  const NSPoint   rloc  = [NSEvent mouseLocation];
+  const NSPoint   rloc  = eventRootLocation(event);
   const PuglKey   spec  = keySymToSpecial(event);
   const NSString* chars = [event charactersIgnoringModifiers];
   const char*     str   = [[chars lowercaseString] UTF8String];
@@ -721,7 +754,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     wloc.x,
     wloc.y,
     rloc.x,
-    [[NSScreen mainScreen] frame].size.height - rloc.y,
+    rootY(rloc),
     puglFilterMods(getModifiers(event), spec),
     [event keyCode],
     (code != 0xFFFD) ? code : 0,
@@ -743,7 +776,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (NSRange)markedRange
 {
-  return (([markedText length] > 0) ? NSMakeRange(0, [markedText length] - 1)
+  return (([markedText length] > 0) ? NSMakeRange(0, [markedText length])
                                     : NSMakeRange(NSNotFound, 0));
 }
 
@@ -816,7 +849,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
        : (NSString*)string);
 
   const NSPoint wloc = [self eventLocation:event];
-  const NSPoint rloc = [NSEvent mouseLocation];
+  const NSPoint rloc = eventRootLocation(event);
   for (size_t i = 0; i < [characters length]; ++i) {
     const uint32_t code    = [characters characterAtIndex:i];
     char           utf8[8] = {0};
@@ -827,7 +860,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
               usedLength:&len
                 encoding:NSUTF8StringEncoding
                  options:0
-                   range:NSMakeRange(i, i + 1)
+                   range:NSMakeRange(i, 1)
           remainingRange:nil];
 
     PuglTextEvent ev = {
@@ -837,7 +870,7 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
       wloc.x,
       wloc.y,
       rloc.x,
-      [[NSScreen mainScreen] frame].size.height - rloc.y,
+      rootY(rloc),
       getModifiers(event),
       [event keyCode],
       code,
@@ -878,7 +911,7 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
 
   if (special != 0) {
     const NSPoint wloc    = [self eventLocation:event];
-    const NSPoint rloc    = [NSEvent mouseLocation];
+    const NSPoint rloc    = eventRootLocation(event);
     const bool    release = [event type] == NSEventTypeKeyUp;
 
     const PuglKeyEvent ev = {release ? PUGL_KEY_RELEASE : PUGL_KEY_PRESS,
@@ -887,7 +920,7 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
                              wloc.x,
                              wloc.y,
                              rloc.x,
-                             [[NSScreen mainScreen] frame].size.height - rloc.y,
+                             rootY(rloc),
                              puglFilterMods(mods, special),
                              [event keyCode],
                              special};
@@ -1194,7 +1227,7 @@ puglRealize(PuglView* view)
   }
 
   const NSScreen* const screen      = [NSScreen mainScreen];
-  const double          scaleFactor = [screen backingScaleFactor];
+  const double          scaleFactor = screenScaleFactor(screen);
 
   // Getting depth from the display mode seems tedious, just set usual values
   puglEnsureHint(view, PUGL_RED_BITS, 8);
@@ -1202,24 +1235,21 @@ puglRealize(PuglView* view)
   puglEnsureHint(view, PUGL_BLUE_BITS, 8);
   puglEnsureHint(view, PUGL_ALPHA_BITS, 8);
 
-  CGDirectDisplayID displayId = CGMainDisplayID();
-  CGDisplayModeRef  mode      = CGDisplayCopyDisplayMode(displayId);
+  const NSNumber* const screenNumber =
+    [[screen deviceDescription] objectForKey:@"NSScreenNumber"];
+  const CGDirectDisplayID displayId =
+    screenNumber ? (CGDirectDisplayID)[screenNumber unsignedIntValue]
+                 : CGMainDisplayID();
+  CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayId);
 
-  // Try to get refresh rate from mode (usually fails)
-  view->hints[PUGL_REFRESH_RATE] = (int)CGDisplayModeGetRefreshRate(mode);
+  view->hints[PUGL_REFRESH_RATE] = PUGL_DONT_CARE;
+  if (mode) {
+    const double refreshRate = CGDisplayModeGetRefreshRate(mode);
+    if (refreshRate > 0.0) {
+      view->hints[PUGL_REFRESH_RATE] = (int)lrint(refreshRate);
+    }
 
-  CGDisplayModeRelease(mode);
-  if (view->hints[PUGL_REFRESH_RATE] == 0) {
-    // Get refresh rate from a display link
-    // TODO: Keep and actually use the display link for something?
-    CVDisplayLinkRef link;
-    CVDisplayLinkCreateWithCGDisplay(displayId, &link);
-
-    const CVTime p = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link);
-    const double r = p.timeScale / (double)p.timeValue;
-    view->hints[PUGL_REFRESH_RATE] = (int)lrint(r);
-
-    CVDisplayLinkRelease(link);
+    CGDisplayModeRelease(mode);
   }
 
   // Get the initial size and position from the defaults or last configuration
@@ -1234,12 +1264,11 @@ puglRealize(PuglView* view)
                                     framePx.size.height / scaleFactor);
 
   // Create wrapper view to handle input
-  impl->wrapperView             = [PuglWrapperView alloc];
-  impl->wrapperView->puglview   = view;
+  impl->wrapperView = [[PuglWrapperView alloc] initWithFrame:framePt];
+  impl->wrapperView->puglview = view;
   impl->wrapperView->userTimers = [[NSMutableDictionary alloc] init];
   impl->wrapperView->markedText = [[NSMutableAttributedString alloc] init];
   [impl->wrapperView setAutoresizesSubviews:YES];
-  [impl->wrapperView initWithFrame:framePt];
 
   [impl->wrapperView
     addConstraint:puglConstraint(impl->wrapperView,
@@ -1284,17 +1313,18 @@ puglRealize(PuglView* view)
     [impl->drawView setHidden:NO];
     [[impl->drawView window] makeFirstResponder:impl->wrapperView];
   } else {
-    unsigned style =
-      (NSClosableWindowMask | NSTitledWindowMask | NSMiniaturizableWindowMask);
+    NSWindowStyleMask style = (NSWindowStyleMaskClosable |
+                               NSWindowStyleMaskTitled |
+                               NSWindowStyleMaskMiniaturizable);
     if (view->hints[PUGL_RESIZABLE]) {
-      style |= NSResizableWindowMask;
+      style |= NSWindowStyleMaskResizable;
     }
 
-    PuglWindow* window = [[[PuglWindow alloc]
+    PuglWindow* window = [[PuglWindow alloc]
       initWithContentRect:rectToScreen([NSScreen mainScreen], framePt)
                 styleMask:style
                   backing:NSBackingStoreBuffered
-                    defer:NO] retain];
+                    defer:NO];
 
     window->puglview = view;
     impl->window     = window;
@@ -1310,8 +1340,10 @@ puglRealize(PuglView* view)
       [window setTitle:titleString];
     }
 
-    ((NSWindow*)window).delegate =
+    PuglWindowDelegate* const delegate =
       [[PuglWindowDelegate alloc] initWithPuglWindow:window];
+    [window setRetainedDelegate:delegate];
+    [delegate release];
 
     // Set window frame
     const NSRect screenPt = rectToScreen(screen, framePt);
@@ -1498,7 +1530,7 @@ puglSetViewStyle(PuglView* const view, const PuglViewStyleFlags flags)
       break;
 
     case PUGL_VIEW_STYLE_FULLSCREEN:
-      if (newValue != ([window styleMask] & NSFullScreenWindowMask)) {
+      if (newValue != ([window styleMask] & NSWindowStyleMaskFullScreen)) {
         [window toggleFullScreen:nil];
       }
       break;
@@ -1615,7 +1647,7 @@ puglUpdate(PuglWorld* world, const double timeout)
                        : [NSDate dateWithTimeIntervalSinceNow:timeout]);
 
       for (NSEvent* ev = NULL;
-           (ev = [world->impl->app nextEventMatchingMask:NSAnyEventMask
+           (ev = [world->impl->app nextEventMatchingMask:NSEventMaskAny
                                                untilDate:date
                                                   inMode:NSDefaultRunLoopMode
                                                  dequeue:YES]);) {
@@ -1746,7 +1778,7 @@ puglApplyViewString(PuglView* const      view,
 double
 puglGetScaleFactor(const PuglView* const view)
 {
-  return [viewScreen(view) backingScaleFactor];
+  return viewScaleFactor(view);
 }
 
 PuglStatus
@@ -1781,7 +1813,7 @@ puglSetWindowSize(PuglView* const view,
   PuglInternals* const impl = view->impl;
 
   // Set wrapper view size
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
   const CGSize frameSizePt = {width / scaleFactor, height / scaleFactor};
   [impl->wrapperView setFrameSize:frameSizePt];
 
@@ -1845,8 +1877,9 @@ uint32_t
 puglGetNumClipboardTypes(const PuglView* PUGL_UNUSED(view))
 {
   NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
-
-  return pasteboard ? (uint32_t)[[pasteboard types] count] : 0;
+  return (pasteboard && [pasteboard availableTypeFromArray:@[PUGL_TEXT_PASTEBOARD_TYPE]])
+           ? 1U
+           : 0U;
 }
 
 const char*
@@ -1854,20 +1887,12 @@ puglGetClipboardType(const PuglView* PUGL_UNUSED(view),
                      const uint32_t  typeIndex)
 {
   NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
-  if (!pasteboard) {
+  if (!pasteboard || typeIndex > 0U ||
+      ![pasteboard availableTypeFromArray:@[PUGL_TEXT_PASTEBOARD_TYPE]]) {
     return NULL;
   }
 
-  const NSArray<NSPasteboardType>* const types = [pasteboard types];
-  if (typeIndex >= [types count]) {
-    return NULL;
-  }
-
-  NSString* const uti      = [types objectAtIndex:typeIndex];
-  NSString* const mimeType = mimeTypeForUti(uti);
-
-  // FIXME: lifetime?
-  return mimeType ? [mimeType UTF8String] : [uti UTF8String];
+  return [PUGL_TEXT_MIME_TYPE UTF8String];
 }
 
 PuglStatus
@@ -1881,8 +1906,8 @@ puglAcceptOffer(PuglView* const                 view,
     return PUGL_UNKNOWN_ERROR;
   }
 
-  const NSArray<NSPasteboardType>* const types = [pasteboard types];
-  if (typeIndex >= [types count]) {
+  if (typeIndex > 0U ||
+      ![pasteboard availableTypeFromArray:@[PUGL_TEXT_PASTEBOARD_TYPE]]) {
     return PUGL_BAD_PARAMETER;
   }
 
@@ -1905,23 +1930,14 @@ puglGetClipboard(PuglView* const view,
   *len = 0;
 
   NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
-  if (!pasteboard) {
+  if (!pasteboard || typeIndex > 0U) {
     return NULL;
   }
 
-  const NSArray<NSPasteboardType>* const types = [pasteboard types];
-  if (typeIndex >= [types count]) {
+  const NSData* const data = [pasteboard dataForType:PUGL_TEXT_PASTEBOARD_TYPE];
+  if (!data) {
     return NULL;
   }
-
-  NSString* const uti = [types objectAtIndex:typeIndex];
-  if ([uti isEqualToString:@"public.file-url"] ||
-      [uti isEqualToString:@"com.apple.pasteboard.promised-file-url"]) {
-    *len = [view->impl->wrapperView->droppedUriList length];
-    return [view->impl->wrapperView->droppedUriList UTF8String];
-  }
-
-  const NSData* const data = [pasteboard dataForType:uti];
 
   *len = [data length];
   return [data bytes];
@@ -1931,7 +1947,9 @@ static NSCursor*
 extendedCursor(const SEL cursorSelector)
 {
   if (cursorSelector && [NSCursor respondsToSelector:cursorSelector]) {
-    const id object = [NSCursor performSelector:cursorSelector];
+    NSCursor* (*const getter)(id, SEL) =
+      (NSCursor* (*)(id, SEL))[NSCursor methodForSelector:cursorSelector];
+    const id object = getter ? getter(NSCursor.class, cursorSelector) : nil;
     if ([object isKindOfClass:[NSCursor class]]) {
       return (NSCursor*)object;
     }
@@ -1994,15 +2012,25 @@ puglSetClipboard(PuglView*         PUGL_UNUSED(view),
                  const size_t      len)
 {
   NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
-  NSString* const     mimeType   = [NSString stringWithUTF8String:type];
-  NSString* const     uti        = utiForMimeType(mimeType);
-  NSData* const       blob       = [NSData dataWithBytes:data length:len];
+  if (!pasteboard || strcmp(type, "text/plain")) {
+    return PUGL_UNSUPPORTED;
+  }
 
-  [pasteboard declareTypes:[NSArray arrayWithObjects:uti, nil] owner:nil];
+  NSString* const text =
+    [[NSString alloc] initWithBytes:data
+                             length:len
+                           encoding:NSUTF8StringEncoding];
+  if (!text) {
+    return PUGL_BAD_PARAMETER;
+  }
 
-  if ([pasteboard setData:blob forType:uti]) {
+  [pasteboard declareTypes:@[PUGL_TEXT_PASTEBOARD_TYPE] owner:nil];
+
+  if ([pasteboard setString:text forType:PUGL_TEXT_PASTEBOARD_TYPE]) {
+    [text release];
     return PUGL_SUCCESS;
   }
 
+  [text release];
   return PUGL_FAILURE;
 }

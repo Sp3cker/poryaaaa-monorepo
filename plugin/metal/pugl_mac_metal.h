@@ -7,7 +7,8 @@
 
 #ifdef __OBJC__
 #import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
+@class CAMetalLayer;
+@protocol CAMetalDrawable;
 
 typedef struct {
     id<MTLDevice>               device;
