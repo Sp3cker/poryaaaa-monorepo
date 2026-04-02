@@ -31,7 +31,7 @@ static bool is_program_param(clap_id param_id, int *trackIndex)
 void m4a_params_init(M4APluginData *data)
 {
     for (int i = 0; i < MAX_TRACKS; ++i)
-        atomic_init(&data->programParams[i], 0);
+        atomic_init(&data->programParams[i], (uint8_t)i);
 }
 
 void m4a_params_set_program(M4APluginData *data, int trackIndex, uint8_t program)
@@ -120,7 +120,7 @@ static bool params_get_info(const clap_plugin_t *plugin, uint32_t param_index,
     snprintf(info->module, sizeof(info->module), "Programs");
     info->min_value = 0.0;
     info->max_value = 127.0;
-    info->default_value = 0.0;
+    info->default_value = (double)param_index;
     info->flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
     return true;
 }

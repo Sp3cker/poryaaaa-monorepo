@@ -1939,3 +1939,105 @@ void voicegroup_free(LoadedVoiceGroup *vg)
 
     free(vg);
 }
+
+/* ---- Project asset collection ---- */
+
+/* Helper: extract the basename from a path (after last / or \). */
+static const char *path_basename(const char *path)
+{
+    const char *last = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\')
+            last = p + 1;
+    }
+    return last;
+}
+
+bool voicegroup_loader_collect_project_assets(const char *projectRoot,
+                                              const VoicegroupLoaderConfig *config,
+                                              VoicegroupProjectAssets *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    ProjectDiscovery *disc = calloc(1, sizeof(ProjectDiscovery));
+    if (!disc) return false;
+    discover_project(projectRoot, config, disc);
+
+    /* Parse symbol maps */
+    SymbolMap dsMap, pwMap;
+    symbol_map_init(&dsMap);
+    symbol_map_init(&pwMap);
+    parse_all_direct_sound_data(disc, projectRoot, &dsMap);
+    parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
+
+    /* Build DirectSound asset array */
+    if (dsMap.count > 0) {
+        out->directsound = calloc((size_t)dsMap.count, sizeof(ProjectAssetEntry));
+        if (out->directsound) {
+            for (int i = 0; i < dsMap.count; i++) {
+                ProjectAssetEntry *e = &out->directsound[out->directsoundCount];
+                e->kind = PROJECT_ASSET_DIRECTSOUND;
+                strncpy(e->symbol, dsMap.entries[i].symbol, sizeof(e->symbol) - 1);
+                strncpy(e->relPath, dsMap.entries[i].filePath, sizeof(e->relPath) - 1);
+                const char *base = path_basename(dsMap.entries[i].filePath);
+                strncpy(e->fileName, base, sizeof(e->fileName) - 1);
+                out->directsoundCount++;
+            }
+        }
+    }
+
+    /* Build ProgrammableWave asset array */
+    if (pwMap.count > 0) {
+        out->progWave = calloc((size_t)pwMap.count, sizeof(ProjectAssetEntry));
+        if (out->progWave) {
+            for (int i = 0; i < pwMap.count; i++) {
+                ProjectAssetEntry *e = &out->progWave[out->progWaveCount];
+                e->kind = PROJECT_ASSET_PROG_WAVE;
+                strncpy(e->symbol, pwMap.entries[i].symbol, sizeof(e->symbol) - 1);
+                strncpy(e->relPath, pwMap.entries[i].filePath, sizeof(e->relPath) - 1);
+                const char *base = path_basename(pwMap.entries[i].filePath);
+                strncpy(e->fileName, base, sizeof(e->fileName) - 1);
+                out->progWaveCount++;
+            }
+        }
+    }
+
+    symbol_map_free(&dsMap);
+    symbol_map_free(&pwMap);
+    free(disc);
+    return true;
+}
+
+void voicegroup_loader_free_project_assets(VoicegroupProjectAssets *assets)
+{
+    free(assets->directsound);
+    free(assets->progWave);
+    memset(assets, 0, sizeof(*assets));
+}
+
+WaveData *voicegroup_loader_load_sample(const char *projectRoot,
+                                        const char *relPath,
+                                        LoadedVoiceGroup *vg)
+{
+    /* Try .wav first (substitute .bin extension) */
+    WaveData *wd = load_wave_data_from_wav(projectRoot, relPath);
+    if (!wd) {
+        /* Fallback to raw .bin */
+        wd = load_wave_data(projectRoot, relPath);
+    }
+    if (wd) {
+        vg_register_wavedata(vg, wd);
+    }
+    return wd;
+}
+
+uint32_t *voicegroup_loader_load_prog_wave(const char *projectRoot,
+                                           const char *relPath,
+                                           LoadedVoiceGroup *vg)
+{
+    uint32_t *pw = load_prog_wave(projectRoot, relPath);
+    if (pw) {
+        vg_register_progwave(vg, pw);
+    }
+    return pw;
+}

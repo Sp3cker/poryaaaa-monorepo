@@ -77,4 +77,52 @@ void voicegroup_free(LoadedVoiceGroup *vg);
  */
 void voicegroup_loader_set_log_path(const char *path);
 
+/* ---- Project asset collection (for voicegroup sample swapper) ---- */
+
+typedef enum {
+    PROJECT_ASSET_DIRECTSOUND,
+    PROJECT_ASSET_PROG_WAVE,
+} ProjectAssetKind;
+
+typedef struct {
+    ProjectAssetKind kind;
+    char fileName[256];               /* basename visible to user, e.g. "brass_1.wav" */
+    char relPath[VG_MAX_PATH_LEN];    /* path relative to project root */
+    char symbol[256];                 /* assembly symbol name */
+} ProjectAssetEntry;
+
+typedef struct {
+    ProjectAssetEntry *directsound;
+    int directsoundCount;
+    ProjectAssetEntry *progWave;
+    int progWaveCount;
+} VoicegroupProjectAssets;
+
+/*
+ * Collect all DirectSound and ProgrammableWave sample assets from a project.
+ * Populates out->directsound and out->progWave with malloc'd arrays.
+ * Returns true on success. Caller must free with voicegroup_loader_free_project_assets().
+ */
+bool voicegroup_loader_collect_project_assets(const char *projectRoot,
+                                              const VoicegroupLoaderConfig *config,
+                                              VoicegroupProjectAssets *out);
+
+void voicegroup_loader_free_project_assets(VoicegroupProjectAssets *assets);
+
+/*
+ * Load a DirectSound sample by its relative path and register it with the voicegroup.
+ * Returns the loaded WaveData, or NULL on failure.
+ */
+WaveData *voicegroup_loader_load_sample(const char *projectRoot,
+                                        const char *relPath,
+                                        LoadedVoiceGroup *vg);
+
+/*
+ * Load a programmable wave by its relative path and register it with the voicegroup.
+ * Returns the loaded data, or NULL on failure.
+ */
+uint32_t *voicegroup_loader_load_prog_wave(const char *projectRoot,
+                                           const char *relPath,
+                                           LoadedVoiceGroup *vg);
+
 #endif /* VOICEGROUP_LOADER_H */

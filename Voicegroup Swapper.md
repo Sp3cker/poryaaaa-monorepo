@@ -7,7 +7,7 @@ Allow the plugin GUI to override the sample source used by a voicegroup slot fro
 This feature will:
 
 - keep the existing voice index selector on the `Voices` tab
-- add a filterable project-wide asset selector on the selected voice's editor page
+- add a filterable sound asset selector on the selected voice's editor page
 - only allow same-nature swaps
 - apply swaps by reloading the voicegroup
 - persist overrides in plugin state
@@ -34,7 +34,6 @@ Reasons:
 
 - the existing loader already discovers asset files and maps symbols to asset paths
 - the missing piece is a reusable catalog, not a database
-- a DB adds dependency, schema, invalidation, and cross-platform file-location complexity
 - an in-memory index is sufficient for a project-wide browser and reload-time override application
 
 ## Implementation Shape
@@ -94,7 +93,6 @@ This stores what asset a voice originally used and what override is currently se
 
 ```c
 typedef struct {
-	bool valid;
 	ProjectAssetKind kind;
 	char file_name[256];
 } VoiceAssetBinding;

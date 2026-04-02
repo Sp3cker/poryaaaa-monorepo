@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <clap/clap.h>
 #include "m4a_engine.h"
+#include "voicegroup_loader.h"
+#include "project_asset_index.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -130,6 +132,25 @@ bool m4a_gui_poll_voice_restore(M4AGuiState *gui, int *voiceIndex);
  * The plugin should call m4a_engine_refresh_voices() to propagate changes.
  */
 bool m4a_gui_poll_voices_dirty(M4AGuiState *gui);
+
+/*
+ * Provide the GUI with the project-wide asset catalog for the sample selector.
+ * Pass NULL/0 to clear.
+ */
+void m4a_gui_set_project_assets(M4AGuiState *gui,
+                                const ProjectAssetEntry *directsoundAssets,
+                                int directsoundCount,
+                                const ProjectAssetEntry *progWaveAssets,
+                                int progWaveCount,
+                                const ProjectAssetOverride *overrides);
+
+/*
+ * Poll for a sample swap request. Returns true if the user selected a new
+ * sample for a voice. Fills voiceIndex, kind, and fileName.
+ */
+bool m4a_gui_poll_sample_swap(M4AGuiState *gui, int *voiceIndex,
+                              ProjectAssetKind *kind,
+                              char *fileName, int fileNameSize);
 
 #ifdef __cplusplus
 }

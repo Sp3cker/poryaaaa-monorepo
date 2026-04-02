@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include "m4a_engine.h"
 #include "voicegroup_loader.h"
+#include "project_asset_index.h"
 #include "m4a_gui.h"
 #include <clap/clap.h>
 
@@ -30,6 +31,9 @@ typedef struct {
     /* Voice editor: snapshot of original voices and per-voice override flags */
     ToneData originalVoices[VOICEGROUP_SIZE];
     bool voiceOverrides[VOICEGROUP_SIZE];
+
+    /* Project-wide sample catalog and per-voice sample overrides */
+    ProjectAssetIndex *assetIndex;
 
     /* GUI */
     const clap_host_t *host;

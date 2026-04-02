@@ -79,6 +79,7 @@ set(ENGINE_SOURCES
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
     plugin/m4a_params.c
+    plugin/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
@@ -185,6 +186,7 @@ target_link_libraries(poryaaaa_unit_tests PRIVATE m)
 add_executable(poryaaaa-standalone
     plugin/m4a_plugin.c
     plugin/m4a_params.c
+    plugin/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}

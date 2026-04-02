@@ -106,6 +106,19 @@ struct M4AGuiState {
     int selectedVoice;
     int pendingRestoreVoice;  /* -1 = none */
     bool voicesDirty;         /* set when any voice param is edited */
+
+    /* Sample swapper state */
+    const ProjectAssetEntry *directsoundAssets;
+    int directsoundAssetCount;
+    const ProjectAssetEntry *progWaveAssets;
+    int progWaveAssetCount;
+    const ProjectAssetOverride *assetOverrides;
+    char sampleFilterText[256];
+
+    bool pendingSampleSwap;
+    int pendingSwapVoice;
+    ProjectAssetKind pendingSwapKind;
+    char pendingSwapFileName[256];
 };
 
 /* ---- Internal helpers ---- */
@@ -245,6 +258,71 @@ static void render_general_tab(M4AGuiState *gui)
         gui->settingsChanged = true;
 }
 
+/* Portable case-insensitive substring search (strcasestr is not on Windows). */
+static const char *ci_strstr(const char *haystack, const char *needle)
+{
+    if (!needle[0]) return haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) { h++; n++; }
+        if (!*n) return haystack;
+    }
+    return NULL;
+}
+
+/*
+ * Render a filterable sample selector combo for a voice slot.
+ */
+static void render_sample_selector(M4AGuiState *gui, int voiceIndex,
+                                   const char *label, ProjectAssetKind kind,
+                                   const ProjectAssetEntry *assets, int assetCount)
+{
+    if (!assets || assetCount <= 0) return;
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(label);
+
+    /* Determine preview text: current override name, or placeholder */
+    const char *preview = "(select sample...)";
+    const char *currentName = NULL;
+    if (gui->assetOverrides && gui->assetOverrides[voiceIndex].active) {
+        currentName = gui->assetOverrides[voiceIndex].fileName;
+        preview = currentName;
+    }
+
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    if (ImGui::BeginCombo("##sampleCombo", preview)) {
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::InputTextWithHint("##filter", "Filter...", gui->sampleFilterText, sizeof(gui->sampleFilterText));
+
+        if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+        ImGui::Separator();
+
+        for (int i = 0; i < assetCount; i++) {
+            if (gui->sampleFilterText[0] != '\0' &&
+                ci_strstr(assets[i].fileName, gui->sampleFilterText) == NULL)
+                continue;
+
+            bool isSelected = (currentName && strcmp(assets[i].fileName, currentName) == 0);
+            if (ImGui::Selectable(assets[i].fileName, isSelected)) {
+                gui->pendingSampleSwap = true;
+                gui->pendingSwapVoice = voiceIndex;
+                gui->pendingSwapKind = kind;
+                strncpy(gui->pendingSwapFileName, assets[i].fileName,
+                        sizeof(gui->pendingSwapFileName) - 1);
+                gui->pendingSwapFileName[sizeof(gui->pendingSwapFileName) - 1] = '\0';
+                ImGui::CloseCurrentPopup();
+            }
+            if (isSelected)
+                ImGui::SetItemDefaultFocus();
+        }
+
+        ImGui::EndCombo();
+    }
+}
+
 static void render_voices_tab(M4AGuiState *gui)
 {
     if (!gui->liveVoices) {
@@ -298,6 +376,9 @@ static void render_voices_tab(M4AGuiState *gui)
             ImGui::Text("Frequency: %u Hz", voice->wav->freq);
             ImGui::Text("Loop: %s (start: %u)", (voice->wav->status & 0x4000) ? "Yes" : "No", voice->wav->loopStart);
         }
+
+        render_sample_selector(gui, idx, "Sample", PROJECT_ASSET_DIRECTSOUND,
+                               gui->directsoundAssets, gui->directsoundAssetCount);
     } else if (baseType == 0x01) {
         /* Square 1 */
         int key = voice->key;
@@ -327,6 +408,9 @@ static void render_voices_tab(M4AGuiState *gui)
         int key = voice->key;
         if (ImGui::SliderInt("Key", &key, 0, 127)) { voice->key = (uint8_t)key; changed = true; }
         changed |= edit_cgb_adsr(voice);
+
+        render_sample_selector(gui, idx, "Wave", PROJECT_ASSET_PROG_WAVE,
+                               gui->progWaveAssets, gui->progWaveAssetCount);
     } else if (baseType == 0x04) {
         /* Noise */
         int key = voice->key;
@@ -879,5 +963,34 @@ void m4a_gui_stop_internal_timer(M4AGuiState *gui)
 
     puglStopTimer(gui->view, RENDER_TIMER_ID);
     gui->internalTimerActive = false;
+}
+
+void m4a_gui_set_project_assets(M4AGuiState *gui,
+                                const ProjectAssetEntry *directsoundAssets,
+                                int directsoundCount,
+                                const ProjectAssetEntry *progWaveAssets,
+                                int progWaveCount,
+                                const ProjectAssetOverride *overrides)
+{
+    if (!gui) return;
+    gui->directsoundAssets = directsoundAssets;
+    gui->directsoundAssetCount = directsoundCount;
+    gui->progWaveAssets = progWaveAssets;
+    gui->progWaveAssetCount = progWaveCount;
+    gui->assetOverrides = overrides;
+}
+
+bool m4a_gui_poll_sample_swap(M4AGuiState *gui, int *voiceIndex,
+                              ProjectAssetKind *kind,
+                              char *fileName, int fileNameSize)
+{
+    if (!gui || !gui->pendingSampleSwap)
+        return false;
+    *voiceIndex = gui->pendingSwapVoice;
+    *kind = gui->pendingSwapKind;
+    strncpy(fileName, gui->pendingSwapFileName, (size_t)fileNameSize - 1);
+    fileName[fileNameSize - 1] = '\0';
+    gui->pendingSampleSwap = false;
+    return true;
 }
 } /* extern "C" */

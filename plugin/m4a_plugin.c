@@ -187,11 +187,19 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->guiTimerId = CLAP_INVALID_ID;
     atomic_init(&data->midiActivitySeq, 0);
     data->guiMidiActivitySeqSeen = 0;
+    data->assetIndex = NULL;
     m4a_params_init(data);
     /* Load defaults from config file placed next to the .clap */
     load_config_file(data);
     /* Forward the log path into the voicegroup loader so it can emit diagnostics */
     voicegroup_loader_set_log_path(s_pluginLogPath);
+
+    /* Build the project asset index once at init (used by sample swapper) */
+    if (data->projectRoot[0]) {
+        data->assetIndex = project_asset_index_create();
+        if (data->assetIndex)
+            project_asset_index_rebuild(data->assetIndex, data->projectRoot, &data->loaderConfig);
+    }
     return true;
 }
 
@@ -203,6 +211,8 @@ static void plugin_destroy(const clap_plugin_t *plugin)
         voicegroup_free(data->loadedVg);
         data->loadedVg = NULL;
     }
+    project_asset_index_destroy(data->assetIndex);
+    data->assetIndex = NULL;
     m4a_engine_destroy(&data->engine);
     free(data);
     free((void *)plugin);
@@ -219,6 +229,13 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
     data->engine.maxPcmChannels = data->maxPcmChannels;
     m4a_reverb_set_amount(&data->engine.reverb, data->reverbAmount);
 
+    /* Build asset index if not yet created (e.g. projectRoot set via state_load) */
+    if (data->projectRoot[0] && !data->assetIndex) {
+        data->assetIndex = project_asset_index_create();
+        if (data->assetIndex)
+            project_asset_index_rebuild(data->assetIndex, data->projectRoot, &data->loaderConfig);
+    }
+
     /* If voicegroup is configured, load it */
     if (data->projectRoot[0] && data->voicegroupName[0]) {
         if (data->loadedVg) {
@@ -231,6 +248,9 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
             memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
             memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+            /* Apply any pending sample overrides */
+            if (data->assetIndex)
+                project_asset_index_apply_overrides(data->assetIndex, data->projectRoot, data->loadedVg);
             m4a_params_sync_to_engine(data);
         }
     }
@@ -243,6 +263,15 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             m4a_gui_set_voice_data(data->gui, data->loadedVg->voices, data->originalVoices, data->voiceOverrides);
         else
             m4a_gui_set_voice_data(data->gui, NULL, NULL, NULL);
+
+        /* Provide project asset catalog to the GUI for the sample selector */
+        if (data->assetIndex)
+            m4a_gui_set_project_assets(data->gui,
+                                       data->assetIndex->directsoundAssets, data->assetIndex->directsoundCount,
+                                       data->assetIndex->progWaveAssets, data->assetIndex->progWaveCount,
+                                       data->assetIndex->overrides);
+        else
+            m4a_gui_set_project_assets(data->gui, NULL, 0, NULL, 0, NULL);
     }
 
     /* Notify GUI of current voicegroup status */
@@ -640,6 +669,20 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
     if (voicesChanged && data->activated)
         m4a_engine_refresh_voices(&data->engine);
 
+    /* Handle sample swap requests from the voice editor */
+    {
+        int swapVoice;
+        ProjectAssetKind swapKind;
+        char swapFileName[256];
+        while (m4a_gui_poll_sample_swap(data->gui, &swapVoice, &swapKind, swapFileName, sizeof(swapFileName))) {
+            if (data->assetIndex) {
+                project_asset_index_set_override(data->assetIndex, swapVoice, swapKind, swapFileName);
+                data->restartRequested = true;
+                data->host->request_restart(data->host);
+            }
+        }
+    }
+
     /* Apply any settings the user changed */
     M4AGuiSettings gs;
     bool reloadVoicegroup = false;
@@ -668,6 +711,9 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
                  "%s", gs.projectRoot);
         snprintf(data->voicegroupName, sizeof(data->voicegroupName),
                  "%s", gs.voicegroupName);
+        /* Reload clears all sample overrides — user gets fresh voicegroup */
+        if (data->assetIndex)
+            project_asset_index_clear_all_overrides(data->assetIndex);
         data->restartRequested = true;
         data->host->request_restart(data->host);
     }
@@ -772,6 +818,13 @@ static bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_flo
     /* Wire voice data pointers if voicegroup is already loaded */
     if (data->loadedVg)
         m4a_gui_set_voice_data(data->gui, data->loadedVg->voices, data->originalVoices, data->voiceOverrides);
+
+    /* Wire project asset catalog for the sample selector */
+    if (data->assetIndex)
+        m4a_gui_set_project_assets(data->gui,
+                                   data->assetIndex->directsoundAssets, data->assetIndex->directsoundCount,
+                                   data->assetIndex->progWaveAssets, data->assetIndex->progWaveCount,
+                                   data->assetIndex->overrides);
 
     plugin_log("gui_create: success");
 
