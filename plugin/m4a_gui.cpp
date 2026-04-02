@@ -95,7 +95,7 @@ struct M4AGuiState {
     bool wasClosed;
 
     /* True when the internal pugl render timer is active */
-    bool internalTimerActive;
+
     M4AGuiTimerCallback internalTimerCallback;
     void *internalTimerUserData;
 
@@ -949,20 +949,19 @@ void m4a_gui_start_internal_timer(M4AGuiState *gui)
 {
     if (!gui || !gui->view || !gui->realized)
         return;
-    if (gui->internalTimerActive)
-        return;
+
     PuglStatus st = puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
-    if (st == PUGL_SUCCESS)
-        gui->internalTimerActive = true;
+
+
 }
 
 void m4a_gui_stop_internal_timer(M4AGuiState *gui)
 {
-    if (!gui || !gui->view || !gui->internalTimerActive)
+    if (!gui || !gui->view)
         return;
 
     puglStopTimer(gui->view, RENDER_TIMER_ID);
-    gui->internalTimerActive = false;
+
 }
 
 void m4a_gui_set_project_assets(M4AGuiState *gui,

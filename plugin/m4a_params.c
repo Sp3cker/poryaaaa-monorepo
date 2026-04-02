@@ -116,7 +116,7 @@ static bool params_get_info(const clap_plugin_t *plugin, uint32_t param_index,
     memset(info, 0, sizeof(*info));
     info->id = param_index;
     info->cookie = NULL;
-    snprintf(info->name, sizeof(info->name), "Program Ch %u", (unsigned)(param_index + 1));
+    snprintf(info->name, sizeof(info->name), "Chn %u", (unsigned)(param_index + 1));
     snprintf(info->module, sizeof(info->module), "Programs");
     info->min_value = 0.0;
     info->max_value = 127.0;
