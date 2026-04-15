@@ -42,6 +42,34 @@ static int tests_passed = 0;
     } \
 } while(0)
 
+static void send_xcmd_select(M4AEngine *engine, int trackIndex, uint8_t selector)
+{
+    m4a_engine_cc(engine, trackIndex, 0x1E, selector);
+}
+
+static void send_xcmd_bytes(M4AEngine *engine, int trackIndex, const uint8_t *bytes, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+        m4a_engine_cc(engine, trackIndex, 0x1D, bytes[i]);
+}
+
+typedef struct {
+    int trackIndex;
+    uint8_t selector;
+    uint32_t value;
+    int called;
+} XcmdCapture;
+
+static void capture_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value)
+{
+    XcmdCapture *cap = (XcmdCapture *)ctx;
+
+    cap->trackIndex = trackIndex;
+    cap->selector = selector;
+    cap->value = value;
+    cap->called++;
+}
+
 /* Test umul3232H32 */
 static void test_umul3232H32(void)
 {
@@ -196,6 +224,116 @@ static void test_engine_init(void)
     ASSERT_EQ(engine.cgbChannels[3].type, 4, "cgb ch3 type");
 
     m4a_engine_destroy(&engine);
+}
+
+static void test_xcmd_subcommands(void)
+{
+    printf("Testing XCMD subcommands...\n");
+
+    M4AEngine engine;
+    m4a_engine_init(&engine, 44100.0f);
+
+    int dataSize = 4;
+    WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    wd->type = 0;
+    wd->freq = 0x01000000;
+    wd->loopStart = 0;
+    wd->size = dataSize;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+    wd->data[dataSize] = 0;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = wd;
+    voices[0].attack = 0x10;
+    voices[0].decay = 0x20;
+    voices[0].sustain = 0x30;
+    voices[0].release = 0x40;
+    voices[0].length = 0x50;
+    voices[0].panSweep = 0x60;
+
+    m4a_engine_set_voicegroup(&engine, voices);
+    m4a_engine_program_change(&engine, 0, 0);
+    {
+        XcmdCapture xcmd_cap = {0};
+
+        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xcmd_cap);
+        send_xcmd_select(&engine, 0, 0x04);
+        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x7A }, 1);
+        ASSERT_EQ(xcmd_cap.called, 1, "xcmd callback fires on successful apply");
+        ASSERT_EQ(xcmd_cap.trackIndex, 0, "xcmd callback reports track index");
+        ASSERT_EQ(xcmd_cap.selector, 0x04, "xcmd callback reports selector");
+        ASSERT_EQ(xcmd_cap.value, 0x7A, "xcmd callback reports value");
+    }
+
+    send_xcmd_select(&engine, 0, 0x05);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x55 }, 1);
+    send_xcmd_select(&engine, 0, 0x06);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x44 }, 1);
+    send_xcmd_select(&engine, 0, 0x07);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x33 }, 1);
+    send_xcmd_select(&engine, 0, 0x08);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x22 }, 1);
+    send_xcmd_select(&engine, 0, 0x09);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x11 }, 1);
+    send_xcmd_select(&engine, 0, 0x0A);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x66 }, 1);
+    send_xcmd_select(&engine, 0, 0x0B);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x77 }, 1);
+    send_xcmd_select(&engine, 0, 0x02);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ VOICE_SQUARE_1 }, 1);
+
+    ASSERT_EQ(engine.tracks[0].currentVoice.attack, 0x7A, "xatta updates attack");
+    ASSERT_EQ(engine.tracks[0].currentVoice.decay, 0x55, "xdeca updates decay");
+    ASSERT_EQ(engine.tracks[0].currentVoice.sustain, 0x44, "xsust updates sustain");
+    ASSERT_EQ(engine.tracks[0].currentVoice.release, 0x33, "xrele updates release");
+    ASSERT_EQ(engine.tracks[0].pseudoEchoVolume, 0x22, "xiecv updates pseudo-echo volume");
+    ASSERT_EQ(engine.tracks[0].pseudoEchoLength, 0x11, "xiecl updates pseudo-echo length");
+    ASSERT_EQ(engine.tracks[0].currentVoice.length, 0x66, "xleng updates length");
+    ASSERT_EQ(engine.tracks[0].currentVoice.panSweep, 0x77, "xswee updates pan sweep");
+    ASSERT_EQ(engine.tracks[0].currentVoice.type, VOICE_SQUARE_1, "xtype updates voice type");
+
+    engine.tracks[0].currentVoice.type = VOICE_DIRECTSOUND;
+    engine.tracks[0].currentVoice.wav = wd;
+    m4a_engine_note_on(&engine, 0, 60, 100);
+    ASSERT_EQ(engine.pcmChannels[0].attack, 0x7A, "XCMD ADSR is copied into new PCM notes");
+    ASSERT_EQ(engine.pcmChannels[0].decay, 0x55, "XCMD decay is copied into new PCM notes");
+    ASSERT_EQ(engine.pcmChannels[0].sustain, 0x44, "XCMD sustain is copied into new PCM notes");
+    ASSERT_EQ(engine.pcmChannels[0].release, 0x33, "XCMD release is copied into new PCM notes");
+    ASSERT_EQ(engine.pcmChannels[0].pseudoEchoVolume, 0x22, "XCMD IECV is copied into new PCM notes");
+    ASSERT_EQ(engine.pcmChannels[0].pseudoEchoLength, 0x11, "XCMD IECL is copied into new PCM notes");
+
+    send_xcmd_select(&engine, 0, 0x0D);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x78, 0x56, 0x34 }, 3);
+    ASSERT_EQ(engine.tracks[0].extendedValue, 0, "xcmd 0D waits for all four bytes");
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x12 }, 1);
+    ASSERT_EQ(engine.tracks[0].extendedValue, 0x12345678, "xcmd 0D stores little-endian value");
+
+    send_xcmd_select(&engine, 0, 0x01);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE }, 3);
+    ASSERT_EQ((uint32_t)(uintptr_t)engine.tracks[0].currentVoice.wav, (uint32_t)(uintptr_t)wd,
+              "xwave does not apply until the fourth byte arrives");
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xCA }, 1);
+    ASSERT_EQ((uint32_t)(uintptr_t)engine.tracks[0].currentVoice.wav, 0xCAFEBABE,
+              "xwave stores the assembled 32-bit pointer");
+
+    send_xcmd_select(&engine, 0, 0x0C);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 1, "xcmd 0C increments loop count");
+    ASSERT_EQ(engine.tracks[0].extendedWait, 1, "xcmd 0C sets wait while looping");
+    send_xcmd_select(&engine, 0, 0x0C);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 2, "xcmd 0C keeps counting up to the limit");
+    ASSERT_EQ(engine.tracks[0].extendedWait, 1, "xcmd 0C keeps wait asserted before completion");
+    send_xcmd_select(&engine, 0, 0x0C);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 0, "xcmd 0C resets after hitting the limit");
+    ASSERT_EQ(engine.tracks[0].extendedWait, 0, "xcmd 0C clears wait after completion");
+
+    m4a_engine_destroy(&engine);
+    free(wd);
 }
 
 /* Test basic audio generation */
@@ -423,6 +561,7 @@ int main(void)
     test_midi_key_to_cgb_freq();
     test_trk_vol_pit_set();
     test_engine_init();
+    test_xcmd_subcommands();
     test_basic_audio();
     test_polyphony_stealing();
 

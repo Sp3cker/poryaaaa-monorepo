@@ -140,6 +140,16 @@ static void cgb_chn_vol_set(M4ACGBChannel *ch, M4ATrack *track)
     ch->leftVolume = (uint8_t)result;
 }
 
+static void engine_notify_xcmd(M4AEngine *engine, int trackIndex, uint8_t selector, uint32_t value)
+{
+    if (!engine->xcmd_fn)
+        return;
+
+    engine->xcmd_fn(engine->xcmd_ctx, trackIndex, selector, value);
+}
+
+
+
 /*
  * Resolve voice for a given key - handles keysplit and rhythm types
  */
@@ -222,6 +232,13 @@ void m4a_engine_destroy(M4AEngine *engine)
     m4a_reverb_destroy(&engine->reverb);
 }
 
+void m4a_engine_set_xcmd_callback(M4AEngine *engine, M4AEngineXcmdFn xcmd_fn, void *xcmd_ctx)
+{
+    engine->xcmd_fn = xcmd_fn;
+    engine->xcmd_ctx = xcmd_ctx;
+}
+
+
 void m4a_engine_set_tempo_bpm(M4AEngine *engine, double bpm)
 {
     if (bpm < 1.0) bpm = 1.0;
@@ -254,6 +271,106 @@ void m4a_engine_refresh_voices(M4AEngine *engine)
         M4ATrack *track = &engine->tracks[i];
         track->currentVoice = engine->voiceGroup[track->currentProgram];
     }
+}
+
+static uint8_t xcmd_data_length(uint8_t selector)
+{
+    switch (selector) {
+    case 0x01: /* xwave */
+    case 0x0D:
+        return 4;
+    case 0x0C:
+        return 2;
+    case 0x02: /* xtype */
+    case 0x04: /* xatta */
+    case 0x05: /* xdeca */
+    case 0x06: /* xsust */
+    case 0x07: /* xrele */
+    case 0x08: /* xiecv */
+    case 0x09: /* xiecl */
+    case 0x0A: /* xleng */
+    case 0x0B: /* xswee */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static uint32_t xcmd_read_le(const uint8_t *bytes, uint8_t count)
+{
+    uint32_t value = 0;
+
+    for (uint8_t i = 0; i < count; i++)
+        value |= (uint32_t)bytes[i] << (i * 8);
+
+    return value;
+}
+
+static void xcmd_apply(M4AEngine *engine, int trackIndex, M4ATrack *track)
+{
+    switch (track->extendedCommand) {
+    case 0x01: /* xwave */
+        track->currentVoice.wav = (WaveData *)(uintptr_t)xcmd_read_le(track->extendedCommandBytes, 4);
+        engine_notify_xcmd(engine, trackIndex, 0x01, xcmd_read_le(track->extendedCommandBytes, 4));
+        break;
+    case 0x02: /* xtype */
+        track->currentVoice.type = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x02, track->extendedCommandBytes[0]);
+        break;
+    case 0x04: /* xatta */
+        track->currentVoice.attack = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x04, track->extendedCommandBytes[0]);
+        break;
+    case 0x05: /* xdeca */
+        track->currentVoice.decay = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x05, track->extendedCommandBytes[0]);
+        break;
+    case 0x06: /* xsust */
+        track->currentVoice.sustain = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x06, track->extendedCommandBytes[0]);
+        break;
+    case 0x07: /* xrele */
+        track->currentVoice.release = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x07, track->extendedCommandBytes[0]);
+        break;
+    case 0x08: /* xiecv */
+        track->pseudoEchoVolume = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x08, track->extendedCommandBytes[0]);
+        break;
+    case 0x09: /* xiecl */
+        track->pseudoEchoLength = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x09, track->extendedCommandBytes[0]);
+        break;
+    case 0x0A: /* xleng */
+        track->currentVoice.length = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x0A, track->extendedCommandBytes[0]);
+        break;
+    case 0x0B: /* xswee */
+        track->currentVoice.panSweep = track->extendedCommandBytes[0];
+        engine_notify_xcmd(engine, trackIndex, 0x0B, track->extendedCommandBytes[0]);
+        break;
+    case 0x0C: {
+        uint16_t count = (uint16_t)xcmd_read_le(track->extendedCommandBytes, 2);
+
+        if (track->extendedLoopCount < count) {
+            track->extendedLoopCount++;
+            track->extendedWait = 1;
+        } else {
+            track->extendedLoopCount = 0;
+            track->extendedWait = 0;
+        }
+        engine_notify_xcmd(engine, trackIndex, 0x0C, count);
+        break;
+    }
+    case 0x0D:
+        track->extendedValue = xcmd_read_le(track->extendedCommandBytes, 4);
+        engine_notify_xcmd(engine, trackIndex, 0x0D, track->extendedValue);
+        break;
+    default:
+        break;
+    }
+
+    track->extendedCommandCount = 0;
 }
 
 /*
@@ -588,12 +705,51 @@ void m4a_engine_cc(M4AEngine *engine, int trackIndex, uint8_t cc, uint8_t value)
         break;
     case 0x16: /* Modulation type (MODT) */
         // TODO: none of the pokemon emerald songs use MODT
+        if (track->modT != value) {
+            track->modT = value;
+            refresh_volumes(engine, track, trackIndex);
+            refresh_channel_pitches(engine, track, trackIndex);
+        }
         break;
     case 0x18: /* Micro tuning (TUNE) */
         // TODO: none of the pokemon emerald songs use TUNE
+        if (track->tune != (int8_t)(value - 0x40)) {
+            track->tune = (int8_t)(value - 0x40);
+            m4a_track_vol_pit_set(track);
+            refresh_channel_pitches(engine, track, trackIndex);
+        }
         break;
     case 0x1A: /* LFO delay (LFODL) */
-        // TODO: none of the pokemon emerald songs use LFODL
+        if (track->lfoDelay != value || track->lfoDelayC != value
+            || track->lfoSpeedC != 0 || track->modM != 0) {
+            track->lfoDelay = value;
+            track->lfoDelayC = value;
+            track->lfoSpeedC = 0;
+            if (track->modM != 0) {
+                track->modM = 0;
+                m4a_track_vol_pit_set(track);
+                refresh_volumes(engine, track, trackIndex);
+                refresh_channel_pitches(engine, track, trackIndex);
+            }
+        }
+        break;
+    case 0x1D: /* Extended command value (XCMD part 1) */
+    case 0x1F:
+        {
+            uint8_t dataLength = xcmd_data_length(track->extendedCommand);
+
+            if (dataLength == 0)
+                break;
+
+            track->extendedCommandBytes[track->extendedCommandCount++] = value;
+            if (track->extendedCommandCount >= dataLength)
+                xcmd_apply(engine, trackIndex, track);
+            break;
+        }
+    case 0x1E: /* Extended command selector (XCMD part 2) */
+        track->extendedCommand = value;
+        track->extendedCommandCount = 0;
+        memset(track->extendedCommandBytes, 0, sizeof(track->extendedCommandBytes));
         break;
     case 0x7B: /* All Notes Off */
         m4a_engine_all_notes_off(engine, trackIndex);

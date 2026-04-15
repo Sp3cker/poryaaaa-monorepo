@@ -10,6 +10,8 @@
 #define VBLANK_RATE 59.7275f
 #define MAX_SONG_VOLUME 127 // called "mxv" in pokeemerald
 
+typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
+
 /* Voice types (matching GBA ToneData.type) */
 #define VOICE_DIRECTSOUND           0x00
 #define VOICE_SQUARE_1              0x01
@@ -102,6 +104,12 @@ typedef struct {
     uint8_t priority;
     uint8_t currentProgram; /* last program_change index (0-127) */
     ToneData currentVoice;  /* current instrument */
+    uint8_t extendedCommand;   /* last XCMD selector (0x1D/0x1F), dispatched by 0x1E */
+    uint8_t extendedCommandBytes[4];
+    uint8_t extendedCommandCount;
+    uint8_t extendedWait;
+    uint16_t extendedLoopCount;
+    uint32_t extendedValue;
 } M4ATrack;
 
 /* PCM Sound Channel */
@@ -222,11 +230,14 @@ struct M4AEngine {
 
     /* Loaded voice data */
     ToneData *voiceGroup;   /* array of 128 ToneData entries */
+    M4AEngineXcmdFn xcmd_fn;
+    void *xcmd_ctx;
 };
 
 /* Engine lifecycle */
 void m4a_engine_init(M4AEngine *engine, float sampleRate);
 void m4a_engine_destroy(M4AEngine *engine);
+void m4a_engine_set_xcmd_callback(M4AEngine *engine, M4AEngineXcmdFn xcmd_fn, void *xcmd_ctx);
 
 /* Set voicegroup (must be loaded by voicegroup_loader) */
 void m4a_engine_set_voicegroup(M4AEngine *engine, ToneData *voiceGroup);

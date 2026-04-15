@@ -55,6 +55,13 @@ static char s_pluginDir[512] = {0};
 /* Optional diagnostic log path, set from config key "log=<path>" */
 static const char *s_pluginLogPath = NULL;
 
+static void plugin_engine_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
+static bool plugin_poll_pending_xcmd(M4APluginData *data, unsigned int *seq_out,
+                                     unsigned int *meta_out);
+static bool plugin_poll_latest_xcmd(M4APluginData *data, unsigned int *seq_out,
+                                    unsigned int *meta_out, unsigned int *value_out);
+static void plugin_format_pending_xcmd(char *buf, size_t buf_size, unsigned int meta);
+
 /*
  * Load settings from poryaaaa.cfg placed next to the .clap file.
  *
@@ -186,7 +193,16 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->gui = NULL;
     data->guiTimerId = CLAP_INVALID_ID;
     atomic_init(&data->midiActivitySeq, 0);
+    atomic_init(&data->xcmdActivitySeq, 0);
+    atomic_init(&data->pendingXcmdSeq, 0);
+    atomic_init(&data->pendingXcmdMeta, 0);
+    atomic_init(&data->latestXcmdSeq, 0);
+    atomic_init(&data->latestXcmdMeta, 0);
+    atomic_init(&data->latestXcmdValue, 0);
     data->guiMidiActivitySeqSeen = 0;
+    data->guiXcmdActivitySeqSeen = 0;
+    data->guiPendingXcmdSeqSeen = 0;
+    data->guiLatestXcmdSeqSeen = 0;
     data->assetIndex = NULL;
     m4a_params_init(data);
     /* Load defaults from config file placed next to the .clap */
@@ -223,6 +239,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     m4a_engine_init(&data->engine, (float)sample_rate);
+    m4a_engine_set_xcmd_callback(&data->engine, plugin_engine_xcmd, data);
     data->engine.masterVolume = data->masterVolume;
     data->engine.songMasterVolume = data->songMasterVolume;
     data->engine.analogFilter = data->analogFilter;
@@ -351,6 +368,15 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg)
         m4a_engine_program_change(&data->engine, channel, msg[1]);
         break;
     case 0xB0: /* Control Change */
+        if (msg[1] == 0x1D || msg[1] == 0x1E || msg[1] == 0x1F)
+            atomic_fetch_add(&data->xcmdActivitySeq, 1);
+        if (msg[1] == 0x1E) {
+            unsigned int meta = ((unsigned int)channel & 0xFFu)
+                              | ((unsigned int)msg[2] << 8);
+
+            atomic_store_explicit(&data->pendingXcmdMeta, meta, memory_order_relaxed);
+            atomic_fetch_add_explicit(&data->pendingXcmdSeq, 1, memory_order_release);
+        }
         m4a_engine_cc(&data->engine, channel, msg[1], msg[2]);
         break;
     case 0xE0: /* Pitch Bend */
@@ -377,6 +403,83 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
     } else if (ev->header.type == CLAP_EVENT_NOTE_CHOKE) {
         m4a_engine_note_off(&data->engine, channel, (uint8_t)ev->key);
     }
+}
+
+static void plugin_engine_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value)
+{
+    M4APluginData *data = (M4APluginData *)ctx;
+    unsigned int meta = ((unsigned int)(uint8_t)trackIndex)
+                      | ((unsigned int)selector << 8);
+
+    atomic_store_explicit(&data->latestXcmdValue, value, memory_order_relaxed);
+    atomic_store_explicit(&data->latestXcmdMeta, meta, memory_order_relaxed);
+    atomic_fetch_add_explicit(&data->latestXcmdSeq, 1, memory_order_release);
+}
+
+static bool plugin_poll_pending_xcmd(M4APluginData *data, unsigned int *seq_out,
+                                     unsigned int *meta_out)
+{
+    for (;;) {
+        unsigned int seq1 = atomic_load_explicit(&data->pendingXcmdSeq, memory_order_acquire);
+        unsigned int meta = atomic_load_explicit(&data->pendingXcmdMeta, memory_order_relaxed);
+        unsigned int seq2 = atomic_load_explicit(&data->pendingXcmdSeq, memory_order_acquire);
+
+        if (seq1 == seq2) {
+            if (seq1 == 0 || seq1 == data->guiPendingXcmdSeqSeen)
+                return false;
+            *seq_out = seq1;
+            *meta_out = meta;
+            return true;
+        }
+    }
+}
+
+static bool plugin_poll_latest_xcmd(M4APluginData *data, unsigned int *seq_out,
+                                    unsigned int *meta_out, unsigned int *value_out)
+{
+    for (;;) {
+        unsigned int seq1 = atomic_load_explicit(&data->latestXcmdSeq, memory_order_acquire);
+        unsigned int meta = atomic_load_explicit(&data->latestXcmdMeta, memory_order_relaxed);
+        unsigned int value = atomic_load_explicit(&data->latestXcmdValue, memory_order_relaxed);
+        unsigned int seq2 = atomic_load_explicit(&data->latestXcmdSeq, memory_order_acquire);
+
+        if (seq1 == seq2) {
+            if (seq1 == 0 || seq1 == data->guiLatestXcmdSeqSeen)
+                return false;
+            *seq_out = seq1;
+            *meta_out = meta;
+            *value_out = value;
+            return true;
+        }
+    }
+}
+
+static void plugin_format_pending_xcmd(char *buf, size_t buf_size, unsigned int meta)
+{
+    unsigned int track = meta & 0xFFu;
+    unsigned int selector = (meta >> 8) & 0xFFu;
+    const char *name = NULL;
+
+    switch (selector) {
+    case 0x01: name = "xwave"; break;
+    case 0x02: name = "xtype"; break;
+    case 0x04: name = "xatta"; break;
+    case 0x05: name = "xdeca"; break;
+    case 0x06: name = "xsust"; break;
+    case 0x07: name = "xrele"; break;
+    case 0x08: name = "xiecv"; break;
+    case 0x09: name = "xiecl"; break;
+    case 0x0A: name = "xleng"; break;
+    case 0x0B: name = "xswee"; break;
+    case 0x0C: name = "xcmd_0C"; break;
+    case 0x0D: name = "xcmd_0D"; break;
+    default: break;
+    }
+
+    if (name)
+        snprintf(buf, buf_size, "Ch %u: next CC29/31 -> %s", track + 1, name);
+    else
+        snprintf(buf, buf_size, "Ch %u: next CC29/31 -> XCMD 0x%02X", track + 1, selector);
 }
 
 /* ---- Audio processing ---- */
@@ -647,6 +750,37 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
     if (midiSeq != data->guiMidiActivitySeqSeen) {
         data->guiMidiActivitySeqSeen = midiSeq;
         m4a_gui_pulse_midi_activity(data->gui);
+    }
+
+    {
+        unsigned int xcmdSeq = atomic_load(&data->xcmdActivitySeq);
+        if (xcmdSeq != data->guiXcmdActivitySeqSeen) {
+            data->guiXcmdActivitySeqSeen = xcmdSeq;
+            m4a_gui_pulse_xcmd_activity(data->gui);
+        }
+    }
+
+    {
+        unsigned int seq, meta;
+
+        if (plugin_poll_pending_xcmd(data, &seq, &meta)) {
+            char pending_xcmd[128];
+
+            plugin_format_pending_xcmd(pending_xcmd, sizeof(pending_xcmd), meta);
+            m4a_gui_set_latest_xcmd(data->gui, pending_xcmd);
+            data->guiPendingXcmdSeqSeen = seq;
+        }
+    }
+
+    {
+        unsigned int seq, meta, value;
+
+        if (plugin_poll_latest_xcmd(data, &seq, &meta, &value)) {
+            (void)meta;
+            (void)value;
+            m4a_gui_pulse_valid_xcmd(data->gui);
+            data->guiLatestXcmdSeqSeen = seq;
+        }
     }
 
     /* Render one GUI frame */

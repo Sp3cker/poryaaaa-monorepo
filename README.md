@@ -139,6 +139,50 @@ Caveat: I haven't actually tested this on Linux.  It theoretically works...
 
 The plugin reads `poryaaaa.cfg` on startup for initial defaults. All settings can be changed live through the GUI and are saved in the DAW's project state.
 
+#### XCMD via MIDI CC
+
+`poryaaaa` exposes m4a-style `XCMD` control through raw MIDI CC messages, matching `mid2agb`:
+
+- Send `CC 30` (`0x1E`) with the XCMD subcommand number.
+- Then send one or more `CC 29` (`0x1D`) or `CC 31` (`0x1F`) messages containing the subcommand payload bytes.
+
+For the common 1-byte XCMDs, that means two CC events total:
+ 
+```text
+CC 30 = <subcommand>
+CC 29 = <value>
+```
+
+Examples:
+
+```text
+CC 30 = 0x04, CC 29 = 0x7A   -> xatta 0x7A
+CC 30 = 0x05, CC 29 = 0x55   -> xdeca 0x55
+CC 30 = 0x08, CC 29 = 0x22   -> xiecv 0x22
+CC 30 = 0x09, CC 29 = 0x11   -> xiecl 0x11
+```
+
+Supported XCMD subcommands:
+
+- `0x01` `xwave`: 4 payload bytes, little-endian 32-bit wave pointer
+- `0x02` `xtype`: 1 payload byte
+- `0x04` `xatta`: 1 payload byte
+- `0x05` `xdeca`: 1 payload byte
+- `0x06` `xsust`: 1 payload byte
+- `0x07` `xrele`: 1 payload byte
+- `0x08` `xiecv`: 1 payload byte
+- `0x09` `xiecl`: 1 payload byte
+- `0x0A` `xleng`: 1 payload byte
+- `0x0B` `xswee`: 1 payload byte
+- `0x0C`: 2 payload bytes, little-endian
+- `0x0D`: 4 payload bytes, little-endian
+
+Notes:
+
+- Multi-byte payloads are assembled from repeated `CC 29`/`CC 31` messages.
+- Audio-affecting XCMD changes apply to notes started after the command is received.
+- `0x0C` tracks the original engine's loop/wait state but does not alter playback flow in `poryaaaa`, because there is no song-script interpreter in the MIDI path.
+
 #### Plugin config reference
 
 | Key | Default | Description |

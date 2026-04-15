@@ -23,6 +23,12 @@ typedef struct {
     /* Incremented from the audio thread when incoming MIDI/note activity is
      * seen. The GUI polls it from the main thread and handles the visual decay. */
     atomic_uint midiActivitySeq;
+    atomic_uint xcmdActivitySeq;
+    atomic_uint pendingXcmdSeq;
+    atomic_uint pendingXcmdMeta;
+    atomic_uint latestXcmdSeq;
+    atomic_uint latestXcmdMeta;
+    atomic_uint latestXcmdValue;
     /* CLAP param mirror for per-track program selection.
      * Kept outside the engine so params/state can read it without poking
      * directly at audio-thread-owned track state. */
@@ -40,6 +46,9 @@ typedef struct {
     M4AGuiState *gui;
     clap_id guiTimerId;
     unsigned int guiMidiActivitySeqSeen;
+    unsigned int guiXcmdActivitySeqSeen;
+    unsigned int guiPendingXcmdSeqSeen;
+    unsigned int guiLatestXcmdSeqSeen;
 
     /* Set when the plugin calls request_restart (e.g. after Reload).
      * The standalone polls this to perform the actual restart cycle. */

@@ -87,6 +87,9 @@ struct M4AGuiState {
     bool settingsChanged;
     bool reloadRequested;
     double midiActivityUntil;
+    double xcmdActivityUntil;
+    double validXcmdUntil;
+    char latestXcmd[128];
 
     /* True after set_parent() — host drives sizing and visibility */
     bool isEmbedded;
@@ -179,17 +182,33 @@ static bool edit_cgb_adsr(ToneData *voice)
 static void render_general_tab(M4AGuiState *gui)
 {
     bool midiActive = ImGui::GetTime() < gui->midiActivityUntil;
+    bool xcmdActive = ImGui::GetTime() < gui->xcmdActivityUntil;
+    bool validXcmdActive = ImGui::GetTime() < gui->validXcmdUntil;
     ImDrawList *drawList = ImGui::GetWindowDrawList();
-    ImVec2 ledCenter = ImGui::GetCursorScreenPos();
-    ledCenter.x += 7.0f;
-    ledCenter.y += 9.0f;
-    drawList->AddCircleFilled(ledCenter, 5.0f,
-                              ImGui::GetColorU32(midiActive
-                                  ? ImVec4(0.18f, 0.95f, 0.35f, 1.0f)
-                                  : ImVec4(0.18f, 0.24f, 0.20f, 1.0f)));
-    ImGui::Dummy(ImVec2(14.0f, 18.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("MIDI Activity");
+    auto draw_led = [&](bool active, const ImVec4 &onColor, const ImVec4 &offColor, const char *label) {
+        ImVec2 ledCenter = ImGui::GetCursorScreenPos();
+        ledCenter.x += 7.0f;
+        ledCenter.y += 9.0f;
+        drawList->AddCircleFilled(ledCenter, 5.0f,
+                                  ImGui::GetColorU32(active ? onColor : offColor));
+        ImGui::Dummy(ImVec2(14.0f, 18.0f));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+    };
+
+    draw_led(midiActive,
+             ImVec4(0.18f, 0.95f, 0.35f, 1.0f),
+             ImVec4(0.18f, 0.24f, 0.20f, 1.0f),
+             "MIDI Activity");
+    draw_led(xcmdActive,
+             ImVec4(0.95f, 0.75f, 0.18f, 1.0f),
+             ImVec4(0.26f, 0.22f, 0.14f, 1.0f),
+             "XCMD Traffic");
+    draw_led(validXcmdActive,
+             ImVec4(0.18f, 0.75f, 0.95f, 1.0f),
+             ImVec4(0.15f, 0.22f, 0.28f, 1.0f),
+             "Valid XCMD");
+    ImGui::Text("XCMD Target: %s", gui->latestXcmd[0] ? gui->latestXcmd : "None");
     ImGui::Spacing();
 
     /* ---- Project Settings ---- */
@@ -874,6 +893,30 @@ void m4a_gui_pulse_midi_activity(M4AGuiState *gui)
         return;
     ImGui::SetCurrentContext(gui->imguiCtx);
     gui->midiActivityUntil = ImGui::GetTime() + 0.15;
+}
+
+void m4a_gui_pulse_xcmd_activity(M4AGuiState *gui)
+{
+    if (!gui || !gui->imguiCtx)
+        return;
+    ImGui::SetCurrentContext(gui->imguiCtx);
+    gui->xcmdActivityUntil = ImGui::GetTime() + 0.15;
+}
+
+void m4a_gui_pulse_valid_xcmd(M4AGuiState *gui)
+{
+    if (!gui || !gui->imguiCtx)
+        return;
+    ImGui::SetCurrentContext(gui->imguiCtx);
+    gui->validXcmdUntil = ImGui::GetTime() + 0.15;
+}
+
+void m4a_gui_set_latest_xcmd(M4AGuiState *gui, const char *text)
+{
+    if (!gui)
+        return;
+
+    snprintf(gui->latestXcmd, sizeof(gui->latestXcmd), "%s", text ? text : "");
 }
 
 bool m4a_gui_poll_changes(M4AGuiState *gui, M4AGuiSettings *out, bool *reload_voicegroup)
