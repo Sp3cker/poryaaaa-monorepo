@@ -67,22 +67,11 @@ else()
 endif()
 
 # ---- Voicegroup loader (decomp parser, reusable by external tools) ----
-# Pure C, no audio engine dependencies. Reads a pokeemerald /
-# pokefirered project's voicegroup files and returns a
-# LoadedVoiceGroup. Kept as its own static library so projects like
-# ccomidi can link against it via add_subdirectory without pulling
-# in the m4a audio engine.
-add_library(voicegroup_loader STATIC
-    plugin/voicegroup/voicegroup_loader.c
-    plugin/voicegroup/vg_log.c
-    plugin/voicegroup/vg_paths.c
-    plugin/voicegroup/vg_discovery.c
-    plugin/voicegroup/vg_symbols.c
-    plugin/voicegroup/vg_keysplit.c
-    plugin/voicegroup/vg_wav.c
-    plugin/voicegroup/vg_parser.c
-)
-target_include_directories(voicegroup_loader PUBLIC plugin)
+# Pure C, no audio-engine dependencies. Defined in its own
+# CMakeLists so external projects (ccomidi etc.) can add_subdirectory
+# just the library without dragging in poryaaaa's plugin /
+# standalone / test targets.
+add_subdirectory(plugin/voicegroup)
 
 # m4a audio engine sources (shared between plugin, standalone, tests).
 set(ENGINE_SOURCES
