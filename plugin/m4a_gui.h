@@ -5,8 +5,8 @@
 #include <stdbool.h>
 #include <clap/clap.h>
 #include "m4a_engine.h"
-#include "voicegroup_loader.h"
-#include "project_asset_index.h"
+#include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/project_asset_index.h"
 
 #ifdef __cplusplus
 extern "C" {

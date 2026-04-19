@@ -5,7 +5,7 @@
 #include "m4a_engine.h"
 #include "m4a_channel.h"
 #include "m4a_reverb.h"
-#include "voicegroup_loader.h"
+#include "voicegroup/voicegroup_loader.h"
 
 /*
  * Standalone test program for the m4a engine.

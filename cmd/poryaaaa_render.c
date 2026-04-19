@@ -26,7 +26,7 @@
 #endif
 #include "m4a_engine.h"
 #include "m4a_reverb.h"
-#include "voicegroup_loader.h"
+#include "voicegroup/voicegroup_loader.h"
 
 /* ========================================================================
  * WAV writing helpers (matching test_wav_export.c)

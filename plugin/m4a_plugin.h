@@ -3,8 +3,8 @@
 
 #include <stdatomic.h>
 #include "m4a_engine.h"
-#include "voicegroup_loader.h"
-#include "project_asset_index.h"
+#include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/project_asset_index.h"
 #include "m4a_gui.h"
 #include <clap/clap.h>
 

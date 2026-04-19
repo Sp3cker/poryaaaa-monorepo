@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "voicegroup_types.h"
+#include "voicegroup/voicegroup_types.h"
 
 #define MAX_PCM_CHANNELS 12
 #define MAX_CGB_CHANNELS 4
