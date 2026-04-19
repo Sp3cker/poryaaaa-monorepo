@@ -12,6 +12,7 @@
 #endif
 
 #define VG_MAX_DISCOVERED_PATHS 32
+#define VG_MAX_LINE 1024
 
 /*
  * Bounded, deduplicated list of paths used by project discovery.

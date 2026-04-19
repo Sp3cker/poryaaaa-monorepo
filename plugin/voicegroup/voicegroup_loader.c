@@ -1,5 +1,6 @@
 #include "voicegroup_loader.h"
 
+#include "vg_discovery.h"
 #include "vg_log.h"
 #include "vg_paths.h"
 
@@ -11,20 +12,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#define MAX_LINE 1024
 #define MAX_SYMBOL_LEN 256
 #define INITIAL_CAPACITY 64
-
-/* ---- Discovery data structures ---- */
-
-typedef struct {
-    PathList directSoundDataFiles;   /* paths to direct_sound_data.inc files */
-    PathList progWaveDataFiles;      /* paths to programmable_wave_data.inc files */
-    PathList keySplitTableFiles;     /* paths to keysplit_tables.inc files */
-    PathList voicegroupDirs;         /* directories with individual .inc/.s voicegroup files */
-    PathList monolithicVGFiles;      /* files containing multiple voicegroups (voice_groups.inc) */
-    PathList wavSampleDirs;          /* directories with .wav sample files */
-} ProjectDiscovery;
 
 typedef struct {
     char filePath[VG_MAX_PATH_LEN];
@@ -220,245 +209,6 @@ static KeySplitDef *keysplit_map_find(const KeySplitMap *map, const char *name)
     return NULL;
 }
 
-/* ---- Directory scanning helpers ---- */
-
-/*
- * Check if a directory contains files matching a given extension.
- * Returns 1 if at least one matching file is found.
- */
-static int dir_has_files_with_ext(const char *dirPath, const char *ext)
-{
-    DIR *d = opendir(dirPath);
-    if (!d) return 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        if (vg_str_ends_with_ci(ent->d_name, ext)) {
-            closedir(d);
-            return 1;
-        }
-    }
-    closedir(d);
-    return 0;
-}
-
-/*
- * Check if a directory contains any voice macro definitions (.inc or .s files
- * with voice_directsound, voice_square, voice_keysplit, etc.).
- * Quick heuristic: check first few matching files for voice macro keywords.
- */
-static int dir_has_voice_macros(const char *dirPath)
-{
-    DIR *d = opendir(dirPath);
-    if (!d) return 0;
-    struct dirent *ent;
-    int checked = 0;
-    while ((ent = readdir(d)) != NULL && checked < 5) {
-        if (ent->d_name[0] == '.') continue;
-        if (!vg_str_ends_with_ci(ent->d_name, ".inc") && !vg_str_ends_with_ci(ent->d_name, ".s"))
-            continue;
-        char filePath[VG_MAX_PATH_LEN];
-        snprintf(filePath, sizeof(filePath), "%s%c%s", dirPath, VG_PATH_SEP, ent->d_name);
-        FILE *f = fopen(filePath, "r");
-        if (!f) continue;
-        char line[MAX_LINE];
-        int lineCount = 0;
-        while (fgets(line, sizeof(line), f) && lineCount < 50) {
-            if (strstr(line, "voice_directsound") || strstr(line, "voice_square") ||
-                strstr(line, "voice_programmable_wave") || strstr(line, "voice_noise") ||
-                strstr(line, "voice_keysplit") || strstr(line, "voice_group")) {
-                fclose(f);
-                closedir(d);
-                return 1;
-            }
-            lineCount++;
-        }
-        fclose(f);
-        checked++;
-    }
-    closedir(d);
-    return 0;
-}
-
-/*
- * Recursively scan under a base directory for subdirectories, up to maxDepth levels.
- * Calls the provided callback for each directory found (including basePath itself).
- */
-typedef void (*dir_visit_fn)(const char *dirPath, void *ctx);
-
-static void scan_dirs_recursive(const char *basePath, int depth, int maxDepth, dir_visit_fn visit, void *ctx)
-{
-    visit(basePath, ctx);
-    if (depth >= maxDepth) return;
-
-    DIR *d = opendir(basePath);
-    if (!d) return;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        char subPath[VG_MAX_PATH_LEN];
-        snprintf(subPath, sizeof(subPath), "%s%c%s", basePath, VG_PATH_SEP, ent->d_name);
-        if (vg_is_directory(subPath)) {
-            scan_dirs_recursive(subPath, depth + 1, maxDepth, visit, ctx);
-        }
-    }
-    closedir(d);
-}
-
-/* Combined visitor context for voicegroup and wav directory discovery */
-typedef struct {
-    ProjectDiscovery *disc;
-} CombinedDirVisitorCtx;
-
-static void visit_for_voicegroup_and_wav_dirs(const char *dirPath, void *ctx)
-{
-    CombinedDirVisitorCtx *vctx = (CombinedDirVisitorCtx *)ctx;
-    if (dir_has_voice_macros(dirPath))
-        pathlist_add(&vctx->disc->voicegroupDirs, dirPath);
-    if (dir_has_files_with_ext(dirPath, ".wav"))
-        pathlist_add(&vctx->disc->wavSampleDirs, dirPath);
-}
-
-/*
- * Check if a file is a monolithic voicegroup file (contains multiple labeled voicegroups).
- * Heuristic: file has multiple `<word>::` labels AND contains voice macros,
- * but is NOT just a list of .include directives pointing to a voicegroups/ subdir.
- */
-static int is_monolithic_voicegroup_file(const char *filePath)
-{
-    FILE *f = fopen(filePath, "r");
-    if (!f) return 0;
-
-    char line[MAX_LINE];
-    int labelCount = 0;
-    int voiceMacroCount = 0;
-    int includeCount = 0;
-    int lineCount = 0;
-
-    while (fgets(line, sizeof(line), f) && lineCount < 500) {
-        vg_strip_comment(line);
-        vg_rtrim(line);
-        char *trimmed = vg_ltrim(line);
-
-        if (strstr(trimmed, "::") && trimmed[0] != '.' && trimmed[0] != '\0') {
-            labelCount++;
-        }
-        if (strstr(trimmed, "voice_directsound") || strstr(trimmed, "voice_square") ||
-            strstr(trimmed, "voice_programmable_wave") || strstr(trimmed, "voice_noise") ||
-            strstr(trimmed, "voice_keysplit") || strstr(trimmed, "voice_group")) {
-            voiceMacroCount++;
-        }
-        if (strstr(trimmed, ".include")) {
-            includeCount++;
-        }
-        lineCount++;
-    }
-    fclose(f);
-
-    /* It's monolithic if it has multiple labels AND voice macros,
-     * and it's NOT primarily a hub of .include directives */
-    if (labelCount >= 2 && voiceMacroCount > 0 && voiceMacroCount > includeCount) {
-        return 1;
-    }
-    return 0;
-}
-
-/* ---- Project discovery ---- */
-
-static void discover_project(const char *projectRoot,
-                             const VoicegroupLoaderConfig *cfg,
-                             ProjectDiscovery *out)
-{
-    memset(out, 0, sizeof(ProjectDiscovery));
-
-    char path[VG_MAX_PATH_LEN];
-    char soundDir[VG_MAX_PATH_LEN];
-    vg_build_path(soundDir, sizeof(soundDir), projectRoot, "sound");
-    vg_log("discover_project: soundDir='%s' exists=%d", soundDir, vg_is_directory(soundDir));
-
-    /* 1. Config overrides first (prepended) */
-    if (cfg) {
-        for (int i = 0; i < cfg->soundDataPathCount && i < 8; i++) {
-            vg_build_path(path, sizeof(path), projectRoot, cfg->soundDataPaths[i]);
-            if (vg_file_exists(path))
-                pathlist_add(&out->directSoundDataFiles, path);
-        }
-        for (int i = 0; i < cfg->voicegroupPathCount && i < 8; i++) {
-            vg_build_path(path, sizeof(path), projectRoot, cfg->voicegroupPaths[i]);
-            if (vg_is_directory(path)) {
-                /* If it's a directory, add as voicegroup dir and scan for voice macros */
-                pathlist_add(&out->voicegroupDirs, path);
-                /* Also check if files inside are monolithic */
-                DIR *d = opendir(path);
-                if (d) {
-                    struct dirent *ent;
-                    while ((ent = readdir(d)) != NULL) {
-                        if (ent->d_name[0] == '.') continue;
-                        if (vg_str_ends_with_ci(ent->d_name, ".inc") || vg_str_ends_with_ci(ent->d_name, ".s")) {
-                            char fpath[VG_MAX_PATH_LEN];
-                            snprintf(fpath, sizeof(fpath), "%s%c%s", path, VG_PATH_SEP, ent->d_name);
-                            if (is_monolithic_voicegroup_file(fpath))
-                                pathlist_add(&out->monolithicVGFiles, fpath);
-                        }
-                    }
-                    closedir(d);
-                }
-            } else if (vg_file_exists(path)) {
-                /* It's a file - check if it's monolithic or a voicegroup dir entry */
-                if (is_monolithic_voicegroup_file(path))
-                    pathlist_add(&out->monolithicVGFiles, path);
-            }
-        }
-        for (int i = 0; i < cfg->sampleDirCount && i < 8; i++) {
-            vg_build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
-            if (vg_is_directory(path))
-                pathlist_add(&out->wavSampleDirs, path);
-        }
-    }
-
-    /* 2. Standard direct_sound_data.inc, programmable_wave_data.inc, keysplit_tables.inc */
-    vg_build_path(path, sizeof(path), projectRoot, "sound/direct_sound_data.inc");
-    if (vg_file_exists(path))
-        pathlist_add(&out->directSoundDataFiles, path);
-
-    vg_build_path(path, sizeof(path), projectRoot, "sound/programmable_wave_data.inc");
-    if (vg_file_exists(path))
-        pathlist_add(&out->progWaveDataFiles, path);
-
-    vg_build_path(path, sizeof(path), projectRoot, "sound/keysplit_tables.inc");
-    if (vg_file_exists(path))
-        pathlist_add(&out->keySplitTableFiles, path);
-
-    /* 3. Standard voicegroup directories */
-    vg_build_path(path, sizeof(path), projectRoot, "sound/voicegroups");
-    if (vg_is_directory(path)) {
-        pathlist_add(&out->voicegroupDirs, path);
-        /* Also add keysplits/ and drumsets/ subdirs */
-        char subPath[VG_MAX_PATH_LEN];
-        snprintf(subPath, sizeof(subPath), "%s%ckeysplits", path, VG_PATH_SEP);
-        if (vg_is_directory(subPath))
-            pathlist_add(&out->voicegroupDirs, subPath);
-        snprintf(subPath, sizeof(subPath), "%s%cdrumsets", path, VG_PATH_SEP);
-        if (vg_is_directory(subPath))
-            pathlist_add(&out->voicegroupDirs, subPath);
-    }
-
-    /* 4. Scan under sound/ for voicegroup dirs AND wav dirs in one pass */
-    vg_log("discover_project: scanning for voicegroup and wav dirs under '%s'", soundDir);
-    if (vg_is_directory(soundDir)) {
-        CombinedDirVisitorCtx vctx = { .disc = out };
-        scan_dirs_recursive(soundDir, 0, 3, visit_for_voicegroup_and_wav_dirs, &vctx);
-    }
-    vg_log("discover_project: dir scan done, vgDirs=%d wavDirs=%d",
-           out->voicegroupDirs.count, out->wavSampleDirs.count);
-
-    /* 5. Check for monolithic voicegroup files */
-    vg_build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
-    vg_log("discover_project: checking monolithic '%s' exists=%d", path, vg_file_exists(path));
-    if (vg_file_exists(path) && is_monolithic_voicegroup_file(path))
-        pathlist_add(&out->monolithicVGFiles, path);
-}
-
 /* ---- Symbol data file parsing (parameterized by file path) ---- */
 
 /*
@@ -474,7 +224,7 @@ static int parse_direct_sound_data_file(const char *filePath, const char *projec
         return -1;
     }
 
-    char line[MAX_LINE];
+    char line[VG_MAX_LINE];
     char currentSymbol[MAX_SYMBOL_LEN] = {0};
 
     while (fgets(line, sizeof(line), f)) {
@@ -522,7 +272,7 @@ static int parse_programmable_wave_data_file(const char *filePath, const char *p
         return -1;
     }
 
-    char line[MAX_LINE];
+    char line[VG_MAX_LINE];
     char currentSymbol[MAX_SYMBOL_LEN] = {0};
 
     while (fgets(line, sizeof(line), f)) {
@@ -567,7 +317,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
         return -1;
     }
 
-    char line[MAX_LINE];
+    char line[VG_MAX_LINE];
     KeySplitDef *current = NULL;
     int lastNote = 0;
 
@@ -1274,7 +1024,7 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
         char searchLabel[MAX_SYMBOL_LEN + 4];
         snprintf(searchLabel, sizeof(searchLabel), "%s::", vgName);
 
-        char line[MAX_LINE];
+        char line[VG_MAX_LINE];
         while (fgets(line, sizeof(line), f)) {
             vg_strip_comment(line);
             char *trimmed = vg_ltrim(line);
@@ -1358,7 +1108,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         return -1;
     }
 
-    char line[MAX_LINE];
+    char line[VG_MAX_LINE];
     int voiceIndex = 0;
     int inSection = (startLabel == NULL); /* if no startLabel, parse from the beginning */
     int voicesParsedInSection = 0;
@@ -1742,8 +1492,8 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     }
 
     /* Discover project structure */
-    vg_log("voicegroup_load: calling discover_project");
-    discover_project(projectRoot, config, disc);
+    vg_log("voicegroup_load: calling vg_discover_project");
+    vg_discover_project(projectRoot, config, disc);
     vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d vgDirs=%d monoFiles=%d wavDirs=%d",
            disc->directSoundDataFiles.count, disc->progWaveDataFiles.count,
            disc->keySplitTableFiles.count, disc->voicegroupDirs.count,
@@ -1847,7 +1597,7 @@ bool voicegroup_loader_collect_project_assets(const char *projectRoot,
 
     ProjectDiscovery *disc = calloc(1, sizeof(ProjectDiscovery));
     if (!disc) return false;
-    discover_project(projectRoot, config, disc);
+    vg_discover_project(projectRoot, config, disc);
 
     /* Parse symbol maps */
     SymbolMap dsMap, pwMap;
