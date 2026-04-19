@@ -1,6 +1,7 @@
 #include "voicegroup_loader.h"
 
 #include "vg_discovery.h"
+#include "vg_keysplit.h"
 #include "vg_log.h"
 #include "vg_paths.h"
 #include "vg_symbols.h"
@@ -21,25 +22,7 @@ typedef struct {
     int found;
 } VoicegroupLocation;
 
-typedef struct {
-    char name[VG_MAX_SYMBOL_LEN];
-    int startingNote;
-    uint8_t table[128];
-    int maxNote;
-} KeySplitDef;
-
-typedef struct {
-    KeySplitDef *entries;
-    int count;
-    int capacity;
-} KeySplitMap;
-
 /* Forward declarations */
-static void keysplit_map_init(KeySplitMap *map);
-static void keysplit_map_free(KeySplitMap *map);
-static KeySplitDef *keysplit_map_find(const KeySplitMap *map, const char *name);
-
-static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map);
 static WaveData *load_wave_data_from_wav(const char *projectRoot, const char *relativeBinPath);
 static WaveData *load_wav_from_path(const char *absoluteWavPath);
 static WaveData *load_wave_data(const char *projectRoot, const char *relativePath);
@@ -122,132 +105,6 @@ static void vg_register_keysplittable(LoadedVoiceGroup *vg, uint8_t *ks)
     vg->keySplitTables[vg->keySplitTableCount++] = ks;
 }
 
-/*
- * Keysplit map implementation
- */
-static void keysplit_map_init(KeySplitMap *map)
-{
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
-}
-
-static void keysplit_map_free(KeySplitMap *map)
-{
-    free(map->entries);
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
-}
-
-static KeySplitDef *keysplit_map_find(const KeySplitMap *map, const char *name)
-{
-    for (int i = 0; i < map->count; i++) {
-        if (strcmp(map->entries[i].name, name) == 0)
-            return &map->entries[i];
-    }
-    return NULL;
-}
-
-
-/*
- * Parse a keysplit_tables .inc file.
- */
-static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
-{
-    FILE *f = fopen(filePath, "r");
-    if (!f) {
-        vg_err("cannot open %s", filePath);
-        return -1;
-    }
-
-    char line[VG_MAX_LINE];
-    KeySplitDef *current = NULL;
-    int lastNote = 0;
-
-    while (fgets(line, sizeof(line), f)) {
-        vg_strip_comment(line);
-        vg_rtrim(line);
-        char *trimmed = vg_ltrim(line);
-
-        if (strncmp(trimmed, "keysplit ", 9) == 0) {
-            /* pokeemerald macro format: keysplit tableName, startNote */
-            char name[VG_MAX_SYMBOL_LEN];
-            int startNote = 0;
-            if (sscanf(trimmed + 9, "%[^,], %d", name, &startNote) >= 1) {
-                vg_rtrim(name);
-                if (map->count >= map->capacity) {
-                    map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
-                    map->entries = realloc(map->entries, sizeof(KeySplitDef) * map->capacity);
-                }
-                current = &map->entries[map->count];
-                memset(current, 0, sizeof(KeySplitDef));
-                snprintf(current->name, VG_MAX_SYMBOL_LEN, "keysplit_%s", name);
-                current->startingNote = startNote;
-                current->maxNote = 0;
-                lastNote = startNote;
-                map->count++;
-            }
-        } else if (strncmp(trimmed, "split ", 6) == 0 && current) {
-            int index, endNote;
-            if (sscanf(trimmed + 6, "%d, %d", &index, &endNote) == 2) {
-                for (int n = lastNote; n < endNote && n < 128; n++) {
-                    current->table[n] = (uint8_t)index;
-                }
-                lastNote = endNote;
-                if (endNote > current->maxNote)
-                    current->maxNote = endNote;
-            }
-        } else if (strncmp(trimmed, ".set ", 5) == 0) {
-            /* pokefirered raw format: .set TableName, . - startNote */
-            char name[VG_MAX_SYMBOL_LEN];
-            int startNote = 0;
-            if (sscanf(trimmed + 5, "%[^,], . - %d", name, &startNote) == 2) {
-                vg_rtrim(name);
-                if (map->count >= map->capacity) {
-                    map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
-                    map->entries = realloc(map->entries, sizeof(KeySplitDef) * map->capacity);
-                }
-                current = &map->entries[map->count];
-                memset(current, 0, sizeof(KeySplitDef));
-                strncpy(current->name, name, VG_MAX_SYMBOL_LEN - 1);
-                current->name[VG_MAX_SYMBOL_LEN - 1] = '\0';
-                current->startingNote = startNote;
-                current->maxNote = 0;
-                lastNote = startNote;
-                map->count++;
-            }
-        } else if (strncmp(trimmed, ".byte ", 6) == 0 && current) {
-            /* raw per-note byte values; strip_comment already removed the @ note annotation */
-            char *p = trimmed + 6;
-            while (*p) {
-                char *end;
-                long val = strtol(p, &end, 10);
-                if (end == p) break;
-                if (lastNote < 128) {
-                    current->table[lastNote] = (uint8_t)val;
-                    if (lastNote > current->maxNote)
-                        current->maxNote = lastNote;
-                    lastNote++;
-                }
-                p = end;
-                while (isspace((unsigned char)*p)) p++;
-                if (*p == ',') p++;
-                while (isspace((unsigned char)*p)) p++;
-            }
-        }
-    }
-
-    fclose(f);
-    return 0;
-}
-
-static void parse_all_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map)
-{
-    for (int i = 0; i < disc->keySplitTableFiles.count; i++) {
-        parse_keysplit_tables_file(disc->keySplitTableFiles.paths[i], map);
-    }
-}
 
 /* ---- Sample loading ---- */
 
@@ -1234,7 +1091,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                                                        vg, dsMap, pwMap, ksMap, disc, waveCache);
                 td->subGroup = subVg;
 
-                KeySplitDef *ksDef = keysplit_map_find(ksMap, ksSymbol);
+                KeySplitDef *ksDef = vg_keysplit_map_find(ksMap, ksSymbol);
                 if (ksDef) {
                     uint8_t *table = malloc(128);
                     memcpy(table, ksDef->table, 128);
@@ -1336,14 +1193,14 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     KeySplitMap ksMap;
     vg_symbol_map_init(&dsMap);
     vg_symbol_map_init(&pwMap);
-    keysplit_map_init(&ksMap);
+    vg_keysplit_map_init(&ksMap);
 
     vg_log("voicegroup_load: parsing symbol maps");
     vg_parse_direct_sound_data(disc, &dsMap);
     vg_log("voicegroup_load: dsMap entries=%d", dsMap.count);
     vg_parse_prog_wave_data(disc, &pwMap);
     vg_log("voicegroup_load: pwMap entries=%d", pwMap.count);
-    parse_all_keysplit_tables(disc, &ksMap);
+    vg_parse_keysplit_tables(disc, &ksMap);
     vg_log("voicegroup_load: ksMap entries=%d", ksMap.count);
 
     /* Find the voicegroup */
@@ -1368,14 +1225,14 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
 
     vg_symbol_map_free(&dsMap);
     vg_symbol_map_free(&pwMap);
-    keysplit_map_free(&ksMap);
+    vg_keysplit_map_free(&ksMap);
     free(disc);
     return vg;
 
 fail:
     vg_symbol_map_free(&dsMap);
     vg_symbol_map_free(&pwMap);
-    keysplit_map_free(&ksMap);
+    vg_keysplit_map_free(&ksMap);
     free(disc);
     voicegroup_free(vg);
     return NULL;
