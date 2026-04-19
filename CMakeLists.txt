@@ -66,12 +66,13 @@ else()
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()
 
-# Common source files (shared between plugin and test)
-set(ENGINE_SOURCES
-    plugin/m4a_engine.c
-    plugin/m4a_channel.c
-    plugin/m4a_tables.c
-    plugin/m4a_reverb.c
+# ---- Voicegroup loader (decomp parser, reusable by external tools) ----
+# Pure C, no audio engine dependencies. Reads a pokeemerald /
+# pokefirered project's voicegroup files and returns a
+# LoadedVoiceGroup. Kept as its own static library so projects like
+# ccomidi can link against it via add_subdirectory without pulling
+# in the m4a audio engine.
+add_library(voicegroup_loader STATIC
     plugin/voicegroup/voicegroup_loader.c
     plugin/voicegroup/vg_log.c
     plugin/voicegroup/vg_paths.c
@@ -80,6 +81,15 @@ set(ENGINE_SOURCES
     plugin/voicegroup/vg_keysplit.c
     plugin/voicegroup/vg_wav.c
     plugin/voicegroup/vg_parser.c
+)
+target_include_directories(voicegroup_loader PUBLIC plugin)
+
+# m4a audio engine sources (shared between plugin, standalone, tests).
+set(ENGINE_SOURCES
+    plugin/m4a_engine.c
+    plugin/m4a_channel.c
+    plugin/m4a_tables.c
+    plugin/m4a_reverb.c
 )
 
 # ---- CLAP Plugin ----
@@ -116,7 +126,7 @@ set_target_properties(poryaaaa PROPERTIES
     LINKER_LANGUAGE CXX
 )
 
-target_link_libraries(poryaaaa PRIVATE clap)
+target_link_libraries(poryaaaa PRIVATE clap voicegroup_loader)
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa PRIVATE m X11 Xcursor Xrandr Xext)
@@ -158,7 +168,7 @@ target_include_directories(poryaaaa_test PRIVATE
     plugin
 )
 
-target_link_libraries(poryaaaa_test PRIVATE m)
+target_link_libraries(poryaaaa_test PRIVATE m voicegroup_loader)
 
 # ---- Standalone Renderer ----
 add_executable(poryaaaa_render
@@ -166,7 +176,7 @@ add_executable(poryaaaa_render
     ${ENGINE_SOURCES}
 )
 target_include_directories(poryaaaa_render PRIVATE plugin third_party)
-target_link_libraries(poryaaaa_render PRIVATE m)
+target_link_libraries(poryaaaa_render PRIVATE m voicegroup_loader)
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa_render PRIVATE pthread dl)
 endif()
@@ -187,7 +197,7 @@ target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin
 )
 
-target_link_libraries(poryaaaa_unit_tests PRIVATE m)
+target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader)
 
 # ---- Standalone (clap-wrapper) ----
 add_executable(poryaaaa-standalone
@@ -212,7 +222,7 @@ set_target_properties(poryaaaa-standalone PROPERTIES
 
 # Build Pugl as a static library (not a DLL) on all platforms
 target_compile_definitions(poryaaaa-standalone PRIVATE PUGL_STATIC)
-target_link_libraries(poryaaaa-standalone PRIVATE clap)
+target_link_libraries(poryaaaa-standalone PRIVATE clap voicegroup_loader)
 
 # On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
 if(APPLE)

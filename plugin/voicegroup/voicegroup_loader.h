@@ -1,7 +1,7 @@
 #ifndef VOICEGROUP_LOADER_H
 #define VOICEGROUP_LOADER_H
 
-#include "m4a_engine.h"
+#include "voicegroup_types.h"
 
 #define VOICEGROUP_SIZE 128
 #define VG_MAX_PATH_LEN 512
