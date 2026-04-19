@@ -78,6 +78,7 @@ set(ENGINE_SOURCES
     plugin/voicegroup/vg_discovery.c
     plugin/voicegroup/vg_symbols.c
     plugin/voicegroup/vg_keysplit.c
+    plugin/voicegroup/vg_wav.c
 )
 
 # ---- CLAP Plugin ----
