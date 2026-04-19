@@ -76,6 +76,7 @@ set(ENGINE_SOURCES
     plugin/voicegroup/vg_log.c
     plugin/voicegroup/vg_paths.c
     plugin/voicegroup/vg_discovery.c
+    plugin/voicegroup/vg_symbols.c
 )
 
 # ---- CLAP Plugin ----

@@ -3,6 +3,7 @@
 #include "vg_discovery.h"
 #include "vg_log.h"
 #include "vg_paths.h"
+#include "vg_symbols.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,30 +13,16 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#define MAX_SYMBOL_LEN 256
 #define INITIAL_CAPACITY 64
 
 typedef struct {
     char filePath[VG_MAX_PATH_LEN];
-    char label[MAX_SYMBOL_LEN];  /* non-empty if inside a monolithic file */
+    char label[VG_MAX_SYMBOL_LEN];  /* non-empty if inside a monolithic file */
     int found;
 } VoicegroupLocation;
 
-/* ---- Symbol maps ---- */
-
 typedef struct {
-    char symbol[MAX_SYMBOL_LEN];
-    char filePath[VG_MAX_PATH_LEN];
-} SymbolMapping;
-
-typedef struct {
-    SymbolMapping *entries;
-    int count;
-    int capacity;
-} SymbolMap;
-
-typedef struct {
-    char name[MAX_SYMBOL_LEN];
+    char name[VG_MAX_SYMBOL_LEN];
     int startingNote;
     uint8_t table[128];
     int maxNote;
@@ -48,17 +35,10 @@ typedef struct {
 } KeySplitMap;
 
 /* Forward declarations */
-static void symbol_map_init(SymbolMap *map);
-static void symbol_map_free(SymbolMap *map);
-static void symbol_map_add(SymbolMap *map, const char *symbol, const char *path);
-static const char *symbol_map_find(const SymbolMap *map, const char *symbol);
-
 static void keysplit_map_init(KeySplitMap *map);
 static void keysplit_map_free(KeySplitMap *map);
 static KeySplitDef *keysplit_map_find(const KeySplitMap *map, const char *name);
 
-static int parse_direct_sound_data_file(const char *filePath, const char *projectRoot, SymbolMap *map);
-static int parse_programmable_wave_data_file(const char *filePath, const char *projectRoot, SymbolMap *map);
 static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map);
 static WaveData *load_wave_data_from_wav(const char *projectRoot, const char *relativeBinPath);
 static WaveData *load_wav_from_path(const char *absoluteWavPath);
@@ -143,46 +123,6 @@ static void vg_register_keysplittable(LoadedVoiceGroup *vg, uint8_t *ks)
 }
 
 /*
- * Symbol map implementation
- */
-static void symbol_map_init(SymbolMap *map)
-{
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
-}
-
-static void symbol_map_free(SymbolMap *map)
-{
-    free(map->entries);
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
-}
-
-static void symbol_map_add(SymbolMap *map, const char *symbol, const char *path)
-{
-    if (map->count >= map->capacity) {
-        map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
-        map->entries = realloc(map->entries, sizeof(SymbolMapping) * map->capacity);
-    }
-    strncpy(map->entries[map->count].symbol, symbol, MAX_SYMBOL_LEN - 1);
-    map->entries[map->count].symbol[MAX_SYMBOL_LEN - 1] = '\0';
-    strncpy(map->entries[map->count].filePath, path, VG_MAX_PATH_LEN - 1);
-    map->entries[map->count].filePath[VG_MAX_PATH_LEN - 1] = '\0';
-    map->count++;
-}
-
-static const char *symbol_map_find(const SymbolMap *map, const char *symbol)
-{
-    for (int i = 0; i < map->count; i++) {
-        if (strcmp(map->entries[i].symbol, symbol) == 0)
-            return map->entries[i].filePath;
-    }
-    return NULL;
-}
-
-/*
  * Keysplit map implementation
  */
 static void keysplit_map_init(KeySplitMap *map)
@@ -209,102 +149,6 @@ static KeySplitDef *keysplit_map_find(const KeySplitMap *map, const char *name)
     return NULL;
 }
 
-/* ---- Symbol data file parsing (parameterized by file path) ---- */
-
-/*
- * Parse a direct_sound_data .inc file.
- * Builds symbol name -> file path mapping.
- */
-static int parse_direct_sound_data_file(const char *filePath, const char *projectRoot, SymbolMap *map)
-{
-    (void)projectRoot; /* paths inside the file are relative to projectRoot, stored as-is */
-    FILE *f = fopen(filePath, "r");
-    if (!f) {
-        vg_err("cannot open %s", filePath);
-        return -1;
-    }
-
-    char line[VG_MAX_LINE];
-    char currentSymbol[MAX_SYMBOL_LEN] = {0};
-
-    while (fgets(line, sizeof(line), f)) {
-        vg_strip_comment(line);
-        vg_rtrim(line);
-        char *trimmed = vg_ltrim(line);
-
-        /* Look for label:: lines */
-        char *colonColon = strstr(trimmed, "::");
-        if (colonColon && colonColon > trimmed) {
-            *colonColon = '\0';
-            strncpy(currentSymbol, trimmed, MAX_SYMBOL_LEN - 1);
-            currentSymbol[MAX_SYMBOL_LEN - 1] = '\0';
-            continue;
-        }
-
-        /* Look for .incbin lines */
-        if (currentSymbol[0] && strstr(trimmed, ".incbin")) {
-            char *quote1 = strchr(trimmed, '"');
-            if (quote1) {
-                quote1++;
-                char *quote2 = strchr(quote1, '"');
-                if (quote2) {
-                    *quote2 = '\0';
-                    symbol_map_add(map, currentSymbol, quote1);
-                }
-            }
-            currentSymbol[0] = '\0';
-        }
-    }
-
-    fclose(f);
-    return 0;
-}
-
-/*
- * Parse a programmable_wave_data .inc file.
- */
-static int parse_programmable_wave_data_file(const char *filePath, const char *projectRoot, SymbolMap *map)
-{
-    (void)projectRoot;
-    FILE *f = fopen(filePath, "r");
-    if (!f) {
-        vg_err("cannot open %s", filePath);
-        return -1;
-    }
-
-    char line[VG_MAX_LINE];
-    char currentSymbol[MAX_SYMBOL_LEN] = {0};
-
-    while (fgets(line, sizeof(line), f)) {
-        vg_strip_comment(line);
-        vg_rtrim(line);
-        char *trimmed = vg_ltrim(line);
-
-        char *colonColon = strstr(trimmed, "::");
-        if (colonColon && colonColon > trimmed) {
-            *colonColon = '\0';
-            strncpy(currentSymbol, trimmed, MAX_SYMBOL_LEN - 1);
-            currentSymbol[MAX_SYMBOL_LEN - 1] = '\0';
-            continue;
-        }
-
-        if (currentSymbol[0] && strstr(trimmed, ".incbin")) {
-            char *quote1 = strchr(trimmed, '"');
-            if (quote1) {
-                quote1++;
-                char *quote2 = strchr(quote1, '"');
-                if (quote2) {
-                    *quote2 = '\0';
-                    symbol_map_add(map, currentSymbol, quote1);
-                }
-            }
-            currentSymbol[0] = '\0';
-        }
-    }
-
-    fclose(f);
-    return 0;
-}
 
 /*
  * Parse a keysplit_tables .inc file.
@@ -328,7 +172,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
 
         if (strncmp(trimmed, "keysplit ", 9) == 0) {
             /* pokeemerald macro format: keysplit tableName, startNote */
-            char name[MAX_SYMBOL_LEN];
+            char name[VG_MAX_SYMBOL_LEN];
             int startNote = 0;
             if (sscanf(trimmed + 9, "%[^,], %d", name, &startNote) >= 1) {
                 vg_rtrim(name);
@@ -338,7 +182,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
                 }
                 current = &map->entries[map->count];
                 memset(current, 0, sizeof(KeySplitDef));
-                snprintf(current->name, MAX_SYMBOL_LEN, "keysplit_%s", name);
+                snprintf(current->name, VG_MAX_SYMBOL_LEN, "keysplit_%s", name);
                 current->startingNote = startNote;
                 current->maxNote = 0;
                 lastNote = startNote;
@@ -356,7 +200,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
             }
         } else if (strncmp(trimmed, ".set ", 5) == 0) {
             /* pokefirered raw format: .set TableName, . - startNote */
-            char name[MAX_SYMBOL_LEN];
+            char name[VG_MAX_SYMBOL_LEN];
             int startNote = 0;
             if (sscanf(trimmed + 5, "%[^,], . - %d", name, &startNote) == 2) {
                 vg_rtrim(name);
@@ -366,8 +210,8 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
                 }
                 current = &map->entries[map->count];
                 memset(current, 0, sizeof(KeySplitDef));
-                strncpy(current->name, name, MAX_SYMBOL_LEN - 1);
-                current->name[MAX_SYMBOL_LEN - 1] = '\0';
+                strncpy(current->name, name, VG_MAX_SYMBOL_LEN - 1);
+                current->name[VG_MAX_SYMBOL_LEN - 1] = '\0';
                 current->startingNote = startNote;
                 current->maxNote = 0;
                 lastNote = startNote;
@@ -396,22 +240,6 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
 
     fclose(f);
     return 0;
-}
-
-/* Wrappers that iterate over all discovered paths */
-
-static void parse_all_direct_sound_data(const ProjectDiscovery *disc, const char *projectRoot, SymbolMap *map)
-{
-    for (int i = 0; i < disc->directSoundDataFiles.count; i++) {
-        parse_direct_sound_data_file(disc->directSoundDataFiles.paths[i], projectRoot, map);
-    }
-}
-
-static void parse_all_programmable_wave_data(const ProjectDiscovery *disc, const char *projectRoot, SymbolMap *map)
-{
-    for (int i = 0; i < disc->progWaveDataFiles.count; i++) {
-        parse_programmable_wave_data_file(disc->progWaveDataFiles.paths[i], projectRoot, map);
-    }
 }
 
 static void parse_all_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map)
@@ -810,7 +638,7 @@ static WaveData *resolve_and_load_sample(const char *projectRoot, const char *sy
                                           const SymbolMap *dsMap, const ProjectDiscovery *disc,
                                           LoadedVoiceGroup *vg, WaveCache *waveCache)
 {
-    const char *samplePath = symbol_map_find(dsMap, symbol);
+    const char *samplePath = vg_symbol_map_find(dsMap, symbol);
     if (samplePath) {
         /* Build the absolute .wav path to use as cache key */
         char relWavPath[VG_MAX_PATH_LEN];
@@ -911,9 +739,9 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
     {
         const char *suffix = strstr(vgName, "_keysplit");
         if (suffix) {
-            char baseName[MAX_SYMBOL_LEN];
+            char baseName[VG_MAX_SYMBOL_LEN];
             int baseLen = (int)(suffix - vgName);
-            if (baseLen > 0 && baseLen < MAX_SYMBOL_LEN) {
+            if (baseLen > 0 && baseLen < VG_MAX_SYMBOL_LEN) {
                 memcpy(baseName, vgName, baseLen);
                 baseName[baseLen] = '\0';
                 /* Explicit <dir>/keysplits/<base>.inc probe for each voicegroup dir */
@@ -956,9 +784,9 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
     {
         const char *suffix = strstr(vgName, "_drumset");
         if (suffix) {
-            char baseName[MAX_SYMBOL_LEN];
+            char baseName[VG_MAX_SYMBOL_LEN];
             int baseLen = (int)(suffix - vgName);
-            if (baseLen > 0 && baseLen < MAX_SYMBOL_LEN) {
+            if (baseLen > 0 && baseLen < VG_MAX_SYMBOL_LEN) {
                 memcpy(baseName, vgName, baseLen);
                 baseName[baseLen] = '\0';
                 /* Explicit <dir>/drumsets/<base>.inc probe for each voicegroup dir */
@@ -1021,7 +849,7 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
         FILE *f = fopen(disc->monolithicVGFiles.paths[i], "r");
         if (!f) continue;
 
-        char searchLabel[MAX_SYMBOL_LEN + 4];
+        char searchLabel[VG_MAX_SYMBOL_LEN + 4];
         snprintf(searchLabel, sizeof(searchLabel), "%s::", vgName);
 
         char line[VG_MAX_LINE];
@@ -1030,7 +858,7 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
             char *trimmed = vg_ltrim(line);
             if (strstr(trimmed, searchLabel) == trimmed) {
                 strncpy(loc.filePath, disc->monolithicVGFiles.paths[i], VG_MAX_PATH_LEN - 1);
-                strncpy(loc.label, vgName, MAX_SYMBOL_LEN - 1);
+                strncpy(loc.label, vgName, VG_MAX_SYMBOL_LEN - 1);
                 loc.found = 1;
                 fclose(f);
                 return loc;
@@ -1114,7 +942,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
     int voicesParsedInSection = 0;
 
     /* If startLabel is set, build the search string */
-    char searchLabel[MAX_SYMBOL_LEN + 4];
+    char searchLabel[VG_MAX_SYMBOL_LEN + 4];
     if (startLabel) {
         snprintf(searchLabel, sizeof(searchLabel), "%s::", startLabel);
     }
@@ -1150,7 +978,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
 
         /* Parse voice_group declaration for starting_note offset */
         if (strncmp(trimmed, "voice_group ", 12) == 0) {
-            char vgDeclName[MAX_SYMBOL_LEN];
+            char vgDeclName[VG_MAX_SYMBOL_LEN];
             int startingNote = 0;
             if (sscanf(trimmed + 12, "%[^,\n], %d", vgDeclName, &startingNote) >= 2) {
                 if (startingNote > 0 && startingNote < VOICEGROUP_SIZE)
@@ -1162,7 +990,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         /* voice_directsound variants */
         if (strncmp(trimmed, "voice_directsound_no_resample ", 30) == 0) {
             int key, pan, attack, decay, sustain, release;
-            char sampleSymbol[MAX_SYMBOL_LEN];
+            char sampleSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 30, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
                 vg_rtrim(sampleSymbol);
@@ -1184,7 +1012,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             voicesParsedInSection++;
         } else if (strncmp(trimmed, "voice_directsound_alt ", 22) == 0) {
             int key, pan, attack, decay, sustain, release;
-            char sampleSymbol[MAX_SYMBOL_LEN];
+            char sampleSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 22, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
                 vg_rtrim(sampleSymbol);
@@ -1206,7 +1034,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             voicesParsedInSection++;
         } else if (strncmp(trimmed, "voice_directsound ", 18) == 0) {
             int key, pan, attack, decay, sustain, release;
-            char sampleSymbol[MAX_SYMBOL_LEN];
+            char sampleSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 18, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
                 vg_rtrim(sampleSymbol);
@@ -1298,7 +1126,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         /* voice_programmable_wave */
         else if (strncmp(trimmed, "voice_programmable_wave_alt ", 27) == 0) {
             int key, pan, attack, decay, sustain, release;
-            char waveSymbol[MAX_SYMBOL_LEN];
+            char waveSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 27, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, waveSymbol, &attack, &decay, &sustain, &release) == 7) {
                 vg_rtrim(waveSymbol);
@@ -1310,7 +1138,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                 td->sustain = (uint8_t)(sustain & 0x0F);
                 td->release = (uint8_t)(release & 0x07);
 
-                const char *wavePath = symbol_map_find(pwMap, waveSymbol);
+                const char *wavePath = vg_symbol_map_find(pwMap, waveSymbol);
                 if (wavePath) {
                     uint32_t *pw = load_prog_wave(projectRoot, wavePath);
                     if (pw) {
@@ -1323,7 +1151,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             voicesParsedInSection++;
         } else if (strncmp(trimmed, "voice_programmable_wave ", 23) == 0) {
             int key, pan, attack, decay, sustain, release;
-            char waveSymbol[MAX_SYMBOL_LEN];
+            char waveSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 23, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, waveSymbol, &attack, &decay, &sustain, &release) == 7) {
                 vg_rtrim(waveSymbol);
@@ -1335,7 +1163,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                 td->sustain = (uint8_t)(sustain & 0x0F);
                 td->release = (uint8_t)(release & 0x07);
 
-                const char *wavePath = symbol_map_find(pwMap, waveSymbol);
+                const char *wavePath = vg_symbol_map_find(pwMap, waveSymbol);
                 if (wavePath) {
                     uint32_t *pw = load_prog_wave(projectRoot, wavePath);
                     if (pw) {
@@ -1381,7 +1209,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         }
         /* voice_keysplit */
         else if (strncmp(trimmed, "voice_keysplit_all ", 19) == 0) {
-            char vgSymbol[MAX_SYMBOL_LEN];
+            char vgSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 19, "%s", vgSymbol) == 1) {
                 vg_rtrim(vgSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
@@ -1394,8 +1222,8 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             voiceIndex++;
             voicesParsedInSection++;
         } else if (strncmp(trimmed, "voice_keysplit ", 15) == 0) {
-            char vgSymbol[MAX_SYMBOL_LEN];
-            char ksSymbol[MAX_SYMBOL_LEN];
+            char vgSymbol[VG_MAX_SYMBOL_LEN];
+            char ksSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 15, "%[^,], %s", vgSymbol, ksSymbol) == 2) {
                 vg_rtrim(vgSymbol);
                 vg_rtrim(ksSymbol);
@@ -1419,7 +1247,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         }
         /* cry / cry_reverse */
         else if (strncmp(trimmed, "cry_reverse ", 12) == 0) {
-            char sampleSymbol[MAX_SYMBOL_LEN];
+            char sampleSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 12, "%s", sampleSymbol) == 1) {
                 vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
@@ -1430,7 +1258,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                 td->sustain = 0xFF;
                 td->release = 0;
 
-                const char *samplePath = symbol_map_find(dsMap, sampleSymbol);
+                const char *samplePath = vg_symbol_map_find(dsMap, sampleSymbol);
                 if (samplePath) {
                     WaveData *wd = load_wave_data(projectRoot, samplePath);
                     if (wd) {
@@ -1442,7 +1270,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             voiceIndex++;
             voicesParsedInSection++;
         } else if (strncmp(trimmed, "cry ", 4) == 0) {
-            char sampleSymbol[MAX_SYMBOL_LEN];
+            char sampleSymbol[VG_MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 4, "%s", sampleSymbol) == 1) {
                 vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
@@ -1453,7 +1281,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                 td->sustain = 0xFF;
                 td->release = 0;
 
-                const char *samplePath = symbol_map_find(dsMap, sampleSymbol);
+                const char *samplePath = vg_symbol_map_find(dsMap, sampleSymbol);
                 if (samplePath) {
                     WaveData *wd = load_wave_data(projectRoot, samplePath);
                     if (wd) {
@@ -1506,14 +1334,14 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     /* Parse symbol maps from all discovered files */
     SymbolMap dsMap, pwMap;
     KeySplitMap ksMap;
-    symbol_map_init(&dsMap);
-    symbol_map_init(&pwMap);
+    vg_symbol_map_init(&dsMap);
+    vg_symbol_map_init(&pwMap);
     keysplit_map_init(&ksMap);
 
     vg_log("voicegroup_load: parsing symbol maps");
-    parse_all_direct_sound_data(disc, projectRoot, &dsMap);
+    vg_parse_direct_sound_data(disc, &dsMap);
     vg_log("voicegroup_load: dsMap entries=%d", dsMap.count);
-    parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
+    vg_parse_prog_wave_data(disc, &pwMap);
     vg_log("voicegroup_load: pwMap entries=%d", pwMap.count);
     parse_all_keysplit_tables(disc, &ksMap);
     vg_log("voicegroup_load: ksMap entries=%d", ksMap.count);
@@ -1538,15 +1366,15 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     }
     vg_log("voicegroup_load: done OK");
 
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
+    vg_symbol_map_free(&dsMap);
+    vg_symbol_map_free(&pwMap);
     keysplit_map_free(&ksMap);
     free(disc);
     return vg;
 
 fail:
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
+    vg_symbol_map_free(&dsMap);
+    vg_symbol_map_free(&pwMap);
     keysplit_map_free(&ksMap);
     free(disc);
     voicegroup_free(vg);
@@ -1601,10 +1429,10 @@ bool voicegroup_loader_collect_project_assets(const char *projectRoot,
 
     /* Parse symbol maps */
     SymbolMap dsMap, pwMap;
-    symbol_map_init(&dsMap);
-    symbol_map_init(&pwMap);
-    parse_all_direct_sound_data(disc, projectRoot, &dsMap);
-    parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
+    vg_symbol_map_init(&dsMap);
+    vg_symbol_map_init(&pwMap);
+    vg_parse_direct_sound_data(disc, &dsMap);
+    vg_parse_prog_wave_data(disc, &pwMap);
 
     /* Build DirectSound asset array */
     if (dsMap.count > 0) {
@@ -1638,8 +1466,8 @@ bool voicegroup_loader_collect_project_assets(const char *projectRoot,
         }
     }
 
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
+    vg_symbol_map_free(&dsMap);
+    vg_symbol_map_free(&pwMap);
     free(disc);
     return true;
 }
