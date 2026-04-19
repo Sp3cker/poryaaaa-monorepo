@@ -150,6 +150,27 @@ static uint32_t *resolve_prog_wave(const ParseCtx *ctx, const char *symbol)
 }
 
 /*
+ * Record a user-visible sample name on the voice slot. Called by any
+ * handler that resolves a sample/wave/cry symbol so GUIs can show
+ * the list of instruments without reloading the symbol map.
+ *
+ * If the symbol resolves in `map`, we store the basename of the
+ * resolved path (e.g. "brass_1.bin"). If not (e.g. the wav-dirs
+ * fallback path took over), we fall back to the raw symbol name.
+ */
+static void record_sample_name(ParseCtx *ctx, ToneData *td,
+                               const SymbolMap *map, const char *symbol)
+{
+    int slot = (int)(td - ctx->vg->voices);
+    if (slot < 0 || slot >= VOICEGROUP_SIZE) return;
+
+    const char *path = vg_symbol_map_find(map, symbol);
+    const char *name = path ? vg_path_basename(path) : symbol;
+    strncpy(ctx->vg->voiceSampleNames[slot], name, VG_MAX_VOICE_SAMPLE_NAME - 1);
+    ctx->vg->voiceSampleNames[slot][VG_MAX_VOICE_SAMPLE_NAME - 1] = '\0';
+}
+
+/*
  * Cry voices deliberately bypass the wav cache and sample dir fallback
  * — pokeemerald's cry samples are always referenced via the symbol map
  * and loaded once per voicegroup.
@@ -404,7 +425,10 @@ static void handle_directsound(ToneData *td, uint8_t voiceType,
     td->release  = (uint8_t)release;
 
     WaveData *wd = resolve_sample(ctx, sampleSymbol);
-    if (wd) td->wav = wd;
+    if (wd) {
+        td->wav = wd;
+        record_sample_name(ctx, td, ctx->dsMap, sampleSymbol);
+    }
 }
 
 static void handle_square_1(ToneData *td, uint8_t voiceType,
@@ -463,7 +487,10 @@ static void handle_prog_wave(ToneData *td, uint8_t voiceType,
     td->release = (uint8_t)(release & 0x07);
 
     uint32_t *pw = resolve_prog_wave(ctx, waveSymbol);
-    if (pw) td->wavePointer = pw;
+    if (pw) {
+        td->wavePointer = pw;
+        record_sample_name(ctx, td, ctx->pwMap, waveSymbol);
+    }
 }
 
 static void handle_noise(ToneData *td, uint8_t voiceType,
@@ -531,7 +558,10 @@ static void handle_cry(ToneData *td, uint8_t voiceType,
     td->release = 0;
 
     WaveData *wd = resolve_cry_sample(ctx, sampleSymbol);
-    if (wd) td->wav = wd;
+    if (wd) {
+        td->wav = wd;
+        record_sample_name(ctx, td, ctx->dsMap, sampleSymbol);
+    }
 }
 
 /*

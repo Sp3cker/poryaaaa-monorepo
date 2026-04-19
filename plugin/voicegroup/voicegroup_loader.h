@@ -5,6 +5,7 @@
 
 #define VOICEGROUP_SIZE 128
 #define VG_MAX_PATH_LEN 512
+#define VG_MAX_VOICE_SAMPLE_NAME 128
 
 /*
  * Optional configuration for the voicegroup loader.
@@ -26,6 +27,14 @@ typedef struct {
  */
 typedef struct {
     ToneData voices[VOICEGROUP_SIZE];
+
+    /* Per-slot sample basename (e.g. "brass_1.bin", "wave_01.pcm").
+     * Empty string for slots that reference no sample (square, noise,
+     * keysplit, keysplit_all) or for unused slots.
+     * Populated by the parser for DirectSound, ProgrammableWave, and
+     * Cry voices. Intended for consumers that want to display voices
+     * to a user without reloading the project's symbol maps. */
+    char voiceSampleNames[VOICEGROUP_SIZE][VG_MAX_VOICE_SAMPLE_NAME];
 
     /* Loaded wave data (samples) */
     WaveData **waveDatas;

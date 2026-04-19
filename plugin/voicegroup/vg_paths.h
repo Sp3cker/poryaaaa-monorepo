@@ -36,5 +36,6 @@ int   vg_str_ends_with_ci(const char *s, const char *suffix);
 void vg_build_path(char *dest, size_t destSize, const char *base, const char *relative);
 int  vg_file_exists(const char *path);
 int  vg_is_directory(const char *path);
+const char *vg_path_basename(const char *path);  /* last component after / or \ */
 
 #endif /* VG_PATHS_H */

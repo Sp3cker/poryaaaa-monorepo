@@ -71,3 +71,13 @@ int vg_is_directory(const char *path)
     if (stat(path, &st) != 0) return 0;
     return S_ISDIR(st.st_mode);
 }
+
+const char *vg_path_basename(const char *path)
+{
+    const char *last = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\')
+            last = p + 1;
+    }
+    return last;
+}
