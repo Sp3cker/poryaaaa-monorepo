@@ -1,59 +1,21 @@
 #include "voicegroup_loader.h"
+
+#include "vg_log.h"
+#include "vg_paths.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
-#include <time.h>
-#include <stdarg.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#define PATH_SEP '\\'
-#else
-#define PATH_SEP '/'
-#endif
-
 #define MAX_LINE 1024
-#define MAX_PATH_LEN 512
 #define MAX_SYMBOL_LEN 256
 #define INITIAL_CAPACITY 64
 
-#define MAX_DISCOVERED_PATHS 32
-
-/* ---- Diagnostic logging ---- */
-
-static const char *s_vgLogPath = NULL;
-
-void voicegroup_loader_set_log_path(const char *path)
-{
-    s_vgLogPath = path;
-}
-
-static void vg_log(const char *fmt, ...)
-{
-    if (!s_vgLogPath) return;
-    FILE *f = fopen(s_vgLogPath, "a");
-    if (!f) return;
-    time_t t = time(NULL);
-    char tbuf[32];
-    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", localtime(&t));
-    fprintf(f, "[%s] vg_loader: ", tbuf);
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-    fputc('\n', f);
-    fclose(f);
-}
-
 /* ---- Discovery data structures ---- */
-
-typedef struct {
-    char paths[MAX_DISCOVERED_PATHS][MAX_PATH_LEN];
-    int count;
-} PathList;
 
 typedef struct {
     PathList directSoundDataFiles;   /* paths to direct_sound_data.inc files */
@@ -65,7 +27,7 @@ typedef struct {
 } ProjectDiscovery;
 
 typedef struct {
-    char filePath[MAX_PATH_LEN];
+    char filePath[VG_MAX_PATH_LEN];
     char label[MAX_SYMBOL_LEN];  /* non-empty if inside a monolithic file */
     int found;
 } VoicegroupLocation;
@@ -74,7 +36,7 @@ typedef struct {
 
 typedef struct {
     char symbol[MAX_SYMBOL_LEN];
-    char filePath[MAX_PATH_LEN];
+    char filePath[VG_MAX_PATH_LEN];
 } SymbolMapping;
 
 typedef struct {
@@ -118,7 +80,7 @@ static uint32_t *load_prog_wave(const char *projectRoot, const char *relativePat
 #define WAVE_CACHE_CAPACITY 128
 
 typedef struct {
-    char absPath[MAX_PATH_LEN];
+    char absPath[VG_MAX_PATH_LEN];
     WaveData *wd;
 } WaveCacheEntry;
 
@@ -140,8 +102,8 @@ static WaveData *wave_cache_find(const WaveCache *cache, const char *absPath)
 static void wave_cache_insert(WaveCache *cache, const char *absPath, WaveData *wd)
 {
     if (cache->count >= WAVE_CACHE_CAPACITY) return;
-    strncpy(cache->entries[cache->count].absPath, absPath, MAX_PATH_LEN - 1);
-    cache->entries[cache->count].absPath[MAX_PATH_LEN - 1] = '\0';
+    strncpy(cache->entries[cache->count].absPath, absPath, VG_MAX_PATH_LEN - 1);
+    cache->entries[cache->count].absPath[VG_MAX_PATH_LEN - 1] = '\0';
     cache->entries[cache->count].wd = wd;
     cache->count++;
 }
@@ -153,82 +115,6 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
                                   const KeySplitMap *ksMap,
                                   const ProjectDiscovery *disc,
                                   WaveCache *waveCache);
-
-/* Helper: trim leading whitespace */
-static char *ltrim(char *s)
-{
-    while (*s && isspace((unsigned char)*s)) s++;
-    return s;
-}
-
-/* Helper: strip trailing whitespace/newline */
-static void rtrim(char *s)
-{
-    int len = strlen(s);
-    while (len > 0 && isspace((unsigned char)s[len - 1])) {
-        s[--len] = '\0';
-    }
-}
-
-/* Helper: strip inline comments (@ or //) */
-static void strip_comment(char *s)
-{
-    char *p = strchr(s, '@');
-    if (p) *p = '\0';
-    p = strstr(s, "//");
-    if (p) *p = '\0';
-}
-
-/* Helper: build a path */
-static void build_path(char *dest, size_t destSize, const char *base, const char *relative)
-{
-    snprintf(dest, destSize, "%s%c%s", base, PATH_SEP, relative);
-    /* Normalize separators */
-    for (char *p = dest; *p; p++) {
-        if (*p == '/' || *p == '\\')
-            *p = PATH_SEP;
-    }
-}
-
-/* Helper: try to open a file path, return 1 if it exists, 0 otherwise */
-static int file_exists(const char *path)
-{
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-}
-
-/* Helper: check if a path is a directory */
-static int is_directory(const char *path)
-{
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-    return S_ISDIR(st.st_mode);
-}
-
-/* Helper: add a path to a PathList if not already present and not full */
-static void pathlist_add(PathList *list, const char *path)
-{
-    if (list->count >= MAX_DISCOVERED_PATHS) return;
-    for (int i = 0; i < list->count; i++) {
-        if (strcmp(list->paths[i], path) == 0) return;
-    }
-    strncpy(list->paths[list->count], path, MAX_PATH_LEN - 1);
-    list->paths[list->count][MAX_PATH_LEN - 1] = '\0';
-    list->count++;
-}
-
-/* Helper: check if a string ends with a given suffix (case-insensitive) */
-static int str_ends_with_ci(const char *str, const char *suffix)
-{
-    size_t slen = strlen(str);
-    size_t sufflen = strlen(suffix);
-    if (sufflen > slen) return 0;
-    for (size_t i = 0; i < sufflen; i++) {
-        if (tolower((unsigned char)str[slen - sufflen + i]) != tolower((unsigned char)suffix[i]))
-            return 0;
-    }
-    return 1;
-}
 
 /* Helper: register a WaveData in the loaded voicegroup for later cleanup */
 static void vg_register_wavedata(LoadedVoiceGroup *vg, WaveData *wd)
@@ -293,8 +179,8 @@ static void symbol_map_add(SymbolMap *map, const char *symbol, const char *path)
     }
     strncpy(map->entries[map->count].symbol, symbol, MAX_SYMBOL_LEN - 1);
     map->entries[map->count].symbol[MAX_SYMBOL_LEN - 1] = '\0';
-    strncpy(map->entries[map->count].filePath, path, MAX_PATH_LEN - 1);
-    map->entries[map->count].filePath[MAX_PATH_LEN - 1] = '\0';
+    strncpy(map->entries[map->count].filePath, path, VG_MAX_PATH_LEN - 1);
+    map->entries[map->count].filePath[VG_MAX_PATH_LEN - 1] = '\0';
     map->count++;
 }
 
@@ -347,7 +233,7 @@ static int dir_has_files_with_ext(const char *dirPath, const char *ext)
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
-        if (str_ends_with_ci(ent->d_name, ext)) {
+        if (vg_str_ends_with_ci(ent->d_name, ext)) {
             closedir(d);
             return 1;
         }
@@ -369,10 +255,10 @@ static int dir_has_voice_macros(const char *dirPath)
     int checked = 0;
     while ((ent = readdir(d)) != NULL && checked < 5) {
         if (ent->d_name[0] == '.') continue;
-        if (!str_ends_with_ci(ent->d_name, ".inc") && !str_ends_with_ci(ent->d_name, ".s"))
+        if (!vg_str_ends_with_ci(ent->d_name, ".inc") && !vg_str_ends_with_ci(ent->d_name, ".s"))
             continue;
-        char filePath[MAX_PATH_LEN];
-        snprintf(filePath, sizeof(filePath), "%s%c%s", dirPath, PATH_SEP, ent->d_name);
+        char filePath[VG_MAX_PATH_LEN];
+        snprintf(filePath, sizeof(filePath), "%s%c%s", dirPath, VG_PATH_SEP, ent->d_name);
         FILE *f = fopen(filePath, "r");
         if (!f) continue;
         char line[MAX_LINE];
@@ -410,9 +296,9 @@ static void scan_dirs_recursive(const char *basePath, int depth, int maxDepth, d
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
-        char subPath[MAX_PATH_LEN];
-        snprintf(subPath, sizeof(subPath), "%s%c%s", basePath, PATH_SEP, ent->d_name);
-        if (is_directory(subPath)) {
+        char subPath[VG_MAX_PATH_LEN];
+        snprintf(subPath, sizeof(subPath), "%s%c%s", basePath, VG_PATH_SEP, ent->d_name);
+        if (vg_is_directory(subPath)) {
             scan_dirs_recursive(subPath, depth + 1, maxDepth, visit, ctx);
         }
     }
@@ -450,9 +336,9 @@ static int is_monolithic_voicegroup_file(const char *filePath)
     int lineCount = 0;
 
     while (fgets(line, sizeof(line), f) && lineCount < 500) {
-        strip_comment(line);
-        rtrim(line);
-        char *trimmed = ltrim(line);
+        vg_strip_comment(line);
+        vg_rtrim(line);
+        char *trimmed = vg_ltrim(line);
 
         if (strstr(trimmed, "::") && trimmed[0] != '.' && trimmed[0] != '\0') {
             labelCount++;
@@ -485,21 +371,21 @@ static void discover_project(const char *projectRoot,
 {
     memset(out, 0, sizeof(ProjectDiscovery));
 
-    char path[MAX_PATH_LEN];
-    char soundDir[MAX_PATH_LEN];
-    build_path(soundDir, sizeof(soundDir), projectRoot, "sound");
-    vg_log("discover_project: soundDir='%s' exists=%d", soundDir, is_directory(soundDir));
+    char path[VG_MAX_PATH_LEN];
+    char soundDir[VG_MAX_PATH_LEN];
+    vg_build_path(soundDir, sizeof(soundDir), projectRoot, "sound");
+    vg_log("discover_project: soundDir='%s' exists=%d", soundDir, vg_is_directory(soundDir));
 
     /* 1. Config overrides first (prepended) */
     if (cfg) {
         for (int i = 0; i < cfg->soundDataPathCount && i < 8; i++) {
-            build_path(path, sizeof(path), projectRoot, cfg->soundDataPaths[i]);
-            if (file_exists(path))
+            vg_build_path(path, sizeof(path), projectRoot, cfg->soundDataPaths[i]);
+            if (vg_file_exists(path))
                 pathlist_add(&out->directSoundDataFiles, path);
         }
         for (int i = 0; i < cfg->voicegroupPathCount && i < 8; i++) {
-            build_path(path, sizeof(path), projectRoot, cfg->voicegroupPaths[i]);
-            if (is_directory(path)) {
+            vg_build_path(path, sizeof(path), projectRoot, cfg->voicegroupPaths[i]);
+            if (vg_is_directory(path)) {
                 /* If it's a directory, add as voicegroup dir and scan for voice macros */
                 pathlist_add(&out->voicegroupDirs, path);
                 /* Also check if files inside are monolithic */
@@ -508,58 +394,58 @@ static void discover_project(const char *projectRoot,
                     struct dirent *ent;
                     while ((ent = readdir(d)) != NULL) {
                         if (ent->d_name[0] == '.') continue;
-                        if (str_ends_with_ci(ent->d_name, ".inc") || str_ends_with_ci(ent->d_name, ".s")) {
-                            char fpath[MAX_PATH_LEN];
-                            snprintf(fpath, sizeof(fpath), "%s%c%s", path, PATH_SEP, ent->d_name);
+                        if (vg_str_ends_with_ci(ent->d_name, ".inc") || vg_str_ends_with_ci(ent->d_name, ".s")) {
+                            char fpath[VG_MAX_PATH_LEN];
+                            snprintf(fpath, sizeof(fpath), "%s%c%s", path, VG_PATH_SEP, ent->d_name);
                             if (is_monolithic_voicegroup_file(fpath))
                                 pathlist_add(&out->monolithicVGFiles, fpath);
                         }
                     }
                     closedir(d);
                 }
-            } else if (file_exists(path)) {
+            } else if (vg_file_exists(path)) {
                 /* It's a file - check if it's monolithic or a voicegroup dir entry */
                 if (is_monolithic_voicegroup_file(path))
                     pathlist_add(&out->monolithicVGFiles, path);
             }
         }
         for (int i = 0; i < cfg->sampleDirCount && i < 8; i++) {
-            build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
-            if (is_directory(path))
+            vg_build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
+            if (vg_is_directory(path))
                 pathlist_add(&out->wavSampleDirs, path);
         }
     }
 
     /* 2. Standard direct_sound_data.inc, programmable_wave_data.inc, keysplit_tables.inc */
-    build_path(path, sizeof(path), projectRoot, "sound/direct_sound_data.inc");
-    if (file_exists(path))
+    vg_build_path(path, sizeof(path), projectRoot, "sound/direct_sound_data.inc");
+    if (vg_file_exists(path))
         pathlist_add(&out->directSoundDataFiles, path);
 
-    build_path(path, sizeof(path), projectRoot, "sound/programmable_wave_data.inc");
-    if (file_exists(path))
+    vg_build_path(path, sizeof(path), projectRoot, "sound/programmable_wave_data.inc");
+    if (vg_file_exists(path))
         pathlist_add(&out->progWaveDataFiles, path);
 
-    build_path(path, sizeof(path), projectRoot, "sound/keysplit_tables.inc");
-    if (file_exists(path))
+    vg_build_path(path, sizeof(path), projectRoot, "sound/keysplit_tables.inc");
+    if (vg_file_exists(path))
         pathlist_add(&out->keySplitTableFiles, path);
 
     /* 3. Standard voicegroup directories */
-    build_path(path, sizeof(path), projectRoot, "sound/voicegroups");
-    if (is_directory(path)) {
+    vg_build_path(path, sizeof(path), projectRoot, "sound/voicegroups");
+    if (vg_is_directory(path)) {
         pathlist_add(&out->voicegroupDirs, path);
         /* Also add keysplits/ and drumsets/ subdirs */
-        char subPath[MAX_PATH_LEN];
-        snprintf(subPath, sizeof(subPath), "%s%ckeysplits", path, PATH_SEP);
-        if (is_directory(subPath))
+        char subPath[VG_MAX_PATH_LEN];
+        snprintf(subPath, sizeof(subPath), "%s%ckeysplits", path, VG_PATH_SEP);
+        if (vg_is_directory(subPath))
             pathlist_add(&out->voicegroupDirs, subPath);
-        snprintf(subPath, sizeof(subPath), "%s%cdrumsets", path, PATH_SEP);
-        if (is_directory(subPath))
+        snprintf(subPath, sizeof(subPath), "%s%cdrumsets", path, VG_PATH_SEP);
+        if (vg_is_directory(subPath))
             pathlist_add(&out->voicegroupDirs, subPath);
     }
 
     /* 4. Scan under sound/ for voicegroup dirs AND wav dirs in one pass */
     vg_log("discover_project: scanning for voicegroup and wav dirs under '%s'", soundDir);
-    if (is_directory(soundDir)) {
+    if (vg_is_directory(soundDir)) {
         CombinedDirVisitorCtx vctx = { .disc = out };
         scan_dirs_recursive(soundDir, 0, 3, visit_for_voicegroup_and_wav_dirs, &vctx);
     }
@@ -567,9 +453,9 @@ static void discover_project(const char *projectRoot,
            out->voicegroupDirs.count, out->wavSampleDirs.count);
 
     /* 5. Check for monolithic voicegroup files */
-    build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
-    vg_log("discover_project: checking monolithic '%s' exists=%d", path, file_exists(path));
-    if (file_exists(path) && is_monolithic_voicegroup_file(path))
+    vg_build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
+    vg_log("discover_project: checking monolithic '%s' exists=%d", path, vg_file_exists(path));
+    if (vg_file_exists(path) && is_monolithic_voicegroup_file(path))
         pathlist_add(&out->monolithicVGFiles, path);
 }
 
@@ -584,7 +470,7 @@ static int parse_direct_sound_data_file(const char *filePath, const char *projec
     (void)projectRoot; /* paths inside the file are relative to projectRoot, stored as-is */
     FILE *f = fopen(filePath, "r");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
+        vg_err("cannot open %s", filePath);
         return -1;
     }
 
@@ -592,9 +478,9 @@ static int parse_direct_sound_data_file(const char *filePath, const char *projec
     char currentSymbol[MAX_SYMBOL_LEN] = {0};
 
     while (fgets(line, sizeof(line), f)) {
-        strip_comment(line);
-        rtrim(line);
-        char *trimmed = ltrim(line);
+        vg_strip_comment(line);
+        vg_rtrim(line);
+        char *trimmed = vg_ltrim(line);
 
         /* Look for label:: lines */
         char *colonColon = strstr(trimmed, "::");
@@ -632,7 +518,7 @@ static int parse_programmable_wave_data_file(const char *filePath, const char *p
     (void)projectRoot;
     FILE *f = fopen(filePath, "r");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
+        vg_err("cannot open %s", filePath);
         return -1;
     }
 
@@ -640,9 +526,9 @@ static int parse_programmable_wave_data_file(const char *filePath, const char *p
     char currentSymbol[MAX_SYMBOL_LEN] = {0};
 
     while (fgets(line, sizeof(line), f)) {
-        strip_comment(line);
-        rtrim(line);
-        char *trimmed = ltrim(line);
+        vg_strip_comment(line);
+        vg_rtrim(line);
+        char *trimmed = vg_ltrim(line);
 
         char *colonColon = strstr(trimmed, "::");
         if (colonColon && colonColon > trimmed) {
@@ -677,7 +563,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
 {
     FILE *f = fopen(filePath, "r");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
+        vg_err("cannot open %s", filePath);
         return -1;
     }
 
@@ -686,16 +572,16 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
     int lastNote = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        strip_comment(line);
-        rtrim(line);
-        char *trimmed = ltrim(line);
+        vg_strip_comment(line);
+        vg_rtrim(line);
+        char *trimmed = vg_ltrim(line);
 
         if (strncmp(trimmed, "keysplit ", 9) == 0) {
             /* pokeemerald macro format: keysplit tableName, startNote */
             char name[MAX_SYMBOL_LEN];
             int startNote = 0;
             if (sscanf(trimmed + 9, "%[^,], %d", name, &startNote) >= 1) {
-                rtrim(name);
+                vg_rtrim(name);
                 if (map->count >= map->capacity) {
                     map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
                     map->entries = realloc(map->entries, sizeof(KeySplitDef) * map->capacity);
@@ -723,7 +609,7 @@ static int parse_keysplit_tables_file(const char *filePath, KeySplitMap *map)
             char name[MAX_SYMBOL_LEN];
             int startNote = 0;
             if (sscanf(trimmed + 5, "%[^,], . - %d", name, &startNote) == 2) {
-                rtrim(name);
+                vg_rtrim(name);
                 if (map->count >= map->capacity) {
                     map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
                     map->entries = realloc(map->entries, sizeof(KeySplitDef) * map->capacity);
@@ -802,7 +688,7 @@ static WaveData *load_wav_from_path(const char *absoluteWavPath)
         memcmp(riffHdr, "RIFF", 4) != 0 ||
         memcmp(riffHdr + 8, "WAVE", 4) != 0) {
         fclose(f);
-        fprintf(stderr, "voicegroup_loader: invalid RIFF/WAVE header in %s\n", absoluteWavPath);
+        vg_err("invalid RIFF/WAVE header in %s", absoluteWavPath);
         return NULL;
     }
     uint32_t riffSize = riffHdr[4] | ((uint32_t)riffHdr[5] << 8) |
@@ -897,7 +783,7 @@ static WaveData *load_wav_from_path(const char *absoluteWavPath)
 
     if (!fmtFound || !dataFound) {
         fclose(f);
-        fprintf(stderr, "voicegroup_loader: missing fmt or data chunk in %s\n", absoluteWavPath);
+        vg_err("missing fmt or data chunk in %s", absoluteWavPath);
         return NULL;
     }
 
@@ -910,7 +796,7 @@ static WaveData *load_wav_from_path(const char *absoluteWavPath)
         else if (blockAlign == 4 && bitsPerSample == 32) bytesPerSample = 4;
         else {
             fclose(f);
-            fprintf(stderr, "voicegroup_loader: unsupported integer PCM format in %s\n", absoluteWavPath);
+            vg_err("unsupported integer PCM format in %s", absoluteWavPath);
             return NULL;
         }
     } else if (fmtTag == 3) {
@@ -918,12 +804,12 @@ static WaveData *load_wav_from_path(const char *absoluteWavPath)
         else if (blockAlign == 8 && bitsPerSample == 64) bytesPerSample = 8;
         else {
             fclose(f);
-            fprintf(stderr, "voicegroup_loader: unsupported float format in %s\n", absoluteWavPath);
+            vg_err("unsupported float format in %s", absoluteWavPath);
             return NULL;
         }
     } else {
         fclose(f);
-        fprintf(stderr, "voicegroup_loader: unsupported audio format %d in %s\n", fmtTag, absoluteWavPath);
+        vg_err("unsupported audio format %d in %s", fmtTag, absoluteWavPath);
         return NULL;
     }
 
@@ -1042,9 +928,9 @@ static WaveData *load_wav_from_path(const char *absoluteWavPath)
  */
 static WaveData *load_wave_data_from_wav(const char *projectRoot, const char *relativeBinPath)
 {
-    char relativeWavPath[MAX_PATH_LEN];
-    strncpy(relativeWavPath, relativeBinPath, MAX_PATH_LEN - 1);
-    relativeWavPath[MAX_PATH_LEN - 1] = '\0';
+    char relativeWavPath[VG_MAX_PATH_LEN];
+    strncpy(relativeWavPath, relativeBinPath, VG_MAX_PATH_LEN - 1);
+    relativeWavPath[VG_MAX_PATH_LEN - 1] = '\0';
 
     size_t pathLen = strlen(relativeWavPath);
     char *ext = NULL;
@@ -1056,8 +942,8 @@ static WaveData *load_wave_data_from_wav(const char *projectRoot, const char *re
     }
     ext[1] = 'w'; ext[2] = 'a'; ext[3] = 'v';
 
-    char fullPath[MAX_PATH_LEN];
-    build_path(fullPath, sizeof(fullPath), projectRoot, relativeWavPath);
+    char fullPath[VG_MAX_PATH_LEN];
+    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativeWavPath);
 
     WaveData *wd = load_wav_from_path(fullPath);
     if (wd) return wd;
@@ -1071,18 +957,18 @@ static WaveData *load_wave_data_from_wav(const char *projectRoot, const char *re
  */
 static WaveData *load_wave_data(const char *projectRoot, const char *relativePath)
 {
-    char fullPath[MAX_PATH_LEN];
-    build_path(fullPath, sizeof(fullPath), projectRoot, relativePath);
+    char fullPath[VG_MAX_PATH_LEN];
+    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativePath);
 
     FILE *f = fopen(fullPath, "rb");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open sample %s\n", fullPath);
+        vg_err("cannot open sample %s", fullPath);
         return NULL;
     }
 
     uint8_t header[16];
     if (fread(header, 1, 16, f) != 16) {
-        fprintf(stderr, "voicegroup_loader: short read on header %s\n", fullPath);
+        vg_err("short read on header %s", fullPath);
         fclose(f);
         return NULL;
     }
@@ -1122,12 +1008,12 @@ static WaveData *load_wave_data(const char *projectRoot, const char *relativePat
  */
 static uint32_t *load_prog_wave(const char *projectRoot, const char *relativePath)
 {
-    char fullPath[MAX_PATH_LEN];
-    build_path(fullPath, sizeof(fullPath), projectRoot, relativePath);
+    char fullPath[VG_MAX_PATH_LEN];
+    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativePath);
 
     FILE *f = fopen(fullPath, "rb");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open wave %s\n", fullPath);
+        vg_err("cannot open wave %s", fullPath);
         return NULL;
     }
 
@@ -1138,7 +1024,7 @@ static uint32_t *load_prog_wave(const char *projectRoot, const char *relativePat
     }
 
     if (fread(data, 1, 16, f) != 16) {
-        fprintf(stderr, "voicegroup_loader: short read on wave %s\n", fullPath);
+        vg_err("short read on wave %s", fullPath);
         free(data);
         fclose(f);
         return NULL;
@@ -1157,8 +1043,8 @@ static WaveData *resolve_sample_from_wav_dirs(const char *symbol,
                                                const ProjectDiscovery *disc)
 {
     for (int i = 0; i < disc->wavSampleDirs.count; i++) {
-        char wavPath[MAX_PATH_LEN];
-        snprintf(wavPath, sizeof(wavPath), "%s%c%s.wav", disc->wavSampleDirs.paths[i], PATH_SEP, symbol);
+        char wavPath[VG_MAX_PATH_LEN];
+        snprintf(wavPath, sizeof(wavPath), "%s%c%s.wav", disc->wavSampleDirs.paths[i], VG_PATH_SEP, symbol);
         WaveData *wd = load_wav_from_path(wavPath);
         if (wd) return wd;
     }
@@ -1177,17 +1063,17 @@ static WaveData *resolve_and_load_sample(const char *projectRoot, const char *sy
     const char *samplePath = symbol_map_find(dsMap, symbol);
     if (samplePath) {
         /* Build the absolute .wav path to use as cache key */
-        char relWavPath[MAX_PATH_LEN];
-        strncpy(relWavPath, samplePath, MAX_PATH_LEN - 1);
-        relWavPath[MAX_PATH_LEN - 1] = '\0';
+        char relWavPath[VG_MAX_PATH_LEN];
+        strncpy(relWavPath, samplePath, VG_MAX_PATH_LEN - 1);
+        relWavPath[VG_MAX_PATH_LEN - 1] = '\0';
         size_t pathLen = strlen(relWavPath);
         if (pathLen >= 4 && strcmp(relWavPath + pathLen - 4, ".bin") == 0) {
             relWavPath[pathLen - 3] = 'w';
             relWavPath[pathLen - 2] = 'a';
             relWavPath[pathLen - 1] = 'v';
         }
-        char absWavPath[MAX_PATH_LEN];
-        build_path(absWavPath, sizeof(absWavPath), projectRoot, relWavPath);
+        char absWavPath[VG_MAX_PATH_LEN];
+        vg_build_path(absWavPath, sizeof(absWavPath), projectRoot, relWavPath);
 
         WaveData *cached = wave_cache_find(waveCache, absWavPath);
         if (cached) return cached;
@@ -1202,9 +1088,9 @@ static WaveData *resolve_and_load_sample(const char *projectRoot, const char *sy
     /* Fallback: search wav directories */
     if (disc) {
         for (int i = 0; i < disc->wavSampleDirs.count; i++) {
-            char wavPath[MAX_PATH_LEN];
+            char wavPath[VG_MAX_PATH_LEN];
             snprintf(wavPath, sizeof(wavPath), "%s%c%s.wav",
-                     disc->wavSampleDirs.paths[i], PATH_SEP, symbol);
+                     disc->wavSampleDirs.paths[i], VG_PATH_SEP, symbol);
             WaveData *cached = wave_cache_find(waveCache, wavPath);
             if (cached) return cached;
             WaveData *wd = load_wav_from_path(wavPath);
@@ -1243,21 +1129,21 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
     VoicegroupLocation loc;
     memset(&loc, 0, sizeof(loc));
 
-    char path[MAX_PATH_LEN];
+    char path[VG_MAX_PATH_LEN];
 
     /* 1. Individual files in discovered voicegroup directories */
     for (int i = 0; i < disc->voicegroupDirs.count; i++) {
         /* Try <dir>/<name>.inc */
-        snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path)) {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+        snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], VG_PATH_SEP, vgName);
+        if (vg_file_exists(path)) {
+            strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
             loc.found = 1;
             return loc;
         }
         /* Try <dir>/<name>.s */
-        snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path)) {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+        snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], VG_PATH_SEP, vgName);
+        if (vg_file_exists(path)) {
+            strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
             loc.found = 1;
             return loc;
         }
@@ -1283,16 +1169,16 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
                 /* Explicit <dir>/keysplits/<base>.inc probe for each voicegroup dir */
                 for (int i = 0; i < disc->voicegroupDirs.count; i++) {
                     snprintf(path, sizeof(path), "%s%ckeysplits%c%s.inc",
-                             disc->voicegroupDirs.paths[i], PATH_SEP, PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                             disc->voicegroupDirs.paths[i], VG_PATH_SEP, VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
                     snprintf(path, sizeof(path), "%s%ckeysplits%c%s.s",
-                             disc->voicegroupDirs.paths[i], PATH_SEP, PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                             disc->voicegroupDirs.paths[i], VG_PATH_SEP, VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
@@ -1301,15 +1187,15 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
                 for (int i = 0; i < disc->voicegroupDirs.count; i++) {
                     if (!dir_last_component_is(disc->voicegroupDirs.paths[i], "keysplits"))
                         continue;
-                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
-                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
@@ -1328,16 +1214,16 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
                 /* Explicit <dir>/drumsets/<base>.inc probe for each voicegroup dir */
                 for (int i = 0; i < disc->voicegroupDirs.count; i++) {
                     snprintf(path, sizeof(path), "%s%cdrumsets%c%s.inc",
-                             disc->voicegroupDirs.paths[i], PATH_SEP, PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                             disc->voicegroupDirs.paths[i], VG_PATH_SEP, VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
                     snprintf(path, sizeof(path), "%s%cdrumsets%c%s.s",
-                             disc->voicegroupDirs.paths[i], PATH_SEP, PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                             disc->voicegroupDirs.paths[i], VG_PATH_SEP, VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
@@ -1346,15 +1232,15 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
                 for (int i = 0; i < disc->voicegroupDirs.count; i++) {
                     if (!dir_last_component_is(disc->voicegroupDirs.paths[i], "drumsets"))
                         continue;
-                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
-                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path)) {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], VG_PATH_SEP, baseName);
+                    if (vg_file_exists(path)) {
+                        strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
                         loc.found = 1;
                         return loc;
                     }
@@ -1366,15 +1252,15 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
 
     /* 3. Also try vg_<name>.s and vg_<name>.inc patterns (eventide convention) */
     for (int i = 0; i < disc->voicegroupDirs.count; i++) {
-        snprintf(path, sizeof(path), "%s%cvg_%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path)) {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+        snprintf(path, sizeof(path), "%s%cvg_%s.inc", disc->voicegroupDirs.paths[i], VG_PATH_SEP, vgName);
+        if (vg_file_exists(path)) {
+            strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
             loc.found = 1;
             return loc;
         }
-        snprintf(path, sizeof(path), "%s%cvg_%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path)) {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
+        snprintf(path, sizeof(path), "%s%cvg_%s.s", disc->voicegroupDirs.paths[i], VG_PATH_SEP, vgName);
+        if (vg_file_exists(path)) {
+            strncpy(loc.filePath, path, VG_MAX_PATH_LEN - 1);
             loc.found = 1;
             return loc;
         }
@@ -1390,10 +1276,10 @@ static VoicegroupLocation find_voicegroup(const char *projectRoot,
 
         char line[MAX_LINE];
         while (fgets(line, sizeof(line), f)) {
-            strip_comment(line);
-            char *trimmed = ltrim(line);
+            vg_strip_comment(line);
+            char *trimmed = vg_ltrim(line);
             if (strstr(trimmed, searchLabel) == trimmed) {
-                strncpy(loc.filePath, disc->monolithicVGFiles.paths[i], MAX_PATH_LEN - 1);
+                strncpy(loc.filePath, disc->monolithicVGFiles.paths[i], VG_MAX_PATH_LEN - 1);
                 strncpy(loc.label, vgName, MAX_SYMBOL_LEN - 1);
                 loc.found = 1;
                 fclose(f);
@@ -1424,7 +1310,7 @@ static ToneData *load_sub_voicegroup(const char *projectRoot, const char *vgSymb
 
     VoicegroupLocation loc = find_voicegroup(projectRoot, name, disc);
     if (!loc.found) {
-        fprintf(stderr, "voicegroup_loader: cannot find sub-voicegroup '%s'\n", vgSymbol);
+        vg_err("cannot find sub-voicegroup '%s'", vgSymbol);
         return NULL;
     }
 
@@ -1468,7 +1354,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
     vg_log("parse_voicegroup_file: '%s' label='%s'", filePath, startLabel ? startLabel : "(none)");
     FILE *f = fopen(filePath, "r");
     if (!f) {
-        fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
+        vg_err("cannot open %s", filePath);
         return -1;
     }
 
@@ -1484,9 +1370,9 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
     }
 
     while (fgets(line, sizeof(line), f) && voiceIndex < VOICEGROUP_SIZE) {
-        strip_comment(line);
-        rtrim(line);
-        char *trimmed = ltrim(line);
+        vg_strip_comment(line);
+        vg_rtrim(line);
+        char *trimmed = vg_ltrim(line);
 
         if (trimmed[0] == '\0')
             continue;
@@ -1529,7 +1415,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char sampleSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 30, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
-                rtrim(sampleSymbol);
+                vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_DIRECTSOUND_NO_RESAMPLE;
                 td->key = (uint8_t)key;
@@ -1551,7 +1437,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char sampleSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 22, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
-                rtrim(sampleSymbol);
+                vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_DIRECTSOUND_ALT;
                 td->key = (uint8_t)key;
@@ -1573,7 +1459,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char sampleSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 18, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) == 7) {
-                rtrim(sampleSymbol);
+                vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_DIRECTSOUND;
                 td->key = (uint8_t)key;
@@ -1665,7 +1551,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char waveSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 27, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, waveSymbol, &attack, &decay, &sustain, &release) == 7) {
-                rtrim(waveSymbol);
+                vg_rtrim(waveSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_PROGRAMMABLE_WAVE_ALT;
                 td->key = (uint8_t)key;
@@ -1690,7 +1576,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char waveSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 23, "%d, %d, %[^,], %d, %d, %d, %d",
                        &key, &pan, waveSymbol, &attack, &decay, &sustain, &release) == 7) {
-                rtrim(waveSymbol);
+                vg_rtrim(waveSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_PROGRAMMABLE_WAVE;
                 td->key = (uint8_t)key;
@@ -1747,7 +1633,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         else if (strncmp(trimmed, "voice_keysplit_all ", 19) == 0) {
             char vgSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 19, "%s", vgSymbol) == 1) {
-                rtrim(vgSymbol);
+                vg_rtrim(vgSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_KEYSPLIT_ALL;
 
@@ -1761,8 +1647,8 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
             char vgSymbol[MAX_SYMBOL_LEN];
             char ksSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 15, "%[^,], %s", vgSymbol, ksSymbol) == 2) {
-                rtrim(vgSymbol);
-                rtrim(ksSymbol);
+                vg_rtrim(vgSymbol);
+                vg_rtrim(ksSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_KEYSPLIT;
 
@@ -1785,7 +1671,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         else if (strncmp(trimmed, "cry_reverse ", 12) == 0) {
             char sampleSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 12, "%s", sampleSymbol) == 1) {
-                rtrim(sampleSymbol);
+                vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_CRY_REVERSE;
                 td->key = 60;
@@ -1808,7 +1694,7 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
         } else if (strncmp(trimmed, "cry ", 4) == 0) {
             char sampleSymbol[MAX_SYMBOL_LEN];
             if (sscanf(trimmed + 4, "%s", sampleSymbol) == 1) {
-                rtrim(sampleSymbol);
+                vg_rtrim(sampleSymbol);
                 ToneData *td = &vg->voices[voiceIndex];
                 td->type = VOICE_CRY;
                 td->key = 60;
@@ -1887,7 +1773,7 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     VoicegroupLocation loc = find_voicegroup(projectRoot, voicegroupName, disc);
     if (!loc.found) {
         vg_log("voicegroup_load: voicegroup '%s' not found", voicegroupName);
-        fprintf(stderr, "voicegroup_loader: cannot find voicegroup '%s'\n", voicegroupName);
+        vg_err("cannot find voicegroup '%s'", voicegroupName);
         goto fail;
     }
     vg_log("voicegroup_load: found at '%s' label='%s'", loc.filePath, loc.label);

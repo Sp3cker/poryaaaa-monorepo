@@ -73,6 +73,8 @@ set(ENGINE_SOURCES
     plugin/m4a_tables.c
     plugin/m4a_reverb.c
     plugin/voicegroup/voicegroup_loader.c
+    plugin/voicegroup/vg_log.c
+    plugin/voicegroup/vg_paths.c
 )
 
 # ---- CLAP Plugin ----
