@@ -100,23 +100,13 @@ void voicegroup_free(LoadedVoiceGroup *vg)
 
 /* ---- Project asset collection ---- */
 
-static const char *path_basename(const char *path)
-{
-    const char *last = path;
-    for (const char *p = path; *p; p++) {
-        if (*p == '/' || *p == '\\')
-            last = p + 1;
-    }
-    return last;
-}
-
 static void fill_asset_entry(ProjectAssetEntry *out, ProjectAssetKind kind,
                              const SymbolMapping *src)
 {
     out->kind = kind;
     strncpy(out->symbol, src->symbol, sizeof(out->symbol) - 1);
     strncpy(out->relPath, src->filePath, sizeof(out->relPath) - 1);
-    strncpy(out->fileName, path_basename(src->filePath), sizeof(out->fileName) - 1);
+    strncpy(out->fileName, vg_path_basename(src->filePath), sizeof(out->fileName) - 1);
 }
 
 static void build_asset_array(const SymbolMap *map, ProjectAssetKind kind,
