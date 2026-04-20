@@ -194,7 +194,6 @@ Notes:
 | `song_master_volume` | `127` | Song-level volume multiplier (0–127) |
 | `sound_data_paths` | *(auto)* | Extra `.inc` files for sample symbols (semicolon-separated, relative to project root) |
 | `voicegroup_paths` | *(auto)* | Extra voicegroup search directories or files |
-| `sample_dirs` | *(auto)* | Extra `.wav` sample search directories |
 | `log` | *(off)* | Diagnostic log file path |
 
 #### GUI

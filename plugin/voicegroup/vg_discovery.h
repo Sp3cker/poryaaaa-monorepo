@@ -16,17 +16,16 @@ typedef struct {
     PathList keySplitTableFiles;     /* keysplit_tables.inc */
     PathList voicegroupDirs;         /* dirs containing per-voicegroup .inc/.s */
     PathList monolithicVGFiles;      /* .inc files packing many voicegroups with <label>:: */
-    PathList wavSampleDirs;          /* dirs with .wav sample files */
 } ProjectDiscovery;
 
 /*
  * Walk the project tree rooted at projectRoot and populate *out.
  *
  * Discovery order (later entries append to, don't overwrite, earlier ones):
- *   1. Paths named in cfg->{soundData,voicegroup,sample}Paths (if any)
+ *   1. Paths named in cfg->{soundData,voicegroup}Paths (if any)
  *   2. Standard sound/direct_sound_data.inc etc.
  *   3. Standard sound/voicegroups/ (plus keysplits/ and drumsets/ subdirs)
- *   4. Recursive scan under sound/ (depth 3) for voicegroup/wav dirs
+ *   4. Recursive scan under sound/ (depth 3) for voicegroup dirs
  *   5. Standard sound/voice_groups.inc (monolithic)
  *
  * Zeros *out before populating. cfg may be NULL for pure auto-discovery.

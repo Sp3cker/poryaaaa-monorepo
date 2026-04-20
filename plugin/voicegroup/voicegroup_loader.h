@@ -17,8 +17,6 @@ typedef struct {
     int soundDataPathCount;
     char voicegroupPaths[8][VG_MAX_PATH_LEN];   /* extra voicegroup directories or files */
     int voicegroupPathCount;
-    char sampleDirs[8][VG_MAX_PATH_LEN];        /* extra directories with .wav sample files */
-    int sampleDirCount;
 } VoicegroupLoaderConfig;
 
 /*

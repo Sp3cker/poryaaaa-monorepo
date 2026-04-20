@@ -42,10 +42,10 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     }
 
     vg_discover_project(projectRoot, config, disc);
-    vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d vgDirs=%d monoFiles=%d wavDirs=%d",
+    vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d vgDirs=%d monoFiles=%d",
            disc->directSoundDataFiles.count, disc->progWaveDataFiles.count,
            disc->keySplitTableFiles.count, disc->voicegroupDirs.count,
-           disc->monolithicVGFiles.count, disc->wavSampleDirs.count);
+           disc->monolithicVGFiles.count);
 
     SymbolMap dsMap, pwMap;
     KeySplitMap ksMap;

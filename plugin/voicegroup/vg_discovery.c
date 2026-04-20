@@ -7,22 +7,6 @@
 
 /* ---- Lightweight content heuristics ---- */
 
-static int dir_has_files_with_ext(const char *dirPath, const char *ext)
-{
-    DIR *d = opendir(dirPath);
-    if (!d) return 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        if (vg_str_ends_with_ci(ent->d_name, ext)) {
-            closedir(d);
-            return 1;
-        }
-    }
-    closedir(d);
-    return 0;
-}
-
 /*
  * True if any of the first few .inc/.s files in dirPath mention a voice
  * macro. Quick heuristic — we peek at the first 50 lines of up to 5
@@ -120,13 +104,11 @@ static void scan_dirs_recursive(const char *basePath, int depth, int maxDepth,
     closedir(d);
 }
 
-static void visit_voicegroup_and_wav_dirs(const char *dirPath, void *ctx)
+static void visit_voicegroup_dirs(const char *dirPath, void *ctx)
 {
     ProjectDiscovery *disc = (ProjectDiscovery *)ctx;
     if (dir_has_voice_macros(dirPath))
         pathlist_add(&disc->voicegroupDirs, dirPath);
-    if (dir_has_files_with_ext(dirPath, ".wav"))
-        pathlist_add(&disc->wavSampleDirs, dirPath);
 }
 
 /* ---- Config override application ---- */
@@ -178,11 +160,6 @@ static void apply_config_overrides(const char *projectRoot,
     }
     for (int i = 0; i < cfg->voicegroupPathCount && i < 8; i++)
         apply_voicegroup_path_override(projectRoot, cfg->voicegroupPaths[i], out);
-    for (int i = 0; i < cfg->sampleDirCount && i < 8; i++) {
-        vg_build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
-        if (vg_is_directory(path))
-            pathlist_add(&out->wavSampleDirs, path);
-    }
 }
 
 /* ---- Standard-path discovery ---- */
@@ -242,11 +219,11 @@ void vg_discover_project(const char *projectRoot,
     add_standard_symbol_files(projectRoot, out);
     add_standard_voicegroup_dirs(projectRoot, out);
 
-    vg_log("discover_project: scanning for voicegroup and wav dirs under '%s'", soundDir);
+    vg_log("discover_project: scanning for voicegroup dirs under '%s'", soundDir);
     if (vg_is_directory(soundDir))
-        scan_dirs_recursive(soundDir, 0, 3, visit_voicegroup_and_wav_dirs, out);
-    vg_log("discover_project: dir scan done, vgDirs=%d wavDirs=%d",
-           out->voicegroupDirs.count, out->wavSampleDirs.count);
+        scan_dirs_recursive(soundDir, 0, 3, visit_voicegroup_dirs, out);
+    vg_log("discover_project: dir scan done, vgDirs=%d",
+           out->voicegroupDirs.count);
 
     check_monolithic_voice_groups_inc(projectRoot, out);
 }

@@ -77,15 +77,21 @@ typedef struct {
     const ProjectDiscovery *disc;
     LoadedVoiceGroup *vg;
     WaveCache *waveCache;
+    /* Trailing "@ ..." comment from the current voice macro's line, trimmed
+     * of surrounding whitespace. NULL/empty if the line had no comment.
+     * Valid only for the duration of the current dispatch; handlers that
+     * recurse (keysplit -> load_sub_voicegroup) must capture it first. */
+    const char *lineComment;
 } ParseCtx;
 
 /* ---- Sample resolution ---- */
 
 /*
- * Resolve a DirectSound sample symbol to a WaveData. Tries the symbol
- * map first (looking up the .bin path pokeemerald records there, then
- * substituting .wav on disk). Falls back to scanning every
- * disc->wavSampleDirs entry for `<symbol>.wav`. Cached within the
+ * Resolve a DirectSound sample symbol to a WaveData via the symbol
+ * map (looking up the .bin path pokeemerald records there, then
+ * substituting .wav on disk). Returns NULL if the symbol isn't in
+ * direct_sound_data.inc — matching real-ROM linking, where only
+ * .incbin'd samples are part of the build. Cached within the
  * ParseCtx so the same .wav isn't loaded twice per voicegroup.
  */
 static WaveData *resolve_sample(const ParseCtx *ctx, const char *symbol)
@@ -116,23 +122,6 @@ static WaveData *resolve_sample(const ParseCtx *ctx, const char *symbol)
         }
     }
 
-    /* Fallback: brute-search discovered wav directories for
-     * <symbol>.wav. This covers projects where a sample isn't in
-     * direct_sound_data.inc but exists on disk. */
-    if (!ctx->disc) return NULL;
-    for (int i = 0; i < ctx->disc->wavSampleDirs.count; i++) {
-        char wavPath[VG_MAX_PATH_LEN];
-        snprintf(wavPath, sizeof(wavPath), "%s%c%s.wav",
-                 ctx->disc->wavSampleDirs.paths[i], VG_PATH_SEP, symbol);
-        WaveData *cached = vg_wave_cache_find(ctx->waveCache, wavPath);
-        if (cached) return cached;
-        WaveData *wd = vg_load_wav_file(wavPath);
-        if (wd) {
-            register_wavedata(ctx->vg, wd);
-            vg_wave_cache_insert(ctx->waveCache, wavPath, wd);
-            return wd;
-        }
-    }
     return NULL;
 }
 
@@ -158,16 +147,19 @@ static uint32_t *resolve_prog_wave(const ParseCtx *ctx, const char *symbol)
  * resolved path (e.g. "brass_1.bin"). If not (e.g. the wav-dirs
  * fallback path took over), we fall back to the raw symbol name.
  */
-static void record_sample_name(ParseCtx *ctx, ToneData *td,
-                               const SymbolMap *map, const char *symbol)
+static void set_slot_name(ParseCtx *ctx, ToneData *td, const char *name)
 {
     int slot = (int)(td - ctx->vg->voices);
     if (slot < 0 || slot >= VOICEGROUP_SIZE) return;
-
-    const char *path = vg_symbol_map_find(map, symbol);
-    const char *name = path ? vg_path_basename(path) : symbol;
     strncpy(ctx->vg->voiceSampleNames[slot], name, VG_MAX_VOICE_SAMPLE_NAME - 1);
     ctx->vg->voiceSampleNames[slot][VG_MAX_VOICE_SAMPLE_NAME - 1] = '\0';
+}
+
+static void record_sample_name(ParseCtx *ctx, ToneData *td,
+                               const SymbolMap *map, const char *symbol)
+{
+    const char *path = vg_symbol_map_find(map, symbol);
+    set_slot_name(ctx, td, path ? vg_path_basename(path) : symbol);
 }
 
 /*
@@ -383,22 +375,28 @@ static ToneData *load_sub_voicegroup(const char *vgSymbol, ParseCtx *ctx)
     ToneData *subVg = calloc(VOICEGROUP_SIZE, sizeof(ToneData));
     if (!subVg) return NULL;
 
-    /* parse_voicegroup_file writes into vg->voices. Save/restore so
-     * the recursion doesn't clobber the parent voicegroup's voices. */
-    ToneData saved[VOICEGROUP_SIZE];
-    memcpy(saved, ctx->vg->voices, sizeof(saved));
+    /* parse_voicegroup_file writes into vg->voices and, via
+     * record_sample_name, into vg->voiceSampleNames. Save/restore both
+     * so the recursion doesn't clobber the parent voicegroup's data. */
+    ToneData savedVoices[VOICEGROUP_SIZE];
+    char savedNames[VOICEGROUP_SIZE][VG_MAX_VOICE_SAMPLE_NAME];
+    memcpy(savedVoices, ctx->vg->voices, sizeof(savedVoices));
+    memcpy(savedNames,  ctx->vg->voiceSampleNames, sizeof(savedNames));
     memset(ctx->vg->voices, 0, sizeof(ctx->vg->voices));
+    memset(ctx->vg->voiceSampleNames, 0, sizeof(ctx->vg->voiceSampleNames));
 
     const char *startLabel = loc.label[0] ? loc.label : NULL;
     int rc = parse_voicegroup_file(loc.filePath, startLabel, ctx);
     if (rc != 0) {
         free(subVg);
-        memcpy(ctx->vg->voices, saved, sizeof(saved));
+        memcpy(ctx->vg->voices, savedVoices, sizeof(savedVoices));
+        memcpy(ctx->vg->voiceSampleNames, savedNames, sizeof(savedNames));
         return NULL;
     }
 
     memcpy(subVg, ctx->vg->voices, sizeof(ToneData) * VOICEGROUP_SIZE);
-    memcpy(ctx->vg->voices, saved, sizeof(saved));
+    memcpy(ctx->vg->voices, savedVoices, sizeof(savedVoices));
+    memcpy(ctx->vg->voiceSampleNames, savedNames, sizeof(savedNames));
 
     register_subgroup(ctx->vg, subVg);
     return subVg;
@@ -519,10 +517,18 @@ static void handle_keysplit(ToneData *td, uint8_t voiceType,
     if (sscanf(args, "%[^,], %s", vgSymbol, ksSymbol) != 2)
         return;
 
+    /* Capture before recursing — load_sub_voicegroup overwrites lineComment. */
+    char displayName[VG_MAX_VOICE_SAMPLE_NAME];
+    if (ctx->lineComment && ctx->lineComment[0])
+        snprintf(displayName, sizeof(displayName), "%s", ctx->lineComment);
+    else
+        snprintf(displayName, sizeof(displayName), "%s", vgSymbol);
+
     vg_rtrim(vgSymbol);
     vg_rtrim(ksSymbol);
     td->type     = voiceType;
     td->subGroup = load_sub_voicegroup(vgSymbol, ctx);
+    set_slot_name(ctx, td, displayName);
 
     KeySplitDef *ksDef = vg_keysplit_map_find(ctx->ksMap, ksSymbol);
     if (ksDef) {
@@ -538,9 +544,17 @@ static void handle_keysplit_all(ToneData *td, uint8_t voiceType,
 {
     char vgSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%s", vgSymbol) != 1) return;
+
+    char displayName[VG_MAX_VOICE_SAMPLE_NAME];
+    if (ctx->lineComment && ctx->lineComment[0])
+        snprintf(displayName, sizeof(displayName), "%s", ctx->lineComment);
+    else
+        snprintf(displayName, sizeof(displayName), "%s", vgSymbol);
+
     vg_rtrim(vgSymbol);
     td->type     = voiceType;
     td->subGroup = load_sub_voicegroup(vgSymbol, ctx);
+    set_slot_name(ctx, td, displayName);
 }
 
 static void handle_cry(ToneData *td, uint8_t voiceType,
@@ -640,6 +654,20 @@ static int parse_voicegroup_file(const char *filePath, const char *startLabel, P
     int voicesInSection = 0;
 
     while (fgets(line, sizeof(line), f) && voiceIndex < VOICEGROUP_SIZE) {
+        char commentBuf[VG_MAX_VOICE_SAMPLE_NAME];
+        commentBuf[0] = '\0';
+        const char *at = strchr(line, '@');
+        if (at) {
+            const char *c = at + 1;
+            while (*c && isspace((unsigned char)*c)) c++;
+            size_t n = 0;
+            while (*c && n + 1 < sizeof(commentBuf))
+                commentBuf[n++] = *c++;
+            while (n > 0 && isspace((unsigned char)commentBuf[n - 1])) n--;
+            commentBuf[n] = '\0';
+        }
+        ctx->lineComment = commentBuf[0] ? commentBuf : NULL;
+
         vg_strip_comment(line);
         vg_rtrim(line);
         char *trimmed = vg_ltrim(line);

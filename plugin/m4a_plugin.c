@@ -55,6 +55,54 @@ static char s_pluginDir[512] = {0};
 /* Optional diagnostic log path, set from config key "log=<path>" */
 static const char *s_pluginLogPath = NULL;
 
+/*
+ * Write poryaaaa_state.json next to the .clap bundle so sibling plugins
+ * (ccomidi) can mirror the currently-loaded voicegroup. Uses write-then-rename
+ * so readers never observe a partial file.
+ *
+ * Sample names stored in voiceSampleNames[] are basenames from decomp .inc
+ * paths; they never contain " or \, but escape defensively anyway.
+ */
+static void write_state_file(const M4APluginData *data)
+{
+    if (s_pluginDir[0] == '\0' || !data->loadedVg) return;
+
+    char tmpPath[600];
+    char finalPath[600];
+    snprintf(tmpPath,   sizeof(tmpPath),   "%s/poryaaaa_state.json.tmp", s_pluginDir);
+    snprintf(finalPath, sizeof(finalPath), "%s/poryaaaa_state.json",     s_pluginDir);
+
+    FILE *f = fopen(tmpPath, "w");
+    if (!f) return;
+
+    fprintf(f, "{\n");
+    fprintf(f, "  \"projectRoot\": \"");
+    for (const char *p = data->projectRoot; *p; p++) {
+        if (*p == '"' || *p == '\\') fputc('\\', f);
+        fputc(*p, f);
+    }
+    fprintf(f, "\",\n");
+    fprintf(f, "  \"voicegroup\": \"%s\",\n", data->voicegroupName);
+    fprintf(f, "  \"slots\": [\n");
+    int first = 1;
+    for (int i = 0; i < VOICEGROUP_SIZE; i++) {
+        const char *name = data->loadedVg->voiceSampleNames[i];
+        if (name[0] == '\0') continue;
+        if (!first) fprintf(f, ",\n");
+        first = 0;
+        fprintf(f, "    {\"program\": %d, \"name\": \"", i);
+        for (const char *p = name; *p; p++) {
+            if (*p == '"' || *p == '\\') fputc('\\', f);
+            fputc(*p, f);
+        }
+        fprintf(f, "\"}");
+    }
+    fprintf(f, "\n  ]\n}\n");
+    fclose(f);
+
+    rename(tmpPath, finalPath);
+}
+
 static void plugin_engine_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 static bool plugin_poll_pending_xcmd(M4APluginData *data, unsigned int *seq_out,
                                      unsigned int *meta_out);
@@ -158,18 +206,6 @@ static void load_config_file(M4APluginData *data)
                          sizeof(data->loaderConfig.voicegroupPaths[idx]), "%s", tok);
                 tok = strtok(NULL, ";");
             }
-        } else if (strcmp(key, "sample_dirs") == 0) {
-            char tmp[600];
-            strncpy(tmp, value, sizeof(tmp) - 1);
-            tmp[sizeof(tmp) - 1] = '\0';
-            char *tok = strtok(tmp, ";");
-            while (tok && data->loaderConfig.sampleDirCount < 8) {
-                while (*tok == ' ') tok++;
-                int idx = data->loaderConfig.sampleDirCount++;
-                snprintf(data->loaderConfig.sampleDirs[idx],
-                         sizeof(data->loaderConfig.sampleDirs[idx]), "%s", tok);
-                tok = strtok(NULL, ";");
-            }
         }
     }
 
@@ -269,6 +305,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             if (data->assetIndex)
                 project_asset_index_apply_overrides(data->assetIndex, data->projectRoot, data->loadedVg);
             m4a_params_sync_to_engine(data);
+            write_state_file(data);
         }
     }
 
@@ -681,6 +718,7 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
                 m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
                 memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
                 memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+                write_state_file(data);
             }
         }
         data->engine.masterVolume = data->masterVolume;

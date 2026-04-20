@@ -40,11 +40,6 @@ song_master_volume=127
 # Normally auto-discovered under sound/. Use this for custom locations outside the standard structure.
 #voicegroup_paths=sound/eventide_music/voice_groups
 
-# Additional sample search directories (semicolon-separated, relative to project_root).
-# When a sample symbol isn't found in direct_sound_data.inc, the loader searches these
-# directories for <symbol>.wav files.
-#sample_dirs=sound/eventide_music/samples/wav
-
 # Optional: diagnostic log file path. Uncomment to enable GUI debug logging.
 # Useful for diagnosing GUI problems (e.g. why the GUI window doesn't appear).
 # On Windows: use a path you can write to, e.g. your Desktop or C:\Temp.
