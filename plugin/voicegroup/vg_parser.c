@@ -477,12 +477,13 @@ static void handle_prog_wave(ToneData *td, uint8_t voiceType,
         return;
 
     vg_rtrim(waveSymbol);
-    td->type    = voiceType;
-    td->key     = (uint8_t)key;
-    td->attack  = (uint8_t)(attack & 0x07);
-    td->decay   = (uint8_t)(decay  & 0x07);
-    td->sustain = (uint8_t)(sustain & 0x0F);
-    td->release = (uint8_t)(release & 0x07);
+    td->type     = voiceType;
+    td->key      = (uint8_t)key;
+    td->panSweep = pan ? (uint8_t)(0x80 | pan) : 0;
+    td->attack   = (uint8_t)(attack & 0x07);
+    td->decay    = (uint8_t)(decay  & 0x07);
+    td->sustain  = (uint8_t)(sustain & 0x0F);
+    td->release  = (uint8_t)(release & 0x07);
 
     uint32_t *pw = resolve_prog_wave(ctx, waveSymbol);
     if (pw) {
