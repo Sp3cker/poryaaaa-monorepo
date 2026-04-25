@@ -228,14 +228,16 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->activated = false;
     data->gui = NULL;
     data->guiTimerId = CLAP_INVALID_ID;
-    atomic_init(&data->midiActivitySeq, 0);
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        atomic_init(&data->midiActivitySeq[i], 0);
+        data->guiMidiActivitySeqSeen[i] = 0;
+    }
     atomic_init(&data->xcmdActivitySeq, 0);
     atomic_init(&data->pendingXcmdSeq, 0);
     atomic_init(&data->pendingXcmdMeta, 0);
     atomic_init(&data->latestXcmdSeq, 0);
     atomic_init(&data->latestXcmdMeta, 0);
     atomic_init(&data->latestXcmdValue, 0);
-    data->guiMidiActivitySeqSeen = 0;
     data->guiXcmdActivitySeqSeen = 0;
     data->guiPendingXcmdSeqSeen = 0;
     data->guiLatestXcmdSeqSeen = 0;
@@ -382,9 +384,10 @@ static void plugin_reset(const clap_plugin_t *plugin)
 
 static void process_midi_event(M4APluginData *data, const uint8_t *msg)
 {
-    atomic_fetch_add(&data->midiActivitySeq, 1);
     uint8_t status = msg[0] & 0xF0;
     uint8_t channel = msg[0] & 0x0F;
+    if (channel < MAX_TRACKS)
+        atomic_fetch_add(&data->midiActivitySeq[channel], 1);
 
     switch (status) {
     case 0x90: /* Note On */
@@ -427,9 +430,9 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg)
 
 static void process_clap_note_event(M4APluginData *data, const clap_event_note_t *ev)
 {
-    atomic_fetch_add(&data->midiActivitySeq, 1);
     int channel = ev->channel >= 0 ? ev->channel : 0;
     if (channel >= MAX_TRACKS) channel = 0;
+    atomic_fetch_add(&data->midiActivitySeq[channel], 1);
 
     if (ev->header.type == CLAP_EVENT_NOTE_ON) {
         uint8_t velocity = (uint8_t)(ev->velocity * 127.0 + 0.5);
@@ -564,6 +567,33 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
                 {
                     const clap_event_midi_t *midiEv = (const clap_event_midi_t *)hdr;
                     process_midi_event(data, midiEv->data);
+                    /* MIDI Program Change is the source of truth when it
+                     * arrives; mirror it back out as a CLAP param event so
+                     * the host's automation lane and saved state stay in
+                     * sync with the engine instead of clobbering it on the
+                     * next params_flush. */
+                    if ((midiEv->data[0] & 0xF0) == 0xC0
+                        && process->out_events) {
+                        uint8_t channel = midiEv->data[0] & 0x0F;
+                        if (channel < MAX_TRACKS) {
+                            clap_event_param_value_t pv;
+                            memset(&pv, 0, sizeof(pv));
+                            pv.header.size = sizeof(pv);
+                            pv.header.time = hdr->time;
+                            pv.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                            pv.header.type = CLAP_EVENT_PARAM_VALUE;
+                            pv.header.flags = 0;
+                            pv.param_id = channel;
+                            pv.cookie = NULL;
+                            pv.note_id = -1;
+                            pv.port_index = -1;
+                            pv.channel = -1;
+                            pv.key = -1;
+                            pv.value = (double)midiEv->data[1];
+                            process->out_events->try_push(process->out_events,
+                                                          &pv.header);
+                        }
+                    }
                     break;
                 }
                 case CLAP_EVENT_PARAM_VALUE:
@@ -784,10 +814,12 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
     if (data->guiTimerId != CLAP_INVALID_ID && timer_id != data->guiTimerId)
         return;
 
-    unsigned int midiSeq = atomic_load(&data->midiActivitySeq);
-    if (midiSeq != data->guiMidiActivitySeqSeen) {
-        data->guiMidiActivitySeqSeen = midiSeq;
-        m4a_gui_pulse_midi_activity(data->gui);
+    for (int ch = 0; ch < MAX_TRACKS; ch++) {
+        unsigned int midiSeq = atomic_load(&data->midiActivitySeq[ch]);
+        if (midiSeq != data->guiMidiActivitySeqSeen[ch]) {
+            data->guiMidiActivitySeqSeen[ch] = midiSeq;
+            m4a_gui_pulse_midi_activity(data->gui, ch);
+        }
     }
 
     {

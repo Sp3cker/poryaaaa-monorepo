@@ -100,10 +100,10 @@ bool m4a_gui_was_closed(M4AGuiState *gui);
 void m4a_gui_update_settings(M4AGuiState *gui, const M4AGuiSettings *settings);
 
 /*
- * Extend the GUI's MIDI activity indicator pulse.
- * Must be called from the main thread.
+ * Extend the per-channel MIDI activity indicator pulse for the given MIDI
+ * channel (0-15). Must be called from the main thread.
  */
-void m4a_gui_pulse_midi_activity(M4AGuiState *gui);
+void m4a_gui_pulse_midi_activity(M4AGuiState *gui, int channel);
 void m4a_gui_pulse_xcmd_activity(M4AGuiState *gui);
 void m4a_gui_pulse_valid_xcmd(M4AGuiState *gui);
 void m4a_gui_set_latest_xcmd(M4AGuiState *gui, const char *text);

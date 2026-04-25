@@ -86,7 +86,7 @@ struct M4AGuiState {
     /* Pending change flags (cleared by poll_changes) */
     bool settingsChanged;
     bool reloadRequested;
-    double midiActivityUntil;
+    double midiActivityUntil[16];
     double xcmdActivityUntil;
     double validXcmdUntil;
     char latestXcmd[128];
@@ -181,9 +181,9 @@ static bool edit_cgb_adsr(ToneData *voice)
 
 static void render_general_tab(M4AGuiState *gui)
 {
-    bool midiActive = ImGui::GetTime() < gui->midiActivityUntil;
-    bool xcmdActive = ImGui::GetTime() < gui->xcmdActivityUntil;
-    bool validXcmdActive = ImGui::GetTime() < gui->validXcmdUntil;
+    double now = ImGui::GetTime();
+    bool xcmdActive = now < gui->xcmdActivityUntil;
+    bool validXcmdActive = now < gui->validXcmdUntil;
     ImDrawList *drawList = ImGui::GetWindowDrawList();
     auto draw_led = [&](bool active, const ImVec4 &onColor, const ImVec4 &offColor, const char *label) {
         ImVec2 ledCenter = ImGui::GetCursorScreenPos();
@@ -196,10 +196,40 @@ static void render_general_tab(M4AGuiState *gui)
         ImGui::TextUnformatted(label);
     };
 
-    draw_led(midiActive,
-             ImVec4(0.18f, 0.95f, 0.35f, 1.0f),
-             ImVec4(0.18f, 0.24f, 0.20f, 1.0f),
-             "MIDI Activity");
+    /* Per-channel MIDI activity: 16 compact LEDs in a row, one per MIDI
+     * channel. Each LED pulses independently when its channel sees an event. */
+    static const ImVec4 kChanOn  = ImVec4(0.18f, 0.95f, 0.35f, 1.0f);
+    static const ImVec4 kChanOff = ImVec4(0.18f, 0.24f, 0.20f, 1.0f);
+    ImGui::TextUnformatted("MIDI Activity");
+    {
+        const float ledSlot = 18.0f;
+        ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
+        for (int ch = 0; ch < 16; ch++) {
+            bool active = now < gui->midiActivityUntil[ch];
+            ImVec2 c;
+            c.x = rowOrigin.x + ch * ledSlot + 7.0f;
+            c.y = rowOrigin.y + 9.0f;
+            drawList->AddCircleFilled(c, 5.0f,
+                                       ImGui::GetColorU32(active ? kChanOn : kChanOff));
+        }
+        ImGui::Dummy(ImVec2(ledSlot * 16.0f, 18.0f));
+
+        /* Channel-number labels under each LED (1-based to match how DAWs
+         * present MIDI channels). */
+        ImVec2 labelOrigin = ImGui::GetCursorScreenPos();
+        for (int ch = 0; ch < 16; ch++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%d", ch + 1);
+            ImVec2 sz = ImGui::CalcTextSize(buf);
+            ImVec2 p;
+            p.x = labelOrigin.x + ch * ledSlot + (14.0f - sz.x) * 0.5f;
+            p.y = labelOrigin.y;
+            drawList->AddText(p, ImGui::GetColorU32(ImGuiCol_TextDisabled), buf);
+        }
+        ImGui::Dummy(ImVec2(ledSlot * 16.0f, ImGui::GetTextLineHeight()));
+    }
+    ImGui::Spacing();
+
     draw_led(xcmdActive,
              ImVec4(0.95f, 0.75f, 0.18f, 1.0f),
              ImVec4(0.26f, 0.22f, 0.14f, 1.0f),
@@ -887,12 +917,14 @@ void m4a_gui_update_settings(M4AGuiState *gui, const M4AGuiSettings *settings)
     sync_buffers(gui);
 }
 
-void m4a_gui_pulse_midi_activity(M4AGuiState *gui)
+void m4a_gui_pulse_midi_activity(M4AGuiState *gui, int channel)
 {
     if (!gui || !gui->imguiCtx)
         return;
+    if (channel < 0 || channel >= 16)
+        return;
     ImGui::SetCurrentContext(gui->imguiCtx);
-    gui->midiActivityUntil = ImGui::GetTime() + 0.15;
+    gui->midiActivityUntil[channel] = ImGui::GetTime() + 0.15;
 }
 
 void m4a_gui_pulse_xcmd_activity(M4AGuiState *gui)

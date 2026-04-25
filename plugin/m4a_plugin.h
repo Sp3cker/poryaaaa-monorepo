@@ -20,9 +20,10 @@ typedef struct {
     bool analogFilter;
     uint8_t maxPcmChannels;
     bool activated;
-    /* Incremented from the audio thread when incoming MIDI/note activity is
-     * seen. The GUI polls it from the main thread and handles the visual decay. */
-    atomic_uint midiActivitySeq;
+    /* Per-channel activity counters. Incremented from the audio thread at the
+     * channel's index whenever a MIDI/note event arrives for that channel;
+     * the GUI polls them from the main thread and pulses the matching LED. */
+    atomic_uint midiActivitySeq[MAX_TRACKS];
     atomic_uint xcmdActivitySeq;
     atomic_uint pendingXcmdSeq;
     atomic_uint pendingXcmdMeta;
@@ -45,7 +46,7 @@ typedef struct {
     const clap_host_t *host;
     M4AGuiState *gui;
     clap_id guiTimerId;
-    unsigned int guiMidiActivitySeqSeen;
+    unsigned int guiMidiActivitySeqSeen[MAX_TRACKS];
     unsigned int guiXcmdActivitySeqSeen;
     unsigned int guiPendingXcmdSeqSeen;
     unsigned int guiLatestXcmdSeqSeen;
