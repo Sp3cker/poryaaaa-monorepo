@@ -2,6 +2,11 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include <clap/clap.h>
 #include <clap/ext/gui.h>
@@ -56,21 +61,68 @@ static char s_pluginDir[512] = {0};
 static const char *s_pluginLogPath = NULL;
 
 /*
- * Write poryaaaa_state.json next to the .clap bundle so sibling plugins
- * (ccomidi) can mirror the currently-loaded voicegroup. Uses write-then-rename
- * so readers never observe a partial file.
+ * Resolve the per-user state directory shared with sibling plugins
+ * (ccomidi). Both sides must agree on this path; ccomidi reads it from
+ * voicegroup_bridge.cpp's state_path(). Returns false if no home dir is set.
+ */
+static bool resolve_state_dir(char *out, size_t outSize)
+{
+#ifdef _WIN32
+    const char *appdata = getenv("APPDATA");
+    if (appdata && *appdata) {
+        snprintf(out, outSize, "%s\\poryaaaa", appdata);
+        return true;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !*home) return false;
+    snprintf(out, outSize, "%s\\AppData\\Roaming\\poryaaaa", home);
+    return true;
+#else
+    const char *home = getenv("HOME");
+    if (!home || !*home) return false;
+#ifdef __APPLE__
+    snprintf(out, outSize, "%s/Library/Application Support/poryaaaa", home);
+#else
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg)
+        snprintf(out, outSize, "%s/poryaaaa", xdg);
+    else
+        snprintf(out, outSize, "%s/.config/poryaaaa", home);
+#endif
+    return true;
+#endif
+}
+
+static void ensure_dir_exists(const char *path)
+{
+#ifdef _WIN32
+    _mkdir(path);
+#else
+    mkdir(path, 0755);
+#endif
+}
+
+/*
+ * Write state.json to a fixed per-user location so sibling plugins (ccomidi)
+ * can mirror the currently-loaded voicegroup regardless of where the .clap or
+ * .vst3 bundle was installed. Uses write-then-rename so readers never observe
+ * a partial file.
  *
  * Sample names stored in voiceSampleNames[] are basenames from decomp .inc
  * paths; they never contain " or \, but escape defensively anyway.
  */
 static void write_state_file(const M4APluginData *data)
 {
-    if (s_pluginDir[0] == '\0' || !data->loadedVg) return;
+    if (!data->loadedVg) return;
 
-    char tmpPath[600];
-    char finalPath[600];
-    snprintf(tmpPath,   sizeof(tmpPath),   "%s/poryaaaa_state.json.tmp", s_pluginDir);
-    snprintf(finalPath, sizeof(finalPath), "%s/poryaaaa_state.json",     s_pluginDir);
+    char stateDir[600];
+    if (!resolve_state_dir(stateDir, sizeof(stateDir))) return;
+    ensure_dir_exists(stateDir);
+
+    char tmpPath[700];
+    char finalPath[700];
+    snprintf(tmpPath,   sizeof(tmpPath),   "%s/state.json.tmp", stateDir);
+    snprintf(finalPath, sizeof(finalPath), "%s/state.json",     stateDir);
 
     FILE *f = fopen(tmpPath, "w");
     if (!f) return;
