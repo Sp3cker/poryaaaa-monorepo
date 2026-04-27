@@ -673,6 +673,7 @@ static void print_usage(const char *prog)
         "  --reverb <0-127>            Reverb amount (default: 0)\n"
         "  --analog-filter             Enable GBA analog low-pass filter (default: off)\n"
         "  --polyphony <1-12>          Max simultaneous PCM channels (default: 5)\n"
+        "  --cgb-only                  Disable PCM channels; render CGB voices only\n"
         "  --sample-rate <hz>          Sample rate in Hz (default: 44100)\n"
         "  --tail <seconds>            Silence after last event, no loop markers (default: 3.0)\n"
         "\n"
@@ -750,6 +751,7 @@ int main(int argc, char *argv[])
     int         reverbAmount  = 0;
     bool        analogFilter  = false;
     int         maxChannels   = 5;
+    bool        cgbOnly       = false;
     int         sampleRateHz  = 44100;
     double      tailSeconds   = 3.0;
     int         loopCount     = 2;
@@ -777,6 +779,8 @@ int main(int argc, char *argv[])
             maxChannels = atoi(argv[++i]);
             if (maxChannels < 1) maxChannels = 1;
             if (maxChannels > MAX_PCM_CHANNELS) maxChannels = MAX_PCM_CHANNELS;
+        } else if (strcmp(argv[i], "--cgb-only") == 0) {
+            cgbOnly = true;
         } else if (strcmp(argv[i], "--sample-rate") == 0 && i + 1 < argc) {
             sampleRateHz = atoi(argv[++i]);
             if (sampleRateHz < 8000) sampleRateHz = 8000;
@@ -969,7 +973,7 @@ oom:
     m4a_engine_set_tempo_bpm(&engine, 120.0);
     m4a_reverb_set_amount(&engine.reverb, (uint8_t)reverbAmount);
     engine.analogFilter = analogFilter;
-    engine.maxPcmChannels = (uint8_t)maxChannels;
+    engine.maxPcmChannels = cgbOnly ? 0 : (uint8_t)maxChannels;
 
     /* ---- Allocate output buffers ---- */
     float *outL = calloc(totalSamples, sizeof(float));
