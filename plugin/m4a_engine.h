@@ -12,12 +12,14 @@
 #define VBLANK_RATE 59.7275f
 #define MAX_SONG_VOLUME 127 // called "mxv" in pokeemerald
 
-/* CGB internal synthesis rate.  mGBA emulates the GBA CGB sound block at
- * 32768 Hz; rendering CGB channels at this rate and resampling to host rate
- * (instead of synthesizing directly at host rate) avoids aliased harmonics
- * from naive duty-pattern bit-pick on square waves and matches mGBA's
- * spectrum.  PCM channels still synthesize at host rate. */
-#define CGB_INTERNAL_RATE 32768.0f
+/* CGB internal synthesis rate.  Matches mGBA's GBA-mode audio output rate
+ * (mGBA generates samples every SAMPLE_INTERVAL*timingFactor = 64 GBA cycles
+ * → 262144 Hz internally, with its own buffer typically at 65536 Hz output).
+ * Synthesizing CGB at this rate and resampling to host rate avoids losing
+ * the 16–32 kHz content that mGBA preserves; a lower rate (e.g. 32768)
+ * caps content at 16384 Hz Nyquist and audibly dulls the high end vs mGBA.
+ * PCM channels still synthesize at host rate. */
+#define CGB_INTERNAL_RATE 65536.0f
 
 typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 
