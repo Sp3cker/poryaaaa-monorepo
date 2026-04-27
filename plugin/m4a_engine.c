@@ -191,40 +191,37 @@ static ToneData *resolve_voice(ToneData *voice, uint8_t key)
 }
 
 /*
- * Compute biquad coefficients for a 4th-order Butterworth low-pass at
- * `cutoffHz`, given `sampleRate`.  Two biquads with Butterworth Q values
- * (Q1 = 0.5412, Q2 = 1.3066) cascade to give a 24 dB/oct rolloff.  When
- * sampleRate <= 2*cutoffHz the filter is bypassed (host can't carry content
- * above the cutoff anyway, and the bilinear pre-warp blows up at Nyquist).
+ * Compute biquad coefficients for a 2nd-order Butterworth low-pass at
+ * `cutoffHz`, given `sampleRate`.  Q = 1/sqrt(2) gives the maximally-flat
+ * Butterworth response with monotonic magnitude (no peaking) and a short
+ * impulse response.
+ *
+ * NOTE: currently force-bypassed.  mGBA Qt has no explicit LPF — band-limit
+ * only emerges from its sinc resampler given a 32768 Hz source.  Filtering
+ * poryaaaa's host-rate output ends up being more aggressive than what mGBA
+ * does to in-game audio.  Coefficients are still computed so the field is
+ * easy to re-enable once CGB channels synthesize at native rate (which is
+ * the proper fix for the real source of the band mismatch).
  */
 static void m4a_lpf_init_coefficients(M4AEngine *engine, float cutoffHz)
 {
-    if (engine->sampleRate <= 2.0f * cutoffHz) {
-        engine->lpfBypass = true;
-        return;
-    }
-    engine->lpfBypass = false;
+    engine->lpfBypass = true;
 
-    static const float kButterworthQ[2] = { 0.54119610f, 1.30656296f };
+    const float Q = 0.70710678f; /* 1/sqrt(2) */
     const float K = tanf((float)M_PI * cutoffHz / engine->sampleRate);
     const float K2 = K * K;
-    for (int i = 0; i < 2; i++) {
-        float Q = kButterworthQ[i];
-        float norm = 1.0f / (1.0f + K / Q + K2);
-        engine->lpf_b0[i] =  K2 * norm;
-        engine->lpf_b1[i] =  2.0f * K2 * norm;
-        engine->lpf_b2[i] =  K2 * norm;
-        engine->lpf_a1[i] =  2.0f * (K2 - 1.0f) * norm;
-        engine->lpf_a2[i] = (1.0f - K / Q + K2) * norm;
-    }
+    const float norm = 1.0f / (1.0f + K / Q + K2);
+    engine->lpf_b0 =  K2 * norm;
+    engine->lpf_b1 =  2.0f * K2 * norm;
+    engine->lpf_b2 =  K2 * norm;
+    engine->lpf_a1 =  2.0f * (K2 - 1.0f) * norm;
+    engine->lpf_a2 = (1.0f - K / Q + K2) * norm;
 }
 
 void m4a_engine_lpf_reset(M4AEngine *engine)
 {
-    for (int i = 0; i < 2; i++) {
-        engine->lpf_sL1[i] = engine->lpf_sL2[i] = 0.0f;
-        engine->lpf_sR1[i] = engine->lpf_sR2[i] = 0.0f;
-    }
+    engine->lpf_sL1 = engine->lpf_sL2 = 0.0f;
+    engine->lpf_sR1 = engine->lpf_sR2 = 0.0f;
 }
 
 /* Initialize engine */
@@ -1020,32 +1017,29 @@ void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int numSamp
         outL[i] = (float)mixL / 256.0f;
         outR[i] = (float)mixR / 256.0f;
 
-        /* Output band-limit: 4th-order Butterworth low-pass at 16384 Hz.
+        /* Output band-limit: 2nd-order Butterworth low-pass at 16384 Hz.
          * Matches the band-limit imposed by mGBA Qt's sinc resampler when
          * upsampling GBA-native rate to host rate.  Bypassed when the host
          * rate is at or below 32768 Hz (no content above the cutoff is
          * representable anyway). */
         if (engine->analogFilter && !engine->lpfBypass) {
             float xL = outL[i], xR = outR[i];
-            for (int s = 0; s < 2; s++) {
-                float yL = engine->lpf_b0[s] * xL + engine->lpf_sL1[s];
-                engine->lpf_sL1[s] = engine->lpf_b1[s] * xL
-                                   - engine->lpf_a1[s] * yL
-                                   + engine->lpf_sL2[s];
-                engine->lpf_sL2[s] = engine->lpf_b2[s] * xL
-                                   - engine->lpf_a2[s] * yL;
-                xL = yL;
+            float yL = engine->lpf_b0 * xL + engine->lpf_sL1;
+            engine->lpf_sL1 = engine->lpf_b1 * xL
+                            - engine->lpf_a1 * yL
+                            + engine->lpf_sL2;
+            engine->lpf_sL2 = engine->lpf_b2 * xL
+                            - engine->lpf_a2 * yL;
 
-                float yR = engine->lpf_b0[s] * xR + engine->lpf_sR1[s];
-                engine->lpf_sR1[s] = engine->lpf_b1[s] * xR
-                                   - engine->lpf_a1[s] * yR
-                                   + engine->lpf_sR2[s];
-                engine->lpf_sR2[s] = engine->lpf_b2[s] * xR
-                                   - engine->lpf_a2[s] * yR;
-                xR = yR;
-            }
-            outL[i] = xL;
-            outR[i] = xR;
+            float yR = engine->lpf_b0 * xR + engine->lpf_sR1;
+            engine->lpf_sR1 = engine->lpf_b1 * xR
+                            - engine->lpf_a1 * yR
+                            + engine->lpf_sR2;
+            engine->lpf_sR2 = engine->lpf_b2 * xR
+                            - engine->lpf_a2 * yR;
+
+            outL[i] = yL;
+            outR[i] = yR;
         }
     }
 }

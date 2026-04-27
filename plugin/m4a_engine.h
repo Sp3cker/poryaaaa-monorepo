@@ -164,16 +164,18 @@ struct M4AEngine {
     uint8_t maxPcmChannels; /* active PCM channel count */
     uint8_t c15;            /* counter 0-14 for CGB envelope double-step */
 
-    /* Output low-pass filter: 4th-order Butterworth at 16384 Hz (GBA Nyquist).
+    /* Output low-pass filter: 2nd-order Butterworth at 16384 Hz (GBA Nyquist).
      * Approximates the band-limit imposed by mGBA Qt's sinc resampler when it
      * upsamples GBA-native (~32768 Hz) to host rate.  When sampleRate <=
      * 32768 the filter is bypassed (host can't carry content above the
-     * cutoff anyway).  Two cascaded biquads, Direct Form II Transposed. */
+     * cutoff anyway).  Single biquad, Q = 1/sqrt(2), Direct Form II Transposed —
+     * monotonic magnitude response, short impulse response, no audible ringing
+     * on square-wave edges. */
     bool analogFilter;
     bool lpfBypass;
-    float lpf_b0[2], lpf_b1[2], lpf_b2[2], lpf_a1[2], lpf_a2[2];
-    float lpf_sL1[2], lpf_sL2[2];
-    float lpf_sR1[2], lpf_sR2[2];
+    float lpf_b0, lpf_b1, lpf_b2, lpf_a1, lpf_a2;
+    float lpf_sL1, lpf_sL2;
+    float lpf_sR1, lpf_sR2;
 
     /* Tempo system (matches GBA MPlayMain tempo accumulator).
      * tempoD = base tempo (ply_tempo param * 2), default 150.
