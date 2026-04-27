@@ -12,6 +12,13 @@
 #define VBLANK_RATE 59.7275f
 #define MAX_SONG_VOLUME 127 // called "mxv" in pokeemerald
 
+/* CGB internal synthesis rate.  mGBA emulates the GBA CGB sound block at
+ * 32768 Hz; rendering CGB channels at this rate and resampling to host rate
+ * (instead of synthesizing directly at host rate) avoids aliased harmonics
+ * from naive duty-pattern bit-pick on square waves and matches mGBA's
+ * spectrum.  PCM channels still synthesize at host rate. */
+#define CGB_INTERNAL_RATE 32768.0f
+
 typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 
 /* Channel status flags (matching GBA) */
@@ -176,6 +183,15 @@ struct M4AEngine {
     float lpf_b0, lpf_b1, lpf_b2, lpf_a1, lpf_a2;
     float lpf_sL1, lpf_sL2;
     float lpf_sR1, lpf_sR2;
+
+    /* CGB resampler state.  CGB channels render at CGB_INTERNAL_RATE; this
+     * accumulator tracks the fractional position between two adjacent native
+     * samples (cgbPrev*, cgbCurr*) for linear interpolation up to host rate.
+     * accum advances by CGB_INTERNAL_RATE/sampleRate per host sample; when it
+     * crosses 1.0 we render a new native CGB sample. */
+    float cgbResampleAccum;
+    int32_t cgbPrevL, cgbPrevR;
+    int32_t cgbCurrL, cgbCurrR;
 
     /* Tempo system (matches GBA MPlayMain tempo accumulator).
      * tempoD = base tempo (ply_tempo param * 2), default 150.

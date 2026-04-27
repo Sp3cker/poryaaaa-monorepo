@@ -984,6 +984,8 @@ void m4a_engine_tick(M4AEngine *engine)
  */
 void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int numSamples)
 {
+    const float cgbStep = CGB_INTERNAL_RATE / engine->sampleRate;
+
     for (int i = 0; i < numSamples; i++) {
         /* Check for engine tick (~60Hz) */
         engine->tickAccumulator += 1.0f;
@@ -1000,13 +1002,33 @@ void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int numSamp
                 m4a_pcm_channel_render(&engine->pcmChannels[ch], &mixL, &mixR);
         }
 
-        /* Apply reverb */
+        /* Apply reverb (PCM only — CGB output is added below at native rate) */
         m4a_reverb_process(&engine->reverb, &mixL, &mixR);
 
-        for (int ch = 0; ch < MAX_CGB_CHANNELS; ch++) {
-            m4a_cgb_channel_render(&engine->cgbChannels[ch], &mixL, &mixR,
-                                   engine->sampleRate);
+        /* CGB channels: render at CGB_INTERNAL_RATE, linear-interp to host rate.
+         * Each iteration of the while loop produces one new native-rate sample;
+         * for typical host rates (44.1/48 kHz) this fires roughly every 1.4
+         * host samples.  When host rate < CGB rate (rare), multiple native
+         * samples are produced per host step — that branch decimates without
+         * anti-aliasing, but it's an unlikely configuration. */
+        engine->cgbResampleAccum += cgbStep;
+        while (engine->cgbResampleAccum >= 1.0f) {
+            engine->cgbPrevL = engine->cgbCurrL;
+            engine->cgbPrevR = engine->cgbCurrR;
+            int32_t cL = 0, cR = 0;
+            for (int ch = 0; ch < MAX_CGB_CHANNELS; ch++) {
+                m4a_cgb_channel_render(&engine->cgbChannels[ch], &cL, &cR,
+                                       CGB_INTERNAL_RATE);
+            }
+            engine->cgbCurrL = cL;
+            engine->cgbCurrR = cR;
+            engine->cgbResampleAccum -= 1.0f;
         }
+        const float frac = engine->cgbResampleAccum;
+        mixL += engine->cgbPrevL
+              + (int32_t)(frac * (float)(engine->cgbCurrL - engine->cgbPrevL));
+        mixR += engine->cgbPrevR
+              + (int32_t)(frac * (float)(engine->cgbCurrR - engine->cgbPrevR));
 
 
         /* Normalize to float (-1.0 to 1.0)
