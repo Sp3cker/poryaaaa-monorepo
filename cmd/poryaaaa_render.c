@@ -167,7 +167,10 @@ typedef struct {
     int      origIndex; /* insertion order — used to make sort stable */
 } RawMidiEvent;
 
-/* A rendered event with its absolute sample position */
+/* A rendered event with its absolute sample position.
+ * `type` is a MIDI nibble (0x8/0x9/0xB/0xC/0xE) for channel events, or
+ * RENDER_EVENT_TEMPO for tempo changes (data0:data1 = BPM, little-endian). */
+#define RENDER_EVENT_TEMPO 0x01
 typedef struct {
     uint64_t samplePos;
     uint8_t  channel;
@@ -378,6 +381,18 @@ static int cmp_tempo_events(const void *a, const void *b)
     return 0;
 }
 
+static int cmp_render_events(const void *a, const void *b)
+{
+    const RenderEvent *ea = (const RenderEvent *)a;
+    const RenderEvent *eb = (const RenderEvent *)b;
+    if (ea->samplePos < eb->samplePos) return -1;
+    if (ea->samplePos > eb->samplePos) return  1;
+    /* Tempo changes apply before channel events at the same sample. */
+    int ka = (ea->type == RENDER_EVENT_TEMPO) ? 0 : 1;
+    int kb = (eb->type == RENDER_EVENT_TEMPO) ? 0 : 1;
+    return ka - kb;
+}
+
 /*
  * Convert an absolute tick position to an absolute sample index using the
  * tempo map.  Default tempo: 500000 µs/beat (= 120 BPM).
@@ -526,13 +541,14 @@ static RenderEventArray *parse_midi(const char *path, double sampleRate,
                                             tpqn, sampleRate);
 
     /* ---- Build RenderEventArray ---- */
+    int totalEvents = rawEvents.count + tempos.count;
     RenderEventArray *result = malloc(sizeof(*result));
     if (!result) {
         free(rawEvents.events); free(tempos.events);
         return NULL;
     }
-    result->count  = rawEvents.count;
-    result->events = malloc((size_t)rawEvents.count * sizeof(RenderEvent));
+    result->count  = totalEvents;
+    result->events = malloc((size_t)totalEvents * sizeof(RenderEvent));
     if (!result->events) {
         free(result); free(rawEvents.events); free(tempos.events);
         return NULL;
@@ -548,6 +564,26 @@ static RenderEventArray *parse_midi(const char *path, double sampleRate,
         result->events[i].data0     = re->data0;
         result->events[i].data1     = re->data1;
     }
+
+    /* Inject tempo changes as pseudo-events so the engine's tempoI follows
+     * the MIDI tempo map.  Without this the engine stays at its 150 BPM
+     * default, so LFO and per-VBlank state run at the wrong rate. */
+    for (int i = 0; i < tempos.count; i++) {
+        double bpm = 60000000.0 / (double)tempos.events[i].tempo;
+        uint16_t bpmI = (uint16_t)(bpm + 0.5);
+        RenderEvent *re = &result->events[rawEvents.count + i];
+        re->samplePos = tick_to_sample(tempos.events[i].tick,
+                                        tempos.events, tempos.count,
+                                        tpqn, sampleRate);
+        re->channel = 0;
+        re->track   = 0;
+        re->type    = RENDER_EVENT_TEMPO;
+        re->data0   = (uint8_t)(bpmI & 0xFF);
+        re->data1   = (uint8_t)((bpmI >> 8) & 0xFF);
+    }
+
+    qsort(result->events, (size_t)result->count, sizeof(RenderEvent),
+          cmp_render_events);
 
     free(rawEvents.events);
     free(tempos.events);
@@ -658,6 +694,11 @@ static void dispatch_event(M4AEngine *engine, const RenderEvent *ev,
     int trackIdx = useTrackIndex ? ev->track : ev->channel;
 
     switch (ev->type) {
+    case RENDER_EVENT_TEMPO: {
+        double bpm = (double)((uint16_t)ev->data0 | ((uint16_t)ev->data1 << 8));
+        m4a_engine_set_tempo_bpm(engine, bpm);
+        break;
+    }
     case 0x8: /* Note Off */
         m4a_engine_note_off(engine, trackIdx, ev->data0);
         break;
@@ -924,6 +965,8 @@ oom:
     m4a_engine_init(&engine, (float)sampleRate);
     m4a_engine_set_voicegroup(&engine, vg->voices);
     m4a_engine_set_song_volume(&engine, (uint8_t)songVolume);
+    /* MIDI default tempo is 120 BPM until a Set Tempo event applies. */
+    m4a_engine_set_tempo_bpm(&engine, 120.0);
     m4a_reverb_set_amount(&engine.reverb, (uint8_t)reverbAmount);
     engine.analogFilter = analogFilter;
     engine.maxPcmChannels = (uint8_t)maxChannels;

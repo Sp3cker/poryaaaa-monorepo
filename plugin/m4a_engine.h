@@ -164,10 +164,16 @@ struct M4AEngine {
     uint8_t maxPcmChannels; /* active PCM channel count */
     uint8_t c15;            /* counter 0-14 for CGB envelope double-step */
 
-    /* GBA analog output emulation: IIR low-pass filter */
-    bool analogFilter;      /* enable/disable the hardware output filter */
-    float lowPassLeft;
-    float lowPassRight;
+    /* Output low-pass filter: 4th-order Butterworth at 16384 Hz (GBA Nyquist).
+     * Approximates the band-limit imposed by mGBA Qt's sinc resampler when it
+     * upsamples GBA-native (~32768 Hz) to host rate.  When sampleRate <=
+     * 32768 the filter is bypassed (host can't carry content above the
+     * cutoff anyway).  Two cascaded biquads, Direct Form II Transposed. */
+    bool analogFilter;
+    bool lpfBypass;
+    float lpf_b0[2], lpf_b1[2], lpf_b2[2], lpf_a1[2], lpf_a2[2];
+    float lpf_sL1[2], lpf_sL2[2];
+    float lpf_sR1[2], lpf_sR2[2];
 
     /* Tempo system (matches GBA MPlayMain tempo accumulator).
      * tempoD = base tempo (ply_tempo param * 2), default 150.
@@ -206,6 +212,7 @@ void m4a_engine_cc(M4AEngine *engine, int trackIndex, uint8_t cc, uint8_t value)
 void m4a_engine_pitch_bend(M4AEngine *engine, int trackIndex, int16_t bend);
 void m4a_engine_all_notes_off(M4AEngine *engine, int trackIndex);
 void m4a_engine_all_sound_off(M4AEngine *engine);
+void m4a_engine_lpf_reset(M4AEngine *engine);
 void m4a_engine_set_song_volume(M4AEngine *engine, uint8_t volume);
 
 /* Set tempo from DAW BPM.  The GBA relationship is tempoI ≈ BPM
