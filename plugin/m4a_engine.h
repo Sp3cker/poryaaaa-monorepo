@@ -12,14 +12,11 @@
 #define VBLANK_RATE 59.7275f
 #define MAX_SONG_VOLUME 127 // called "mxv" in pokeemerald
 
-/* CGB internal synthesis rate.  Matches mGBA's GBA-mode audio output rate
- * (mGBA generates samples every SAMPLE_INTERVAL*timingFactor = 64 GBA cycles
- * → 262144 Hz internally, with its own buffer typically at 65536 Hz output).
- * Synthesizing CGB at this rate and resampling to host rate avoids losing
- * the 16–32 kHz content that mGBA preserves; a lower rate (e.g. 32768)
- * caps content at 16384 Hz Nyquist and audibly dulls the high end vs mGBA.
- * PCM channels still synthesize at host rate. */
-#define CGB_INTERNAL_RATE 65536.0f
+/* CGB internal synthesis rate.  mGBA's native PSG rate is 32768 Hz on GBA
+ * (DMG_SM83_FREQUENCY 4.194304 MHz / SAMPLE_INTERVAL 32 cycles / timingFactor 4 =
+ * 32768 Hz; gb_audio.c line 18-21).  Match it exactly so that aliasing,
+ * envelope step timing, and noise LFSR coalescing reproduce mGBA's output. */
+#define CGB_INTERNAL_RATE 32768.0f
 
 typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 
@@ -143,6 +140,11 @@ typedef struct {
     uint32_t *wavePointer;  /* programmable wave data */
 
     uint16_t lfsr;          /* noise LFSR state */
+    /* Noise sub-sample averaging (mGBA's _coalesceNoiseChannel).  When the
+     * LFSR clocks more than once per output sample, return the mean instead
+     * of just the latest bit — band-limits the noise to the output Nyquist. */
+    int32_t noiseAccum;
+    int32_t noiseSamples;
 
     int trackIndex;
 
@@ -194,6 +196,18 @@ struct M4AEngine {
     float cgbResampleAccum;
     int32_t cgbPrevL, cgbPrevR;
     int32_t cgbCurrL, cgbCurrR;
+
+    /* PCM sample-and-hold upsampler state.  Real m4a renders PCM into the
+     * GBA's FIFO at pcmStepHz (≈13379 Hz, "freq index 4"), and the hardware
+     * DAC reads the FIFO at the SOUNDBIAS sample rate (32768 Hz default),
+     * naturally applying a zero-order hold.  The hold's sinc(πf/pcmStepHz)
+     * frequency response rolls high frequencies off above ~6.7 kHz — that
+     * rolloff is part of the GBA's characteristic sound.  We replicate it by
+     * advancing PCM channels at pcmStepHz and holding the last rendered
+     * mix between updates. */
+    float pcmStepHz;
+    float pcmStepAccum;
+    int32_t pcmHeldL, pcmHeldR;
 
     /* Tempo system (matches GBA MPlayMain tempo accumulator).
      * tempoD = base tempo (ply_tempo param * 2), default 150.

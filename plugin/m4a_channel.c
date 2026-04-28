@@ -531,31 +531,49 @@ void m4a_cgb_channel_render(M4ACGBChannel *ch, int32_t *mixL, int32_t *mixR,
             ch->phase += phaseInc;
         }
     } else if (cgbType == 4) {
-        /* Noise channel using LFSR */
-        sample = (ch->lfsr & 1) ? 64 : -64;
-
-        /* Advance LFSR at noise frequency rate */
+        /* Noise channel using LFSR with mGBA-style sub-sample coalescing
+         * (gb_audio.c _coalesceNoiseChannel).  We may clock the LFSR multiple
+         * times during one output sample (when noise rate exceeds output rate)
+         * — averaging those clocks band-limits the output to ≤ output Nyquist
+         * and removes the broadband HF that naive single-bit sampling would
+         * otherwise produce. */
         uint8_t noiseParams = ch->frequency & 0xFF;
         uint8_t divRatio = noiseParams & 0x07;
         uint8_t shiftFreq = (noiseParams >> 4) & 0x0F;
-        /* bool shortMode = (noiseParams >> 3) & 1; */
 
         float baseFreq = 524288.0f;
         float divisor = (divRatio == 0) ? 0.5f : (float)divRatio;
         float noiseFreq = baseFreq / divisor / (float)(1 << (shiftFreq + 1));
 
-        uint32_t phaseInc = (uint32_t)(noiseFreq / sampleRate * 4294967296.0f);
+        /* phaseInc carries fractional-clocks-per-output-sample in 32-bit fixed
+         * point.  When noiseFreq > sampleRate, this would overflow uint32, so
+         * clamp at 2^32-1 (≈ 1 clock per output) and explicitly run the
+         * remaining whole-clock count below. */
+        double clocksPerSample = (double)noiseFreq / (double)sampleRate;
+        int wholeClocks = (int)clocksPerSample;
+        double frac = clocksPerSample - wholeClocks;
+        uint32_t phaseInc = (uint32_t)(frac * 4294967296.0);
         uint32_t oldPhase = ch->phase;
         ch->phase += phaseInc;
+        if (ch->phase < oldPhase) wholeClocks += 1;
 
-        /* Clock LFSR on phase wrap.
-         * Bit 3 of frequency = period mode: 0 = 15-bit LFSR, 1 = 7-bit LFSR. */
-        if (ch->phase < oldPhase) {
+        for (int s = 0; s < wholeClocks; s++) {
             uint16_t bit = ((ch->lfsr >> 1) ^ ch->lfsr) & 1;
             if (noiseParams & 0x08)
                 ch->lfsr = (ch->lfsr >> 1) | (bit << 6);   /* 7-bit */
             else
                 ch->lfsr = (ch->lfsr >> 1) | (bit << 14);  /* 15-bit */
+            ch->noiseAccum += (ch->lfsr & 1) ? 64 : -64;
+            ch->noiseSamples += 1;
+        }
+
+        if (ch->noiseSamples > 1) {
+            sample = ch->noiseAccum / ch->noiseSamples;
+            ch->noiseAccum = 0;
+            ch->noiseSamples = 0;
+        } else {
+            /* 0 or 1 fresh clocks since last average — hold last LFSR bit. */
+            sample = (ch->lfsr & 1) ? 64 : -64;
         }
     }
 

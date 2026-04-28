@@ -232,6 +232,16 @@ void m4a_engine_init(M4AEngine *engine, float sampleRate)
     engine->sampleRate = sampleRate;
     engine->samplesPerTick = sampleRate / VBLANK_RATE;
     engine->tickAccumulator = 0.0f;
+    /* m4a writes PCM samples to the FIFO at "freq index 4" = 13379 Hz on
+     * Pokemon Emerald (224 samples per VBlank × 59.7275 Hz).  The exact value
+     * matches the existing per-track frequency calculation. */
+    {
+        const int32_t pcmSamplesPerVBlank = 224;
+        const int32_t pcmFreqInt = (597275 * pcmSamplesPerVBlank + 5000) / 10000;
+        engine->pcmStepHz = (float)pcmFreqInt;
+    }
+    engine->pcmStepAccum = 0.0f;
+    engine->pcmHeldL = engine->pcmHeldR = 0;
     engine->masterVolume = 15;
     engine->songMasterVolume = MAX_SONG_VOLUME;
     engine->maxPcmChannels = 5;  /* default, matches Pokemon Emerald init */
@@ -577,25 +587,19 @@ void m4a_engine_note_on(M4AEngine *engine, int trackIndex, uint8_t key, uint8_t 
 
         chn_vol_set(ch, track);
 
-        /* Calculate frequency.
-         * GBA freq index 4 = 13379 Hz, pcmSamplesPerVBlank = 224.
-         * divFreq converts from MidiKeyToFreq units to source-samples-per-GBA-tick.
-         * scale converts from GBA tick rate to DAW sample rate. */
+        /* Calculate frequency word (advance per PCM tick at pcmStepHz).
+         * The process loop renders PCM at pcmStepHz and S&Hs to host rate, so
+         * fw advances at the GBA tick rate, no host-rate scale factor. */
         {
             int32_t pcmSamplesPerVBlank = 224;
             int32_t pcmFreq = (597275 * pcmSamplesPerVBlank + 5000) / 10000;
-            float scale = (float)pcmFreq / engine->sampleRate;
 
             if (voice->type & VOICE_TYPE_FIX) {
-                /* Fixed-frequency (no resample): ignore MIDI key, play at GBA PCM rate.
-                 * On the GBA, SoundMainRAM uses fw advance = 0x800000 per PCM tick
-                 * (i.e., exactly one source sample per GBA output sample).
-                 * Scale that to the DAW sample rate. */
-                ch->frequency = (uint32_t)(0x800000 * scale);
+                ch->frequency = 0x800000u;
             } else {
                 int32_t divFreq = (16777216 / pcmFreq + 1) >> 1;
                 ch->frequency = m4a_midi_key_to_freq(voice->wav, (uint8_t)finalKey, track->pitM);
-                ch->frequency = (uint32_t)((uint64_t)ch->frequency * divFreq * scale);
+                ch->frequency = (uint32_t)((uint64_t)ch->frequency * divFreq);
             }
         }
 
@@ -656,8 +660,7 @@ static void refresh_channel_pitches(M4AEngine *engine, M4ATrack *track, int trac
             int32_t pcmSamplesPerVBlank = 224;
             int32_t pcmFreq = (597275 * pcmSamplesPerVBlank + 5000) / 10000;
             int32_t divFreq = (16777216 / pcmFreq + 1) >> 1;
-            float scale = (float)pcmFreq / engine->sampleRate;
-            ch->frequency = (uint32_t)((uint64_t)freq * divFreq * scale);
+            ch->frequency = (uint32_t)((uint64_t)freq * divFreq);
         }
     }
     for (int i = 0; i < MAX_CGB_CHANNELS; i++) {
@@ -905,8 +908,7 @@ static void m4a_lfo_tick(M4AEngine *engine)
                         int32_t pcmSamplesPerVBlank = 224;
                         int32_t pcmFreq = (597275 * pcmSamplesPerVBlank + 5000) / 10000;
                         int32_t divFreq = (16777216 / pcmFreq + 1) >> 1;
-                        float scale = (float)pcmFreq / engine->sampleRate;
-                        ch->frequency = (uint32_t)((uint64_t)freq * divFreq * scale);
+                        ch->frequency = (uint32_t)((uint64_t)freq * divFreq);
                     }
                 }
             }
@@ -985,6 +987,7 @@ void m4a_engine_tick(M4AEngine *engine)
 void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int numSamples)
 {
     const float cgbStep = CGB_INTERNAL_RATE / engine->sampleRate;
+    const float pcmStep = engine->pcmStepHz / engine->sampleRate;
 
     for (int i = 0; i < numSamples; i++) {
         /* Check for engine tick (~60Hz) */
@@ -994,13 +997,22 @@ void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int numSamp
             m4a_engine_tick(engine);
         }
 
-        /* Mix all active channels */
-        int32_t mixL = 0, mixR = 0;
-
-        for (int ch = 0; ch < MAX_PCM_CHANNELS; ch++) {
-            if (engine->pcmChannels[ch].status & CHN_ON)
-                m4a_pcm_channel_render(&engine->pcmChannels[ch], &mixL, &mixR);
+        /* PCM channels: render at pcmStepHz (≈13379 Hz) and zero-order-hold to
+         * host rate.  This replicates the GBA's hardware FIFO upsampling and
+         * yields a sinc(πf/pcmStepHz) high-frequency rolloff that matches mGBA. */
+        engine->pcmStepAccum += pcmStep;
+        while (engine->pcmStepAccum >= 1.0f) {
+            int32_t pcmL = 0, pcmR = 0;
+            for (int ch = 0; ch < MAX_PCM_CHANNELS; ch++) {
+                if (engine->pcmChannels[ch].status & CHN_ON)
+                    m4a_pcm_channel_render(&engine->pcmChannels[ch], &pcmL, &pcmR);
+            }
+            engine->pcmHeldL = pcmL;
+            engine->pcmHeldR = pcmR;
+            engine->pcmStepAccum -= 1.0f;
         }
+        int32_t mixL = engine->pcmHeldL;
+        int32_t mixR = engine->pcmHeldR;
 
         /* Apply reverb (PCM only — CGB output is added below at native rate) */
         m4a_reverb_process(&engine->reverb, &mixL, &mixR);
