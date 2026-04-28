@@ -584,13 +584,16 @@ void m4a_cgb_channel_render(M4ACGBChannel *ch, int32_t *mixL, int32_t *mixR,
         sample = (sample * ch->envelopeVolume) >> 4;
     }
 
-    /* Scale CGB to match the GBA hardware mixing ratio.
-     * SOUNDCNT_H is initialised with SOUND_ALL_MIX_FULL (volume bits = 2), so
-     * mGBA applies psgShift = 4 - 2 = 2 (CGB >> 2) while PCM is << 2.
-     * That is a 16:1 ratio; >> 2 here keeps us in the same integer domain as
-     * the PCM mixer which already incorporates the << 2 implicitly through its
-     * larger sample values (~±127 vs CGB's ~±60). */
-    sample >>= 1;
+    /* Scale CGB to match mGBA's per-channel output amplitude.  At default
+     * SOUNDCNT_H (volume=2 → psgShift=2) and NR50=7 master, mGBA's per-channel
+     * full-envelope per-side output is 240 (unipolar 0..240); after master
+     * volume × 48 and 16-bit normalize that's an AC peak of ±0.176.  poryaaaa
+     * accumulates ±60 max per CGB channel (after envelope) and divides the
+     * mixer by 256, so we need a ×0.75 scale to land at ±0.176 output AC
+     * peak.  This is the per-channel match — it does mean CGB occupies more
+     * of the mix's RMS-normalized spectrum than in mGBA, because mGBA's
+     * unipolar CGB carries DC that dilutes its AC band content. */
+    sample = (sample * 3) >> 2;
 
     /* Track last sample for wave channel declick on note-off. */
     if (cgbType == 3)
