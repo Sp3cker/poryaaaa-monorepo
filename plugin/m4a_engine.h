@@ -14,12 +14,14 @@
 
 /* CGB internal synthesis rate.  mGBA's native PSG rate is 32768 Hz on GBA
  * (DMG_SM83_FREQUENCY 4.194304 MHz / SAMPLE_INTERVAL 32 cycles / timingFactor 4
- * = 32768 Hz; gb_audio.c line 18-21).  We synthesize at 65536 Hz (2× mGBA's
- * rate) so the linear-interp resampler down to typical DAW host rates
- * (44.1/48 kHz) has its sinc² rolloff knee well above the audible band —
- * synthesizing at 32768 then upsampling to 48 kHz drops -3.9 dB at 16 kHz
- * and deeper above, audibly attenuating noise's HF replicas relative to
- * wave's fundamentals. */
+ * = 32768 Hz; gb_audio.c line 18-21).  We synthesize at 49152 Hz = 1.5 ×
+ * 32768 = 1024 × 48 — close to common DAW host rates (44.1/48 kHz) so the
+ * linear-interp resampler is essentially a no-op there.  Matching mGBA's
+ * 32768 Hz exactly required upsampling 32768→48000, whose sinc²(πf/32768)
+ * cuts -3.9 dB at 16 kHz and deeper above — that bit noise's HF replicas
+ * much more than wave's fundamentals, audibly skewing the wave-to-noise
+ * balance vs in-game.  At 49152, friendventure's wave/noise ratio matches
+ * mGBA within 0.02 dB at host=48000 and host=44100. */
 #define CGB_INTERNAL_RATE 49152.0f
 
 typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
