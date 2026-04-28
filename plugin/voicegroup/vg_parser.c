@@ -432,7 +432,6 @@ static void handle_directsound(ToneData *td, uint8_t voiceType,
 static void handle_square_1(ToneData *td, uint8_t voiceType,
                             const char *args, ParseCtx *ctx)
 {
-    (void)ctx;
     int key, pan, sweep, duty, attack, decay, sustain, release;
     if (sscanf(args, "%d, %d, %d, %d, %d, %d, %d, %d",
                &key, &pan, &sweep, &duty, &attack, &decay, &sustain, &release) != 8)
@@ -446,12 +445,17 @@ static void handle_square_1(ToneData *td, uint8_t voiceType,
     td->decay       = (uint8_t)(decay  & 0x07);
     td->sustain     = (uint8_t)(sustain & 0x0F);
     td->release     = (uint8_t)(release & 0x07);
+
+    /* Hardware channels carry no sample symbol — record a stable
+     * display name so state.json (and downstream UIs like ccomidi)
+     * surface them instead of dropping empty-name slots. */
+    set_slot_name(ctx, td,
+                  voiceType == VOICE_SQUARE_1_ALT ? "Square 1 (alt)" : "Square 1");
 }
 
 static void handle_square_2(ToneData *td, uint8_t voiceType,
                             const char *args, ParseCtx *ctx)
 {
-    (void)ctx;
     int key, pan, duty, attack, decay, sustain, release;
     if (sscanf(args, "%d, %d, %d, %d, %d, %d, %d",
                &key, &pan, &duty, &attack, &decay, &sustain, &release) != 7)
@@ -465,6 +469,9 @@ static void handle_square_2(ToneData *td, uint8_t voiceType,
     td->decay       = (uint8_t)(decay  & 0x07);
     td->sustain     = (uint8_t)(sustain & 0x0F);
     td->release     = (uint8_t)(release & 0x07);
+
+    set_slot_name(ctx, td,
+                  voiceType == VOICE_SQUARE_2_ALT ? "Square 2 (alt)" : "Square 2");
 }
 
 static void handle_prog_wave(ToneData *td, uint8_t voiceType,
@@ -489,13 +496,19 @@ static void handle_prog_wave(ToneData *td, uint8_t voiceType,
     if (pw) {
         td->wavePointer = pw;
         record_sample_name(ctx, td, ctx->pwMap, waveSymbol);
+    } else {
+        /* Wave symbol didn't resolve — still record the slot so it shows
+         * up in state.json as a Programmable Wave slot. */
+        set_slot_name(ctx, td,
+                      voiceType == VOICE_PROGRAMMABLE_WAVE_ALT
+                          ? "ProgWave (alt)"
+                          : "ProgWave");
     }
 }
 
 static void handle_noise(ToneData *td, uint8_t voiceType,
                          const char *args, ParseCtx *ctx)
 {
-    (void)ctx;
     int key, pan, period, attack, decay, sustain, release;
     if (sscanf(args, "%d, %d, %d, %d, %d, %d, %d",
                &key, &pan, &period, &attack, &decay, &sustain, &release) != 7)
@@ -508,6 +521,9 @@ static void handle_noise(ToneData *td, uint8_t voiceType,
     td->decay       = (uint8_t)(decay  & 0x07);
     td->sustain     = (uint8_t)(sustain & 0x0F);
     td->release     = (uint8_t)(release & 0x07);
+
+    set_slot_name(ctx, td,
+                  voiceType == VOICE_NOISE_ALT ? "Noise (alt)" : "Noise");
 }
 
 static void handle_keysplit(ToneData *td, uint8_t voiceType,
