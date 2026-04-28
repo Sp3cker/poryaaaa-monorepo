@@ -6,3 +6,6 @@ This file tracks known issues and to-do items for the plugin.
 - Full midi -> .wav output regression tests
 - Architecture document
 - Identify any performance issues/improvements
+- **Layered DSP rewrite of m4a_channel.c / m4a_engine.c** — see NEXT_SESSION.md.
+  Splits clean voice synthesis from per-channel hardware filtering and a single
+  output resampler.  Replaces the chain of one-off fixes accumulated 2026-04.
