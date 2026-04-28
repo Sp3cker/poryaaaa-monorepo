@@ -13,10 +13,14 @@
 #define MAX_SONG_VOLUME 127 // called "mxv" in pokeemerald
 
 /* CGB internal synthesis rate.  mGBA's native PSG rate is 32768 Hz on GBA
- * (DMG_SM83_FREQUENCY 4.194304 MHz / SAMPLE_INTERVAL 32 cycles / timingFactor 4 =
- * 32768 Hz; gb_audio.c line 18-21).  Match it exactly so that aliasing,
- * envelope step timing, and noise LFSR coalescing reproduce mGBA's output. */
-#define CGB_INTERNAL_RATE 32768.0f
+ * (DMG_SM83_FREQUENCY 4.194304 MHz / SAMPLE_INTERVAL 32 cycles / timingFactor 4
+ * = 32768 Hz; gb_audio.c line 18-21).  We synthesize at 65536 Hz (2× mGBA's
+ * rate) so the linear-interp resampler down to typical DAW host rates
+ * (44.1/48 kHz) has its sinc² rolloff knee well above the audible band —
+ * synthesizing at 32768 then upsampling to 48 kHz drops -3.9 dB at 16 kHz
+ * and deeper above, audibly attenuating noise's HF replicas relative to
+ * wave's fundamentals. */
+#define CGB_INTERNAL_RATE 49152.0f
 
 typedef void (*M4AEngineXcmdFn)(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 
