@@ -253,16 +253,27 @@ def fmt_row(ch, side, src, st):
 		return f"  {ch:<12s} {side:<3s} {src:<8s} | (missing)"
 	return f"  {ch:<12s} {side:<3s} {src:<8s} | {st['min']:7d}  {st['max']:7d}  {st['dc']:9.1f} ({st['dc_norm']:+8.5f})  {st['raw_rms']:8.1f}  {st['ac_rms']:8.1f}  {st['zc_per_s']:7.1f}"
 
+# Use the full-mix's trim_start_s as the reference for every channel of a
+# given source.  Per-channel silencedetect would otherwise pick a different
+# starting time per channel — e.g. mGBA wave's first audio at 38.66 s vs
+# full at 3.58 s — and the comparison would compare different musical
+# regions across channels.  The musically aligned window is "30 s from
+# song start", which is what the full-mix trim represents.
+m_full = get("full", "mgba")
+p_full = get("full", "poryaaaa")
+m_trim = float(m_full.get("trim_start_s") or 0) if m_full else 0.0
+p_trim = float(p_full.get("trim_start_s") or 0) if p_full else 0.0
+
 for ch in CHANNELS:
 	mr = get(ch, "mgba")
 	pr = get(ch, "poryaaaa")
 	if mr is None or pr is None:
 		continue
-	# Trim is in seconds; load_window applies it.
-	mL, mR, msr = load_window(mr.get("file"), float(mr.get("trim_start_s") or 0),
-	                          compare_seconds)
-	pL, pR, psr = load_window(pr.get("file"), float(pr.get("trim_start_s") or 0),
-	                          compare_seconds)
+	# Same trim_start for every channel of a source so per-channel
+	# windows align musically (and so wave/noise solos that are silent
+	# at song-start aren't trimmed past the comparison window).
+	mL, mR, msr = load_window(mr.get("file"), m_trim, compare_seconds)
+	pL, pR, psr = load_window(pr.get("file"), p_trim, compare_seconds)
 	mL_s = stats(mL, msr) if mL is not None and msr else None
 	mR_s = stats(mR, msr) if mR is not None and msr else None
 	pL_s = stats(pL, psr) if pL is not None and psr else None
