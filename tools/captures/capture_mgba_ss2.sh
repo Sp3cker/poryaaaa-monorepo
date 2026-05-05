@@ -19,7 +19,7 @@ cd "$ROOT_DIR"
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 	echo "Usage: $0 [savestate] [rom] [out_dir]"
 	echo
-	echo "Env overrides: HEADLESS, SAVESTATE, ROM, OUT_DIR, DURATION_SECONDS"
+	echo "Env overrides: HEADLESS, SAVESTATE, ROM, OUT_DIR, DURATION_SECONDS, SAMPLE_RATE"
 	echo "               CHANNELS='full psg directsound ch1 ch2 ch3 ch4 fifo-a fifo-b'"
 	exit 0
 fi
@@ -29,6 +29,7 @@ SAVESTATE="${1:-${SAVESTATE:-/Users/spencer/dev/pokemon-hearth/pokeemerald-heart
 ROM="${2:-${ROM:-/Users/spencer/dev/pokemon-hearth/pokeemerald-hearth.gba}}"
 OUT_DIR="${3:-${OUT_DIR:-tools/captures/mgba-headless-channel-mute/reference-wavs/mgba-ss2}}"
 DURATION_SECONDS="${DURATION_SECONDS:-35}"
+SAMPLE_RATE="${SAMPLE_RATE:-44100}"
 
 CHANNELS=(${CHANNELS:-full psg directsound ch1 ch2 ch3 ch4 fifo-a fifo-b})
 
@@ -45,11 +46,6 @@ if [[ ! -f "$ROM" ]]; then
 	echo "ROM not found: $ROM" >&2
 	exit 1
 fi
-if ! command -v gtimeout >/dev/null 2>&1; then
-	echo "gtimeout not found (brew install coreutils)" >&2
-	exit 1
-fi
-
 mkdir -p "$OUT_DIR"
 
 echo "Headless:    $HEADLESS"
@@ -57,19 +53,19 @@ echo "Savestate:   $SAVESTATE"
 echo "ROM:         $ROM"
 echo "Output dir:  $OUT_DIR"
 echo "Duration:    ${DURATION_SECONDS}s per channel"
+echo "Sample rate: ${SAMPLE_RATE} Hz"
 echo "Channels:    ${CHANNELS[*]}"
 echo
 
 for channel in "${CHANNELS[@]}"; do
 	out="$OUT_DIR/${channel}.wav"
 	echo "Capturing $channel -> $out"
-	args=(-t "$SAVESTATE" --audio-out "$out")
+	args=(-t "$SAVESTATE" --audio-out "$out" --sample-rate "$SAMPLE_RATE" --duration-seconds "$DURATION_SECONDS")
 	if [[ "$channel" != "full" ]]; then
 		args+=(--solo "$channel")
 	fi
 	args+=("$ROM")
-	gtimeout --signal=INT "${DURATION_SECONDS}s" "$HEADLESS" "${args[@]}" \
-		>/dev/null 2>&1 || true
+	"$HEADLESS" "${args[@]}" >/dev/null 2>&1
 	if [[ ! -s "$out" ]]; then
 		echo "  ERROR: $out is empty or missing" >&2
 		exit 1

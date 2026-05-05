@@ -6,6 +6,10 @@
 
 #include "m4a_engine.h"
 
+#if defined(M4A_DRIVER_V2)
+#include "m4a/m4a_driver.h"
+#endif
+
 enum {
     PARAM_PROGRAM_BASE = 0,
     PARAM_COUNT = MAX_TRACKS,
@@ -53,8 +57,12 @@ static void apply_param_value(M4APluginData *data, clap_id param_id, double valu
      * audio is active. */
     uint8_t program = clamp_u8_param(value, 0, 127);
     m4a_params_set_program(data, trackIndex, program);
-    if (data->activated)
+    if (data->activated) {
         m4a_engine_program_change(&data->engine, trackIndex, program);
+#if defined(M4A_DRIVER_V2)
+        m4a_program_change(data->m4a_v2, trackIndex, program);
+#endif
+    }
 }
 
 void m4a_params_sync_to_engine(M4APluginData *data)
@@ -68,6 +76,9 @@ void m4a_params_sync_to_engine(M4APluginData *data)
     for (int trackIndex = 0; trackIndex < MAX_TRACKS; ++trackIndex) {
         uint8_t program = atomic_load(&data->programParams[trackIndex]);
         m4a_engine_program_change(&data->engine, trackIndex, program);
+#if defined(M4A_DRIVER_V2)
+        m4a_program_change(data->m4a_v2, trackIndex, program);
+#endif
     }
 }
 

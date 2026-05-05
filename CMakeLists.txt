@@ -73,6 +73,23 @@ endif()
 # standalone / test targets.
 add_subdirectory(plugin/voicegroup)
 
+# ---- v2 audio engine: m4a software driver + hw_audio chip emulation ----
+# Two independent flags so we can validate the driver and the chip in
+# isolation during the rewrite.  See HW_AUDIO_SCAFFOLD_PLAN.md §8.
+#   OFF / OFF (default): pure v1 — unchanged behaviour.
+#   ON  / ON : full v2 path through both modules.
+#   ON  / OFF: v2 driver feeds a v1 chip-side adapter (Layer 1 work).
+#   OFF / ON : canned-input chip tests (Layer 1+ unit tests).
+option(M4A_DRIVER_V2 "Use v2 m4a software driver"      OFF)
+option(HW_AUDIO_V2   "Use v2 hw_audio chip emulation"  OFF)
+
+if(M4A_DRIVER_V2)
+    add_subdirectory(plugin/m4a)
+endif()
+if(HW_AUDIO_V2)
+    add_subdirectory(plugin/hw_audio)
+endif()
+
 # m4a audio engine sources (shared between plugin, standalone, tests).
 set(ENGINE_SOURCES
     plugin/m4a_engine.c
@@ -271,5 +288,26 @@ if(UNIX AND NOT APPLE)
             list(REMOVE_ITEM _defs "CLAP_WRAPPER_HAS_GTK3")
             set_target_properties(${_salib} PROPERTIES ${_prop} "${_defs}")
         endif()
+    endforeach()
+endif()
+
+# ---- v2 link wiring ----
+# Each executable target picks up the v2 libraries / compile defines
+# whichever flags are set.  When neither flag is set, this is a no-op
+# and v1 behaviour is exactly unchanged.
+set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
+                         poryaaaa_unit_tests poryaaaa-standalone)
+
+if(M4A_DRIVER_V2)
+    foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
+        target_link_libraries(${_tgt} PRIVATE m4a_driver)
+        target_compile_definitions(${_tgt} PRIVATE M4A_DRIVER_V2=1)
+    endforeach()
+endif()
+
+if(HW_AUDIO_V2)
+    foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
+        target_link_libraries(${_tgt} PRIVATE hw_audio)
+        target_compile_definitions(${_tgt} PRIVATE HW_AUDIO_V2=1)
     endforeach()
 endif()

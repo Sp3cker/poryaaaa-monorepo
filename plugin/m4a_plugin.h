@@ -8,6 +8,13 @@
 #include "m4a_gui.h"
 #include <clap/clap.h>
 
+#if defined(M4A_DRIVER_V2)
+#include "m4a/m4a_driver.h"
+#endif
+#if defined(HW_AUDIO_V2)
+#include "hw_audio/hw_audio.h"
+#endif
+
 typedef struct {
     M4AEngine engine;
     LoadedVoiceGroup *loadedVg;
@@ -54,6 +61,13 @@ typedef struct {
     /* Set when the plugin calls request_restart (e.g. after Reload).
      * The standalone polls this to perform the actual restart cycle. */
     bool restartRequested;
+
+#if defined(M4A_DRIVER_V2)
+    M4ADriver *m4a_v2;
+#endif
+#if defined(HW_AUDIO_V2)
+    HwAudio *hw_v2;
+#endif
 } M4APluginData;
 
 #endif /* M4A_PLUGIN_H */
