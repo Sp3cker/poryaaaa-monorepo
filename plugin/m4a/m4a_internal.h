@@ -88,6 +88,16 @@ typedef struct {
     uint8_t  pseudoEchoLength;
     uint8_t  priority;
 
+    /* xCmd (XCMD-via-MIDI-CC) state.  Two-CC protocol mirrors v1
+     * (plugin/m4a_engine.c:779-796): CC 0x1E sets `extendedCommand`,
+     * CC 0x1D/0x1F appends payload bytes.  When `extendedCommandCount`
+     * reaches `xcmd_data_length(extendedCommand)` we apply.  Selector is
+     * sticky after apply — only the byte count resets.  See xcmd.md. */
+    uint8_t   extendedCommand;        /* last 0x1E selector, 0 = idle */
+    uint8_t   extendedCommandCount;   /* bytes accumulated so far */
+    uint8_t   extendedCommandBytes[4];
+    uint32_t  extendedValue;          /* xCmd 0x0D payload (notify + storage) */
+
     uint8_t   currentProgram;   /* last program_change */
     ToneData  currentVoice;     /* resolved voice for currentProgram */
 } M4ADriverTrack;

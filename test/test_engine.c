@@ -7,6 +7,12 @@
 
 #if defined(M4A_DRIVER_V2)
 #include "m4a/m4a_driver.h"
+/* Tests access internal track / channel state to verify XCMD field
+ * mutations and propagation into newly-started notes (xcmd.md).  The
+ * driver's public header keeps M4ADriver opaque; test code is the
+ * one consumer that has the same compile-time view as plugin/m4a/'s
+ * own .c files. */
+#include "m4a/m4a_internal.h"
 #endif
 #if defined(HW_AUDIO_V2)
 #include "hw_audio/hw_audio.h"
@@ -1462,6 +1468,393 @@ static void capture_sq2_freq_under_lfo(uint8_t mod_cc, uint8_t lfos_cc,
     }
 
     m4a_driver_destroy(drv);
+}
+
+/* ---- v2 XCMD-via-MIDI-CC tests ----------------------------------------
+ *
+ * The v2 driver implements the same two-CC XCMD protocol the v1 engine
+ * has (CC 0x1E selector, then 0x1D/0x1F payload bytes), but mutates v2's
+ * own M4ADriverTrack / M4ADriverPcmChan / M4ADriverCgbChan fields.  These
+ * tests prove field mutation, propagation into newly-started notes,
+ * little-endian multi-byte assembly, partial/invalid safety, and sticky-
+ * selector behaviour.  See xcmd.md.
+ */
+static void v2_send_xcmd_select(M4ADriver *drv, int track, uint8_t selector) {
+    m4a_cc(drv, track, 0x1E, selector);
+}
+static void v2_send_xcmd_bytes(M4ADriver *drv, int track,
+                               const uint8_t *bytes, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        m4a_cc(drv, track, 0x1D, bytes[i]);
+}
+
+static void test_v2_xcmd_mutates_track_state(void)
+{
+    printf("Testing v2 XCMD mutates currentVoice and pseudo-echo track fields...\n");
+
+    int dataSize = 4;
+    WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    wd->type = 0;
+    wd->freq = 0x01000000;
+    wd->size = dataSize;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type     = VOICE_DIRECTSOUND;
+    voices[0].key      = 60;
+    voices[0].wav      = wd;
+    voices[0].attack   = 0x10;
+    voices[0].decay    = 0x20;
+    voices[0].sustain  = 0x30;
+    voices[0].release  = 0x40;
+    voices[0].length   = 0x50;
+    voices[0].panSweep = 0x60;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+
+    XcmdCapture cap = {0};
+    m4a_driver_set_xcmd_callback(drv, capture_xcmd, &cap);
+
+    /* xATTA: 1 byte → currentVoice.attack */
+    v2_send_xcmd_select(drv, 0, 0x04);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x7A }, 1);
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x7A,
+              "v2 xATTA mutates currentVoice.attack");
+    ASSERT_EQ(cap.called, 1,                 "v2 xATTA fires xcmd callback");
+    ASSERT_EQ(cap.selector, 0x04,            "v2 xATTA callback reports selector");
+    ASSERT_EQ(cap.value, 0x7A,               "v2 xATTA callback reports value");
+    ASSERT_EQ(cap.trackIndex, 0,             "v2 xATTA callback reports track");
+
+    /* Single-byte selectors: each mutates the matching v2 field. */
+    v2_send_xcmd_select(drv, 0, 0x05);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x55 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x06);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x44 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x07);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x33 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x08);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x22 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x09);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x11 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x0A);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x66 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x0B);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x77 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x02);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ VOICE_SQUARE_1 }, 1);
+
+    ASSERT_EQ(drv->tracks[0].currentVoice.decay,    0x55, "v2 xDECA");
+    ASSERT_EQ(drv->tracks[0].currentVoice.sustain,  0x44, "v2 xSUST");
+    ASSERT_EQ(drv->tracks[0].currentVoice.release,  0x33, "v2 xRELE");
+    ASSERT_EQ(drv->tracks[0].pseudoEchoVolume,      0x22, "v2 xIECV → track pseudoEchoVolume");
+    ASSERT_EQ(drv->tracks[0].pseudoEchoLength,      0x11, "v2 xIECL → track pseudoEchoLength");
+    ASSERT_EQ(drv->tracks[0].currentVoice.length,   0x66, "v2 xLENG");
+    ASSERT_EQ(drv->tracks[0].currentVoice.panSweep, 0x77, "v2 xSWEE");
+    ASSERT_EQ(drv->tracks[0].currentVoice.type, VOICE_SQUARE_1, "v2 xTYPE");
+
+    /* xCmd 0x0D: 4-byte little-endian payload assembled into extendedValue. */
+    cap.called = 0;
+    v2_send_xcmd_select(drv, 0, 0x0D);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x78, 0x56, 0x34 }, 3);
+    ASSERT_EQ(drv->tracks[0].extendedValue, 0u,
+              "v2 xCmd 0x0D waits for all four bytes (no premature apply)");
+    ASSERT_EQ(cap.called, 0,
+              "v2 callback does not fire on partial 4-byte payload");
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x12 }, 1);
+    ASSERT_EQ(drv->tracks[0].extendedValue, 0x12345678u,
+              "v2 xCmd 0x0D assembles 4-byte little-endian value");
+    ASSERT_EQ(cap.called, 1,                 "v2 xCmd 0x0D fires callback after fourth byte");
+    ASSERT_EQ(cap.value, 0x12345678u,        "v2 xCmd 0x0D callback carries assembled u32");
+
+    /* xWAVE (0x01): notify-only.  Per xcmd.md, the 32-bit payload is a
+     * ROM address from the original game and would dangle if cast to a
+     * host pointer — currentVoice.wav must NOT change.  Callback must
+     * still fire with the assembled u32 so a future address-resolver
+     * layer can map it. */
+    WaveData *wavBefore = drv->tracks[0].currentVoice.wav;
+    cap.called = 0;
+    v2_send_xcmd_select(drv, 0, 0x01);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE, 0xCA }, 4);
+    ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
+              "v2 xWAVE does not overwrite currentVoice.wav (notify-only)");
+    ASSERT_EQ(cap.called, 1,                 "v2 xWAVE fires callback");
+    ASSERT_EQ(cap.selector, 0x01,            "v2 xWAVE callback reports selector 0x01");
+    ASSERT_EQ(cap.value, 0xCAFEBABEu,        "v2 xWAVE callback carries assembled u32 (LE)");
+
+    /* xCmd 0x0C (xWAIT) is intentionally not implemented in v2 — there's
+     * no song-script interpreter in the MIDI ingress path that could
+     * honour it.  Selecting 0x0C and sending payload bytes must be a
+     * silent no-op that doesn't fire the callback or mutate any state. */
+    cap.called = 0;
+    v2_send_xcmd_select(drv, 0, 0x0C);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+    ASSERT_EQ(cap.called, 0,
+              "v2 xCmd 0x0C (xWAIT) is unimplemented — no callback fires");
+
+    m4a_driver_destroy(drv);
+    free(wd);
+}
+
+/* Notes started after an XCMD must pick up the changed ADSR / pseudo-echo
+ * values.  PCM and CGB channels each have their own copy-from-track path
+ * in m4a_note_on() — both must propagate. */
+static void test_v2_xcmd_propagates_to_new_notes(void)
+{
+    printf("Testing v2 XCMD propagates to new PCM and CGB notes...\n");
+
+    /* PCM voice — verify direct-sound channel gets the XCMD'd ADSR. */
+    int dataSize = 16;
+    WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    wd->freq = 0x01000000;
+    wd->size = dataSize;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+    for (int i = 0; i < dataSize; i++) wd->data[i] = (int8_t)(i * 7);
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type    = VOICE_DIRECTSOUND;
+    voices[0].key     = 60;
+    voices[0].wav     = wd;
+    voices[0].attack  = 0xFF;
+    voices[0].sustain = 0xFF;
+    /* program 1: SQ2 voice for the CGB-side check. */
+    voices[1].type    = VOICE_SQUARE_2;
+    voices[1].key     = 60;
+    voices[1].attack  = 0;
+    voices[1].decay   = 0;
+    voices[1].sustain = 16;
+    voices[1].release = 16;
+    voices[1].wavePointer = (uint32_t *)(uintptr_t)2;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 4);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+
+    /* Push xATTA / xDECA / xSUST / xRELE / xIECV / xIECL on track 0. */
+    v2_send_xcmd_select(drv, 0, 0x04); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x7A }, 1);
+    v2_send_xcmd_select(drv, 0, 0x05); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x55 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x06); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x44 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x07); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x33 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x08); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x22 }, 1);
+    v2_send_xcmd_select(drv, 0, 0x09); v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x11 }, 1);
+
+    /* Note on now: PCM channel must inherit the new ADSR + pseudo-echo. */
+    m4a_note_on(drv, 0, 60, 100);
+
+    int found = -1;
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+        if (drv->pcmChans[i].status & M4A_CHN_ON) { found = i; break; }
+    ASSERT(found >= 0,                       "v2 PCM channel allocated for note");
+    if (found >= 0) {
+        M4ADriverPcmChan *p = &drv->pcmChans[found];
+        ASSERT_EQ(p->attack,  0x7A,          "v2 XCMD attack copied into new PCM note");
+        ASSERT_EQ(p->decay,   0x55,          "v2 XCMD decay copied into new PCM note");
+        ASSERT_EQ(p->sustain, 0x44,          "v2 XCMD sustain copied into new PCM note");
+        ASSERT_EQ(p->release, 0x33,          "v2 XCMD release copied into new PCM note");
+        ASSERT_EQ(p->pseudoEchoVolume, 0x22, "v2 XCMD IECV copied into new PCM note");
+        ASSERT_EQ(p->pseudoEchoLength, 0x11, "v2 XCMD IECL copied into new PCM note");
+    }
+
+    /* Switch to a CGB voice on a fresh track and prove the SQ2 channel
+     * also picks up XCMD'd ADSR + pseudo-echo. */
+    m4a_program_change(drv, 1, 1);
+    m4a_cc(drv, 1, 7, 127);
+    m4a_cc(drv, 1, 10, 64);
+    v2_send_xcmd_select(drv, 1, 0x04); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x09 }, 1);
+    v2_send_xcmd_select(drv, 1, 0x05); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x08 }, 1);
+    v2_send_xcmd_select(drv, 1, 0x06); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x07 }, 1);
+    v2_send_xcmd_select(drv, 1, 0x07); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x06 }, 1);
+    v2_send_xcmd_select(drv, 1, 0x08); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x05 }, 1);
+    v2_send_xcmd_select(drv, 1, 0x09); v2_send_xcmd_bytes(drv, 1, (uint8_t[]){ 0x04 }, 1);
+
+    m4a_note_on(drv, 1, 60, 100);
+
+    /* SQ2 lives at cgb[1] (type 2 → idx 1). */
+    M4ADriverCgbChan *sq2 = &drv->cgb[1];
+    ASSERT(sq2->status & M4A_CHN_ON,         "v2 SQ2 channel started");
+    ASSERT_EQ(sq2->attack,  0x09,            "v2 XCMD attack copied into new CGB note");
+    ASSERT_EQ(sq2->decay,   0x08,            "v2 XCMD decay copied into new CGB note");
+    ASSERT_EQ(sq2->sustain, 0x07,            "v2 XCMD sustain copied into new CGB note");
+    ASSERT_EQ(sq2->release, 0x06,            "v2 XCMD release copied into new CGB note");
+    ASSERT_EQ(sq2->pseudoEchoVolume, 0x05,   "v2 XCMD IECV copied into new CGB note");
+    ASSERT_EQ(sq2->pseudoEchoLength, 0x04,   "v2 XCMD IECL copied into new CGB note");
+
+    m4a_driver_destroy(drv);
+    free(wd);
+}
+
+/* Defensive cases: unknown selectors must not crash; partial payloads
+ * must not apply; selector stays sticky after apply so consecutive
+ * payloads of the same length all dispatch to the same selector. */
+static void test_v2_xcmd_protocol_safety(void)
+{
+    printf("Testing v2 XCMD partial / invalid / sticky-selector handling...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type    = VOICE_SQUARE_2;
+    voices[0].key     = 60;
+    voices[0].attack  = 0x10;
+    voices[0].decay   = 0x20;
+    voices[0].sustain = 0x30;
+    voices[0].release = 0x40;
+    voices[0].wavePointer = (uint32_t *)(uintptr_t)2;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+
+    XcmdCapture cap = {0};
+    m4a_driver_set_xcmd_callback(drv, capture_xcmd, &cap);
+
+    /* No selector latched yet (initial extendedCommand == 0).  A stray
+     * 0x1D payload byte must be a no-op and not crash. */
+    m4a_cc(drv, 0, 0x1D, 0xAA);
+    ASSERT_EQ(drv->tracks[0].extendedCommandCount, 0,
+              "v2 0x1D with no selector latched does not buffer bytes");
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x10,
+              "v2 0x1D with no selector does not mutate state");
+    ASSERT_EQ(cap.called, 0, "v2 0x1D with no selector does not notify");
+
+    /* Unknown selector (e.g. 0x03 — gap in v1's table) → dataLength==0,
+     * so any subsequent payload is discarded silently. */
+    v2_send_xcmd_select(drv, 0, 0x03);
+    m4a_cc(drv, 0, 0x1D, 0xAA);
+    m4a_cc(drv, 0, 0x1D, 0xBB);
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x10,
+              "v2 unknown selector ignores payload safely");
+    ASSERT_EQ(cap.called, 0, "v2 unknown selector does not notify");
+
+    /* Partial payload: select a 4-byte xCmd, send 3 bytes, assert no apply. */
+    cap.called = 0;
+    v2_send_xcmd_select(drv, 0, 0x0D);
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x11, 0x22, 0x33 }, 3);
+    ASSERT_EQ(drv->tracks[0].extendedValue, 0u,
+              "v2 partial 4-byte payload does not apply");
+    ASSERT_EQ(cap.called, 0,
+              "v2 partial payload does not fire callback");
+    ASSERT_EQ(drv->tracks[0].extendedCommandCount, 3,
+              "v2 partial payload accumulates byte count");
+
+    /* Selecting a different selector mid-payload resets the buffer. */
+    v2_send_xcmd_select(drv, 0, 0x04);
+    ASSERT_EQ(drv->tracks[0].extendedCommandCount, 0,
+              "v2 0x1E resets byte count for new selector");
+    ASSERT_EQ(drv->tracks[0].extendedCommandBytes[0], 0,
+              "v2 0x1E zeroes the payload buffer");
+
+    /* Sticky selector: after a complete xATTA dispatch, another payload
+     * byte without a fresh 0x1E must apply to xATTA again.  This matches
+     * v1 + real m4a (the selector is sticky until the next CMD_XCMD). */
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x70 }, 1);   /* completes xATTA */
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x70,
+              "v2 sticky-selector dispatch 1: xATTA(0x70) applies");
+    ASSERT_EQ(cap.called, 1,
+              "v2 sticky-selector dispatch 1: callback fired once");
+
+    v2_send_xcmd_bytes(drv, 0, (uint8_t[]){ 0x71 }, 1);   /* xATTA again, no re-select */
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x71,
+              "v2 sticky-selector dispatch 2: xATTA stays selected for next payload");
+    ASSERT_EQ(cap.called, 2,
+              "v2 sticky-selector dispatch 2: callback fired twice total");
+    ASSERT_EQ(cap.selector, 0x04,
+              "v2 sticky-selector dispatch 2: callback still reports selector 0x04");
+
+    m4a_driver_destroy(drv);
+}
+
+/* Render-level proof that XCMD changes affect actual audio.  Two
+ * identical-prep drivers; one receives xCmd 0x06 (xSUST = 0xFF) before
+ * note_on, the other does not.  At sustain the louder driver's PCM ring
+ * must carry larger sample magnitudes than the control. */
+static void test_v2_xcmd_render_changes_audio(void)
+{
+    printf("Testing v2 XCMD changes rendered PCM output (sustain XCMD)...\n");
+
+    /* Looping sine so the wave doesn't exhaust before sustain settles.
+     * status & 0xC000 enables loop mode in v2's m4a_drv_pcm_start. */
+    int dataSize = 64;
+    WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    wd->status = 0xC000;
+    wd->freq = 0x01000000;
+    wd->loopStart = 0;
+    wd->size = dataSize;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+    for (int i = 0; i < dataSize; i++)
+        wd->data[i] = (int8_t)(127.0 * sin(2.0 * 3.14159265 * i / dataSize));
+    wd->data[dataSize] = wd->data[0];
+
+    /* attack=0xFF + decay=0 → first PCM tick settles directly onto
+     * sustain (mirrors test_v2_pcm_ring_fills' proven pattern).  Default
+     * sustain=0x10 keeps the control driver quiet; xSUST=0xFF on the
+     * second driver lifts it to maximum.  Identical wave / vol / pan,
+     * so any envelope-amplitude difference comes solely from xCmd. */
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type    = VOICE_DIRECTSOUND;
+    voices[0].key     = 60;
+    voices[0].wav     = wd;
+    voices[0].attack  = 0xFF;
+    voices[0].decay   = 0;
+    voices[0].sustain = 0x10;
+    voices[0].release = 0;
+
+    /* Control driver: stock voice, no XCMD. */
+    M4ADriver *quiet = m4a_driver_create(44100.0f);
+    m4a_set_master_volume(quiet, 15);
+    m4a_set_max_pcm_channels(quiet, 4);
+    m4a_driver_set_voicegroup(quiet, voices);
+    m4a_program_change(quiet, 0, 0);
+    m4a_cc(quiet, 0, 7, 127);
+    m4a_cc(quiet, 0, 10, 64);
+    m4a_note_on(quiet, 0, 60, 127);
+
+    /* Loud driver: xSUST 0xFF before note_on. */
+    M4ADriver *loud  = m4a_driver_create(44100.0f);
+    m4a_set_master_volume(loud, 15);
+    m4a_set_max_pcm_channels(loud, 4);
+    m4a_driver_set_voicegroup(loud, voices);
+    m4a_program_change(loud, 0, 0);
+    m4a_cc(loud, 0, 7, 127);
+    m4a_cc(loud, 0, 10, 64);
+    v2_send_xcmd_select(loud, 0, 0x06);
+    v2_send_xcmd_bytes(loud, 0, (uint8_t[]){ 0xFF }, 1);
+    ASSERT_EQ(loud->tracks[0].currentVoice.sustain, 0xFF,
+              "v2 xSUST raised the loud driver's currentVoice.sustain");
+    m4a_note_on(loud, 0, 60, 127);
+
+    /* Render enough vblanks to settle past attack+decay into sustain. */
+    v2_advance_chunked(quiet, 8192);
+    v2_advance_chunked(loud,  8192);
+
+    const M4APcmRing *qr = m4a_get_pcm_ring(quiet);
+    const M4APcmRing *lr = m4a_get_pcm_ring(loud);
+
+    int qpeak = 0, lpeak = 0;
+    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++) {
+        int qa = qr->ring_a[i] < 0 ? -qr->ring_a[i] : qr->ring_a[i];
+        int la = lr->ring_a[i] < 0 ? -lr->ring_a[i] : lr->ring_a[i];
+        if (qa > qpeak) qpeak = qa;
+        if (la > lpeak) lpeak = la;
+    }
+    ASSERT(qpeak > 0,                 "control driver produces non-silent output");
+    ASSERT(lpeak > 0,                 "xSUST driver produces non-silent output");
+    /* sustain 0x10 → 0xFF is roughly a 16× envelope multiplier; in
+     * practice the rendered peak ratio lands around 15× after master
+     * volume / per-sample clamping.  Require at least 4× to leave
+     * headroom for envelope-phase timing variance between drivers. */
+    ASSERT(lpeak >= qpeak * 4,
+              "v2 xSUST 0xFF produces ≥4× louder PCM peak than stock voice");
+
+    m4a_driver_destroy(quiet);
+    m4a_driver_destroy(loud);
+    free(wd);
 }
 
 static void test_v2_lfo_disabled_no_freq_drift(void)
@@ -3722,6 +4115,10 @@ int main(void)
     test_v2_consume_clears_triggers();
     test_v2_wave_ram_events();
     test_v2_modt_recomputes_track_state();
+    test_v2_xcmd_mutates_track_state();
+    test_v2_xcmd_propagates_to_new_notes();
+    test_v2_xcmd_protocol_safety();
+    test_v2_xcmd_render_changes_audio();
     test_v2_lfo_disabled_no_freq_drift();
     test_v2_lfo_vibrato_modulates_freq();
     test_v2_lfo_delay_holds_off();

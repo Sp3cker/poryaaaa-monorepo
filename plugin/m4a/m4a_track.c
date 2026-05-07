@@ -410,6 +410,105 @@ void m4a_note_off(M4ADriver *drv, int track, uint8_t key) {
     }
 }
 
+/* ---- xCmd (XCMD-via-MIDI-CC) helpers ----------------------------------
+ *
+ * Direct ports of v1's plugin/m4a_engine.c statics, retargeted to v2's
+ * M4ADriverTrack field names.  Selector → byte-count map and LE
+ * assembly are byte-for-byte identical; xcmd_apply mutates the same
+ * track-level fields (currentVoice.* and pseudoEcho*) the v1 engine
+ * touches, so notes started after the xCmd see the changed ADSR /
+ * pseudo-echo values via the existing note_on copy in m4a_note_on().
+ *
+ * Two deviations from v1 documented in xcmd.md and approved upstream:
+ *   - 0x01 (xWAVE): notify-only.  v1 stores the 4-byte LE payload as a
+ *     pointer cast into currentVoice.wav.  In poryaaaa that integer is
+ *     a ROM address from the original game, not a valid host pointer
+ *     — applying it would dangle.  An address→loaded-sample resolver
+ *     can be added later; until then the callback gets the raw u32 and
+ *     plugin code can dispatch.
+ *   - 0x0D: store in extendedValue and notify (matches v1).
+ */
+/* xCmd 0x0C (xWAIT) is intentionally absent — there's no song-script
+ * interpreter in the v2 MIDI ingress path that could honour it, so it
+ * stays as an unknown selector (dataLength == 0) and any payload bytes
+ * are dropped silently. */
+static uint8_t xcmd_data_length(uint8_t selector) {
+    switch (selector) {
+    case 0x01: case 0x0D: return 4;
+    case 0x02: case 0x04: case 0x05: case 0x06: case 0x07:
+    case 0x08: case 0x09: case 0x0A: case 0x0B:
+        return 1;
+    default:              return 0;
+    }
+}
+
+static uint32_t xcmd_read_le(const uint8_t *bytes, uint8_t count) {
+    uint32_t value = 0;
+    for (uint8_t i = 0; i < count; i++)
+        value |= (uint32_t)bytes[i] << (i * 8);
+    return value;
+}
+
+static void xcmd_notify(M4ADriver *drv, int trackIndex,
+                        uint8_t selector, uint32_t value) {
+    if (drv->xcmd_fn)
+        drv->xcmd_fn(drv->xcmd_ctx, trackIndex, selector, value);
+}
+
+static void xcmd_apply(M4ADriver *drv, int trackIndex, M4ADriverTrack *t) {
+    switch (t->extendedCommand) {
+    case 0x01: /* xwave — notify-only; raw u32 is a ROM address, not a host ptr */
+        xcmd_notify(drv, trackIndex, 0x01, xcmd_read_le(t->extendedCommandBytes, 4));
+        break;
+    case 0x02: /* xtype */
+        t->currentVoice.type = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x02, t->extendedCommandBytes[0]);
+        break;
+    case 0x04: /* xatta */
+        t->currentVoice.attack = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x04, t->extendedCommandBytes[0]);
+        break;
+    case 0x05: /* xdeca */
+        t->currentVoice.decay = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x05, t->extendedCommandBytes[0]);
+        break;
+    case 0x06: /* xsust */
+        t->currentVoice.sustain = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x06, t->extendedCommandBytes[0]);
+        break;
+    case 0x07: /* xrele */
+        t->currentVoice.release = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x07, t->extendedCommandBytes[0]);
+        break;
+    case 0x08: /* xiecv */
+        t->pseudoEchoVolume = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x08, t->extendedCommandBytes[0]);
+        break;
+    case 0x09: /* xiecl */
+        t->pseudoEchoLength = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x09, t->extendedCommandBytes[0]);
+        break;
+    case 0x0A: /* xleng */
+        t->currentVoice.length = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x0A, t->extendedCommandBytes[0]);
+        break;
+    case 0x0B: /* xswee */
+        t->currentVoice.panSweep = t->extendedCommandBytes[0];
+        xcmd_notify(drv, trackIndex, 0x0B, t->extendedCommandBytes[0]);
+        break;
+    case 0x0D:
+        t->extendedValue = xcmd_read_le(t->extendedCommandBytes, 4);
+        xcmd_notify(drv, trackIndex, 0x0D, t->extendedValue);
+        break;
+    default:
+        break;
+    }
+
+    /* Selector stays sticky (matches v1).  Only the byte-count resets so
+     * a subsequent 0x1D/0x1F starts refilling for the same selector. */
+    t->extendedCommandCount = 0;
+}
+
 void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
     if (!drv) return;
     if (track < 0 || track >= M4A_MAX_TRACKS) return;
@@ -486,6 +585,21 @@ void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
                 refresh_pcm_pitches(drv, track);
             }
         }
+        break;
+    case 0x1D:  /* XCMD payload byte (part 1) */
+    case 0x1F: { /* XCMD payload byte (alternate) */
+        uint8_t dataLength = xcmd_data_length(t->extendedCommand);
+        if (dataLength == 0) break;   /* no selector latched, or unknown selector */
+        if (t->extendedCommandCount >= 4) break;  /* defensive — shouldn't happen */
+        t->extendedCommandBytes[t->extendedCommandCount++] = value;
+        if (t->extendedCommandCount >= dataLength)
+            xcmd_apply(drv, track, t);
+        break;
+    }
+    case 0x1E:  /* XCMD selector (part 2 — sets which xCmd to assemble) */
+        t->extendedCommand = value;
+        t->extendedCommandCount = 0;
+        memset(t->extendedCommandBytes, 0, sizeof(t->extendedCommandBytes));
         break;
     case 0x7B:  /* All Notes Off */
         m4a_all_notes_off(drv, track);
