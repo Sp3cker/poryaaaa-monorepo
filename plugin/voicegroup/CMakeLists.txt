@@ -11,6 +11,7 @@ add_library(voicegroup_loader STATIC
     vg_keysplit.c
     vg_wav.c
     vg_parser.c
+    voicegroup_state.c
 )
 
 # PUBLIC so consumers pick up the "voicegroup/xxx.h" prefix we use

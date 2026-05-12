@@ -62,6 +62,31 @@ typedef struct {
      * The standalone polls this to perform the actual restart cycle. */
     bool restartRequested;
 
+    /* Recorder UI/wire state. The RecorderCore lives on the engine.
+     * `recorderArmed` gates the audio thread's push calls.
+     * `recorderPath` is the last-typed filename (persisted via CLAP state).
+     * `recorderSeen*` are bitmasks (bit n = channel n) latched when the
+     * recorder captures a PC / volume CC / pan CC for that channel; cleared
+     * by the Clear button so they track the current buffer contents. */
+    atomic_bool recorderArmed;
+    char        recorderPath[512];
+    atomic_uint recorderSeenPC;
+    atomic_uint recorderSeenVol;
+    atomic_uint recorderSeenPan;
+
+    /* Standalone-only: preferred audio output device name, read from
+     * poryaaaa.cfg's `audio_output=` key. Empty string = use system default.
+     * Consumed by the macOS standalone entry before startAudioThread runs. */
+    char        audioOutputName[128];
+
+    /* External MIDI clock sync (standalone or any host without transport).
+     * Driven by 0xF8 (24 PPQ), 0xFA/FB/FC start/continue/stop, 0xF2 SPP. */
+    uint64_t extClockSampleCounter;   /* running sample-time, +=frames each block */
+    uint64_t extClockLastSampleTime;  /* sample-time of last 0xF8 */
+    double   extClockBpm;             /* smoothed BPM derived from clock interval */
+    bool     extClockInitialized;     /* set on first 0xF8 after reset/Start */
+    bool     extClockPlaying;         /* set by 0xFA/FB, cleared by 0xFC */
+
 #if defined(M4A_DRIVER_V2)
     M4ADriver *m4a_v2;
 #endif

@@ -32,6 +32,14 @@ song_master_volume=127
 # Default: 5 (matches Pokemon Emerald's engine configuration).
 #max_channels=5
 
+# Standalone audio output device (case-insensitive substring match against
+# the system's audio devices). Use this to pin BlackHole / Loopback / an
+# Aggregate Device so Ableton can pick poryaaaa up as an audio source.
+# Unset = use the system default output. macOS only (Linux/Windows builds
+# pick the audio device through their own UI).
+# Examples: BlackHole 2ch, Loopback, External Headphones
+#audio_output=BlackHole 2ch
+
 # Additional .inc files for sample symbol definitions (semicolon-separated, relative to project_root).
 # Normally auto-discovered from sound/direct_sound_data.inc.
 #sound_data_paths=

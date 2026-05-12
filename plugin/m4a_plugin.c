@@ -2,11 +2,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#ifdef _WIN32
-#include <direct.h>
-#endif
 
 #include <clap/clap.h>
 #include <clap/ext/gui.h>
@@ -15,9 +10,11 @@
 #include "m4a_plugin.h"
 #include "m4a_params.h"
 #include "m4a_engine.h"
+#include "m4a_engine_recorder.h"
 #include "m4a_channel.h"
 #include "m4a_reverb.h"
 #include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/voicegroup_state.h"
 #include "m4a_gui.h"
 
 /*
@@ -59,101 +56,6 @@ static char s_pluginDir[512] = {0};
 
 /* Optional diagnostic log path, set from config key "log=<path>" */
 static const char *s_pluginLogPath = NULL;
-
-/*
- * Resolve the per-user state directory shared with sibling plugins
- * (ccomidi). Both sides must agree on this path; ccomidi reads it from
- * voicegroup_bridge.cpp's state_path(). Returns false if no home dir is set.
- */
-static bool resolve_state_dir(char *out, size_t outSize)
-{
-#ifdef _WIN32
-    const char *appdata = getenv("APPDATA");
-    if (appdata && *appdata) {
-        snprintf(out, outSize, "%s\\poryaaaa", appdata);
-        return true;
-    }
-    const char *home = getenv("HOME");
-    if (!home || !*home) return false;
-    snprintf(out, outSize, "%s\\AppData\\Roaming\\poryaaaa", home);
-    return true;
-#else
-    const char *home = getenv("HOME");
-    if (!home || !*home) return false;
-#ifdef __APPLE__
-    snprintf(out, outSize, "%s/Library/Application Support/poryaaaa", home);
-#else
-    const char *xdg = getenv("XDG_CONFIG_HOME");
-    if (xdg && *xdg)
-        snprintf(out, outSize, "%s/poryaaaa", xdg);
-    else
-        snprintf(out, outSize, "%s/.config/poryaaaa", home);
-#endif
-    return true;
-#endif
-}
-
-static void ensure_dir_exists(const char *path)
-{
-#ifdef _WIN32
-    _mkdir(path);
-#else
-    mkdir(path, 0755);
-#endif
-}
-
-/*
- * Write state.json to a fixed per-user location so sibling plugins (ccomidi)
- * can mirror the currently-loaded voicegroup regardless of where the .clap or
- * .vst3 bundle was installed. Uses write-then-rename so readers never observe
- * a partial file.
- *
- * Sample names stored in voiceSampleNames[] are basenames from decomp .inc
- * paths; they never contain " or \, but escape defensively anyway.
- */
-static void write_state_file(const M4APluginData *data)
-{
-    if (!data->loadedVg) return;
-
-    char stateDir[600];
-    if (!resolve_state_dir(stateDir, sizeof(stateDir))) return;
-    ensure_dir_exists(stateDir);
-
-    char tmpPath[700];
-    char finalPath[700];
-    snprintf(tmpPath,   sizeof(tmpPath),   "%s/state.json.tmp", stateDir);
-    snprintf(finalPath, sizeof(finalPath), "%s/state.json",     stateDir);
-
-    FILE *f = fopen(tmpPath, "w");
-    if (!f) return;
-
-    fprintf(f, "{\n");
-    fprintf(f, "  \"projectRoot\": \"");
-    for (const char *p = data->projectRoot; *p; p++) {
-        if (*p == '"' || *p == '\\') fputc('\\', f);
-        fputc(*p, f);
-    }
-    fprintf(f, "\",\n");
-    fprintf(f, "  \"voicegroup\": \"%s\",\n", data->voicegroupName);
-    fprintf(f, "  \"slots\": [\n");
-    int first = 1;
-    for (int i = 0; i < VOICEGROUP_SIZE; i++) {
-        const char *name = data->loadedVg->voiceSampleNames[i];
-        if (name[0] == '\0') continue;
-        if (!first) fprintf(f, ",\n");
-        first = 0;
-        fprintf(f, "    {\"program\": %d, \"name\": \"", i);
-        for (const char *p = name; *p; p++) {
-            if (*p == '"' || *p == '\\') fputc('\\', f);
-            fputc(*p, f);
-        }
-        fprintf(f, "\"}");
-    }
-    fprintf(f, "\n  ]\n}\n");
-    fclose(f);
-
-    rename(tmpPath, finalPath);
-}
 
 static void plugin_engine_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 static bool plugin_poll_pending_xcmd(M4APluginData *data, unsigned int *seq_out,
@@ -233,6 +135,12 @@ static void load_config_file(M4APluginData *data)
             if (v < 1) v = 1;
             if (v > MAX_PCM_CHANNELS) v = MAX_PCM_CHANNELS;
             data->maxPcmChannels = (uint8_t)v;
+        } else if (strcmp(key, "audio_output") == 0) {
+            /* Standalone audio device name (e.g. "BlackHole 2ch"). Substring
+             * matched against RtAudio's device enumeration at startup. */
+            while (*value == ' ') value++;
+            snprintf(data->audioOutputName, sizeof(data->audioOutputName),
+                     "%s", value);
         } else if (strcmp(key, "sound_data_paths") == 0) {
             /* Semicolon-separated list of extra .inc files, relative to project_root */
             char tmp[600];
@@ -294,6 +202,17 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->guiPendingXcmdSeqSeen = 0;
     data->guiLatestXcmdSeqSeen = 0;
     data->assetIndex = NULL;
+    atomic_init(&data->recorderArmed, false);
+    data->recorderPath[0] = '\0';
+    atomic_init(&data->recorderSeenPC,  0u);
+    atomic_init(&data->recorderSeenVol, 0u);
+    atomic_init(&data->recorderSeenPan, 0u);
+    data->audioOutputName[0] = '\0';
+    data->extClockSampleCounter = 0;
+    data->extClockLastSampleTime = 0;
+    data->extClockBpm = 0.0;
+    data->extClockInitialized = false;
+    data->extClockPlaying = false;
     m4a_params_init(data);
     /* Load defaults from config file placed next to the .clap */
     load_config_file(data);
@@ -335,6 +254,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     m4a_engine_init(&data->engine, (float)sample_rate);
+    m4a_engine_recorder_set_sample_rate(&data->engine, sample_rate);
 #if defined(M4A_DRIVER_V2)
     data->m4a_v2 = m4a_driver_create((float)sample_rate);
 #endif
@@ -385,7 +305,9 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             if (data->assetIndex)
                 project_asset_index_apply_overrides(data->assetIndex, data->projectRoot, data->loadedVg);
             m4a_params_sync_to_engine(data);
-            write_state_file(data);
+            voicegroup_state_write_default(data->projectRoot,
+                                           data->voicegroupName,
+                                           data->loadedVg);
         }
     }
 
@@ -470,8 +392,88 @@ static void plugin_reset(const clap_plugin_t *plugin)
 
 /* ---- MIDI event processing ---- */
 
-static void process_midi_event(M4APluginData *data, const uint8_t *msg)
+/* External MIDI clock pulse: derive BPM from interval between consecutive 0xF8s
+ * (24 pulses per quarter), apply a light EMA so jitter doesn't shake the engine,
+ * and push the result into the same APIs the host-transport path uses. */
+static void process_midi_clock_pulse(M4APluginData *data, uint32_t sample_in_block)
 {
+    uint64_t now = data->extClockSampleCounter + sample_in_block;
+
+    if (!data->extClockInitialized) {
+        data->extClockInitialized = true;
+        data->extClockLastSampleTime = now;
+        /* First-pulse log so users can confirm pass-through without a DAW. */
+        fprintf(stderr, "[poryaaaa] external MIDI clock detected\n");
+        return;
+    }
+
+    uint64_t dt = now - data->extClockLastSampleTime;
+    data->extClockLastSampleTime = now;
+    if (dt == 0) return;
+
+    double sr = (double)data->engine.sampleRate;
+    if (sr <= 0.0) return;
+
+    /* 24 PPQ: one quarter-note = 24 clocks; bpm = 60 * sr / (samples_per_quarter). */
+    double instBpm = 60.0 * sr / ((double)dt * 24.0);
+    if (instBpm < 20.0 || instBpm > 999.0) return;  /* reject obvious jitter spikes */
+
+    if (data->extClockBpm <= 0.0)
+        data->extClockBpm = instBpm;
+    else
+        data->extClockBpm = data->extClockBpm * 0.85 + instBpm * 0.15;
+
+    m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
+    m4a_engine_recorder_set_tempo(&data->engine, sample_in_block, data->extClockBpm);
+#if defined(M4A_DRIVER_V2)
+    m4a_set_tempo_bpm(data->m4a_v2, data->extClockBpm);
+#endif
+}
+
+/* Status bytes 0xF0..0xFF have no channel nibble. Handle the subset that's
+ * useful for transport sync; ignore the rest. */
+static void process_midi_system_event(M4APluginData *data, const uint8_t *msg,
+                                       uint32_t sample_in_block)
+{
+    switch (msg[0]) {
+    case 0xF2: {  /* Song Position Pointer: data1|data2<<7 = 16th-note count */
+        if (data->extClockBpm <= 0.0) break;  /* need a tempo before we can seek */
+        uint32_t sixteenths = (uint32_t)msg[1] | ((uint32_t)msg[2] << 7);
+        double posSec = ((double)sixteenths * 60.0) / (data->extClockBpm * 4.0);
+        m4a_engine_recorder_update_loop(&data->engine, false, 0.0, 0.0, posSec);
+        break;
+    }
+    case 0xF8:  /* MIDI Clock (24 PPQ) */
+        process_midi_clock_pulse(data, sample_in_block);
+        break;
+    case 0xFA:  /* Start */
+        data->extClockInitialized = false;
+        data->extClockBpm = 0.0;
+        data->extClockPlaying = true;
+        m4a_engine_recorder_reset(&data->engine);
+        break;
+    case 0xFB:  /* Continue */
+        data->extClockPlaying = true;
+        break;
+    case 0xFC:  /* Stop */
+        data->extClockPlaying = false;
+        data->extClockInitialized = false;
+        break;
+    default:
+        break;
+    }
+}
+
+static void process_midi_event(M4APluginData *data, const uint8_t *msg,
+                               uint32_t sample_in_block)
+{
+    /* System messages (0xF0..0xFF) have no channel nibble — route separately
+     * so they don't pulse a phantom channel-LED or get masked as a no-op. */
+    if (msg[0] >= 0xF0) {
+        process_midi_system_event(data, msg, sample_in_block);
+        return;
+    }
+
     uint8_t status = msg[0] & 0xF0;
     uint8_t channel = msg[0] & 0x0F;
     if (channel < MAX_TRACKS)
@@ -532,9 +534,27 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg)
         break;
     }
     }
+
+    /* Record MIDI to the embedded recorder when armed. The recorder's
+     * samplePosition advances every block regardless of armed (tape-recorder
+     * model: time keeps flowing, the toggle only decides whether the current
+     * moment gets stamped into the buffer), so the displayed duration always
+     * reflects elapsed session time, and disarmed periods leave wall-time
+     * gaps in the SMF. samplePosition is monotonic so no reorder is possible.
+     * While capturing, latch the recorder-tab per-channel PC/Vol/Pan
+     * indicators so the GUI can show what's been captured. */
+    if (atomic_load(&data->recorderArmed)) {
+        m4a_engine_recorder_push(&data->engine, sample_in_block,
+                                 msg[0], msg[1], msg[2]);
+        unsigned bit = 1u << channel;
+        if (status == 0xC0) atomic_fetch_or(&data->recorderSeenPC, bit);
+        else if (status == 0xB0 && msg[1] == 0x07) atomic_fetch_or(&data->recorderSeenVol, bit);
+        else if (status == 0xB0 && msg[1] == 0x0A) atomic_fetch_or(&data->recorderSeenPan, bit);
+    }
 }
 
-static void process_clap_note_event(M4APluginData *data, const clap_event_note_t *ev)
+static void process_clap_note_event(M4APluginData *data, const clap_event_note_t *ev,
+                                    uint32_t sample_in_block)
 {
     int channel = ev->channel >= 0 ? ev->channel : 0;
     if (channel >= MAX_TRACKS) channel = 0;
@@ -557,6 +577,22 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
 #if defined(M4A_DRIVER_V2)
         m4a_note_off(data->m4a_v2, channel, (uint8_t)ev->key);
 #endif
+    }
+
+    /* Record CLAP note events to the embedded recorder when armed. */
+    if (atomic_load(&data->recorderArmed)) {
+        uint8_t status, d1, d2;
+        if (ev->header.type == CLAP_EVENT_NOTE_ON) {
+            status = 0x90 | (channel & 0x0F);
+            d1 = (uint8_t)ev->key;
+            d2 = (uint8_t)(ev->velocity * 127.0 + 0.5);
+            if (d2 == 0) d2 = 1;
+        } else {  /* NOTE_OFF or NOTE_CHOKE */
+            status = 0x80 | (channel & 0x0F);
+            d1 = (uint8_t)ev->key;
+            d2 = 0;
+        }
+        m4a_engine_recorder_push(&data->engine, sample_in_block, status, d1, d2);
     }
 }
 
@@ -647,13 +683,34 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
     if (!data->activated)
         return CLAP_PROCESS_ERROR;
 
-    /* Read tempo from host transport (MIDI meta event tempo) */
-    if (process->transport
-        && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO)) {
+    /* Read tempo from host transport when present (DAW with a CLAP transport).
+     * In standalone — and in any host that doesn't supply a transport — tempo
+     * comes from external MIDI clock instead; see process_midi_clock_pulse. */
+    bool host_has_tempo = process->transport
+        && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO);
+    if (host_has_tempo) {
         m4a_engine_set_tempo_bpm(&data->engine, process->transport->tempo);
+        m4a_engine_recorder_set_tempo(&data->engine, 0, process->transport->tempo);
 #if defined(M4A_DRIVER_V2)
         m4a_set_tempo_bpm(data->m4a_v2, process->transport->tempo);
 #endif
+        /* Host transport wins: drop any externally-derived clock state so we
+         * don't fight it on the next clock pulse. */
+        data->extClockInitialized = false;
+    }
+
+    /* Update recorder loop info from transport */
+    if (process->transport
+        && (process->transport->flags & CLAP_TRANSPORT_IS_LOOP_ACTIVE)
+        && (process->transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE)) {
+        double startSec = (double)process->transport->loop_start_seconds / CLAP_SECTIME_FACTOR;
+        double endSec   = (double)process->transport->loop_end_seconds   / CLAP_SECTIME_FACTOR;
+        double posSec   = (double)process->transport->song_pos_seconds   / CLAP_SECTIME_FACTOR;
+        m4a_engine_recorder_update_loop(&data->engine, true, startSec, endSec, posSec);
+    } else if (process->transport
+               && (process->transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE)) {
+        double posSec = (double)process->transport->song_pos_seconds / CLAP_SECTIME_FACTOR;
+        m4a_engine_recorder_update_loop(&data->engine, false, 0.0, 0.0, posSec);
     }
 
     const uint32_t numFrames = process->frames_count;
@@ -679,12 +736,12 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
                 case CLAP_EVENT_NOTE_ON:
                 case CLAP_EVENT_NOTE_OFF:
                 case CLAP_EVENT_NOTE_CHOKE:
-                    process_clap_note_event(data, (const clap_event_note_t *)hdr);
+                    process_clap_note_event(data, (const clap_event_note_t *)hdr, hdr->time);
                     break;
                 case CLAP_EVENT_MIDI:
                 {
                     const clap_event_midi_t *midiEv = (const clap_event_midi_t *)hdr;
-                    process_midi_event(data, midiEv->data);
+                    process_midi_event(data, midiEv->data, hdr->time);
                     /* MIDI Program Change is the source of truth when it
                      * arrives; mirror it back out as a CLAP param event so
                      * the host's automation lane and saved state stay in
@@ -761,6 +818,18 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
         framePos = nextEventTime;
     }
 
+    /* Advance the recorder's sample clock by the full block. Runs every
+     * block — the duration display reflects total elapsed session time, not
+     * the captured buffer length. The Record toggle only gates push_event,
+     * so disarmed periods leave wall-time gaps in the SMF rather than
+     * compressing the timeline. */
+    m4a_engine_recorder_advance(&data->engine, numFrames);
+
+    /* Tick the running sample-time counter used to measure MIDI clock intervals.
+     * Sample_in_block offsets stay valid because realtime events are stamped
+     * with the offset within *this* block before we add numFrames here. */
+    data->extClockSampleCounter += numFrames;
+
     return CLAP_PROCESS_CONTINUE;
 }
 
@@ -833,6 +902,13 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
     if (stream->write(stream, &data->maxPcmChannels, 1) != 1) return false;
     if (!m4a_params_state_save(data, stream)) return false;
 
+    /* Recorder state (optional block — old loads simply won't have it) */
+    uint8_t armed = atomic_load(&data->recorderArmed) ? 1 : 0;
+    if (stream->write(stream, &armed, 1) != 1) return false;
+    uint32_t pathLen = (uint32_t)strlen(data->recorderPath);
+    if (stream->write(stream, &pathLen, sizeof(pathLen)) != sizeof(pathLen)) return false;
+    if (pathLen > 0 && stream->write(stream, data->recorderPath, pathLen) != (int64_t)pathLen) return false;
+
     return true;
 }
 
@@ -873,6 +949,21 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
     data->maxPcmChannels = maxChannelsByte;
     m4a_params_state_load(data, stream);
 
+    /* Recorder state (optional — EOF here means an older save; don't fail) */
+    {
+        uint8_t armed = 0;
+        if (stream->read(stream, &armed, 1) == 1) {
+            atomic_store(&data->recorderArmed, armed != 0);
+            uint32_t pathLen = 0;
+            if (stream->read(stream, &pathLen, sizeof(pathLen)) == (int64_t)sizeof(pathLen)
+                && pathLen < sizeof(data->recorderPath)) {
+                if (pathLen > 0)
+                    stream->read(stream, data->recorderPath, pathLen);
+                data->recorderPath[pathLen] = '\0';
+            }
+        }
+    }
+
     if (data->activated) {
         /* Only reload voicegroup if the project root or name actually changed */
         bool vgChanged = strcmp(data->projectRoot,    prevRoot) != 0 ||
@@ -891,7 +982,9 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
 #endif
                 memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
                 memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
-                write_state_file(data);
+                voicegroup_state_write_default(data->projectRoot,
+                                           data->voicegroupName,
+                                           data->loadedVg);
             }
         }
         data->engine.masterVolume = data->masterVolume;
@@ -1180,6 +1273,9 @@ static bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_flo
     }
     m4a_gui_set_internal_timer_callback(data->gui, gui_internal_timer_callback, (void *)plugin);
 
+    /* Wire plugin data pointer for the recorder tab */
+    m4a_gui_set_plugin_data(data->gui, data);
+
     /* Wire voice data pointers if voicegroup is already loaded */
     if (data->loadedVg)
         m4a_gui_set_voice_data(data->gui, data->loadedVg->voices, data->originalVoices, data->voiceOverrides);
@@ -1353,6 +1449,28 @@ bool m4a_plugin_gui_was_closed(const clap_plugin_t *plugin)
     if (!plugin) return false;
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     return data->gui && m4a_gui_was_closed(data->gui);
+}
+
+/* Standalone helper: preferred audio output device name from poryaaaa.cfg
+ * (`audio_output=` key). Returns an empty string if unset — caller should
+ * then fall back to the system default. Returned pointer is owned by the
+ * plugin and valid for the plugin's lifetime. */
+const char *m4a_plugin_audio_output_name(const clap_plugin_t *plugin)
+{
+    if (!plugin) return "";
+    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
+    return data->audioOutputName;
+}
+
+/* Standalone helper: wire audio-device callbacks into the GUI so the
+ * Settings tab can render an output-device dropdown. CLAP-in-DAW callers
+ * should leave this unset — the host owns audio routing there. */
+void m4a_plugin_set_audio_api(const clap_plugin_t *plugin, const M4AHostAudioApi *api)
+{
+    if (!plugin) return;
+    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
+    if (data && data->gui)
+        m4a_gui_set_audio_api(data->gui, api);
 }
 
 /* Extension dispatcher */

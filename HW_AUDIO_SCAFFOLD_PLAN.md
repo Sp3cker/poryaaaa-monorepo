@@ -15,12 +15,20 @@ audibility sweep, block-size invariance, DC streaming, anti-alias,
 direct internal_rate switching assertion, two-stage drain regression,
 fresh-trigger-only event-stream regression, PCM chunk-size
 invariance, PCM publish-timing).  Audible + band-limited end-to-end
-behind v2 flags.  Three blocking gates remain before any parity claim
-is valid (see "Blocking gates before parity claims" at the end of
-§12): §12.10b mGBA capture parity, the wave trigger / phase contract
-resolved against the intended reference (mGBA / hardware, per memory
-`project_audio_reference_target.md`), and the PSG-unipolar parity
-gate.  PSG-unipolar **structural rework landed 2026-04-30** (hw_psg
+behind v2 flags.  **Current plan direction:** v1 should be deprecated
+and removed from normal build products; it remains only as a comparison
+reference until the v2 path has measured parity evidence.  The immediate
+next step is not more tuning or v1 deletion: it is §12.11 comparison
+test infrastructure that renders stable v2 and reference captures,
+computes RMS / peak / DC / spectral metrics, and records tolerances.
+Those comparison tests gate the remaining parity work.
+
+Three blocking gates remain before any parity claim is valid (see
+"Blocking gates before parity claims" at the end of §12): §12.10b mGBA
+capture parity, the wave trigger / phase contract resolved against the
+intended reference (mGBA / hardware, per memory
+`project_audio_reference_target.md`), and PSG/DC/absolute-level parity.
+PSG-unipolar **structural rework landed 2026-04-30** (hw_psg
 unipolar synth + hw_mix `_applyBias`-mirror); the synth-domain shape
 is now unipolar like mGBA's GBA-mode `GBAudioSamplePSG`.  2026-05-01
 update with mgba-ss2 captures + analyzer single-trim alignment: full-
@@ -32,8 +40,9 @@ bug.  The gate is still **OPEN** on absolute level tuning, but the
 data needed to drive that tune is blocked on a cleaner mGBA reference
 (savestate captures include gameplay SFX that overlap the song; mGBA
 headless `--audio-out` collapses to mono regardless of stereo
-panning).  After that closes: steps 11–13 (RMS regressions, whole-
-song A/B, delete v1).
+panning).  Work that changes parity-sensitive DSP now belongs after the
+comparison harness so every tune is measured against the same reference
+pipeline.  Final cleanup is v2 cutover / v1 removal, not a blind delete.
 Branch: `loader-refactor`.
 **Supersedes the structural part of `NEXT_SESSION.md`** (Layer 1–4
 content there is still valid as future work; this doc replaces the
@@ -127,7 +136,7 @@ Verification most recently observed (2026-04-30):
 
 | `M4A_DRIVER_V2` / `HW_AUDIO_V2` | `poryaaaa_unit_tests` |
 |---|---|
-| OFF / OFF (v1 default) | 86 / 86 |
+| OFF / OFF (deprecated v1 reference) | 86 / 86 |
 | ON / OFF (v2 driver, v1 chip — incl. LFO + reverb + retrigger + PCM publish driver-side regressions) | 190 / 190 |
 | OFF / ON (chip-only canned-event tests + solo-mask) | 148 / 148 |
 | ON / ON (full v2 — driver + LFO + reverb + retrigger + PCM publish + chip incl. PCM two-stage / mix / polyphase / cadence sweep + PCM chunk-size invariance + PCM publish-timing + solo-mask) | 267 / 267 |
@@ -351,11 +360,17 @@ bit layouts.  Reasons:
 ### 2f. Two CMake flags, not one — driver/chip independent
 
 CMake exposes `M4A_DRIVER_V2` and `HW_AUDIO_V2` independently, each
-defaulting OFF.  Reasons:
+defaulting OFF in the original scaffold.  That was correct while v1
+was the safety path.  The project is now moving out of scaffold mode:
+v1 should be deprecated and no longer built for normal products.  The
+flags may remain temporarily as comparison / bisect controls, but
+full-v2 should become the normal build configuration once the cutover
+plumbing is in place.  Reasons the flags still matter during this
+transition:
 - Each Layer 1–7 pass can be merged independently and validated against
   v1 by toggling either flag.
-- v1 keeps producing audio for the user's voice-player workflow during
-  the rewrite — no period where poryaaaa is broken.
+- v1 can remain a reference path for comparison tests without being the
+  shipped or default product path.
 - A/B diff testing (render same MIDI through v1 and v2, take diff WAV)
   becomes trivial with multiple builds.
 - **Independent validation**: with driver-only ON we can A/B the m4a
@@ -365,7 +380,8 @@ defaulting OFF.  Reasons:
 
 The flags also document intent: `plugin/m4a/` is *only* the v2 driver,
 `plugin/hw_audio/` is *only* the v2 chip.  v1 stays under
-`plugin/m4a_engine.c` and friends until deletion at the end.
+`plugin/m4a_engine.c` and friends only as a deprecated comparison
+reference until v2 cutover removes it from normal targets.
 
 ### 2g. Wave declick is a hardware artifact (in `hw_audio/`)
 
@@ -420,14 +436,13 @@ are all closed.  Three blocking gates remain before any parity claim
 is valid (full detail in "Blocking gates before parity claims" at
 the end of §12): §12.10b mGBA capture parity, the wave trigger /
 phase contract resolved against the intended reference (mGBA /
-hardware), and the PSG-unipolar synth rework (hw_psg currently
-dipolar; mGBA + real hardware unipolar — 3.4% full-scale DC
-mismatch confirmed empirically).  DirectSound PCM event/ring
+hardware), and PSG/DC/absolute-level parity.  PSG-unipolar structural
+work has landed; the remaining question is measured level / DC parity
+against a cleaner reference capture set.  DirectSound PCM event/ring
 timing + chunk-size-invariance closed 2026-04-30 (PCM_PUBLISH event
 + chip-side publish gate + chunk-size invariance regression).  The
-same scaffolding discipline applies to each remaining gate — each
-lands as its own ordered pass, with tests, before steps 11–13
-(RMS regressions, whole-song A/B, delete v1).
+next phase is comparison testing first, then parity-dependent tuning /
+cutover work based on those measurements.
 
 ---
 
@@ -473,16 +488,20 @@ open parity gate):
   driver emits per-CgbSound writes with sample offsets; chip's
   `hw_audio_render_events()` segments at each offset, applies events to
   PSG + PCM subsystems, and produces audible output.
-- CMake `M4A_DRIVER_V2` and `HW_AUDIO_V2` independent flags drive a
-  4-way build matrix (default / driver-only / chip-only / full v2).
+- CMake `M4A_DRIVER_V2` and `HW_AUDIO_V2` independent flags currently
+  drive a 4-way build matrix (v1 reference / driver-only / chip-only /
+  full v2).  V1 is deprecated and should stop being built for normal
+  product targets; keep it only where comparison tests explicitly need
+  the reference path.
 - All four entry points (CLAP `process`, headless export, CLI render,
   unit tests) chunk at `M4A_RECOMMENDED_MAX_ADVANCE_FRAMES` and feed
   `m4a_advance` / `hw_audio_render_events` / `m4a_consume_writes`.
 - `hw_audio_render()` (the legacy snapshot-driven API) is preserved as
   a trigger-consumption-only no-render path for any call site that
   hasn't migrated; production v2 does NOT use it.
-- v1 path (both flags OFF, default) is **completely unchanged** — no
-  edits to `m4a_engine.c`, `m4a_channel.c`, `m4a_reverb.c`, `m4a_tables.c`.
+- v1 path (both flags OFF) is **deprecated reference code**.  It should
+  no longer be the normal product build, but it remains useful until
+  comparison tests have captured the v1-vs-v2 and mGBA-vs-v2 deltas.
 
 Driver-side modules:
 
@@ -525,16 +544,19 @@ Chip-side modules:
 
 Open work — see "Blocking gates before parity claims" at the end of §12:
 
+- §12 step 11 — comparison test infrastructure is the next step.  It
+  should render stable v2/reference captures and report RMS / peak / DC /
+  spectral metrics before further parity tuning.
 - §12 step 10b — mGBA capture-comparison parity (self-consistency
   landed at §12.10a but doesn't prove match against a reference).
 - Wave trigger / phase contract resolved against the intended
   reference (mGBA / hardware), with `hw_psg.{h,c}`, `m4a_cgb.c`,
   and tests agreeing.
-- PSG unipolar synth rework: hw_psg currently dipolar, mGBA +
-  hardware unipolar; per-channel + full-mix raw / DC / RMS metrics
-  must match within tolerance.  See `project_psg_unipolar_parity.md`.
-- §12 steps 11–13: re-enable v1-vs-v2 RMS tests, whole-song A/B,
-  delete v1.
+- PSG/DC/absolute-level parity: structural unipolar PSG work and
+  DirectSound int8 DC follow-up are closed, but absolute level tuning
+  still needs clean comparison data.  See `project_psg_unipolar_parity.md`.
+- After comparison tests exist: parity tuning, whole-song A/B, then v2
+  cutover and v1 removal.
 
 ---
 
@@ -998,7 +1020,7 @@ allocation, locks, or unbounded event queue growth inside `plugin_process()`.
 ## 8. CMake wiring
 
 Two independent flags so we can validate the driver and the chip in
-isolation during the rewrite:
+isolation during the rewrite.  Original scaffold default:
 
 ```cmake
 option(M4A_DRIVER_V2 "Use v2 m4a software driver" OFF)
@@ -1012,9 +1034,15 @@ if(HW_AUDIO_V2)
 endif()
 ```
 
+Next cutover direction: v1 is deprecated and should no longer be built
+for normal product targets.  Full-v2 should become the normal build
+path; v1 should survive only behind explicit comparison / bisect targets
+until parity evidence is captured and reviewed.
+
 Combinations:
-- `OFF / OFF` (default): pure v1 — unchanged behaviour.
-- `ON / ON`: full v2 path through both modules.
+- `ON / ON`: full v2 path through both modules; target normal product
+  configuration after cutover.
+- `OFF / OFF`: pure v1 — deprecated reference configuration only.
 - `ON / OFF`: v2 driver feeds its register/ring output into a v1
   chip-side adapter (Layer 1 has a small shim that drives v1's
   `m4a_pcm_channel_render` / `m4a_cgb_channel_render` from the v2
@@ -1116,7 +1144,8 @@ into the v2 driver and immediately become testable through the existing
 entry points without further plumbing.  During early scaffold builds the
 driver absorbed these calls as no-ops; it now has partial behavior, so
 new ingress mirrors must be backed by parity tests before being treated
-as complete.  Behaviour is unchanged at `OFF / OFF`.
+as complete.  `OFF / OFF` behaviour is preserved only as a reference for
+comparison tests; it should not remain the default product path.
 
 For the scaffold, `g_driver` and `g_hw` are file-scope statics in the
 non-plugin targets, lazily initialised by `v2_lazy_init()` (test_wav_export)
@@ -1277,8 +1306,9 @@ Layer 1 status (2026-04-30):
 Audible parity claims still depend on the three blocking gates
 listed at the end of §12 ("Blocking gates before parity claims") —
 §12.10b mGBA capture parity, the wave trigger / phase contract, and
-the PSG unipolar synth rework.  The DirectSound PCM event/ring
-timing gate (a prior entry on this list) closed 2026-04-30.
+PSG/DC/absolute-level parity.  PSG unipolar structural work and the
+DirectSound PCM event/ring timing gate (a prior entry on this list)
+are closed; level tuning still needs comparison-test evidence.
 
 Historical scaffold items to continue watching:
 
@@ -1513,17 +1543,36 @@ Historical scaffold items to continue watching:
     chosen scope reduction, not a closed parity gate — if future ROM
     hacks demand mid-call SOUNDBIAS, the resampler + cumulative
     trackers will need a flush-and-rebuild path mid-call.
-11. **Re-enable disabled tests**: any unit tests `#ifndef`-skipped
-    during the scaffold come back, asserting v1 vs v2 RMS within
-    ±0.5 dB at 32768 Hz host (looser at 44.1/48 kHz where resampling
-    artefacts dominate; pin actual thresholds against per-channel solo
-    captures).
-12. **Whole-song A/B vs v1 and mGBA**: per-channel solo captures vs
-    mGBA Qt; level parity ±0.5 dB at multiple host rates and song
-    types.  This is the *final* gate, not the first — subjective song
-    matching is too easy to pass-by-coincidence on one song while
-    failing on another.
-13. **Delete v1** once v2 reaches parity.
+11. **Comparison test infrastructure** — ⚠ **NEXT.**
+    Build the harness before further parity tuning.  It should:
+    - Render stable v2 captures through `poryaaaa_render` / full-v2
+      builds, including per-channel solo output.
+    - Render or load reference captures from patched mGBA and, while it
+      still exists, deprecated v1 reference builds.
+    - Align captures deterministically and report raw + AC metrics:
+      RMS, peak, DC, min/max, spectral envelope, and channel balance.
+    - Store tolerance policy per comparison type instead of baking one
+      global number into every test.
+    - Skip gracefully when external ROM / decomp / mGBA assets are not
+      available.
+12. **Parity work driven by comparison results.**
+    Use the §12.11 harness to close §12.10b, wave trigger / phase, and
+    PSG/DC/absolute-level gates.  Re-enable any `#ifndef`-skipped tests
+    only when the comparison data says the expected tolerance is real.
+    Keep subjective whole-song A/B as the final smoke check, not the
+    first source of truth.
+13. **V2 cutover and v1 removal.**
+    V1 is deprecated and should no longer be built for normal products.
+    Once comparison tests exist and the remaining parity gates are
+    closed or explicitly waived:
+    - Make full-v2 the normal target configuration.
+    - Remove unconditional `M4AEngine` ownership from plugin / renderer /
+      test plumbing.
+    - Stop compiling v1 `ENGINE_SOURCES` into normal targets.
+    - Remove ingress mirroring that exists only to keep v1 and v2 in
+      parallel.
+    - Delete or quarantine v1 files after the build no longer depends on
+      them.
 
 ---
 
@@ -1540,7 +1589,7 @@ documentation should explicitly say so.
 |---|---|---|---|
 | **§12.10b mGBA capture parity** — chip-only canned outputs compared to mGBA reference captures at SOUNDBIAS=0/1/2/3 | Empirical confirmation that the v2 chip matches mGBA on identical canned event sequences | §12.10a self-consistency tests landed but they only prove the v2 chip's pipeline is internally coherent — they do NOT compare to a reference. | Reference captures via `tools/captures/mgba-headless-channel-mute/` (patched mGBA headless binary; `--audio-out FILE` for native WAV, `--solo LIST` / `--mute LIST` for discrete channel isolation, `--hold-a-frames` / `--tap-a-frames` for menu state setup).  v2-side captures via `poryaaaa_render --solo <name>` (HW_AUDIO_V2 builds; channel-name parity with the mGBA tool: full / psg / directsound / ch1\|sq1 / ch2\|sq2 / wave / noise / fifo-a\|dma-a / fifo-b\|dma-b).  Plus a cross-render comparator harness, tolerance bounds on RMS / peak / spectral envelope, CI regression. |
 | **Wave trigger / phase contract** | A documented, tested agreement between `hw_psg.{h,c}`, `m4a_cgb.c`, and the audio reference on whether a real fresh-note NR34 trigger should reset chip `wave_phase` (and likewise the noise LFSR on NR44) | Today's `freshStart` fix means MO_VOL events no longer re-trigger, so the contract only fires on note-start.  But on a legitimate note-start trigger the chip resets `wave_phase=0` (matches GBATEK / mGBA gb_audio.c) while v1 preserves phase — that divergence is unresolved against v1.  Reference target is mGBA / hardware (per `project_audio_reference_target.md`), so v2's current chip behaviour is correct; the work is verifying it against captures and adding a regression. | Use the §12.10b mGBA capture infrastructure to capture wave output through the v2 chip on a sustained-wave-with-MO_VOL sequence; assert phase coherence + match vs mGBA; add a chip-side regression that pins the contract. |
-| **PSG unipolar synth rework** — structural ports landed 2026-04-30, gate still OPEN pending level tuning + DC parity | Sample-domain raw / DC / RMS parity (not just AC-normalized) between poryaaaa per-channel + full-mix WAVs and mGBA captures.  Even with the synth structural change, full-mix DC delta is ~2.29% full-scale and per-channel amplitudes are ~25–30% short of reference; until both close, raw min/max/DC/RMS comparisons show real mismatch. | **Closed**: structural ports only.  `hw_psg.c` now synthesises unipolar at the synth (square: `duty_high ? env_vol : 0`; wave: `nib × wave_factor / 15`; noise: `lsb × env_vol / 15`) per mGBA `GBAudioSamplePSG` (`dcOffset = 0`).  `hw_mix.c` now mirrors mGBA `_applyBias` (add bias → clip unsigned [0, 0x3FF] → subtract bias) — earlier code embedded the bias offset in output for non-default bias, which was a divergence.  Empirical impact (littleroot_test, default bias): poryaaaa ch2 L DC went +0.00001 → +0.0157 (mGBA +0.0224) and the post-resampler PSG WAV is structurally unipolar at the synth boundary; the rendered WAV still has small negative undershoots from polyphase ringing (e.g. ch2 L min = -287 vs mGBA min = 0).  Full L DC went -0.0152 → -0.00005 on poryaaaa, but mGBA full L DC = +0.0228 — so the **delta** improved from -0.0380 to -0.0229 (still ~2.29% full-scale).  poryaaaa full L is "near zero" because PSG positive DC is being cancelled by the DirectSound negative DC asymmetry, NOT because it matches mGBA.  **Open (still blocking)**: (a) absolute level tuning — poryaaaa PSG amplitude is 73–77% of mGBA (e.g. ch2 L max 3592 vs 4608); needs `kPsgChanScale` + master×psg_vol chain dialled against captures.  (b) DirectSound DC asymmetry — poryaaaa fifo-a DC = -0.015 vs mGBA +0.001 (~-500 raw on each FIFO); int8 PCM mid-point handling bug.  Closing (a) and (b) together is what gets full-mix DC delta down to noise level. | `hw_psg.c` + `hw_mix.c` reworks: ✅ landed.  Existing tests updated for unipolar expectations: ✅ landed.  Remaining: tune `kPsgChanScale` so per-channel raw min/max/DC/RMS matches mGBA within ~5%; investigate + fix DirectSound int8 DC asymmetry; verify the resampler-induced negative undershoot on rendered PSG WAVs is bounded; final raw + AC metrics within tolerance via `tools/captures/analyze_capture_pairs.sh` against the patched mGBA capture set. |
+| **PSG/DC/absolute-level parity** — structural unipolar work landed; level tuning remains open | Sample-domain raw / DC / RMS parity (not just AC-normalized) between poryaaaa per-channel + full-mix WAVs and mGBA captures. | **Closed:** `hw_psg.c` now synthesises unipolar at the synth boundary per mGBA `GBAudioSamplePSG`, `hw_mix.c` mirrors mGBA `_applyBias`, and DirectSound int8 DC follow-up is closed in the 2026-05-01 capture pass.  **Open:** absolute level tuning remains blocked on cleaner reference captures because the current savestate captures include gameplay SFX and mGBA headless `--audio-out` collapses to mono regardless of stereo panning. | First land §12.11 comparison tests so every level/DC change is measured through the same pipeline.  Then tune remaining PSG / mix scale issues against clean captures and pin final raw + AC metrics within tolerance. |
 
 When you hear "v2 is audible" — that's true today.  When you hear "v2
 matches mGBA / v1" — that's not true until the gates listed above close.

@@ -1,4 +1,5 @@
 #include "m4a_engine.h"
+#include "m4a_engine_recorder.h"
 #include "m4a_channel.h"
 #include "m4a_reverb.h"
 #include "m4a_tables.h"
@@ -275,10 +276,14 @@ void m4a_engine_init(M4AEngine *engine, float sampleRate)
 
     /* Initialize reverb */
     m4a_reverb_init(&engine->reverb, sampleRate, 0);
+
+    /* Initialize MIDI recorder */
+    m4a_engine_recorder_init(engine);
 }
 
 void m4a_engine_destroy(M4AEngine *engine)
 {
+    m4a_engine_recorder_destroy(engine);
     m4a_reverb_destroy(&engine->reverb);
 }
 

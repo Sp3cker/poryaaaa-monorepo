@@ -52,6 +52,8 @@ static void gui_log(const char *fmt, ...)
 /* Our C interface */
 #include "m4a_gui.h"
 #include "m4a_engine.h"
+#include "m4a_plugin.h"
+#include "m4a_engine_recorder.h"
 
 /* CLAP GUI extension (for notifying host when floating window closes) */
 #include <clap/ext/gui.h>
@@ -122,6 +124,20 @@ struct M4AGuiState {
     int pendingSwapVoice;
     ProjectAssetKind pendingSwapKind;
     char pendingSwapFileName[256];
+
+    /* Recorder tab: direct pointer to plugin data (M4APluginData*) for
+     * armed flag and path. Stored as void* to avoid circular include in header. */
+    void *plugin_data;
+    /* Status message shown after a save attempt */
+    char recorderStatus[256];
+
+    /* Audio device callbacks (standalone wires these; DAW build leaves NULL).
+     * Cached device list is repopulated on first render and on Refresh so we
+     * don't re-enumerate CoreAudio every frame. */
+    M4AHostAudioApi audioApi;
+    bool            audioDevicesDirty;
+    int             audioDeviceCount;
+    M4AAudioDeviceInfo audioDevices[32];
 };
 
 /* ---- Internal helpers ---- */
@@ -305,6 +321,42 @@ static void render_general_tab(M4AGuiState *gui)
     }
     if (ImGui::Checkbox("GBA Analog Filter", &gui->settings.analogFilter))
         gui->settingsChanged = true;
+
+    /* ---- Output Device (standalone only) ----
+     * audioApi.list_outputs is wired by the standalone entry to RtAudio.
+     * In a DAW-hosted CLAP build the host owns audio routing, so the
+     * callbacks stay NULL and this whole control is hidden. */
+    if (gui->audioApi.list_outputs && gui->audioApi.set_output) {
+        if (gui->audioDevicesDirty) {
+            gui->audioDeviceCount = gui->audioApi.list_outputs(
+                gui->audioApi.ctx, gui->audioDevices,
+                (int)(sizeof(gui->audioDevices) / sizeof(gui->audioDevices[0])));
+            gui->audioDevicesDirty = false;
+        }
+        unsigned int currentID = gui->audioApi.current_id
+            ? gui->audioApi.current_id(gui->audioApi.ctx) : 0u;
+        const char *currentName = "(unknown)";
+        for (int i = 0; i < gui->audioDeviceCount; i++) {
+            if (gui->audioDevices[i].id == currentID) {
+                currentName = gui->audioDevices[i].name;
+                break;
+            }
+        }
+        if (ImGui::BeginCombo("Output Device", currentName)) {
+            for (int i = 0; i < gui->audioDeviceCount; i++) {
+                bool selected = (gui->audioDevices[i].id == currentID);
+                if (ImGui::Selectable(gui->audioDevices[i].name, selected)) {
+                    gui->audioApi.set_output(gui->audioApi.ctx,
+                                              gui->audioDevices[i].id);
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##audiodev"))
+            gui->audioDevicesDirty = true;
+    }
 }
 
 /* Portable case-insensitive substring search (strcasestr is not on Windows). */
@@ -499,6 +551,76 @@ static void render_voices_tab(M4AGuiState *gui)
     }
 }
 
+static void render_recorder_tab(M4AGuiState *gui)
+{
+    M4APluginData *data = static_cast<M4APluginData *>(gui->plugin_data);
+    if (!data) {
+        ImGui::TextUnformatted("Recorder UI wiring deferred — engine ptr plumbing");
+        return;
+    }
+
+    /* Record toggle — only when this is on does the audio thread push MIDI
+     * events into the recorder buffer. */
+    bool armed = atomic_load(&data->recorderArmed);
+    if (ImGui::Checkbox("Record", &armed))
+        atomic_store(&data->recorderArmed, armed);
+
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        m4a_engine_recorder_reset(&data->engine);
+        atomic_store(&data->recorderSeenPC,  0u);
+        atomic_store(&data->recorderSeenVol, 0u);
+        atomic_store(&data->recorderSeenPan, 0u);
+        gui->recorderStatus[0] = '\0';
+    }
+
+    /* Status counters */
+    uint64_t evCount = m4a_engine_recorder_event_count(&data->engine);
+    double durSec    = m4a_engine_recorder_duration_seconds(&data->engine);
+    ImGui::Text("Buffered: %llu events (%.2fs)", (unsigned long long)evCount, durSec);
+
+    /* Filename input */
+    ImGui::InputText("Filename", data->recorderPath, sizeof(data->recorderPath));
+
+    /* Save button */
+    if (ImGui::Button("Save SMF")) {
+        bool ok = m4a_engine_recorder_save_smf(&data->engine, data->recorderPath, 480, 120.0);
+        snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
+                 ok ? "Saved: %s" : "Failed: %s", data->recorderPath);
+    }
+
+    if (gui->recorderStatus[0])
+        ImGui::TextUnformatted(gui->recorderStatus);
+
+    /* Per-channel capture indicators: 12 rows, three LEDs each.
+     * A LED lights green once the recorder has captured an event of that
+     * type for that channel since the last Clear. */
+    ImGui::Separator();
+    uint32_t pcMask  = atomic_load(&data->recorderSeenPC);
+    uint32_t volMask = atomic_load(&data->recorderSeenVol);
+    uint32_t panMask = atomic_load(&data->recorderSeenPan);
+    auto led = [](uint32_t mask, int ch) {
+        bool on = (mask >> ch) & 1u;
+        ImGui::TextColored(on ? ImVec4(0.18f, 0.95f, 0.35f, 1.0f)
+                              : ImVec4(0.18f, 0.24f, 0.20f, 1.0f), "\xE2\x97\x8F");
+    };
+    if (ImGui::BeginTable("rec_indicators", 4, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Ch");
+        ImGui::TableSetupColumn("PC");
+        ImGui::TableSetupColumn("Vol");
+        ImGui::TableSetupColumn("Pan");
+        ImGui::TableHeadersRow();
+        for (int ch = 0; ch < 12; ch++) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::Text("%d", ch + 1);
+            ImGui::TableSetColumnIndex(1); led(pcMask,  ch);
+            ImGui::TableSetColumnIndex(2); led(volMask, ch);
+            ImGui::TableSetColumnIndex(3); led(panMask, ch);
+        }
+        ImGui::EndTable();
+    }
+}
+
 /* Render a single ImGui frame — called from PUGL_EXPOSE. */
 static void render_frame(M4AGuiState *gui)
 {
@@ -543,6 +665,10 @@ static void render_frame(M4AGuiState *gui)
         }
         if (ImGui::BeginTabItem("Voices")) {
             render_voices_tab(gui);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Recorder")) {
+            render_recorder_tab(gui);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -1052,6 +1178,24 @@ void m4a_gui_set_project_assets(M4AGuiState *gui,
     gui->progWaveAssets = progWaveAssets;
     gui->progWaveAssetCount = progWaveCount;
     gui->assetOverrides = overrides;
+}
+
+void m4a_gui_set_plugin_data(M4AGuiState *gui, void *plugin_data)
+{
+    if (!gui) return;
+    gui->plugin_data = plugin_data;
+}
+
+void m4a_gui_set_audio_api(M4AGuiState *gui, const M4AHostAudioApi *api)
+{
+    if (!gui) return;
+    if (api) {
+        gui->audioApi = *api;
+        gui->audioDevicesDirty = true;
+    } else {
+        memset(&gui->audioApi, 0, sizeof(gui->audioApi));
+        gui->audioDeviceCount = 0;
+    }
 }
 
 bool m4a_gui_poll_sample_swap(M4AGuiState *gui, int *voiceIndex,

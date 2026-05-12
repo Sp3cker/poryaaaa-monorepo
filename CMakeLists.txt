@@ -73,6 +73,12 @@ endif()
 # standalone / test targets.
 add_subdirectory(plugin/voicegroup)
 
+# ---- Recorder (MIDI capture + SMF writer) ----
+# Vendored from the old ccomidi_recorder.clap project.  Pure C++17.
+# Engine will own a RecorderCore instance; M4L wrapper consumes it via
+# the engine accessor.  See recorder integration plan.md.
+add_subdirectory(plugin/recorder)
+
 # ---- v2 audio engine: m4a software driver + hw_audio chip emulation ----
 # Two independent flags so we can validate the driver and the chip in
 # isolation during the rewrite.  See HW_AUDIO_SCAFFOLD_PLAN.md §8.
@@ -80,8 +86,8 @@ add_subdirectory(plugin/voicegroup)
 #   ON  / ON : full v2 path through both modules.
 #   ON  / OFF: v2 driver feeds a v1 chip-side adapter (Layer 1 work).
 #   OFF / ON : canned-input chip tests (Layer 1+ unit tests).
-option(M4A_DRIVER_V2 "Use v2 m4a software driver"      OFF)
-option(HW_AUDIO_V2   "Use v2 hw_audio chip emulation"  OFF)
+option(M4A_DRIVER_V2 "Use v2 m4a software driver"      ON)
+option(HW_AUDIO_V2   "Use v2 hw_audio chip emulation"  ON)
 
 if(M4A_DRIVER_V2)
     add_subdirectory(plugin/m4a)
@@ -102,6 +108,7 @@ set(ENGINE_SOURCES
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
     plugin/m4a_params.c
+    plugin/m4a_engine_recorder.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
@@ -132,7 +139,7 @@ set_target_properties(poryaaaa PROPERTIES
     LINKER_LANGUAGE CXX
 )
 
-target_link_libraries(poryaaaa PRIVATE clap voicegroup_loader)
+target_link_libraries(poryaaaa PRIVATE clap voicegroup_loader recorder)
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa PRIVATE m X11 Xcursor Xrandr Xext)
@@ -209,6 +216,7 @@ target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader)
 add_executable(poryaaaa-standalone
     plugin/m4a_plugin.c
     plugin/m4a_params.c
+    plugin/m4a_engine_recorder.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
@@ -228,7 +236,7 @@ set_target_properties(poryaaaa-standalone PROPERTIES
 
 # Build Pugl as a static library (not a DLL) on all platforms
 target_compile_definitions(poryaaaa-standalone PRIVATE PUGL_STATIC)
-target_link_libraries(poryaaaa-standalone PRIVATE clap voicegroup_loader)
+target_link_libraries(poryaaaa-standalone PRIVATE clap voicegroup_loader recorder)
 
 # On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
 if(APPLE)

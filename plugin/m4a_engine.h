@@ -230,6 +230,10 @@ struct M4AEngine {
     ToneData *voiceGroup;   /* array of 128 ToneData entries */
     M4AEngineXcmdFn xcmd_fn;
     void *xcmd_ctx;
+
+    /* Embedded MIDI recorder (ccomidi::RecorderCore *). Opaque from C; cast
+     * to ccomidi::RecorderCore* via m4a_engine_recorder() in C++ code. */
+    void *recorder;
 };
 
 /* Engine lifecycle */
