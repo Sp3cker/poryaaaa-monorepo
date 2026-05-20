@@ -203,6 +203,7 @@ endif()
 # ---- Unit Tests ----
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
+    plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
 )
 
@@ -210,7 +211,7 @@ target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin
 )
 
-target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader)
+target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader recorder)
 
 # ---- Standalone (clap-wrapper) ----
 add_executable(poryaaaa-standalone

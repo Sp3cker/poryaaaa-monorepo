@@ -107,10 +107,34 @@ typedef struct {
      * 3 — NOT the host rate.  The polyphase resampler downstream
      * converts render-rate output to host rate. */
     float    render_rate;
+
+    /* Shared 512 Hz PSG frame sequencer.  Mirrors mGBA GBA-mode
+     * frame ownership: one chip-internal sequencer clocks length
+     * (0/2/4/6), SQ1 sweep (2/6), and envelope (7).  Phase 1 exposes
+     * debug counters only; later length/sweep/envelope implementations
+     * should attach to these hook points. */
+    uint8_t  frame_seq_step;
+    double   frame_seq_accum;
+    uint64_t frame_seq_ticks;
+    uint64_t frame_seq_length_ticks;
+    uint64_t frame_seq_sweep_ticks;
+    uint64_t frame_seq_envelope_ticks;
 } HwPsgSynth;
 
 void hw_psg_init(HwPsgSynth *psg, float render_rate);
 void hw_psg_set_render_rate(HwPsgSynth *psg, float render_rate);
+
+typedef struct {
+    uint8_t  frame_step;
+    double   frame_accum;
+    uint64_t frame_ticks;
+    uint64_t length_ticks;
+    uint64_t sweep_ticks;
+    uint64_t envelope_ticks;
+} HwPsgFrameSequencerDebug;
+
+void hw_psg_get_frame_sequencer_debug(const HwPsgSynth *psg,
+                                      HwPsgFrameSequencerDebug *out);
 
 /* Apply one M4ARegWrite event to the synth state.  Decodes the raw
  * NRxx byte payload into the relevant channel-state fields per real

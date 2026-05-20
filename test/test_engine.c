@@ -16,6 +16,7 @@
 #endif
 #if defined(HW_AUDIO_V2)
 #include "hw_audio/hw_audio.h"
+#include "hw_audio/hw_psg.h"
 #endif
 
 #if defined(M4A_DRIVER_V2)
@@ -2785,6 +2786,234 @@ static void test_v2_all_sound_off_immediate(void)
  * the right granularity for chip-side parity work without booting the
  * driver. ---- */
 
+static void test_hw_psg_frame_sequencer_init_convention(void)
+{
+    printf("Testing hw_psg frame sequencer: init first tick dispatches step 1...\n");
+
+    HwPsgSynth psg;
+    float sq1[256], sq2[256], wave[256], noise[256];
+    HwPsgFrameSequencerDebug dbg;
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, sq1, sq2, wave, noise, 256);
+    hw_psg_get_frame_sequencer_debug(&psg, &dbg);
+
+    ASSERT_EQ(dbg.frame_ticks, 1,    "one 512 Hz frame tick after 256 samples at 131072 Hz");
+    ASSERT_EQ(dbg.frame_step, 1,     "full init starts from mGBA frame=0, first tick dispatches step 1");
+    ASSERT_EQ(dbg.length_ticks, 0,   "step 1 does not clock length");
+    ASSERT_EQ(dbg.sweep_ticks, 0,    "step 1 does not clock sweep");
+    ASSERT_EQ(dbg.envelope_ticks, 0, "step 1 does not clock envelope");
+}
+
+static void test_hw_psg_frame_sequencer_dispatch_table(void)
+{
+    printf("Testing hw_psg frame sequencer: eight-step dispatch table...\n");
+
+    HwPsgSynth psg;
+    HwPsgFrameSequencerDebug dbg;
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
+    hw_psg_get_frame_sequencer_debug(&psg, &dbg);
+
+    ASSERT_EQ(dbg.frame_ticks, 8,    "eight frame ticks after 2048 samples at 131072 Hz");
+    ASSERT_EQ(dbg.frame_step, 0,     "eighth tick wraps to frame step 0");
+    ASSERT_EQ(dbg.length_ticks, 4,   "length clocks on steps 0,2,4,6");
+    ASSERT_EQ(dbg.sweep_ticks, 2,    "sweep clocks on steps 2,6");
+    ASSERT_EQ(dbg.envelope_ticks, 1, "envelope clocks on step 7");
+}
+
+static void test_hw_psg_frame_sequencer_chunk_invariance(void)
+{
+    printf("Testing hw_psg frame sequencer: chunking does not affect timing...\n");
+
+    HwPsgSynth full, chunked;
+    HwPsgFrameSequencerDebug dbg_full, dbg_chunked;
+
+    hw_psg_init(&full, 131072.0f);
+    hw_psg_render(&full, NULL, NULL, NULL, NULL, 2048);
+    hw_psg_get_frame_sequencer_debug(&full, &dbg_full);
+
+    hw_psg_init(&chunked, 131072.0f);
+    int remaining = 2048;
+    while (remaining > 0) {
+        int n = remaining > 17 ? 17 : remaining;
+        hw_psg_render(&chunked, NULL, NULL, NULL, NULL, n);
+        remaining -= n;
+    }
+    hw_psg_get_frame_sequencer_debug(&chunked, &dbg_chunked);
+
+    ASSERT_EQ(dbg_chunked.frame_ticks, dbg_full.frame_ticks,
+              "chunked render matches full render frame tick count");
+    ASSERT_EQ(dbg_chunked.frame_step, dbg_full.frame_step,
+              "chunked render matches full render frame step");
+    ASSERT_EQ(dbg_chunked.length_ticks, dbg_full.length_ticks,
+              "chunked render matches full render length ticks");
+    ASSERT_EQ(dbg_chunked.sweep_ticks, dbg_full.sweep_ticks,
+              "chunked render matches full render sweep ticks");
+    ASSERT_EQ(dbg_chunked.envelope_ticks, dbg_full.envelope_ticks,
+              "chunked render matches full render envelope ticks");
+    ASSERT_NEAR(dbg_chunked.frame_accum, dbg_full.frame_accum, 1e-12,
+                "chunked render matches full render frame accumulator");
+}
+
+static void test_hw_psg_frame_sequencer_rate_continuity(void)
+{
+    printf("Testing hw_psg frame sequencer: render-rate change preserves phase...\n");
+
+    HwPsgSynth psg;
+    HwPsgFrameSequencerDebug dbg;
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 128);
+    hw_psg_set_render_rate(&psg, 262144.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 256);
+    hw_psg_get_frame_sequencer_debug(&psg, &dbg);
+
+    ASSERT_EQ(dbg.frame_ticks, 1,    "half tick at 131072 plus half tick at 262144 clocks once");
+    ASSERT_EQ(dbg.frame_step, 1,     "rate change does not reset frame step");
+    ASSERT_NEAR(dbg.frame_accum, 0.0, 1e-12,
+                "rate change preserves accumulator and lands on tick boundary");
+}
+
+static void test_hw_psg_frame_sequencer_nr52_power_cycle(void)
+{
+    printf("Testing hw_psg frame sequencer: NR52 off-to-on follows mGBA step 0 convention...\n");
+
+    HwPsgSynth psg;
+    HwPsgFrameSequencerDebug dbg;
+    M4ARegWrite off = { 0, M4A_REG_NR52, 0x00 };
+    M4ARegWrite on  = { 0, M4A_REG_NR52, 0x80 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
+    hw_psg_apply_event(&psg, &off);
+    hw_psg_apply_event(&psg, &on);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 256);
+    hw_psg_get_frame_sequencer_debug(&psg, &dbg);
+
+    ASSERT_EQ(dbg.frame_ticks, 1,    "NR52 off-to-on resets frame tick counters");
+    ASSERT_EQ(dbg.frame_step, 0,     "mGBA NR52 re-enable sets frame=7, first tick dispatches step 0");
+    ASSERT_EQ(dbg.length_ticks, 1,   "step 0 clocks length after NR52 re-enable");
+    ASSERT_EQ(dbg.sweep_ticks, 0,    "step 0 does not clock sweep");
+    ASSERT_EQ(dbg.envelope_ticks, 0, "step 0 does not clock envelope");
+}
+
+static void test_hw_psg_frame_sequencer_disabled_does_not_advance(void)
+{
+    printf("Testing hw_psg frame sequencer: disabled master stays silent and does not advance...\n");
+
+    HwPsgSynth psg;
+    float sq1[512], sq2[512], wave[512], noise[512];
+    HwPsgFrameSequencerDebug dbg;
+    M4ARegWrite off = { 0, M4A_REG_NR52, 0x00 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &off);
+    memset(sq1, 1, sizeof(sq1));
+    memset(sq2, 1, sizeof(sq2));
+    memset(wave, 1, sizeof(wave));
+    memset(noise, 1, sizeof(noise));
+    hw_psg_render(&psg, sq1, sq2, wave, noise, 512);
+    hw_psg_get_frame_sequencer_debug(&psg, &dbg);
+
+    bool silent = true;
+    for (int i = 0; i < 512; i++) {
+        if (sq1[i] != 0.0f || sq2[i] != 0.0f ||
+            wave[i] != 0.0f || noise[i] != 0.0f) {
+            silent = false;
+            break;
+        }
+    }
+    ASSERT(silent,                   "NR52 disabled render zeroes all direct PSG outputs");
+    ASSERT_EQ(dbg.frame_ticks, 0,    "NR52 disabled render does not advance frame sequencer");
+    ASSERT_EQ(dbg.frame_step, 7,     "NR52 disabled state holds mGBA re-enable frame seed");
+}
+
+static void test_hw_psg_frame_sequencer_nr52_enabled_write_no_reset(void)
+{
+    printf("Testing hw_psg frame sequencer: NR52 enabled->enabled does not reset...\n");
+
+    HwPsgSynth psg;
+    HwPsgFrameSequencerDebug before, after;
+    M4ARegWrite on = { 0, M4A_REG_NR52, 0x80 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 384);
+    hw_psg_get_frame_sequencer_debug(&psg, &before);
+    hw_psg_apply_event(&psg, &on);
+    hw_psg_get_frame_sequencer_debug(&psg, &after);
+
+    ASSERT_EQ(after.frame_ticks, before.frame_ticks,
+              "enabled NR52 write preserves frame tick count");
+    ASSERT_EQ(after.frame_step, before.frame_step,
+              "enabled NR52 write preserves frame step");
+    ASSERT_NEAR(after.frame_accum, before.frame_accum, 1e-12,
+                "enabled NR52 write preserves frame accumulator");
+    ASSERT_EQ(after.length_ticks, before.length_ticks,
+              "enabled NR52 write preserves length counter");
+    ASSERT_EQ(after.sweep_ticks, before.sweep_ticks,
+              "enabled NR52 write preserves sweep counter");
+    ASSERT_EQ(after.envelope_ticks, before.envelope_ticks,
+              "enabled NR52 write preserves envelope counter");
+}
+
+static void test_hw_psg_frame_sequencer_nr52_disabled_write_stable(void)
+{
+    printf("Testing hw_psg frame sequencer: NR52 disabled->disabled stays stable...\n");
+
+    HwPsgSynth psg;
+    HwPsgFrameSequencerDebug before, after;
+    M4ARegWrite off = { 0, M4A_REG_NR52, 0x00 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 384);
+    hw_psg_apply_event(&psg, &off);
+    hw_psg_get_frame_sequencer_debug(&psg, &before);
+    hw_psg_apply_event(&psg, &off);
+    hw_psg_get_frame_sequencer_debug(&psg, &after);
+
+    ASSERT_EQ(after.frame_ticks, before.frame_ticks,
+              "disabled NR52 write preserves frame tick count");
+    ASSERT_EQ(after.frame_step, before.frame_step,
+              "disabled NR52 write preserves frame step");
+    ASSERT_NEAR(after.frame_accum, before.frame_accum, 1e-12,
+                "disabled NR52 write preserves frame accumulator");
+    ASSERT_EQ(after.length_ticks, before.length_ticks,
+              "disabled NR52 write preserves length counter");
+    ASSERT_EQ(after.sweep_ticks, before.sweep_ticks,
+              "disabled NR52 write preserves sweep counter");
+    ASSERT_EQ(after.envelope_ticks, before.envelope_ticks,
+              "disabled NR52 write preserves envelope counter");
+}
+
+static void test_hw_psg_nr52_power_cycle_preserves_wave_ram(void)
+{
+    printf("Testing hw_psg: NR52 power cycle preserves wave RAM...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite off = { 0, M4A_REG_NR52, 0x00 };
+    M4ARegWrite on  = { 0, M4A_REG_NR52, 0x80 };
+
+    hw_psg_init(&psg, 131072.0f);
+    for (uint32_t i = 0; i < 16; i++) {
+        M4ARegWrite wr = { 0, M4A_REG_WAVE_RAM_BYTE,
+                           (i << 8) | (uint8_t)(0xA0u | i) };
+        hw_psg_apply_event(&psg, &wr);
+    }
+    hw_psg_apply_event(&psg, &off);
+    hw_psg_apply_event(&psg, &on);
+
+    bool preserved = true;
+    for (uint32_t i = 0; i < 16; i++) {
+        if (psg.wave_ram[i] != (uint8_t)(0xA0u | i)) {
+            preserved = false;
+            break;
+        }
+    }
+    ASSERT(preserved,                "NR52 disable/re-enable does not clear channel 3 wave RAM");
+}
+
 static void test_chip_canned_square_audible(void)
 {
     printf("Testing chip-only: canned NRxx events drive sq2 audible...\n");
@@ -4138,6 +4367,16 @@ int main(void)
 #endif
 
 #if defined(HW_AUDIO_V2)
+    test_hw_psg_frame_sequencer_init_convention();
+    test_hw_psg_frame_sequencer_dispatch_table();
+    test_hw_psg_frame_sequencer_chunk_invariance();
+    test_hw_psg_frame_sequencer_rate_continuity();
+    test_hw_psg_frame_sequencer_nr52_power_cycle();
+    test_hw_psg_frame_sequencer_disabled_does_not_advance();
+    test_hw_psg_frame_sequencer_nr52_enabled_write_no_reset();
+    test_hw_psg_frame_sequencer_nr52_disabled_write_stable();
+    test_hw_psg_nr52_power_cycle_preserves_wave_ram();
+
     /* Chip-only canned-event tests — no driver needed.  These also run
      * under full-v2 (M4A_DRIVER_V2 + HW_AUDIO_V2) but their value is
      * the chip-only build which doesn't have the driver. */

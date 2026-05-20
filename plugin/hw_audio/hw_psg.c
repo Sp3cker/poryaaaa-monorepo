@@ -12,6 +12,90 @@ static const uint8_t kDutyPatterns[4] = {
     0x7E,  /* 75%:   0111_1110 */
 };
 
+#define HW_PSG_FRAME_SEQ_HZ 512.0
+
+static void hw_psg_reset_frame_sequencer(HwPsgSynth *psg, uint8_t step) {
+    psg->frame_seq_step = (uint8_t)(step & 7u);
+    psg->frame_seq_accum = 0.0;
+    psg->frame_seq_ticks = 0;
+    psg->frame_seq_length_ticks = 0;
+    psg->frame_seq_sweep_ticks = 0;
+    psg->frame_seq_envelope_ticks = 0;
+}
+
+static void hw_psg_frame_length(HwPsgSynth *psg) {
+    psg->frame_seq_length_ticks++;
+}
+
+static void hw_psg_frame_sweep(HwPsgSynth *psg) {
+    psg->frame_seq_sweep_ticks++;
+}
+
+static void hw_psg_frame_envelope(HwPsgSynth *psg) {
+    psg->frame_seq_envelope_ticks++;
+}
+
+static void hw_psg_tick_frame_sequencer(HwPsgSynth *psg) {
+    psg->frame_seq_step = (uint8_t)((psg->frame_seq_step + 1u) & 7u);
+    psg->frame_seq_ticks++;
+
+    switch (psg->frame_seq_step) {
+    case 2:
+    case 6:
+        hw_psg_frame_sweep(psg);
+        /* Fall through. */
+    case 0:
+    case 4:
+        hw_psg_frame_length(psg);
+        break;
+    case 7:
+        hw_psg_frame_envelope(psg);
+        break;
+    default:
+        break;
+    }
+}
+
+static void hw_psg_advance_frame_sequencer(HwPsgSynth *psg) {
+    if (psg->render_rate <= 0.0f) return;
+    psg->frame_seq_accum += HW_PSG_FRAME_SEQ_HZ / (double)psg->render_rate;
+    while (psg->frame_seq_accum >= 1.0) {
+        psg->frame_seq_accum -= 1.0;
+        hw_psg_tick_frame_sequencer(psg);
+    }
+}
+
+static void hw_psg_clear_channel_state(HwPsgSynth *psg) {
+    psg->sq1_phase = 0;
+    psg->sq2_phase = 0;
+    psg->wave_phase = 0;
+
+    psg->sq1_freq = 0;
+    psg->sq2_freq = 0;
+    psg->wave_freq = 0;
+
+    psg->sq1_duty = 0;
+    psg->sq2_duty = 0;
+
+    psg->sq1_env_vol = 0;
+    psg->sq2_env_vol = 0;
+    psg->wave_vol_code = 0;
+
+    psg->sq1_enabled = false;
+    psg->sq2_enabled = false;
+    psg->wave_enabled = false;
+    psg->wave_dac_on = false;
+
+    psg->noise_lfsr = 0;
+    psg->noise_phase = 0;
+    psg->noise_clock_shift = 0;
+    psg->noise_divisor_code = 0;
+    psg->noise_last_sample = 0;
+    psg->noise_width_7bit = false;
+    psg->noise_env_vol = 0;
+    psg->noise_enabled = false;
+}
+
 /* Convert the 11-bit GB freq word + audio-rate constant + render_rate
  * into a 32-bit phase increment per render-rate sample.  audio_freq_hz
  * = RATE_NUM / (2048 - F); phase_inc = audio_hz / render_rate × 2^32.
@@ -36,6 +120,7 @@ static uint32_t phase_inc_from_freq(uint16_t freq_word, float rate_num, float re
 void hw_psg_init(HwPsgSynth *psg, float render_rate) {
     memset(psg, 0, sizeof(*psg));
     psg->render_rate = render_rate;
+    hw_psg_reset_frame_sequencer(psg, 0);
     /* Match the driver's register-file defaults (m4a_driver_create) so
      * the chip starts in a "configured" state matching what real m4a
      * writes during init: NR52 master-enable on (NR50/NR51/SOUNDCNT_H
@@ -48,6 +133,17 @@ void hw_psg_init(HwPsgSynth *psg, float render_rate) {
 
 void hw_psg_set_render_rate(HwPsgSynth *psg, float render_rate) {
     psg->render_rate = render_rate;
+}
+
+void hw_psg_get_frame_sequencer_debug(const HwPsgSynth *psg,
+                                      HwPsgFrameSequencerDebug *out) {
+    if (!out) return;
+    out->frame_step = psg->frame_seq_step;
+    out->frame_accum = psg->frame_seq_accum;
+    out->frame_ticks = psg->frame_seq_ticks;
+    out->length_ticks = psg->frame_seq_length_ticks;
+    out->sweep_ticks = psg->frame_seq_sweep_ticks;
+    out->envelope_ticks = psg->frame_seq_envelope_ticks;
 }
 
 /* Convert NR32 byte → linear gain in [0..1].  Real GB shifts the wave
@@ -185,7 +281,16 @@ void hw_psg_apply_event(HwPsgSynth *psg, const M4ARegWrite *ev) {
      * NR50, NR51, SOUNDCNT_H PSG vol bits, and SOUNDBIAS land on the
      * mix-bus stage (HwMixBus), not here — see hw_mix.h. */
     case M4A_REG_NR52:
-        psg->master_enabled = (v & 0x80) != 0;
+        if ((v & 0x80) == 0) {
+            if (psg->master_enabled) {
+                psg->master_enabled = false;
+                hw_psg_clear_channel_state(psg);
+                hw_psg_reset_frame_sequencer(psg, 7);
+            }
+        } else if (!psg->master_enabled) {
+            psg->master_enabled = true;
+            hw_psg_reset_frame_sequencer(psg, 7);
+        }
         break;
     default:
         break;
@@ -326,5 +431,11 @@ void hw_psg_render(HwPsgSynth *psg,
         } else if (out_noise) {
             out_noise[i] = 0.0f;
         }
+
+        /* mGBA samples PSG output before running the frame event.  Keep
+         * the tick at the end of the internal sample so future audible
+         * length/sweep/envelope hooks affect the following sample, not
+         * the boundary sample that preceded the frame event. */
+        hw_psg_advance_frame_sequencer(psg);
     }
 }
