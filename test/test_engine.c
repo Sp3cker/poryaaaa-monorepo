@@ -2003,14 +2003,10 @@ static void test_v2_lfo_delay_holds_off(void)
     ASSERT(late_varies,              "post-delay snapshots show LFO modulation");
 }
 
-static void test_v2_lfo_lfodl_resets_running_modulation(void)
+static void test_v2_lfo_lfodl_write_does_not_reset_running_modulation(void)
 {
-    printf("Testing v2 LFODL after modulation running → resets modM and refreshes...\n");
+    printf("Testing v2 LFODL write does not reset running modulation...\n");
 
-    /* This test exercises the m4a_track.c CC 0x1A handler's
-     * "modM != 0 → reset and refresh" branch.  Run vibrato for a
-     * while so modM goes nonzero; then write LFODL and verify the
-     * next snapshot's freq is back at baseline (modM = 0). */
     ToneData voices[128];
     memset(voices, 0, sizeof(voices));
     voices[0].type    = VOICE_SQUARE_2;
@@ -2026,36 +2022,76 @@ static void test_v2_lfo_lfodl_resets_running_modulation(void)
     m4a_program_change(drv, 0, 0);
     m4a_cc(drv, 0, 7,    127);
     m4a_cc(drv, 0, 10,   64);
-    /* Capture baseline freq with NO modulation: trigger the note,
-     * fire the first vblank, snapshot.  modM=0 (no LFO armed yet), so
-     * keyM/pitM reflect the un-modulated note. */
     m4a_note_on(drv, 0, 60, 100);
-    m4a_advance(drv, 1024);
-    m4a_consume_writes(drv);
-    uint16_t baseline = m4a_get_register_file(drv)->sq2_freq;
 
-    /* Now arm LFO and run several vblanks so modM oscillates and
-     * freq drifts away from baseline. */
     m4a_cc(drv, 0, 0x01, 64);    /* mod = 64 */
     m4a_cc(drv, 0, 0x15, 32);    /* LFOS = 32 */
     for (int i = 0; i < 8; i++) {
         m4a_advance(drv, 1024);
         m4a_consume_writes(drv);
     }
-    uint16_t freq_during_lfo = m4a_get_register_file(drv)->sq2_freq;
+    int8_t mod_m = drv->tracks[0].modM;
+    uint8_t lfo_speed_c = drv->tracks[0].lfoSpeedC;
+    uint8_t lfo_delay_c = drv->tracks[0].lfoDelayC;
+    uint16_t freq_before_lfodl = m4a_get_register_file(drv)->sq2_freq;
 
-    /* Apply LFODL.  The CC 0x1A handler resets lfoSpeedC, lfoDelayC,
-     * and (since modM != 0) modM itself + refreshes active channels.
-     * Next snapshot must reflect freq back at baseline. */
+    ASSERT(mod_m != 0,                 "precondition: LFO is running with nonzero modM");
+    ASSERT(lfo_speed_c != 0,           "precondition: LFO phase has advanced");
+
     m4a_cc(drv, 0, 0x1A, 4);
-    m4a_advance(drv, 1024);
-    m4a_consume_writes(drv);
-    uint16_t freq_after_lfodl = m4a_get_register_file(drv)->sq2_freq;
 
-    ASSERT(freq_during_lfo != baseline,
-                                     "LFO running drove freq away from baseline");
-    ASSERT(freq_after_lfodl == baseline,
-                                     "LFODL reset modM → freq returns to baseline");
+    ASSERT_EQ(drv->tracks[0].lfoDelay, 4,        "LFODL stores configured delay");
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, lfo_delay_c,
+              "LFODL write leaves running delay counter unchanged");
+    ASSERT_EQ(drv->tracks[0].lfoSpeedC, lfo_speed_c,
+              "LFODL write leaves running LFO phase unchanged");
+    ASSERT_EQ(drv->tracks[0].modM, mod_m,
+              "LFODL write leaves running modulation output unchanged");
+    ASSERT_EQ(m4a_get_register_file(drv)->sq2_freq, freq_before_lfodl,
+              "LFODL write does not immediately refresh pitch to baseline");
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_lfo_note_on_reloads_delay_and_clears_phase(void)
+{
+    printf("Testing v2 note-on reloads LFODL counter and clears LFO phase...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type    = VOICE_SQUARE_2;
+    voices[0].key     = 60;
+    voices[0].attack  = 0;
+    voices[0].decay   = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t *)(uintptr_t)2;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7,    127);
+    m4a_cc(drv, 0, 10,   64);
+    m4a_cc(drv, 0, 0x1A, 4);     /* LFODL */
+    m4a_cc(drv, 0, 0x01, 64);    /* mod */
+    m4a_cc(drv, 0, 0x15, 32);    /* LFOS */
+
+    m4a_note_on(drv, 0, 60, 100);
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, 4,       "note-on reloads lfoDelayC from lfoDelay");
+    ASSERT_EQ(drv->tracks[0].lfoSpeedC, 0,       "note-on clears LFO phase when delay is nonzero");
+    ASSERT_EQ(drv->tracks[0].modM, 0,            "note-on clears modM when delay is nonzero");
+
+    for (int i = 0; i < 8; i++) {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+    }
+    ASSERT(drv->tracks[0].modM != 0,             "precondition: LFO restarted after first note");
+    ASSERT(drv->tracks[0].lfoSpeedC != 0,        "precondition: LFO phase advanced after first note");
+
+    m4a_note_on(drv, 0, 60, 100);
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, 4,       "second note-on reloads lfoDelayC");
+    ASSERT_EQ(drv->tracks[0].lfoSpeedC, 0,       "second note-on clears LFO phase");
+    ASSERT_EQ(drv->tracks[0].modM, 0,            "second note-on clears modM");
 
     m4a_driver_destroy(drv);
 }
@@ -4545,7 +4581,8 @@ int main(void)
     test_v2_lfo_disabled_no_freq_drift();
     test_v2_lfo_vibrato_modulates_freq();
     test_v2_lfo_delay_holds_off();
-    test_v2_lfo_lfodl_resets_running_modulation();
+    test_v2_lfo_lfodl_write_does_not_reset_running_modulation();
+    test_v2_lfo_note_on_reloads_delay_and_clears_phase();
     test_v2_cgb_trigger_only_on_note_start();
     test_v2_pcm_publish_event_per_vblank();
 #if defined(HW_AUDIO_V2)
