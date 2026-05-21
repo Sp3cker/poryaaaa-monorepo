@@ -239,6 +239,7 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
         ch->velocity  = velocity;
         ch->priority  = combinedPriority;
         ch->trackIndex = track;
+        ch->voiceType = voice->type;
         ch->rhythmPan = rhythmPan;
         ch->attack    = voice->attack;
         ch->decay     = voice->decay;

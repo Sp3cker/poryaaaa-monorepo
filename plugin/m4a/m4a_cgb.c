@@ -124,6 +124,21 @@ static uint32_t encode_nrx4(uint16_t freq, bool trigger, bool lengthEnable) {
          | ((uint32_t)(freq >> 8) & 0x07u);
 }
 
+static uint16_t cgb_pitch_freq_for_registers(M4ADriver *drv,
+                                             const M4ADriverCgbChan *ch) {
+    uint16_t freq = ch->frequency;
+
+    if ((ch->voiceType & VOICE_TYPE_FIX) && ch->type != 4) {
+        if (drv->regs.bias_sampling_cycle == 0) {
+            freq = (uint16_t)((freq + 2u) & 0x07FCu);
+        } else if (drv->regs.bias_sampling_cycle == 1) {
+            freq = (uint16_t)((freq + 1u) & 0x07FEu);
+        }
+    }
+
+    return freq;
+}
+
 /* Write envelope-related fields for one CGB channel into M4ARegisterFile
  * AND emit the equivalent Layer-1.5 NRxx event sequence.  Event order
  * mirrors pokeemerald CgbSound: NR10 (sq1 only, on the wave-RAM-pending
@@ -138,6 +153,7 @@ static void emit_vol_write(M4ADriver *drv, M4ADriverCgbChan *ch, int idx) {
 
     switch (ch->type) {
     case 1: {  /* sq1 — NRx2 envelope, NRx1 length+duty, NR10 sweep */
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
         r->sq1_env_volume    = ch->envelopeVolume & 0x0F;
         r->sq1_duty          = ch->dutyCycle & 0x03;
         r->sq1_length        = ch->length & 0x3F;
@@ -151,12 +167,13 @@ static void emit_vol_write(M4ADriver *drv, M4ADriverCgbChan *ch, int idx) {
         m4a_internal_emit_event(drv, M4A_REG_NR11,
             ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
         m4a_internal_emit_event(drv, M4A_REG_NR12, encode_nrx2(ch->envelopeVolume));
-        m4a_internal_emit_event(drv, M4A_REG_NR13, ch->frequency & 0xFF);
+        m4a_internal_emit_event(drv, M4A_REG_NR13, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR14,
-            encode_nrx4(ch->frequency, /*trigger=*/trig, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/trig, /*length_en=*/false));
         break;
     }
     case 2: {  /* sq2 — no NR20 sweep */
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
         r->sq2_env_volume    = ch->envelopeVolume & 0x0F;
         r->sq2_duty          = ch->dutyCycle & 0x03;
         r->sq2_length        = ch->length & 0x3F;
@@ -166,12 +183,13 @@ static void emit_vol_write(M4ADriver *drv, M4ADriverCgbChan *ch, int idx) {
         m4a_internal_emit_event(drv, M4A_REG_NR21,
             ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
         m4a_internal_emit_event(drv, M4A_REG_NR22, encode_nrx2(ch->envelopeVolume));
-        m4a_internal_emit_event(drv, M4A_REG_NR23, ch->frequency & 0xFF);
+        m4a_internal_emit_event(drv, M4A_REG_NR23, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR24,
-            encode_nrx4(ch->frequency, /*trigger=*/trig, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/trig, /*length_en=*/false));
         break;
     }
     case 3: {  /* wave */
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
         uint8_t nr32 = gCgb3Vol[ch->envelopeVolume & 0x0F];
         r->wave_volume_shift = wave_vol_shift_from_nr32(nr32);
         r->wave_length       = ch->length;
@@ -201,9 +219,9 @@ static void emit_vol_write(M4ADriver *drv, M4ADriverCgbChan *ch, int idx) {
         m4a_internal_emit_event(drv, M4A_REG_NR30, r->wave_dac_on ? 0x80u : 0u);
         m4a_internal_emit_event(drv, M4A_REG_NR31, ch->length);
         m4a_internal_emit_event(drv, M4A_REG_NR32, nr32);
-        m4a_internal_emit_event(drv, M4A_REG_NR33, ch->frequency & 0xFF);
+        m4a_internal_emit_event(drv, M4A_REG_NR33, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR34,
-            encode_nrx4(ch->frequency, /*trigger=*/trig, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/trig, /*length_en=*/false));
         break;
     }
     case 4: {  /* noise */
@@ -239,24 +257,30 @@ static void emit_vol_write(M4ADriver *drv, M4ADriverCgbChan *ch, int idx) {
 static void emit_pit_write(M4ADriver *drv, M4ADriverCgbChan *ch) {
     M4ARegisterFile *r = &drv->regs;
     switch (ch->type) {
-    case 1:
-        r->sq1_freq = ch->frequency & 0x07FF;
-        m4a_internal_emit_event(drv, M4A_REG_NR13, ch->frequency & 0xFF);
+    case 1: {
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
+        r->sq1_freq = freq & 0x07FF;
+        m4a_internal_emit_event(drv, M4A_REG_NR13, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR14,
-            encode_nrx4(ch->frequency, /*trigger=*/false, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/false, /*length_en=*/false));
         break;
-    case 2:
-        r->sq2_freq = ch->frequency & 0x07FF;
-        m4a_internal_emit_event(drv, M4A_REG_NR23, ch->frequency & 0xFF);
+    }
+    case 2: {
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
+        r->sq2_freq = freq & 0x07FF;
+        m4a_internal_emit_event(drv, M4A_REG_NR23, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR24,
-            encode_nrx4(ch->frequency, /*trigger=*/false, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/false, /*length_en=*/false));
         break;
-    case 3:
-        r->wave_freq = ch->frequency & 0x07FF;
-        m4a_internal_emit_event(drv, M4A_REG_NR33, ch->frequency & 0xFF);
+    }
+    case 3: {
+        uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
+        r->wave_freq = freq & 0x07FF;
+        m4a_internal_emit_event(drv, M4A_REG_NR33, freq & 0xFF);
         m4a_internal_emit_event(drv, M4A_REG_NR34,
-            encode_nrx4(ch->frequency, /*trigger=*/false, /*length_en=*/false));
+            encode_nrx4(freq, /*trigger=*/false, /*length_en=*/false));
         break;
+    }
     case 4:
         /* Noise pitch is encoded in NR43 directly — no trigger needed. */
         r->noise_clock_shift  = (ch->frequency >> 4) & 0x0F;

@@ -757,6 +757,76 @@ static void test_v2_trigger_semantics(void)
     m4a_driver_destroy(drv);
 }
 
+static void test_v2_cgb_alt_voice_quantizes_pitch_writes(void)
+{
+    printf("Testing v2 CGB alt voices quantize pitch writes at low SOUNDBIAS cycles...\n");
+
+    uint8_t key = 0;
+    uint16_t base = 0;
+    for (uint8_t k = 0; k < 128; k++) {
+        base = (uint16_t)m4a_midi_key_to_cgb_freq(1, k, 0);
+        if ((base & 0x03) != 0) {
+            key = k;
+            break;
+        }
+    }
+    ASSERT((base & 0x03) != 0, "test must find an SQ1 key affected by FIX quantization");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type        = VOICE_SQUARE_1_ALT;
+    voices[0].key         = 60;
+    voices[0].attack      = 0;
+    voices[0].decay       = 0;
+    voices[0].sustain     = 16;
+    voices[0].release     = 16;
+    voices[0].wavePointer = (uint32_t *)(uintptr_t)2;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+
+    drv->regs.bias_sampling_cycle = 0;
+    m4a_note_on(drv, 0, key, 100);
+    m4a_advance(drv, 1024);
+    ASSERT_EQ(drv->cgb[0].voiceType, VOICE_SQUARE_1_ALT,
+              "CGB channel preserves original alt voice type");
+    ASSERT_EQ(drv->cgb[0].frequency, base,
+              "CGB channel keeps unquantized logical frequency");
+    ASSERT_EQ(drv->regs.sq1_freq, (base + 2u) & 0x07FCu,
+              "SQ1 alt quantizes NR13/NR14 frequency at sampling_cycle 0");
+
+    m4a_consume_writes(drv);
+    drv->regs.bias_sampling_cycle = 1;
+    m4a_note_on(drv, 0, key, 100);
+    m4a_advance(drv, 1024);
+    ASSERT_EQ(drv->regs.sq1_freq, (base + 1u) & 0x07FEu,
+              "SQ1 alt quantizes NR13/NR14 frequency at sampling_cycle 1");
+
+    m4a_consume_writes(drv);
+    drv->regs.bias_sampling_cycle = 2;
+    m4a_note_on(drv, 0, key, 100);
+    m4a_advance(drv, 1024);
+    ASSERT_EQ(drv->regs.sq1_freq, base,
+              "SQ1 alt does not quantize NR13/NR14 frequency at sampling_cycle 2");
+
+    m4a_consume_writes(drv);
+    voices[0].type = VOICE_SQUARE_1;
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    drv->regs.bias_sampling_cycle = 0;
+    m4a_note_on(drv, 0, key, 100);
+    m4a_advance(drv, 1024);
+    ASSERT_EQ(drv->cgb[0].voiceType, VOICE_SQUARE_1,
+              "CGB channel preserves original non-alt voice type");
+    ASSERT_EQ(drv->regs.sq1_freq, base,
+              "non-alt SQ1 does not quantize pitch writes at sampling_cycle 0");
+
+    m4a_driver_destroy(drv);
+}
+
 /* m4a_set_song_volume must rescale active CGB channel volumes
  * immediately — not wait for the next CC7 or note_on.  GUI / state-load
  * paths poke the song master volume on already-sounding tracks. */
@@ -4457,6 +4527,7 @@ int main(void)
     test_polyphony_stealing();
 #if defined(M4A_DRIVER_V2)
     test_v2_trigger_semantics();
+    test_v2_cgb_alt_voice_quantizes_pitch_writes();
     test_v2_song_volume_rescales();
     test_v2_pcm_ring_fills();
     test_v2_pcm_frequency_scale();

@@ -109,6 +109,7 @@ typedef struct {
 typedef struct {
     uint8_t  status;          /* M4A_CHN_* flags */
     uint8_t  type;            /* 1=sq1, 2=sq2, 3=wave, 4=noise */
+    uint8_t  voiceType;       /* Original ToneData.type, including FIX/alt bit */
     uint8_t  rightVolume;
     uint8_t  leftVolume;
     uint8_t  attack;
