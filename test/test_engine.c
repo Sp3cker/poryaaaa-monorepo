@@ -1968,6 +1968,48 @@ static void test_v2_lfo_vibrato_modulates_freq(void)
     ASSERT(fmin != fmax,             "LFO vibrato produces freq variation across vblanks");
 }
 
+static void test_v2_lfo_default_speed_modulates_freq(void)
+{
+    printf("Testing v2 default LFO speed lets MOD alone modulate SQ2 freq...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type    = VOICE_SQUARE_2;
+    voices[0].key     = 60;
+    voices[0].attack  = 0;
+    voices[0].decay   = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t *)(uintptr_t)2;
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    ASSERT_EQ(drv->tracks[0].mod, 0,          "MOD defaults to 0");
+    ASSERT_EQ(drv->tracks[0].lfoSpeed, 22,    "LFOS defaults to M4A's track-start speed");
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7,    127);
+    m4a_cc(drv, 0, 10,   64);
+    m4a_cc(drv, 0, 0x01, 64);    /* MOD only: no explicit LFOS. */
+    m4a_note_on(drv, 0, 60, 100);
+
+    uint16_t fmin = 0xffff;
+    uint16_t fmax = 0;
+    for (int i = 0; i < 16; i++) {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+        uint16_t freq = m4a_get_register_file(drv)->sq2_freq;
+        if (freq < fmin) fmin = freq;
+        if (freq > fmax) fmax = freq;
+    }
+
+    ASSERT(fmax != 0,                 "baseline sq2_freq populated");
+    ASSERT(drv->tracks[0].modM != 0,  "default LFOS advances modM after MOD");
+    ASSERT(fmin != fmax,              "MOD alone produces freq variation");
+
+    m4a_driver_destroy(drv);
+}
+
 static void test_v2_lfo_delay_holds_off(void)
 {
     printf("Testing v2 LFODL delays modulation onset...\n");
@@ -4580,6 +4622,7 @@ int main(void)
     test_v2_xcmd_render_changes_audio();
     test_v2_lfo_disabled_no_freq_drift();
     test_v2_lfo_vibrato_modulates_freq();
+    test_v2_lfo_default_speed_modulates_freq();
     test_v2_lfo_delay_holds_off();
     test_v2_lfo_lfodl_write_does_not_reset_running_modulation();
     test_v2_lfo_note_on_reloads_delay_and_clears_phase();

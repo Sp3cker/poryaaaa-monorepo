@@ -63,6 +63,7 @@ M4ADriver *m4a_driver_create(float host_sample_rate) {
         drv->tracks[i].volX = 64;
         drv->tracks[i].pan = 0;
         drv->tracks[i].bendRange = 2;
+        drv->tracks[i].lfoSpeed = 22;
     }
 
     m4a_internal_recompute_vblank_step(drv);
