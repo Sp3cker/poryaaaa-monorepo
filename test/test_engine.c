@@ -2987,6 +2987,129 @@ static void test_hw_psg_frame_sequencer_nr52_disabled_write_stable(void)
               "disabled NR52 write preserves envelope counter");
 }
 
+static void test_hw_psg_sq1_sweep_nr10_decode(void)
+{
+    printf("Testing hw_psg sq1 sweep: NR10 decode...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite nr10_zero_time = { 0, M4A_REG_NR10, 0x03 };
+    M4ARegWrite nr10_decrease  = { 0, M4A_REG_NR10, 0x6D };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &nr10_zero_time);
+
+    ASSERT_EQ(psg.sq1_sweep_time, 8,       "NR10 sweep pace 0 is stored as 8");
+    ASSERT_EQ(psg.sq1_sweep_shift, 3,      "NR10 decodes sweep shift");
+    ASSERT(!psg.sq1_sweep_decrease,        "NR10 decodes increase direction");
+
+    hw_psg_apply_event(&psg, &nr10_decrease);
+
+    ASSERT_EQ(psg.sq1_sweep_time, 6,       "NR10 decodes nonzero sweep pace");
+    ASSERT_EQ(psg.sq1_sweep_shift, 5,      "NR10 decodes new sweep shift");
+    ASSERT(psg.sq1_sweep_decrease,         "NR10 decodes decrease direction");
+    ASSERT(!psg.sq1_sweep_occurred,        "NR10 write clears sweep occurred flag");
+}
+
+static void test_hw_psg_sq1_sweep_trigger_initializes_shadow(void)
+{
+    printf("Testing hw_psg sq1 sweep: trigger initializes shadow state...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite nr10 = { 0, M4A_REG_NR10, 0x2C };
+    M4ARegWrite nr12 = { 0, M4A_REG_NR12, 0xF0 };
+    M4ARegWrite nr13 = { 0, M4A_REG_NR13, 0x00 };
+    M4ARegWrite nr14 = { 0, M4A_REG_NR14, 0x84 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &nr10);
+    hw_psg_apply_event(&psg, &nr12);
+    hw_psg_apply_event(&psg, &nr13);
+    hw_psg_apply_event(&psg, &nr14);
+
+    ASSERT(psg.sq1_enabled,                "NR14 trigger enables audible SQ1");
+    ASSERT_EQ(psg.sq1_freq, 1024,          "NR13/NR14 establish SQ1 oscillator frequency");
+    ASSERT_EQ(psg.sq1_sweep_shadow_freq, 1024,
+              "NR14 trigger reloads SQ1 sweep shadow frequency");
+    ASSERT_EQ(psg.sq1_sweep_timer, 2,      "NR14 trigger reloads sweep timer");
+    ASSERT(psg.sq1_sweep_enabled,          "NR14 trigger enables nontrivial sweep");
+    ASSERT(psg.sq1_sweep_occurred,         "negative initial precheck records sweep occurrence");
+}
+
+static void test_hw_psg_sq1_negative_sweep_commits_on_frame_step(void)
+{
+    printf("Testing hw_psg sq1 sweep: negative sweep commits on frame step 6...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite nr10 = { 0, M4A_REG_NR10, 0x2C };
+    M4ARegWrite nr12 = { 0, M4A_REG_NR12, 0xF0 };
+    M4ARegWrite nr13 = { 0, M4A_REG_NR13, 0x00 };
+    M4ARegWrite nr14 = { 0, M4A_REG_NR14, 0x84 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &nr10);
+    hw_psg_apply_event(&psg, &nr12);
+    hw_psg_apply_event(&psg, &nr13);
+    hw_psg_apply_event(&psg, &nr14);
+
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 512);
+    ASSERT_EQ(psg.sq1_sweep_timer, 1,      "step 2 decrements negative sweep timer");
+    ASSERT_EQ(psg.sq1_freq, 1024,          "first sweep tick does not commit before timer zero");
+
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 1024);
+    ASSERT_EQ(psg.sq1_sweep_timer, 2,      "step 6 commit reloads negative sweep timer");
+    ASSERT_EQ(psg.sq1_sweep_shadow_freq, 960,
+              "negative sweep commit updates shadow frequency");
+    ASSERT_EQ(psg.sq1_freq, 960,           "negative sweep commit updates oscillator frequency");
+    ASSERT(psg.sq1_enabled,                "valid negative sweep keeps SQ1 enabled");
+}
+
+static void test_hw_psg_sq1_negative_direction_change_quirk(void)
+{
+    printf("Testing hw_psg sq1 sweep: negative-to-positive direction change disables SQ1...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite nr10_neg = { 0, M4A_REG_NR10, 0x2C };
+    M4ARegWrite nr10_pos = { 0, M4A_REG_NR10, 0x20 };
+    M4ARegWrite nr12     = { 0, M4A_REG_NR12, 0xF0 };
+    M4ARegWrite nr13     = { 0, M4A_REG_NR13, 0x00 };
+    M4ARegWrite nr14     = { 0, M4A_REG_NR14, 0x84 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &nr10_neg);
+    hw_psg_apply_event(&psg, &nr12);
+    hw_psg_apply_event(&psg, &nr13);
+    hw_psg_apply_event(&psg, &nr14);
+    ASSERT(psg.sq1_sweep_occurred,         "precondition: negative sweep has occurred");
+
+    hw_psg_apply_event(&psg, &nr10_pos);
+
+    ASSERT(!psg.sq1_enabled,               "mGBA quirk disables SQ1 on negative-to-positive write");
+    ASSERT(!psg.sq1_sweep_decrease,        "NR10 write still updates direction");
+    ASSERT(!psg.sq1_sweep_occurred,        "NR10 quirk write clears occurred flag");
+}
+
+static void test_hw_psg_sq1_trigger_uses_dac_enabled_state(void)
+{
+    printf("Testing hw_psg sq1 sweep: NR14 trigger uses DAC-enabled state...\n");
+
+    HwPsgSynth psg;
+    M4ARegWrite nr12_dac_on = { 0, M4A_REG_NR12, 0x08 };
+    M4ARegWrite nr12_dac_off = { 0, M4A_REG_NR12, 0x00 };
+    M4ARegWrite nr14_trigger = { 0, M4A_REG_NR14, 0x80 };
+
+    hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &nr12_dac_on);
+    psg.sq1_enabled = false;
+    hw_psg_apply_event(&psg, &nr14_trigger);
+
+    ASSERT(psg.sq1_enabled,                "NR12 direction bit enables DAC for NR14 retrigger");
+
+    hw_psg_apply_event(&psg, &nr12_dac_off);
+    hw_psg_apply_event(&psg, &nr14_trigger);
+
+    ASSERT(!psg.sq1_enabled,               "NR12 top five bits zero keeps SQ1 disabled on trigger");
+}
+
 static void test_hw_psg_nr52_power_cycle_preserves_wave_ram(void)
 {
     printf("Testing hw_psg: NR52 power cycle preserves wave RAM...\n");
@@ -4375,6 +4498,11 @@ int main(void)
     test_hw_psg_frame_sequencer_disabled_does_not_advance();
     test_hw_psg_frame_sequencer_nr52_enabled_write_no_reset();
     test_hw_psg_frame_sequencer_nr52_disabled_write_stable();
+    test_hw_psg_sq1_sweep_nr10_decode();
+    test_hw_psg_sq1_sweep_trigger_initializes_shadow();
+    test_hw_psg_sq1_negative_sweep_commits_on_frame_step();
+    test_hw_psg_sq1_negative_direction_change_quirk();
+    test_hw_psg_sq1_trigger_uses_dac_enabled_state();
     test_hw_psg_nr52_power_cycle_preserves_wave_ram();
 
     /* Chip-only canned-event tests — no driver needed.  These also run

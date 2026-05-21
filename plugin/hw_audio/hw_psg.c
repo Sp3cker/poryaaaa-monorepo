@@ -27,8 +27,47 @@ static void hw_psg_frame_length(HwPsgSynth *psg) {
     psg->frame_seq_length_ticks++;
 }
 
+static bool hw_psg_update_sq1_sweep(HwPsgSynth *psg, bool initial) {
+    if (initial || psg->sq1_sweep_time != 8) {
+        int freq = psg->sq1_sweep_shadow_freq;
+        int delta = freq >> psg->sq1_sweep_shift;
+
+        if (psg->sq1_sweep_decrease) {
+            freq -= delta;
+            if (!initial && freq >= 0) {
+                psg->sq1_sweep_shadow_freq = (uint16_t)freq;
+                psg->sq1_freq = (uint16_t)freq;
+            }
+        } else {
+            freq += delta;
+            if (freq >= 2048) {
+                return false;
+            }
+            if (!initial && psg->sq1_sweep_shift) {
+                psg->sq1_sweep_shadow_freq = (uint16_t)freq;
+                psg->sq1_freq = (uint16_t)freq;
+                if (!hw_psg_update_sq1_sweep(psg, true)) {
+                    return false;
+                }
+            }
+        }
+        psg->sq1_sweep_occurred = true;
+    }
+    psg->sq1_sweep_timer = psg->sq1_sweep_time;
+    return true;
+}
+
 static void hw_psg_frame_sweep(HwPsgSynth *psg) {
     psg->frame_seq_sweep_ticks++;
+    if (!psg->sq1_sweep_enabled) return;
+    if (psg->sq1_sweep_timer > 0) {
+        psg->sq1_sweep_timer--;
+    }
+    if (psg->sq1_sweep_timer == 0) {
+        if (!hw_psg_update_sq1_sweep(psg, false)) {
+            psg->sq1_enabled = false;
+        }
+    }
 }
 
 static void hw_psg_frame_envelope(HwPsgSynth *psg) {
@@ -74,6 +113,14 @@ static void hw_psg_clear_channel_state(HwPsgSynth *psg) {
     psg->sq2_freq = 0;
     psg->wave_freq = 0;
 
+    psg->sq1_sweep_shadow_freq = 0;
+    psg->sq1_sweep_time = 8;
+    psg->sq1_sweep_shift = 0;
+    psg->sq1_sweep_timer = 0;
+    psg->sq1_sweep_decrease = false;
+    psg->sq1_sweep_enabled = false;
+    psg->sq1_sweep_occurred = false;
+
     psg->sq1_duty = 0;
     psg->sq2_duty = 0;
 
@@ -81,6 +128,7 @@ static void hw_psg_clear_channel_state(HwPsgSynth *psg) {
     psg->sq2_env_vol = 0;
     psg->wave_vol_code = 0;
 
+    psg->sq1_dac_enabled = false;
     psg->sq1_enabled = false;
     psg->sq2_enabled = false;
     psg->wave_enabled = false;
@@ -120,6 +168,7 @@ static uint32_t phase_inc_from_freq(uint16_t freq_word, float rate_num, float re
 void hw_psg_init(HwPsgSynth *psg, float render_rate) {
     memset(psg, 0, sizeof(*psg));
     psg->render_rate = render_rate;
+    psg->sq1_sweep_time = 8;
     hw_psg_reset_frame_sequencer(psg, 0);
     /* Match the driver's register-file defaults (m4a_driver_create) so
      * the chip starts in a "configured" state matching what real m4a
@@ -170,17 +219,25 @@ void hw_psg_apply_event(HwPsgSynth *psg, const M4ARegWrite *ev) {
 
     /* ---- Square 1 (NR10..NR14) ---- */
     case M4A_REG_NR10:
-        /* Sweep — chip-side sweep advancement is its own subsystem;
-         * we record the byte but don't drive sweep yet. */
-        (void)v;
+    {
+        bool old_decrease = psg->sq1_sweep_decrease;
+        psg->sq1_sweep_shift = (uint8_t)(v & 0x07);
+        psg->sq1_sweep_decrease = (v & 0x08) != 0;
+        if (psg->sq1_sweep_occurred && old_decrease && !psg->sq1_sweep_decrease) {
+            psg->sq1_enabled = false;
+        }
+        psg->sq1_sweep_occurred = false;
+        psg->sq1_sweep_time = (uint8_t)((v >> 4) & 0x07);
+        if (!psg->sq1_sweep_time) psg->sq1_sweep_time = 8;
         break;
+    }
     case M4A_REG_NR11:
         psg->sq1_duty = (uint8_t)((v >> 6) & 0x03);
         break;
     case M4A_REG_NR12:
         psg->sq1_env_vol = (uint8_t)((v >> 4) & 0x0F);
-        psg->sq1_enabled = (psg->sq1_env_vol != 0) || ((v & 0x08) != 0);
-        if ((v & 0xF8) == 0) psg->sq1_enabled = false;  /* NRx2 == 0 → DAC off */
+        psg->sq1_dac_enabled = (v & 0xF8) != 0;
+        if (!psg->sq1_dac_enabled) psg->sq1_enabled = false;  /* NRx2 == 0 → DAC off */
         break;
     case M4A_REG_NR13:
         psg->sq1_freq = (uint16_t)((psg->sq1_freq & 0x0700) | (v & 0xFF));
@@ -190,7 +247,17 @@ void hw_psg_apply_event(HwPsgSynth *psg, const M4ARegWrite *ev) {
         if (v & 0x80) {
             /* NRx4 trigger: re-arm (envelope already loaded by NR12; phase
              * is preserved per real GB hardware). */
-            if (psg->sq1_env_vol != 0) psg->sq1_enabled = true;
+            if (psg->sq1_dac_enabled) psg->sq1_enabled = true;
+            psg->sq1_sweep_shadow_freq = psg->sq1_freq;
+            psg->sq1_sweep_timer = psg->sq1_sweep_time;
+            psg->sq1_sweep_enabled = (psg->sq1_sweep_timer != 8)
+                || psg->sq1_sweep_shift;
+            psg->sq1_sweep_occurred = false;
+            if (psg->sq1_enabled && psg->sq1_sweep_shift) {
+                if (!hw_psg_update_sq1_sweep(psg, true)) {
+                    psg->sq1_enabled = false;
+                }
+            }
         }
         break;
 
@@ -313,8 +380,6 @@ void hw_psg_render(HwPsgSynth *psg,
         return;
     }
 
-    uint32_t sq1_inc = (psg->sq1_enabled && psg->sq1_freq < 2048)
-        ? phase_inc_from_freq(psg->sq1_freq, 131072.0f, psg->render_rate) : 0;
     uint32_t sq2_inc = (psg->sq2_enabled && psg->sq2_freq < 2048)
         ? phase_inc_from_freq(psg->sq2_freq, 131072.0f, psg->render_rate) : 0;
     uint32_t wave_inc = (psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048)
@@ -347,6 +412,9 @@ void hw_psg_render(HwPsgSynth *psg,
     float wave_factor = wave_vol_factor(psg->wave_vol_code);
 
     for (int i = 0; i < frames; i++) {
+        uint32_t sq1_inc = (psg->sq1_enabled && psg->sq1_freq < 2048)
+            ? phase_inc_from_freq(psg->sq1_freq, 131072.0f, psg->render_rate) : 0;
+
         /* Square 1 — mGBA GBA-mode unipolar.  In gb_audio.c
          * `GBAudioSamplePSG` the GBA path uses `dcOffset = 0` and each
          * `audio->chN.sample` is the unsigned current channel value

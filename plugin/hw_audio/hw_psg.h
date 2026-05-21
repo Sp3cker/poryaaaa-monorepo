@@ -71,6 +71,14 @@ typedef struct {
     uint16_t sq2_freq;
     uint16_t wave_freq;
 
+    uint16_t sq1_sweep_shadow_freq;
+    uint8_t  sq1_sweep_time;       /* NR10 pace; 0 is stored as 8 */
+    uint8_t  sq1_sweep_shift;
+    uint8_t  sq1_sweep_timer;
+    bool     sq1_sweep_decrease;
+    bool     sq1_sweep_enabled;
+    bool     sq1_sweep_occurred;
+
     uint8_t  sq1_duty;          /* 0..3 */
     uint8_t  sq2_duty;
 
@@ -78,6 +86,7 @@ typedef struct {
     uint8_t  sq2_env_vol;
     uint8_t  wave_vol_code;     /* NR32 byte */
 
+    bool     sq1_dac_enabled;
     bool     sq1_enabled;
     bool     sq2_enabled;
     bool     wave_enabled;
