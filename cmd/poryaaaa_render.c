@@ -557,10 +557,13 @@ static RenderEventArray *parse_midi(const char *path, double sampleRate,
         return NULL;
     }
     result->count  = totalEvents;
-    result->events = malloc((size_t)totalEvents * sizeof(RenderEvent));
-    if (!result->events) {
-        free(result); free(rawEvents.events); free(tempos.events);
-        return NULL;
+    result->events = NULL;
+    if (totalEvents > 0) {
+        result->events = malloc((size_t)totalEvents * sizeof(RenderEvent));
+        if (!result->events) {
+            free(result); free(rawEvents.events); free(tempos.events);
+            return NULL;
+        }
     }
     for (int i = 0; i < rawEvents.count; i++) {
         const RawMidiEvent *re = &rawEvents.events[i];
