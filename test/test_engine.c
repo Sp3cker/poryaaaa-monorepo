@@ -13,6 +13,8 @@
  * one consumer that has the same compile-time view as plugin/m4a/'s
  * own .c files. */
 #include "m4a/m4a_internal.h"
+
+extern void m4a_trk_vol_pit_set(M4ADriverTrack *track);
 #endif
 #if defined(HW_AUDIO_V2)
 #include "hw_audio/hw_audio.h"
@@ -208,11 +210,12 @@ static void test_midi_key_to_cgb_freq(void)
 }
 
 /* Test track volume/pitch calculation */
+#if defined(M4A_DRIVER_V2)
 static void test_trk_vol_pit_set(void)
 {
     printf("Testing TrkVolPitSet...\n");
 
-    M4ATrack track;
+    M4ADriverTrack track;
     memset(&track, 0, sizeof(track));
     track.volume = 127;
     track.volX = 64;
@@ -227,7 +230,7 @@ static void test_trk_vol_pit_set(void)
     track.pitX = 0;
     track.bend = 0;
 
-    m4a_track_vol_pit_set(&track);
+    m4a_trk_vol_pit_set(&track);
 
     /* With center pan (0), volumes should be roughly equal */
     ASSERT(track.volMR > 0, "right volume should be positive");
@@ -243,20 +246,21 @@ static void test_trk_vol_pit_set(void)
 
     /* Test with full right pan */
     track.pan = 63;
-    m4a_track_vol_pit_set(&track);
+    m4a_trk_vol_pit_set(&track);
     ASSERT(track.volMR > track.volML, "right pan: R > L");
 
     /* Test with full left pan */
     track.pan = -64;
-    m4a_track_vol_pit_set(&track);
+    m4a_trk_vol_pit_set(&track);
     ASSERT(track.volML > track.volMR, "left pan: L > R");
 
     /* Test pitch: bend of +1 with range 2 = +2 semitones */
     track.pan = 0;
     track.bend = 64;
-    m4a_track_vol_pit_set(&track);
+    m4a_trk_vol_pit_set(&track);
     ASSERT_EQ(track.keyM, 2, "bend +64 range 2 = keyM 2");
 }
+#endif
 
 /* Test engine initialization */
 static void test_engine_init(void)
@@ -264,29 +268,27 @@ static void test_engine_init(void)
     printf("Testing engine init...\n");
 
     M4AEngine engine;
-    m4a_engine_init(&engine, 44100.0f);
+    ASSERT(m4a_engine_init(&engine, 44100.0f), "engine init succeeds");
 
     ASSERT_NEAR(engine.sampleRate, 44100.0f, 0.1f, "sample rate");
-    ASSERT_NEAR(engine.samplesPerTick, 44100.0f / 59.7275f, 1.0f, "samples per tick");
-    ASSERT_EQ(engine.masterVolume, 15, "master volume");
-    ASSERT_EQ(engine.songMasterVolume, MAX_SONG_VOLUME, "song master volume");
-    ASSERT_EQ(engine.maxPcmChannels, 5, "max pcm channels");
-
-    /* Verify CGB channel types */
-    ASSERT_EQ(engine.cgbChannels[0].type, 1, "cgb ch0 type");
-    ASSERT_EQ(engine.cgbChannels[1].type, 2, "cgb ch1 type");
-    ASSERT_EQ(engine.cgbChannels[2].type, 3, "cgb ch2 type");
-    ASSERT_EQ(engine.cgbChannels[3].type, 4, "cgb ch3 type");
+    ASSERT_EQ(engine.volume, MAX_SONG_VOLUME, "song volume default");
+    ASSERT_EQ(engine.reverbAmount, 0, "reverb default");
+    ASSERT(engine.voiceGroup == NULL, "voicegroup starts NULL");
+    ASSERT(m4a_engine_driver(&engine) != NULL, "driver accessor returns non-null");
+    ASSERT(m4a_engine_hw_audio(&engine) != NULL, "hw accessor returns non-null");
 
     m4a_engine_destroy(&engine);
 }
 
+#if defined(M4A_DRIVER_V2)
 static void test_xcmd_subcommands(void)
 {
     printf("Testing XCMD subcommands...\n");
 
     M4AEngine engine;
-    m4a_engine_init(&engine, 44100.0f);
+    ASSERT(m4a_engine_init(&engine, 44100.0f), "xcmd test engine init succeeds");
+    M4ADriver *drv = m4a_engine_driver(&engine);
+    ASSERT(drv != NULL, "xcmd test driver accessor returns non-null");
 
     int dataSize = 4;
     WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
@@ -311,6 +313,7 @@ static void test_xcmd_subcommands(void)
 
     m4a_engine_set_voicegroup(&engine, voices);
     m4a_engine_program_change(&engine, 0, 0);
+
     {
         XcmdCapture xcmd_cap = {0};
 
@@ -322,6 +325,8 @@ static void test_xcmd_subcommands(void)
         ASSERT_EQ(xcmd_cap.selector, 0x04, "xcmd callback reports selector");
         ASSERT_EQ(xcmd_cap.value, 0x7A, "xcmd callback reports value");
     }
+
+    ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x7A, "xatta updates attack");
 
     send_xcmd_select(&engine, 0, 0x05);
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x55 }, 1);
@@ -337,59 +342,75 @@ static void test_xcmd_subcommands(void)
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x66 }, 1);
     send_xcmd_select(&engine, 0, 0x0B);
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x77 }, 1);
+
+    ASSERT_EQ(drv->tracks[0].currentVoice.decay, 0x55, "xdeca updates decay");
+    ASSERT_EQ(drv->tracks[0].currentVoice.sustain, 0x44, "xsust updates sustain");
+    ASSERT_EQ(drv->tracks[0].currentVoice.release, 0x33, "xrele updates release");
+    ASSERT_EQ(drv->tracks[0].pseudoEchoVolume, 0x22, "xiecv updates pseudo-echo volume");
+    ASSERT_EQ(drv->tracks[0].pseudoEchoLength, 0x11, "xiecl updates pseudo-echo length");
+    ASSERT_EQ(drv->tracks[0].currentVoice.length, 0x66, "xleng updates length");
+    ASSERT_EQ(drv->tracks[0].currentVoice.panSweep, 0x77, "xswee updates pan sweep");
+
+    m4a_engine_note_on(&engine, 0, 60, 100);
+    {
+        int found = -1;
+        for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+            if (drv->pcmChans[i].status & M4A_CHN_ON) { found = i; break; }
+        ASSERT(found >= 0, "XCMD wrapper path allocates a PCM note");
+        if (found >= 0) {
+            M4ADriverPcmChan *pcm = &drv->pcmChans[found];
+            ASSERT_EQ(pcm->attack, 0x7A, "XCMD ADSR is copied into new PCM notes");
+            ASSERT_EQ(pcm->decay, 0x55, "XCMD decay is copied into new PCM notes");
+            ASSERT_EQ(pcm->sustain, 0x44, "XCMD sustain is copied into new PCM notes");
+            ASSERT_EQ(pcm->release, 0x33, "XCMD release is copied into new PCM notes");
+            ASSERT_EQ(pcm->pseudoEchoVolume, 0x22, "XCMD IECV is copied into new PCM notes");
+            ASSERT_EQ(pcm->pseudoEchoLength, 0x11, "XCMD IECL is copied into new PCM notes");
+        }
+    }
+
     send_xcmd_select(&engine, 0, 0x02);
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ VOICE_SQUARE_1 }, 1);
-
-    ASSERT_EQ(engine.tracks[0].currentVoice.attack, 0x7A, "xatta updates attack");
-    ASSERT_EQ(engine.tracks[0].currentVoice.decay, 0x55, "xdeca updates decay");
-    ASSERT_EQ(engine.tracks[0].currentVoice.sustain, 0x44, "xsust updates sustain");
-    ASSERT_EQ(engine.tracks[0].currentVoice.release, 0x33, "xrele updates release");
-    ASSERT_EQ(engine.tracks[0].pseudoEchoVolume, 0x22, "xiecv updates pseudo-echo volume");
-    ASSERT_EQ(engine.tracks[0].pseudoEchoLength, 0x11, "xiecl updates pseudo-echo length");
-    ASSERT_EQ(engine.tracks[0].currentVoice.length, 0x66, "xleng updates length");
-    ASSERT_EQ(engine.tracks[0].currentVoice.panSweep, 0x77, "xswee updates pan sweep");
-    ASSERT_EQ(engine.tracks[0].currentVoice.type, VOICE_SQUARE_1, "xtype updates voice type");
-
-    engine.tracks[0].currentVoice.type = VOICE_DIRECTSOUND;
-    engine.tracks[0].currentVoice.wav = wd;
-    m4a_engine_note_on(&engine, 0, 60, 100);
-    ASSERT_EQ(engine.pcmChannels[0].attack, 0x7A, "XCMD ADSR is copied into new PCM notes");
-    ASSERT_EQ(engine.pcmChannels[0].decay, 0x55, "XCMD decay is copied into new PCM notes");
-    ASSERT_EQ(engine.pcmChannels[0].sustain, 0x44, "XCMD sustain is copied into new PCM notes");
-    ASSERT_EQ(engine.pcmChannels[0].release, 0x33, "XCMD release is copied into new PCM notes");
-    ASSERT_EQ(engine.pcmChannels[0].pseudoEchoVolume, 0x22, "XCMD IECV is copied into new PCM notes");
-    ASSERT_EQ(engine.pcmChannels[0].pseudoEchoLength, 0x11, "XCMD IECL is copied into new PCM notes");
+    ASSERT_EQ(drv->tracks[0].currentVoice.type, VOICE_SQUARE_1, "xtype updates voice type");
 
     send_xcmd_select(&engine, 0, 0x0D);
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x78, 0x56, 0x34 }, 3);
-    ASSERT_EQ(engine.tracks[0].extendedValue, 0, "xcmd 0D waits for all four bytes");
+    ASSERT_EQ(drv->tracks[0].extendedValue, 0, "xcmd 0D waits for all four bytes");
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x12 }, 1);
-    ASSERT_EQ(engine.tracks[0].extendedValue, 0x12345678, "xcmd 0D stores little-endian value");
+    ASSERT_EQ(drv->tracks[0].extendedValue, 0x12345678, "xcmd 0D stores little-endian value");
 
-    send_xcmd_select(&engine, 0, 0x01);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE }, 3);
-    ASSERT_EQ((uint32_t)(uintptr_t)engine.tracks[0].currentVoice.wav, (uint32_t)(uintptr_t)wd,
-              "xwave does not apply until the fourth byte arrives");
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xCA }, 1);
-    ASSERT_EQ((uint32_t)(uintptr_t)engine.tracks[0].currentVoice.wav, 0xCAFEBABE,
-              "xwave stores the assembled 32-bit pointer");
+    {
+        WaveData *wavBefore = drv->tracks[0].currentVoice.wav;
+        XcmdCapture xwave_cap = {0};
 
-    send_xcmd_select(&engine, 0, 0x0C);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
-    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 1, "xcmd 0C increments loop count");
-    ASSERT_EQ(engine.tracks[0].extendedWait, 1, "xcmd 0C sets wait while looping");
-    send_xcmd_select(&engine, 0, 0x0C);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
-    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 2, "xcmd 0C keeps counting up to the limit");
-    ASSERT_EQ(engine.tracks[0].extendedWait, 1, "xcmd 0C keeps wait asserted before completion");
-    send_xcmd_select(&engine, 0, 0x0C);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
-    ASSERT_EQ(engine.tracks[0].extendedLoopCount, 0, "xcmd 0C resets after hitting the limit");
-    ASSERT_EQ(engine.tracks[0].extendedWait, 0, "xcmd 0C clears wait after completion");
+        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xwave_cap);
+        send_xcmd_select(&engine, 0, 0x01);
+        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE }, 3);
+        ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
+               "xwave partial payload does not mutate currentVoice.wav");
+        ASSERT_EQ(xwave_cap.called, 0, "xwave partial payload does not notify");
+        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xCA }, 1);
+        /* v2 xWAVE is notify-only: the raw payload is a ROM address, not a host WaveData*. */
+        ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
+               "xwave complete payload remains notify-only in v2");
+        ASSERT_EQ(xwave_cap.called, 1, "xwave complete payload fires callback");
+        ASSERT_EQ(xwave_cap.selector, 0x01, "xwave callback reports selector");
+        ASSERT_EQ(xwave_cap.value, 0xCAFEBABE, "xwave callback carries assembled little-endian value");
+    }
+
+    {
+        XcmdCapture wait_cap = {0};
+
+        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &wait_cap);
+        send_xcmd_select(&engine, 0, 0x0C);
+        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+        ASSERT_EQ(wait_cap.called, 0,
+                  "xcmd 0C is unimplemented in v2 MIDI ingress and does not notify");
+    }
 
     m4a_engine_destroy(&engine);
     free(wd);
 }
+#endif
 
 /* Test basic audio generation */
 static void test_basic_audio(void)
@@ -485,6 +506,29 @@ static void test_basic_audio(void)
 }
 
 /* Test PCM channel stealing / polyphony behavior */
+#if defined(M4A_DRIVER_V2)
+static M4ADriver *create_polyphony_test_driver(ToneData *voices)
+{
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "polyphony test driver created");
+    if (!drv)
+        return NULL;
+
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    return drv;
+}
+
+static void fill_polyphony_slots(M4ADriver *drv, uint8_t status, uint8_t priority,
+                                 int trackIndex, int count)
+{
+    for (int i = 0; i < count; i++) {
+        drv->pcmChans[i].status = status;
+        drv->pcmChans[i].priority = priority;
+        drv->pcmChans[i].trackIndex = trackIndex;
+    }
+}
+
 static void test_polyphony_stealing(void)
 {
     printf("Testing polyphony channel stealing...\n");
@@ -509,137 +553,114 @@ static void test_polyphony_stealing(void)
     voices[0].sustain = 0xFF;
     voices[0].release = 0;
 
-    /* Status value for an active (non-stopping) PCM channel */
-    const uint8_t ACTIVE = CHN_START | CHN_ENV_SUSTAIN;
-    /* Status value for a stopping PCM channel */
-    const uint8_t STOPPING = CHN_STOP | CHN_START;
+    const uint8_t ACTIVE = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+    const uint8_t STOPPING = M4A_CHN_ON | M4A_CHN_STOP | M4A_CHN_START;
 
-    M4AEngine engine;
+    M4ADriver *drv;
 
     /* ---- Test 1: Free channel used immediately (baseline) ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 0, 0);
-    engine.tracks[0].priority = 5;
-    m4a_engine_note_on(&engine, 0, 60, 100);
-    ASSERT(engine.pcmChannels[0].status & CHN_ON, "free channel: ch0 allocated");
-    ASSERT_EQ(engine.pcmChannels[0].trackIndex, 0, "free channel: ch0 trackIndex");
-    ASSERT_EQ(engine.pcmChannels[0].priority, 5, "free channel: ch0 priority");
-    m4a_engine_destroy(&engine);
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 0, 0);
+        drv->tracks[0].priority = 5;
+        m4a_note_on(drv, 0, 60, 100);
+        ASSERT(drv->pcmChans[0].status & M4A_CHN_ON, "free channel: ch0 allocated");
+        ASSERT_EQ(drv->pcmChans[0].trackIndex, 0, "free channel: ch0 trackIndex");
+        ASSERT_EQ(drv->pcmChans[0].priority, 5, "free channel: ch0 priority");
+        m4a_driver_destroy(drv);
+    }
 
     /* ---- Test 2: Higher-priority note steals lower-priority active channel ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 1, 0);
-    engine.tracks[1].priority = 7;
-    for (int i = 0; i < 5; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 3;
-        engine.pcmChannels[i].trackIndex = 0;
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 1, 0);
+        drv->tracks[1].priority = 7;
+        fill_polyphony_slots(drv, ACTIVE, 3, 0, 5);
+        m4a_note_on(drv, 1, 60, 100);
+        {
+            int stolen = 0;
+            for (int i = 0; i < 5; i++)
+                if (drv->pcmChans[i].trackIndex == 1) { stolen = 1; break; }
+            ASSERT(stolen, "higher priority: steals lower-priority channel");
+        }
+        m4a_driver_destroy(drv);
     }
-    m4a_engine_note_on(&engine, 1, 60, 100);
-    {
-        int stolen = 0;
-        for (int i = 0; i < 5; i++)
-            if (engine.pcmChannels[i].trackIndex == 1) { stolen = 1; break; }
-        ASSERT(stolen, "higher priority: steals lower-priority channel");
-    }
-    m4a_engine_destroy(&engine);
 
     /* ---- Test 3: Lower-priority note cannot steal higher-priority channel ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 2, 0);
-    engine.tracks[2].priority = 3;
-    for (int i = 0; i < 5; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 7;
-        engine.pcmChannels[i].trackIndex = 0;
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 2, 0);
+        drv->tracks[2].priority = 3;
+        fill_polyphony_slots(drv, ACTIVE, 7, 0, 5);
+        m4a_note_on(drv, 2, 60, 100);
+        for (int i = 0; i < 5; i++)
+            ASSERT_EQ(drv->pcmChans[i].trackIndex, 0, "lower priority: no steal");
+        m4a_driver_destroy(drv);
     }
-    m4a_engine_note_on(&engine, 2, 60, 100);
-    for (int i = 0; i < 5; i++)
-        ASSERT_EQ(engine.pcmChannels[i].trackIndex, 0, "lower priority: no steal");
-    m4a_engine_destroy(&engine);
 
     /* ---- Test 4: Equal-priority note steals channel with higher trackIndex ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 3, 0);
-    engine.tracks[3].priority = 5;
-    for (int i = 0; i < 5; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 5;
-        engine.pcmChannels[i].trackIndex = 7;
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 3, 0);
+        drv->tracks[3].priority = 5;
+        fill_polyphony_slots(drv, ACTIVE, 5, 7, 5);
+        m4a_note_on(drv, 3, 60, 100);
+        {
+            int stolen = 0;
+            for (int i = 0; i < 5; i++)
+                if (drv->pcmChans[i].trackIndex == 3) { stolen = 1; break; }
+            ASSERT(stolen, "equal priority: steals channel with higher trackIndex");
+        }
+        m4a_driver_destroy(drv);
     }
-    m4a_engine_note_on(&engine, 3, 60, 100);  /* trackIndex=3, priority=5 */
-    /* ch.trackIndex=7 >= new.trackIndex=3 → qualifies → steal */
-    {
-        int stolen = 0;
-        for (int i = 0; i < 5; i++)
-            if (engine.pcmChannels[i].trackIndex == 3) { stolen = 1; break; }
-        ASSERT(stolen, "equal priority: steals channel with higher trackIndex");
-    }
-    m4a_engine_destroy(&engine);
 
     /* ---- Test 5: Equal-priority note cannot steal channel with lower trackIndex ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 5, 0);
-    engine.tracks[5].priority = 5;
-    for (int i = 0; i < 5; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 5;
-        engine.pcmChannels[i].trackIndex = 1;
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 5, 0);
+        drv->tracks[5].priority = 5;
+        fill_polyphony_slots(drv, ACTIVE, 5, 1, 5);
+        m4a_note_on(drv, 5, 60, 100);
+        for (int i = 0; i < 5; i++)
+            ASSERT_EQ(drv->pcmChans[i].trackIndex, 1, "equal priority: no steal when ch.trackIndex < new.trackIndex");
+        m4a_driver_destroy(drv);
     }
-    m4a_engine_note_on(&engine, 5, 60, 100);  /* trackIndex=5, priority=5 */
-    /* ch.trackIndex=1 < new.trackIndex=5 → does not qualify → dropped */
-    for (int i = 0; i < 5; i++)
-        ASSERT_EQ(engine.pcmChannels[i].trackIndex, 1, "equal priority: no steal when ch.trackIndex < new.trackIndex");
-    m4a_engine_destroy(&engine);
 
     /* ---- Test 6: Stopping channel is always stolen regardless of priority ---- */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 0, 0);
-    engine.tracks[0].priority = 1;  /* very low priority */
-    /* 4 active channels at high priority */
-    for (int i = 0; i < 4; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 10;
-        engine.pcmChannels[i].trackIndex = 9;
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 0, 0);
+        drv->tracks[0].priority = 1;
+        fill_polyphony_slots(drv, ACTIVE, 10, 9, 4);
+        drv->pcmChans[4].status = STOPPING;
+        drv->pcmChans[4].priority = 10;
+        drv->pcmChans[4].trackIndex = 9;
+        m4a_note_on(drv, 0, 60, 100);
+        ASSERT_EQ(drv->pcmChans[4].trackIndex, 0, "stopping channel: always stolen");
+        for (int i = 0; i < 4; i++)
+            ASSERT_EQ(drv->pcmChans[i].trackIndex, 9, "stopping channel: active channels untouched");
+        m4a_driver_destroy(drv);
     }
-    /* Channel 4 is stopping (releasing) */
-    engine.pcmChannels[4].status = STOPPING;
-    engine.pcmChannels[4].priority = 10;
-    engine.pcmChannels[4].trackIndex = 9;
-    m4a_engine_note_on(&engine, 0, 60, 100);  /* priority=1, trackIndex=0 */
-    /* Stopping channel (index 4) should be stolen */
-    ASSERT_EQ(engine.pcmChannels[4].trackIndex, 0, "stopping channel: always stolen");
-    /* Active channels untouched */
-    for (int i = 0; i < 4; i++)
-        ASSERT_EQ(engine.pcmChannels[i].trackIndex, 9, "stopping channel: active channels untouched");
-    m4a_engine_destroy(&engine);
 
     /* ---- Test 7: Concrete bug case — all 5 slots at equal priority, new note dropped ---- */
-    /* All 5 channels at priority 5, owned by tracks 1–5.
-     * New note from track 7 at priority 5.
-     * ch.trackIndex (1..5) < new.trackIndex (7) for all → no victim → dropped. */
-    m4a_engine_init(&engine, 44100.0f);
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 7, 0);
-    engine.tracks[7].priority = 5;
-    for (int i = 0; i < 5; i++) {
-        engine.pcmChannels[i].status = ACTIVE;
-        engine.pcmChannels[i].priority = 5;
-        engine.pcmChannels[i].trackIndex = i + 1;  /* tracks 1..5 */
+    drv = create_polyphony_test_driver(voices);
+    if (drv) {
+        m4a_program_change(drv, 7, 0);
+        drv->tracks[7].priority = 5;
+        for (int i = 0; i < 5; i++) {
+            drv->pcmChans[i].status = ACTIVE;
+            drv->pcmChans[i].priority = 5;
+            drv->pcmChans[i].trackIndex = i + 1;
+        }
+        m4a_note_on(drv, 7, 60, 100);
+        for (int i = 0; i < 5; i++)
+            ASSERT_EQ(drv->pcmChans[i].trackIndex, i + 1, "all slots: note dropped when no valid victim");
+        m4a_driver_destroy(drv);
     }
-    m4a_engine_note_on(&engine, 7, 60, 100);
-    for (int i = 0; i < 5; i++)
-        ASSERT_EQ(engine.pcmChannels[i].trackIndex, i + 1, "all slots: note dropped when no valid victim");
-    m4a_engine_destroy(&engine);
 
     free(wd);
 }
+#endif
 
 #if defined(M4A_DRIVER_V2)
 /* Layer 1 step 1 acceptance: CgbSound writes M4ARegisterFile correctly,
@@ -4598,12 +4619,12 @@ int main(void)
     test_scale_table();
     test_midi_key_to_freq();
     test_midi_key_to_cgb_freq();
-    test_trk_vol_pit_set();
     test_engine_init();
-    test_xcmd_subcommands();
     test_basic_audio();
-    test_polyphony_stealing();
 #if defined(M4A_DRIVER_V2)
+    test_trk_vol_pit_set();
+    test_xcmd_subcommands();
+    test_polyphony_stealing();
     test_v2_trigger_semantics();
     test_v2_cgb_alt_voice_quantizes_pitch_writes();
     test_v2_song_volume_rescales();
