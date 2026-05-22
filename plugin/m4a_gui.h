@@ -20,11 +20,8 @@ typedef void (*M4AGuiTimerCallback)(void *user_data);
 typedef struct {
     char projectRoot[512];
     char voicegroupName[256];
+    uint8_t volume;
     uint8_t reverbAmount;
-    uint8_t masterVolume;
-    uint8_t songMasterVolume;
-    bool analogFilter;
-    uint8_t maxPcmChannels;
     bool voicegroupLoaded;
 } M4AGuiSettings;
 

@@ -25,7 +25,6 @@
 #include <dlfcn.h>
 #endif
 #include "m4a_engine.h"
-#include "m4a_reverb.h"
 #include "voicegroup/voicegroup_loader.h"
 
 #if defined(M4A_DRIVER_V2)
@@ -1062,7 +1061,14 @@ oom:
 
     /* ---- Initialize engine ---- */
     M4AEngine engine;
-    m4a_engine_init(&engine, (float)sampleRate);
+    if (!m4a_engine_init(&engine, (float)sampleRate)) {
+        fprintf(stderr, "Failed to initialize M4A engine\n");
+        voicegroup_free(vg);
+        free(extEvts);
+        free(events->events);
+        free(events);
+        return 1;
+    }
 #if defined(M4A_DRIVER_V2)
     g_v2_drv = m4a_driver_create((float)sampleRate);
 #endif
@@ -1094,9 +1100,7 @@ oom:
     m4a_set_song_volume(g_v2_drv, (uint8_t)songVolume);
     m4a_set_tempo_bpm(g_v2_drv, 120.0);
 #endif
-    m4a_reverb_set_amount(&engine.reverb, (uint8_t)reverbAmount);
-    engine.analogFilter = analogFilter;
-    engine.maxPcmChannels = cgbOnly ? 0 : (uint8_t)maxChannels;
+    m4a_engine_set_reverb_amount(&engine, (uint8_t)reverbAmount);
 #if defined(M4A_DRIVER_V2)
     m4a_set_reverb_amount(g_v2_drv, (uint8_t)reverbAmount);
     m4a_set_analog_filter(g_v2_drv, analogFilter);

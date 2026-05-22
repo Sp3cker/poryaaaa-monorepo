@@ -299,9 +299,9 @@ static void render_general_tab(M4AGuiState *gui)
     /* ---- Audio Settings ---- */
     ImGui::SeparatorText("Audio Settings");
     {
-        int v = (int)gui->settings.songMasterVolume;
-        if (ImGui::SliderInt("Song Volume (0-127)", &v, 0, 127)) {
-            gui->settings.songMasterVolume = (uint8_t)v;
+        int v = (int)gui->settings.volume;
+        if (ImGui::SliderInt("Volume (0-127)", &v, 0, 127)) {
+            gui->settings.volume = (uint8_t)v;
             gui->settingsChanged = true;
         }
     }
@@ -312,15 +312,6 @@ static void render_general_tab(M4AGuiState *gui)
             gui->settingsChanged = true;
         }
     }
-    {
-        int v = (int)gui->settings.maxPcmChannels;
-        if (ImGui::SliderInt("Polyphony (1-12)", &v, 1, MAX_PCM_CHANNELS)) {
-            gui->settings.maxPcmChannels = (uint8_t)v;
-            gui->settingsChanged = true;
-        }
-    }
-    if (ImGui::Checkbox("GBA Analog Filter", &gui->settings.analogFilter))
-        gui->settingsChanged = true;
 
     /* ---- Output Device (standalone only) ----
      * audioApi.list_outputs is wired by the standalone entry to RtAudio.
@@ -567,7 +558,7 @@ static void render_recorder_tab(M4AGuiState *gui)
 
     ImGui::SameLine();
     if (ImGui::Button("Clear")) {
-        m4a_engine_recorder_reset(&data->engine);
+        m4a_recorder_reset(data->recorder);
         atomic_store(&data->recorderSeenPC,  0u);
         atomic_store(&data->recorderSeenVol, 0u);
         atomic_store(&data->recorderSeenPan, 0u);
@@ -575,8 +566,8 @@ static void render_recorder_tab(M4AGuiState *gui)
     }
 
     /* Status counters */
-    uint64_t evCount = m4a_engine_recorder_event_count(&data->engine);
-    double durSec    = m4a_engine_recorder_duration_seconds(&data->engine);
+    uint64_t evCount = m4a_recorder_event_count(data->recorder);
+    double durSec    = m4a_recorder_duration_seconds(data->recorder);
     ImGui::Text("Buffered: %llu events (%.2fs)", (unsigned long long)evCount, durSec);
 
     /* Filename input */
@@ -584,7 +575,7 @@ static void render_recorder_tab(M4AGuiState *gui)
 
     /* Save button */
     if (ImGui::Button("Save SMF")) {
-        bool ok = m4a_engine_recorder_save_smf(&data->engine, data->recorderPath, 480, 120.0);
+        bool ok = m4a_recorder_save_smf(data->recorder, data->recorderPath, 480, 120.0);
         snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
                  ok ? "Saved: %s" : "Failed: %s", data->recorderPath);
     }
@@ -835,8 +826,7 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
         gui->settings = *initial;
     } else {
         memset(&gui->settings, 0, sizeof(gui->settings));
-        gui->settings.masterVolume     = 15;
-        gui->settings.songMasterVolume = 127;
+        gui->settings.volume = 127;
     }
     sync_buffers(gui);
 

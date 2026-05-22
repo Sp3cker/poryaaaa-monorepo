@@ -3,17 +3,11 @@
 
 #include <stdatomic.h>
 #include "m4a_engine.h"
+#include "m4a_engine_recorder.h"
 #include "voicegroup/voicegroup_loader.h"
 #include "voicegroup/project_asset_index.h"
 #include "m4a_gui.h"
 #include <clap/clap.h>
-
-#if defined(M4A_DRIVER_V2)
-#include "m4a/m4a_driver.h"
-#endif
-#if defined(HW_AUDIO_V2)
-#include "hw_audio/hw_audio.h"
-#endif
 
 typedef struct {
     M4AEngine engine;
@@ -21,11 +15,8 @@ typedef struct {
     VoicegroupLoaderConfig loaderConfig;
     char projectRoot[512];
     char voicegroupName[256];
+    uint8_t volume;
     uint8_t reverbAmount;
-    uint8_t masterVolume; // The m4a-level master volume (0-15)
-    uint8_t songMasterVolume; // The song-level master volume (0-127)
-    bool analogFilter;
-    uint8_t maxPcmChannels;
     bool activated;
     /* Per-channel activity counters. Incremented from the audio thread at the
      * channel's index whenever a MIDI/note event arrives for that channel;
@@ -62,12 +53,13 @@ typedef struct {
      * The standalone polls this to perform the actual restart cycle. */
     bool restartRequested;
 
-    /* Recorder UI/wire state. The RecorderCore lives on the engine.
+    /* Recorder UI/wire state. The RecorderCore is plugin-owned.
      * `recorderArmed` gates the audio thread's push calls.
      * `recorderPath` is the last-typed filename (persisted via CLAP state).
      * `recorderSeen*` are bitmasks (bit n = channel n) latched when the
      * recorder captures a PC / volume CC / pan CC for that channel; cleared
      * by the Clear button so they track the current buffer contents. */
+    M4ARecorder *recorder;
     atomic_bool recorderArmed;
     char        recorderPath[512];
     atomic_uint recorderSeenPC;
@@ -87,12 +79,6 @@ typedef struct {
     bool     extClockInitialized;     /* set on first 0xF8 after reset/Start */
     bool     extClockPlaying;         /* set by 0xFA/FB, cleared by 0xFC */
 
-#if defined(M4A_DRIVER_V2)
-    M4ADriver *m4a_v2;
-#endif
-#if defined(HW_AUDIO_V2)
-    HwAudio *hw_v2;
-#endif
 } M4APluginData;
 
 #endif /* M4A_PLUGIN_H */

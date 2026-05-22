@@ -99,9 +99,7 @@ endif()
 # m4a audio engine sources (shared between plugin, standalone, tests).
 set(ENGINE_SOURCES
     plugin/m4a_engine.c
-    plugin/m4a_channel.c
     plugin/m4a_tables.c
-    plugin/m4a_reverb.c
 )
 
 # ---- CLAP Plugin ----

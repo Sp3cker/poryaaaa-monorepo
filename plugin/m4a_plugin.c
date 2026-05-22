@@ -11,8 +11,6 @@
 #include "m4a_params.h"
 #include "m4a_engine.h"
 #include "m4a_engine_recorder.h"
-#include "m4a_channel.h"
-#include "m4a_reverb.h"
 #include "voicegroup/voicegroup_loader.h"
 #include "voicegroup/voicegroup_state.h"
 #include "m4a_gui.h"
@@ -57,12 +55,16 @@ static char s_pluginDir[512] = {0};
 /* Optional diagnostic log path, set from config key "log=<path>" */
 static const char *s_pluginLogPath = NULL;
 
+#define M4A_PLUGIN_STATE_VERSION 2
+
 static void plugin_engine_xcmd(void *ctx, int trackIndex, uint8_t selector, uint32_t value);
 static bool plugin_poll_pending_xcmd(M4APluginData *data, unsigned int *seq_out,
                                      unsigned int *meta_out);
 static bool plugin_poll_latest_xcmd(M4APluginData *data, unsigned int *seq_out,
                                     unsigned int *meta_out, unsigned int *value_out);
 static void plugin_format_pending_xcmd(char *buf, size_t buf_size, unsigned int meta);
+static void plugin_apply_engine_settings(M4APluginData *data);
+static void plugin_reapply_engine_state(M4APluginData *data);
 
 /*
  * Load settings from poryaaaa.cfg placed next to the .clap file.
@@ -74,8 +76,7 @@ static void plugin_format_pending_xcmd(char *buf, size_t buf_size, unsigned int 
  *   project_root   - Path to the pokeemerald project directory
  *   voicegroup     - Voicegroup name (e.g. petalburg, littleroot_town)
  *   reverb         - Reverb amount (0-127)
- *   master_volume  - Master volume (0-15)
- *   analog_filter  - GBA analog output low-pass filter (0=off, 1=on)
+ *   volume         - Song volume (0-127)
  */
 static void load_config_file(M4APluginData *data)
 {
@@ -118,23 +119,11 @@ static void load_config_file(M4APluginData *data)
             if (v < 0) v = 0;
             if (v > 127) v = 127;
             data->reverbAmount = (uint8_t)v;
-        } else if (strcmp(key, "master_volume") == 0) {
-            int v = atoi(value);
-            if (v < 0) v = 0;
-            if (v > 15) v = 15;
-            data->masterVolume = (uint8_t)v;
-        } else if (strcmp(key, "song_master_volume") == 0) {
+        } else if (strcmp(key, "volume") == 0) {
             int v = atoi(value);
             if (v < 0) v = 0;
             if (v > MAX_SONG_VOLUME) v = MAX_SONG_VOLUME;
-            data->songMasterVolume = (uint8_t)v;
-        } else if (strcmp(key, "analog_filter") == 0) {
-            data->analogFilter = (atoi(value) != 0);
-        } else if (strcmp(key, "max_channels") == 0) {
-            int v = atoi(value);
-            if (v < 1) v = 1;
-            if (v > MAX_PCM_CHANNELS) v = MAX_PCM_CHANNELS;
-            data->maxPcmChannels = (uint8_t)v;
+            data->volume = (uint8_t)v;
         } else if (strcmp(key, "audio_output") == 0) {
             /* Standalone audio device name (e.g. "BlackHole 2ch"). Substring
              * matched against RtAudio's device enumeration at startup. */
@@ -172,16 +161,31 @@ static void load_config_file(M4APluginData *data)
     fclose(f);
 }
 
+static void plugin_apply_engine_settings(M4APluginData *data)
+{
+    m4a_engine_set_volume(&data->engine, data->volume);
+    m4a_engine_set_reverb_amount(&data->engine, data->reverbAmount);
+}
+
+static void plugin_reapply_engine_state(M4APluginData *data)
+{
+    m4a_engine_set_xcmd_callback(&data->engine, plugin_engine_xcmd, data);
+    plugin_apply_engine_settings(data);
+    if (data->loadedVg) {
+        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
+        m4a_params_sync_to_engine(data);
+    }
+    if (data->extClockBpm > 0.0)
+        m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
+}
+
 /* ---- Plugin lifecycle ---- */
 
 static bool plugin_init(const clap_plugin_t *plugin)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    data->masterVolume = 15;
-    data->songMasterVolume = MAX_SONG_VOLUME;
+    data->volume = MAX_SONG_VOLUME;
     data->reverbAmount = 0;
-    data->analogFilter = false;
-    data->maxPcmChannels = 5;
     data->projectRoot[0] = '\0';
     data->voicegroupName[0] = '\0';
     data->loadedVg = NULL;
@@ -202,6 +206,9 @@ static bool plugin_init(const clap_plugin_t *plugin)
     data->guiPendingXcmdSeqSeen = 0;
     data->guiLatestXcmdSeqSeen = 0;
     data->assetIndex = NULL;
+    data->recorder = m4a_recorder_create();
+    if (!data->recorder)
+        return false;
     atomic_init(&data->recorderArmed, false);
     data->recorderPath[0] = '\0';
     atomic_init(&data->recorderSeenPC,  0u);
@@ -239,12 +246,8 @@ static void plugin_destroy(const clap_plugin_t *plugin)
     project_asset_index_destroy(data->assetIndex);
     data->assetIndex = NULL;
     m4a_engine_destroy(&data->engine);
-#if defined(M4A_DRIVER_V2)
-    if (data->m4a_v2) { m4a_driver_destroy(data->m4a_v2); data->m4a_v2 = NULL; }
-#endif
-#if defined(HW_AUDIO_V2)
-    if (data->hw_v2)  { hw_audio_destroy(data->hw_v2);    data->hw_v2  = NULL; }
-#endif
+    m4a_recorder_destroy(data->recorder);
+    data->recorder = NULL;
     free(data);
     free((void *)plugin);
 }
@@ -253,31 +256,13 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
                             uint32_t min_frames, uint32_t max_frames)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    m4a_engine_init(&data->engine, (float)sample_rate);
-    m4a_engine_recorder_set_sample_rate(&data->engine, sample_rate);
-#if defined(M4A_DRIVER_V2)
-    data->m4a_v2 = m4a_driver_create((float)sample_rate);
-#endif
-#if defined(HW_AUDIO_V2)
-    data->hw_v2 = hw_audio_create((float)sample_rate);
-#endif
+    if (!m4a_engine_init(&data->engine, (float)sample_rate))
+        return false;
+    m4a_recorder_set_sample_rate(data->recorder, sample_rate);
     m4a_engine_set_xcmd_callback(&data->engine, plugin_engine_xcmd, data);
-#if defined(M4A_DRIVER_V2)
-    m4a_driver_set_xcmd_callback(data->m4a_v2,
-        (M4ADriverXcmdFn)plugin_engine_xcmd, data);
-#endif
-    data->engine.masterVolume = data->masterVolume;
-    data->engine.songMasterVolume = data->songMasterVolume;
-    data->engine.analogFilter = data->analogFilter;
-    data->engine.maxPcmChannels = data->maxPcmChannels;
-    m4a_reverb_set_amount(&data->engine.reverb, data->reverbAmount);
-#if defined(M4A_DRIVER_V2)
-    m4a_set_master_volume(data->m4a_v2, data->masterVolume);
-    m4a_set_song_volume(data->m4a_v2, data->songMasterVolume);
-    m4a_set_analog_filter(data->m4a_v2, data->analogFilter);
-    m4a_set_max_pcm_channels(data->m4a_v2, data->maxPcmChannels);
-    m4a_set_reverb_amount(data->m4a_v2, data->reverbAmount);
-#endif
+    plugin_apply_engine_settings(data);
+    if (data->extClockBpm > 0.0)
+        m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
 
     /* Build asset index if not yet created (e.g. projectRoot set via state_load) */
     if (data->projectRoot[0] && !data->assetIndex) {
@@ -288,17 +273,13 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
 
     /* If voicegroup is configured, load it */
     if (data->projectRoot[0] && data->voicegroupName[0]) {
-        if (data->loadedVg) {
-            voicegroup_free(data->loadedVg);
-            data->loadedVg = NULL;
-        }
-        data->loadedVg = voicegroup_load(data->projectRoot, data->voicegroupName,
-                                         &data->loaderConfig);
-        if (data->loadedVg) {
+        LoadedVoiceGroup *newVg = voicegroup_load(data->projectRoot, data->voicegroupName,
+                                                  &data->loaderConfig);
+        if (newVg) {
+            if (data->loadedVg)
+                voicegroup_free(data->loadedVg);
+            data->loadedVg = newVg;
             m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-#if defined(M4A_DRIVER_V2)
-            m4a_driver_set_voicegroup(data->m4a_v2, data->loadedVg->voices);
-#endif
             memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
             memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
             /* Apply any pending sample overrides */
@@ -308,7 +289,13 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
             voicegroup_state_write_default(data->projectRoot,
                                            data->voicegroupName,
                                            data->loadedVg);
+        } else if (data->loadedVg) {
+            m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
+            m4a_params_sync_to_engine(data);
         }
+    } else if (data->loadedVg) {
+        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
+        m4a_params_sync_to_engine(data);
     }
 
     data->activated = true;
@@ -336,11 +323,8 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
         memset(&gs, 0, sizeof(gs));
         snprintf(gs.projectRoot,    sizeof(gs.projectRoot),    "%s", data->projectRoot);
         snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+        gs.volume            = data->volume;
         gs.reverbAmount      = data->reverbAmount;
-        gs.masterVolume      = data->masterVolume;
-        gs.songMasterVolume  = data->songMasterVolume;
-        gs.analogFilter      = data->analogFilter;
-        gs.maxPcmChannels    = data->maxPcmChannels;
         gs.voicegroupLoaded  = (data->loadedVg != NULL);
         m4a_gui_update_settings(data->gui, &gs);
     }
@@ -354,12 +338,6 @@ static void plugin_deactivate(const clap_plugin_t *plugin)
     if (data->gui)
         m4a_gui_set_voice_data(data->gui, NULL, NULL, NULL);
     m4a_engine_destroy(&data->engine);
-#if defined(M4A_DRIVER_V2)
-    if (data->m4a_v2) { m4a_driver_destroy(data->m4a_v2); data->m4a_v2 = NULL; }
-#endif
-#if defined(HW_AUDIO_V2)
-    if (data->hw_v2)  { hw_audio_destroy(data->hw_v2);    data->hw_v2  = NULL; }
-#endif
     data->activated = false;
 }
 
@@ -372,22 +350,16 @@ static void plugin_stop_processing(const clap_plugin_t *plugin)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     m4a_engine_all_sound_off(&data->engine);
-#if defined(M4A_DRIVER_V2)
-    m4a_all_sound_off(data->m4a_v2);
-#endif
-    m4a_reverb_reset(&data->engine.reverb);
-    m4a_engine_lpf_reset(&data->engine);
 }
 
 static void plugin_reset(const clap_plugin_t *plugin)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    m4a_engine_all_sound_off(&data->engine);
-#if defined(M4A_DRIVER_V2)
-    m4a_all_sound_off(data->m4a_v2);
-#endif
-    m4a_reverb_reset(&data->engine.reverb);
-    m4a_engine_lpf_reset(&data->engine);
+    if (!m4a_engine_reset(&data->engine)) {
+        data->activated = false;
+        return;
+    }
+    plugin_reapply_engine_state(data);
 }
 
 /* ---- MIDI event processing ---- */
@@ -424,10 +396,7 @@ static void process_midi_clock_pulse(M4APluginData *data, uint32_t sample_in_blo
         data->extClockBpm = data->extClockBpm * 0.85 + instBpm * 0.15;
 
     m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
-    m4a_engine_recorder_set_tempo(&data->engine, sample_in_block, data->extClockBpm);
-#if defined(M4A_DRIVER_V2)
-    m4a_set_tempo_bpm(data->m4a_v2, data->extClockBpm);
-#endif
+    m4a_recorder_set_tempo(data->recorder, sample_in_block, data->extClockBpm);
 }
 
 /* Status bytes 0xF0..0xFF have no channel nibble. Handle the subset that's
@@ -440,7 +409,7 @@ static void process_midi_system_event(M4APluginData *data, const uint8_t *msg,
         if (data->extClockBpm <= 0.0) break;  /* need a tempo before we can seek */
         uint32_t sixteenths = (uint32_t)msg[1] | ((uint32_t)msg[2] << 7);
         double posSec = ((double)sixteenths * 60.0) / (data->extClockBpm * 4.0);
-        m4a_engine_recorder_update_loop(&data->engine, false, 0.0, 0.0, posSec);
+        m4a_recorder_update_loop(data->recorder, false, 0.0, 0.0, posSec);
         break;
     }
     case 0xF8:  /* MIDI Clock (24 PPQ) */
@@ -450,7 +419,7 @@ static void process_midi_system_event(M4APluginData *data, const uint8_t *msg,
         data->extClockInitialized = false;
         data->extClockBpm = 0.0;
         data->extClockPlaying = true;
-        m4a_engine_recorder_reset(&data->engine);
+        m4a_recorder_reset(data->recorder);
         break;
     case 0xFB:  /* Continue */
         data->extClockPlaying = true;
@@ -483,31 +452,19 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg,
     case 0x90: /* Note On */
         if (msg[2] > 0) {
             m4a_engine_note_on(&data->engine, channel, msg[1], msg[2]);
-#if defined(M4A_DRIVER_V2)
-            m4a_note_on(data->m4a_v2, channel, msg[1], msg[2]);
-#endif
         } else {
             /* velocity 0 = note off */
             m4a_engine_note_off(&data->engine, channel, msg[1]);
-#if defined(M4A_DRIVER_V2)
-            m4a_note_off(data->m4a_v2, channel, msg[1]);
-#endif
         }
         break;
     case 0x80: /* Note Off */
         m4a_engine_note_off(&data->engine, channel, msg[1]);
-#if defined(M4A_DRIVER_V2)
-        m4a_note_off(data->m4a_v2, channel, msg[1]);
-#endif
         break;
     case 0xC0: /* Program Change */
         /* Keep the CLAP param mirror in sync even when the source of truth is
          * an incoming MIDI program-change rather than host automation. */
         m4a_params_set_program(data, channel, msg[1]);
         m4a_engine_program_change(&data->engine, channel, msg[1]);
-#if defined(M4A_DRIVER_V2)
-        m4a_program_change(data->m4a_v2, channel, msg[1]);
-#endif
         break;
     case 0xB0: /* Control Change */
         if (msg[1] == 0x1D || msg[1] == 0x1E || msg[1] == 0x1F)
@@ -520,17 +477,11 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg,
             atomic_fetch_add_explicit(&data->pendingXcmdSeq, 1, memory_order_release);
         }
         m4a_engine_cc(&data->engine, channel, msg[1], msg[2]);
-#if defined(M4A_DRIVER_V2)
-        m4a_cc(data->m4a_v2, channel, msg[1], msg[2]);
-#endif
         break;
     case 0xE0: /* Pitch Bend */
     {
         int16_t bend = ((int16_t)msg[2] << 7 | msg[1]) - 8192;
         m4a_engine_pitch_bend(&data->engine, channel, bend);
-#if defined(M4A_DRIVER_V2)
-        m4a_pitch_bend(data->m4a_v2, channel, bend);
-#endif
         break;
     }
     }
@@ -544,8 +495,7 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg,
      * While capturing, latch the recorder-tab per-channel PC/Vol/Pan
      * indicators so the GUI can show what's been captured. */
     if (atomic_load(&data->recorderArmed)) {
-        m4a_engine_recorder_push(&data->engine, sample_in_block,
-                                 msg[0], msg[1], msg[2]);
+        m4a_recorder_push(data->recorder, sample_in_block, msg[0], msg[1], msg[2]);
         unsigned bit = 1u << channel;
         if (status == 0xC0) atomic_fetch_or(&data->recorderSeenPC, bit);
         else if (status == 0xB0 && msg[1] == 0x07) atomic_fetch_or(&data->recorderSeenVol, bit);
@@ -564,19 +514,10 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
         uint8_t velocity = (uint8_t)(ev->velocity * 127.0 + 0.5);
         if (velocity == 0) velocity = 1;
         m4a_engine_note_on(&data->engine, channel, (uint8_t)ev->key, velocity);
-#if defined(M4A_DRIVER_V2)
-        m4a_note_on(data->m4a_v2, channel, (uint8_t)ev->key, velocity);
-#endif
     } else if (ev->header.type == CLAP_EVENT_NOTE_OFF) {
         m4a_engine_note_off(&data->engine, channel, (uint8_t)ev->key);
-#if defined(M4A_DRIVER_V2)
-        m4a_note_off(data->m4a_v2, channel, (uint8_t)ev->key);
-#endif
     } else if (ev->header.type == CLAP_EVENT_NOTE_CHOKE) {
         m4a_engine_note_off(&data->engine, channel, (uint8_t)ev->key);
-#if defined(M4A_DRIVER_V2)
-        m4a_note_off(data->m4a_v2, channel, (uint8_t)ev->key);
-#endif
     }
 
     /* Record CLAP note events to the embedded recorder when armed. */
@@ -592,7 +533,7 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
             d1 = (uint8_t)ev->key;
             d2 = 0;
         }
-        m4a_engine_recorder_push(&data->engine, sample_in_block, status, d1, d2);
+        m4a_recorder_push(data->recorder, sample_in_block, status, d1, d2);
     }
 }
 
@@ -690,10 +631,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
         && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO);
     if (host_has_tempo) {
         m4a_engine_set_tempo_bpm(&data->engine, process->transport->tempo);
-        m4a_engine_recorder_set_tempo(&data->engine, 0, process->transport->tempo);
-#if defined(M4A_DRIVER_V2)
-        m4a_set_tempo_bpm(data->m4a_v2, process->transport->tempo);
-#endif
+        m4a_recorder_set_tempo(data->recorder, 0, process->transport->tempo);
         /* Host transport wins: drop any externally-derived clock state so we
          * don't fight it on the next clock pulse. */
         data->extClockInitialized = false;
@@ -706,11 +644,11 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
         double startSec = (double)process->transport->loop_start_seconds / CLAP_SECTIME_FACTOR;
         double endSec   = (double)process->transport->loop_end_seconds   / CLAP_SECTIME_FACTOR;
         double posSec   = (double)process->transport->song_pos_seconds   / CLAP_SECTIME_FACTOR;
-        m4a_engine_recorder_update_loop(&data->engine, true, startSec, endSec, posSec);
+        m4a_recorder_update_loop(data->recorder, true, startSec, endSec, posSec);
     } else if (process->transport
                && (process->transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE)) {
         double posSec = (double)process->transport->song_pos_seconds / CLAP_SECTIME_FACTOR;
-        m4a_engine_recorder_update_loop(&data->engine, false, 0.0, 0.0, posSec);
+        m4a_recorder_update_loop(data->recorder, false, 0.0, 0.0, posSec);
     }
 
     const uint32_t numFrames = process->frames_count;
@@ -789,7 +727,6 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
 
         uint32_t framesToRender = nextEventTime - framePos;
         if (framesToRender > 0) {
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
             /* Cap each render-event-consume cycle at the driver's
              * recommended max so the bounded event queue never
              * overflows.  CLAP block sizes are usually small but the
@@ -798,21 +735,12 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
             uint32_t off  = framePos;
             while (toGo > 0) {
                 uint32_t chunk = toGo;
-                if (chunk > (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
-                    chunk = (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
-                m4a_advance(data->m4a_v2, (int)chunk);
-                hw_audio_render_events(data->hw_v2,
-                                       m4a_get_pending_writes(data->m4a_v2),
-                                       m4a_get_pcm_ring(data->m4a_v2),
-                                       outL + off, outR + off, (int)chunk);
-                m4a_consume_writes(data->m4a_v2);
+                if (chunk > (uint32_t)M4A_ENGINE_MAX_PROCESS_FRAMES)
+                    chunk = (uint32_t)M4A_ENGINE_MAX_PROCESS_FRAMES;
+                m4a_engine_process(&data->engine, outL + off, outR + off, (int)chunk);
                 off  += chunk;
                 toGo -= chunk;
             }
-#else
-            m4a_engine_process(&data->engine, outL + framePos, outR + framePos,
-                              (int)framesToRender);
-#endif
         }
 
         framePos = nextEventTime;
@@ -823,7 +751,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
      * the captured buffer length. The Record toggle only gates push_event,
      * so disarmed periods leave wall-time gaps in the SMF rather than
      * compressing the timeline. */
-    m4a_engine_recorder_advance(&data->engine, numFrames);
+    m4a_recorder_advance(data->recorder, numFrames);
 
     /* Tick the running sample-time counter used to measure MIDI clock intervals.
      * Sample_in_block offsets stay valid because realtime events are stamped
@@ -887,19 +815,17 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
 
     /* Write a simple format: lengths + strings + parameters */
+    uint32_t version = M4A_PLUGIN_STATE_VERSION;
     uint32_t rootLen = (uint32_t)strlen(data->projectRoot);
     uint32_t nameLen = (uint32_t)strlen(data->voicegroupName);
 
+    if (stream->write(stream, &version, sizeof(version)) != sizeof(version)) return false;
     if (stream->write(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen)) return false;
     if (rootLen > 0 && stream->write(stream, data->projectRoot, rootLen) != (int64_t)rootLen) return false;
     if (stream->write(stream, &nameLen, sizeof(nameLen)) != sizeof(nameLen)) return false;
     if (nameLen > 0 && stream->write(stream, data->voicegroupName, nameLen) != (int64_t)nameLen) return false;
+    if (stream->write(stream, &data->volume, 1) != 1) return false;
     if (stream->write(stream, &data->reverbAmount, 1) != 1) return false;
-    if (stream->write(stream, &data->masterVolume, 1) != 1) return false;
-    if (stream->write(stream, &data->songMasterVolume, 1) != 1) return false;
-    uint8_t analogFilterByte = data->analogFilter ? 1 : 0;
-    if (stream->write(stream, &analogFilterByte, 1) != 1) return false;
-    if (stream->write(stream, &data->maxPcmChannels, 1) != 1) return false;
     if (!m4a_params_state_save(data, stream)) return false;
 
     /* Recorder state (optional block — old loads simply won't have it) */
@@ -915,90 +841,92 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
 static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
+    char newRoot[sizeof(data->projectRoot)];
+    char newName[sizeof(data->voicegroupName)];
+    uint8_t newVolume;
+    uint8_t newReverbAmount;
+    uint8_t newPrograms[MAX_TRACKS];
+    bool newRecorderArmed = atomic_load(&data->recorderArmed);
+    char newRecorderPath[sizeof(data->recorderPath)];
+    LoadedVoiceGroup *newVg = NULL;
 
-    /* Snapshot current voicegroup identity to detect changes after load */
-    char prevRoot[sizeof(data->projectRoot)];
-    char prevName[sizeof(data->voicegroupName)];
-    memcpy(prevRoot, data->projectRoot,    sizeof(prevRoot));
-    memcpy(prevName, data->voicegroupName, sizeof(prevName));
+    newRoot[0] = '\0';
+    newName[0] = '\0';
+    snprintf(newRecorderPath, sizeof(newRecorderPath), "%s", data->recorderPath);
 
-    uint32_t rootLen, nameLen;
+    uint32_t version, rootLen, nameLen;
 
+    if (stream->read(stream, &version, sizeof(version)) != sizeof(version)) return false;
+    if (version != M4A_PLUGIN_STATE_VERSION) return false;
     if (stream->read(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen)) return false;
-    if (rootLen >= sizeof(data->projectRoot)) return false;
-    if (rootLen > 0 && stream->read(stream, data->projectRoot, rootLen) != (int64_t)rootLen) return false;
-    data->projectRoot[rootLen] = '\0';
+    if (rootLen >= sizeof(newRoot)) return false;
+    if (rootLen > 0 && stream->read(stream, newRoot, rootLen) != (int64_t)rootLen) return false;
+    newRoot[rootLen] = '\0';
 
     if (stream->read(stream, &nameLen, sizeof(nameLen)) != sizeof(nameLen)) return false;
-    if (nameLen >= sizeof(data->voicegroupName)) return false;
-    if (nameLen > 0 && stream->read(stream, data->voicegroupName, nameLen) != (int64_t)nameLen) return false;
-    data->voicegroupName[nameLen] = '\0';
+    if (nameLen >= sizeof(newName)) return false;
+    if (nameLen > 0 && stream->read(stream, newName, nameLen) != (int64_t)nameLen) return false;
+    newName[nameLen] = '\0';
 
-    if (stream->read(stream, &data->reverbAmount, 1) != 1) return false;
-    if (stream->read(stream, &data->masterVolume, 1) != 1) return false;
-    if (stream->read(stream, &data->songMasterVolume, 1) != 1) return false;
-    /* analogFilter byte is optional (not present in older saves); default to enabled */
-    uint8_t analogFilterByte = 1;
-    stream->read(stream, &analogFilterByte, 1);
-    data->analogFilter = (analogFilterByte != 0);
-    /* maxPcmChannels byte is optional (not present in older saves); default to 5 */
-    uint8_t maxChannelsByte = 5;
-    stream->read(stream, &maxChannelsByte, 1);
-    if (maxChannelsByte < 1) maxChannelsByte = 1;
-    if (maxChannelsByte > MAX_PCM_CHANNELS) maxChannelsByte = MAX_PCM_CHANNELS;
-    data->maxPcmChannels = maxChannelsByte;
-    m4a_params_state_load(data, stream);
+    if (stream->read(stream, &newVolume, 1) != 1) return false;
+    if (stream->read(stream, &newReverbAmount, 1) != 1) return false;
+    for (int i = 0; i < MAX_TRACKS; ++i) {
+        uint8_t program = 0;
+        stream->read(stream, &program, 1);
+        newPrograms[i] = program;
+    }
 
     /* Recorder state (optional — EOF here means an older save; don't fail) */
     {
         uint8_t armed = 0;
         if (stream->read(stream, &armed, 1) == 1) {
-            atomic_store(&data->recorderArmed, armed != 0);
+            newRecorderArmed = (armed != 0);
             uint32_t pathLen = 0;
             if (stream->read(stream, &pathLen, sizeof(pathLen)) == (int64_t)sizeof(pathLen)
-                && pathLen < sizeof(data->recorderPath)) {
+                && pathLen < sizeof(newRecorderPath)) {
                 if (pathLen > 0)
-                    stream->read(stream, data->recorderPath, pathLen);
-                data->recorderPath[pathLen] = '\0';
+                    stream->read(stream, newRecorderPath, pathLen);
+                newRecorderPath[pathLen] = '\0';
             }
         }
     }
 
     if (data->activated) {
         /* Only reload voicegroup if the project root or name actually changed */
-        bool vgChanged = strcmp(data->projectRoot,    prevRoot) != 0 ||
-                         strcmp(data->voicegroupName, prevName) != 0;
-        if (vgChanged && data->projectRoot[0] && data->voicegroupName[0]) {
-            if (data->loadedVg) {
-                voicegroup_free(data->loadedVg);
-                data->loadedVg = NULL;
-            }
-            data->loadedVg = voicegroup_load(data->projectRoot, data->voicegroupName,
-                                             &data->loaderConfig);
-            if (data->loadedVg) {
-                m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-#if defined(M4A_DRIVER_V2)
-                m4a_driver_set_voicegroup(data->m4a_v2, data->loadedVg->voices);
-#endif
-                memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
-                memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
-                voicegroup_state_write_default(data->projectRoot,
-                                           data->voicegroupName,
-                                           data->loadedVg);
-            }
+        bool vgChanged = strcmp(newRoot, data->projectRoot) != 0 ||
+                         strcmp(newName, data->voicegroupName) != 0;
+        if (vgChanged) {
+            if (!newRoot[0] || !newName[0])
+                return false;
+            newVg = voicegroup_load(newRoot, newName, &data->loaderConfig);
+            if (!newVg)
+                return false;
         }
-        data->engine.masterVolume = data->masterVolume;
-        data->engine.songMasterVolume = data->songMasterVolume;
-        data->engine.analogFilter = data->analogFilter;
-        data->engine.maxPcmChannels = data->maxPcmChannels;
-        m4a_reverb_set_amount(&data->engine.reverb, data->reverbAmount);
-#if defined(M4A_DRIVER_V2)
-        m4a_set_master_volume(data->m4a_v2, data->masterVolume);
-        m4a_set_song_volume(data->m4a_v2, data->songMasterVolume);
-        m4a_set_analog_filter(data->m4a_v2, data->analogFilter);
-        m4a_set_max_pcm_channels(data->m4a_v2, data->maxPcmChannels);
-        m4a_set_reverb_amount(data->m4a_v2, data->reverbAmount);
-#endif
+    }
+
+    snprintf(data->projectRoot, sizeof(data->projectRoot), "%s", newRoot);
+    snprintf(data->voicegroupName, sizeof(data->voicegroupName), "%s", newName);
+    data->volume = newVolume;
+    data->reverbAmount = newReverbAmount;
+    for (int i = 0; i < MAX_TRACKS; ++i)
+        m4a_params_set_program(data, i, newPrograms[i]);
+    atomic_store(&data->recorderArmed, newRecorderArmed);
+    snprintf(data->recorderPath, sizeof(data->recorderPath), "%s", newRecorderPath);
+
+    if (newVg) {
+        if (data->loadedVg)
+            voicegroup_free(data->loadedVg);
+        data->loadedVg = newVg;
+        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
+        memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
+        memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+        voicegroup_state_write_default(data->projectRoot,
+                                   data->voicegroupName,
+                                   data->loadedVg);
+    }
+
+    if (data->activated) {
+        plugin_apply_engine_settings(data);
         m4a_params_sync_to_engine(data);
     }
 
@@ -1008,11 +936,8 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
         memset(&gs, 0, sizeof(gs));
         snprintf(gs.projectRoot,    sizeof(gs.projectRoot),    "%s", data->projectRoot);
         snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+        gs.volume           = data->volume;
         gs.reverbAmount     = data->reverbAmount;
-        gs.masterVolume     = data->masterVolume;
-        gs.songMasterVolume = data->songMasterVolume;
-        gs.analogFilter     = data->analogFilter;
-        gs.maxPcmChannels   = data->maxPcmChannels;
         gs.voicegroupLoaded = (data->loadedVg != NULL);
         m4a_gui_update_settings(data->gui, &gs);
         if (data->loadedVg)
@@ -1115,9 +1040,6 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
         voicesChanged = true;
     if (voicesChanged && data->activated) {
         m4a_engine_refresh_voices(&data->engine);
-#if defined(M4A_DRIVER_V2)
-        m4a_driver_refresh_voices(data->m4a_v2);
-#endif
     }
 
     /* Handle sample swap requests from the voice editor */
@@ -1141,25 +1063,12 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
         return;
 
     /* Immediate audio settings - safe to write since they're byte-sized */
+    data->volume           = gs.volume;
     data->reverbAmount     = gs.reverbAmount;
-    data->masterVolume     = gs.masterVolume;
-    data->songMasterVolume = gs.songMasterVolume;
-    data->analogFilter     = gs.analogFilter;
-    data->maxPcmChannels   = gs.maxPcmChannels;
 
     if (data->activated) {
-        data->engine.masterVolume = gs.masterVolume;
-        m4a_engine_set_song_volume(&data->engine, gs.songMasterVolume);
-        m4a_reverb_set_amount(&data->engine.reverb, gs.reverbAmount);
-        data->engine.analogFilter = gs.analogFilter;
-        data->engine.maxPcmChannels = gs.maxPcmChannels;
-#if defined(M4A_DRIVER_V2)
-        m4a_set_master_volume(data->m4a_v2, gs.masterVolume);
-        m4a_set_song_volume(data->m4a_v2, gs.songMasterVolume);
-        m4a_set_reverb_amount(data->m4a_v2, gs.reverbAmount);
-        m4a_set_analog_filter(data->m4a_v2, gs.analogFilter);
-        m4a_set_max_pcm_channels(data->m4a_v2, gs.maxPcmChannels);
-#endif
+        m4a_engine_set_volume(&data->engine, gs.volume);
+        m4a_engine_set_reverb_amount(&data->engine, gs.reverbAmount);
     }
 
     if (reloadVoicegroup) {
@@ -1259,11 +1168,8 @@ static bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_flo
     memset(&gs, 0, sizeof(gs));
     snprintf(gs.projectRoot,    sizeof(gs.projectRoot),    "%s", data->projectRoot);
     snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+    gs.volume           = data->volume;
     gs.reverbAmount     = data->reverbAmount;
-    gs.masterVolume     = data->masterVolume;
-    gs.songMasterVolume = data->songMasterVolume;
-    gs.analogFilter     = data->analogFilter;
-    gs.maxPcmChannels   = data->maxPcmChannels;
     gs.voicegroupLoaded = (data->loadedVg != NULL);
 
     data->gui = m4a_gui_create(data->host, &gs, s_pluginLogPath);
