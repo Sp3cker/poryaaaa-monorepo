@@ -24,8 +24,9 @@ Core audio logic is C11. GUI and platform entry points are C++.
 
 Start in these paths unless the task clearly points elsewhere:
 
-- Engine and mixing behavior: `plugin/m4a_engine.c`, `plugin/m4a_engine.h`, `plugin/m4a_channel.c`, `plugin/m4a_channel.h`
-- Reverb: `plugin/m4a_reverb.c`, `plugin/m4a_reverb.h`
+- Engine API and MIDI routing: `plugin/m4a_engine.c`, `plugin/m4a_engine.h`
+- M4A driver behavior: `plugin/m4a/`
+- Hardware audio mixing and reverb: `plugin/hw_audio/`
 - Frequency tables and pitch math: `plugin/m4a_tables.c`, `plugin/m4a_tables.h`
 - Voicegroup and sample discovery: `plugin/voicegroup_loader.c`, `plugin/voicegroup_loader.h`
 - CLAP plugin behavior and state: `plugin/m4a_plugin.c`, `plugin/m4a_plugin.h`

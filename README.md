@@ -261,10 +261,10 @@ cmd/
 plugin/
   m4a_plugin.c/.h             CLAP entry point, MIDI event handling, extension dispatch
   m4a_gui.cpp/.h              Dear ImGui + GLFW settings GUI (C++ with C interface)
-  m4a_engine.c/.h             Core engine: tick processing, channel allocation, MIDI routing
-  m4a_channel.c/.h            PCM and CGB channel rendering, ADSR envelopes
+  m4a_engine.c/.h             Public engine wrapper: MIDI routing and v2 driver/chip ownership
+  m4a/                        M4A software driver: tracks, commands, PCM/CGB event generation
+  hw_audio/                   GBA audio hardware emulation: PSG, DirectSound, mixing, reverb
   m4a_tables.c/.h             Frequency/scale tables (from m4a_tables.c)
-  m4a_reverb.c/.h             Delay-based reverb effect
   voicegroup_loader.c/.h      Project discovery, .inc/.s parser, sample loader
   standalone_main_win32.cpp   Custom Win32 entry point for the standalone executable
 
