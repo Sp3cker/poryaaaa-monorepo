@@ -219,6 +219,19 @@ cmake -B build
 cmake --build build
 ```
 
+On macOS, the `poryaaaa` target automatically installs the freshly built CLAP bundle after every successful build. The default install location is the user CLAP directory:
+
+```bash
+~/Library/Audio/Plug-Ins/CLAP/poryaaaa.clap
+```
+
+To install system-wide instead, configure with an explicit install directory and build with permissions that can write to `/Library`:
+
+```bash
+cmake -B build -DPORYAAAA_CLAP_INSTALL_DIR=/Library/Audio/Plug-Ins/CLAP
+cmake --build build --target poryaaaa
+```
+
 This produces the following targets:
 
 | Target | Output | Description |

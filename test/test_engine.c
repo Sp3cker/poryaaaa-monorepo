@@ -4,6 +4,7 @@
 #include <math.h>
 #include "m4a_engine.h"
 #include "m4a_tables.h"
+#include "test_assert.h"
 
 #if defined(M4A_DRIVER_V2)
 #include "m4a/m4a_driver.h"
@@ -19,6 +20,7 @@ extern void m4a_trk_vol_pit_set(M4ADriverTrack *track);
 #if defined(HW_AUDIO_V2)
 #include "hw_audio/hw_audio.h"
 #include "hw_audio/hw_psg.h"
+void test_hw_mix_run_all(void);
 #endif
 
 #if defined(M4A_DRIVER_V2)
@@ -67,37 +69,8 @@ static void v2_render_chunked(M4ADriver *drv, HwAudio *hw,
  * Tests key algorithms against known values from the GBA engine.
  */
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define ASSERT(cond, msg) do { \
-    tests_run++; \
-    if (!(cond)) { \
-        fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); \
-    } else { \
-        tests_passed++; \
-    } \
-} while(0)
-
-#define ASSERT_EQ(a, b, msg) do { \
-    tests_run++; \
-    if ((a) != (b)) { \
-        fprintf(stderr, "FAIL: %s: expected %d, got %d (line %d)\n", \
-                msg, (int)(b), (int)(a), __LINE__); \
-    } else { \
-        tests_passed++; \
-    } \
-} while(0)
-
-#define ASSERT_NEAR(a, b, eps, msg) do { \
-    tests_run++; \
-    if (fabs((double)(a) - (double)(b)) > (eps)) { \
-        fprintf(stderr, "FAIL: %s: expected %f, got %f (line %d)\n", \
-                msg, (double)(b), (double)(a), __LINE__); \
-    } else { \
-        tests_passed++; \
-    } \
-} while(0)
+int tests_run = 0;
+int tests_passed = 0;
 
 static void send_xcmd_select(M4AEngine *engine, int trackIndex, uint8_t selector)
 {
@@ -3546,7 +3519,7 @@ static void test_chip_canned_noise_audible(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
-    /* Noise outputs ±kChanScale × env_vol/15 = ±0.25 (env=15).  Many
+    /* Noise outputs ≈0.3516 at env=15 after the GBA output scale.  Many
      * sign changes per 4096 frames — at ~32768 Hz LFSR rate the LSB
      * flips ~half the LFSR steps; we expect easily > 200 sign changes. */
     float peak = 0.0f;
@@ -3671,16 +3644,11 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
 
     HwAudio *hw = hw_audio_create(44100.0f);
 
-    /* Asymmetric clip with mGBA _applyBias semantics.
-     *
-     * Pre-bias clip window in input space: [-bias_norm, max_norm - bias_norm]
-     * where bias_norm = bias_level / 0x200 and max_norm = 0x3FF / 0x200.
-     * bias=0x340 → bias_norm = 1.625 → clip window = [-1.625, +0.373].
-     * Drive SQ1 + SQ2 unipolar inputs both routed to L only, both at
-     * full env_vol → per-channel input range [0, 0.25] each, summed
-     * range [0, 0.5] on L.  0.5 > 0.373 → top clips at 0.373, bottom
-     * (input 0) stays at 0 (well within the negative half of the
-     * window). */
+    /* Asymmetric clip with mGBA _applyBias semantics.  In mGBA sample
+     * counts, bias=0x340 leaves only 1023 - 832 = 191 positive counts
+     * before the unsigned 10-bit DAC clips.  One full SQ channel is
+     * already 240 counts at these register settings, so SQ1 and SQ2
+     * exercise the high-side clip whenever either channel is high. */
     M4ARegWrite ev[] = {
         { 0, M4A_REG_NR52, 0x80 },
         { 0, M4A_REG_NR50, 0x77 },
@@ -3706,25 +3674,18 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
     /* Output expectations:
-     *   bias_norm = 0x340 / 0x200 = 1.625
-     *   max_norm  = 0x3FF / 0x200 ≈ 1.998
-     *   clip_top  = max_norm - bias_norm ≈ 0.373
-     *   clip_bot  = -bias_norm = -1.625 (well below 0, never reached
-     *               here because input is unipolar)
+     *   clip_top_counts = 0x3FF - 0x340 = 191
+     *   clip_top_output = 191 × 48 / 32768 ≈ 0.2798
      * SQ1 + SQ2 both at full env (env_vol=15) routed to L:
-     *   per-channel input = (env_vol/15) × kPsgChanScale × master_l × psg_vol
-     *                     = 1.0 × 0.25 × 1.0 × 1.0 = 0.25
-     *   when both high: input sum = 0.5 → clipped to 0.373
-     *   when both low:  input sum = 0   → no clip, output 0
-     *   half-overlap (one high one low): input = 0.25 → no clip, output 0.25
+     *   per-channel input = 15 << 3, ×8 NR50, >>2 SOUNDCNT_H = 240 counts
+     *   one or both high: clips to 191 counts, then output-scale applies
+     *   both low: input 0 → no clip, output 0
      * R side: no PSG routed → input 0 → output 0 (mGBA _applyBias
      * subtracts bias back, no embedded DC in silent output).
      *
      * Tolerances: polyphase resampler rings on the clipped square edges
      * (~9% Gibbs overshoot of step amplitude). */
-    const float bias_norm = 832.0f / 512.0f;                     /* 1.625 */
-    const float max_norm  = 1023.0f / 512.0f;                    /* ≈1.998 */
-    const float clip_top  = max_norm - bias_norm;                /* ≈0.373 */
+    const float clip_top  = (1023.0f - 832.0f) * 48.0f / 32768.0f;
     const float ring_eps  = 0.04f;
     const float dc_eps    = 5e-5f;
     const int   warmup    = 32;
@@ -3748,16 +3709,15 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
 
 static void test_chip_canned_soundcnth_psg_vol_codes(void)
 {
-    printf("Testing chip-only: SOUNDCNT_H PSG vol code 25/50/100%% scales...\n");
+    printf("Testing chip-only: SOUNDCNT_H PSG vol code 25/50/100/200%% scales...\n");
 
-    /* Same SQ2 trigger at three SOUNDCNT_H psg-vol codes.  Peak L
-     * amplitude must scale 25% : 50% : 100% within float epsilon.
+    /* Same SQ2 trigger at four SOUNDCNT_H psg-vol codes.  Peak L
+     * amplitude must scale 25% : 50% : 100% : 200% within float epsilon.
      * Master vol is held at full to isolate the psg_vol_code factor. */
-    const uint8_t  codes[3]      = { 0x00, 0x01, 0x02 };
-    const float    expected[3]   = { 0.25f, 0.50f, 1.00f };
-    float          peakOf[3]     = { 0 };
+    const uint8_t  codes[4]      = { 0x00, 0x01, 0x02, 0x03 };
+    float          peakOf[4]     = { 0 };
 
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
         HwAudio *hw = hw_audio_create(44100.0f);
         M4ARegWrite ev[] = {
             { 0, M4A_REG_NR52, 0x80 },
@@ -3791,12 +3751,14 @@ static void test_chip_canned_soundcnth_psg_vol_codes(void)
      * fixed pan/master, so peak[k]/peak[2] should equal expected[k]). */
     float ratio25  = peakOf[0] / peakOf[2];
     float ratio50  = peakOf[1] / peakOf[2];
+    float ratio200 = peakOf[3] / peakOf[2];
     ASSERT(ratio25  > 0.245f && ratio25  < 0.255f,
-                                     "25% PSG vol scales peak by ¼");
+                                             "25% PSG vol scales peak by ¼");
     ASSERT(ratio50  > 0.495f && ratio50  < 0.505f,
-                                     "50% PSG vol scales peak by ½");
+                                             "50% PSG vol scales peak by ½");
+    ASSERT(ratio200 > 1.99f && ratio200 < 2.01f,
+                                             "reserved PSG vol code follows mGBA 200% path");
     ASSERT(peakOf[2] > 0.001f,        "100% PSG vol produces audible signal");
-    (void)expected;
 }
 
 static void test_chip_canned_soundcnth_dma_vol_codes(void)
@@ -3918,7 +3880,8 @@ static void test_chip_canned_resample_antialias(void)
     /* Sanity: low fundamental is audible. */
     ASSERT(peak_low > 0.001f,        "low-frequency square audible");
     /* Anti-alias bound: a 26214 Hz square would, without filtering,
-     * produce ~kPsgChanScale = 0.25 peak at the host (square-wave
+     * produce ~0.3516 peak at the host (single PSG max after GBA output
+     * scale; square-wave
      * amplitude is largely unaffected by aliasing — the alias just
      * shifts the perceived frequency).  With the polyphase low-pass
      * we expect heavy attenuation of the fundamental and odd
@@ -4066,7 +4029,7 @@ static void test_chip_canned_dc_streaming(void)
     M4ARegWriteBatch empty = { .events = NULL, .count = 0 };
 
     /* Stream lots of small chunks.  After the first call's warmup
-     * the output should hold at +0.25 without drift, gain change, or
+     * the output should hold at 0 without drift, gain change, or
      * inter-call discontinuities (which would manifest as periodic
      * spikes at chunk boundaries). */
     enum { CHUNK = 73, NCHUNKS = 200 };  /* 73 is a prime, prevents
@@ -4313,10 +4276,10 @@ static void test_chip_canned_pcm_two_stage_drain(void)
         if (a > peakR) peakR = a;
     }
     /* Sawtooth on ring_a routes to both sides; both peaks must be
-     * audible.  Peak should land near kDmaChanScale × dma_a_vol = 0.5
-     * (default vol code 1 → 100%) — saw peaks at int8 ±127 → ±~1.0 →
-     * ×0.5 mix-bus scale ≈ ±0.5.  Allow generous tolerance for
-     * resampler edge effects. */
+     * audible.  Default DMA vol code 1 maps int8 ±127 through mGBA's
+     * `sample << 2` FIFO scale and final output gain, so peaks land
+     * around ±0.744.  Allow generous tolerance for resampler edge
+     * effects. */
     ASSERT(peakL > 0.1f,             "two-stage drain produces audible L PCM");
     ASSERT(peakR > 0.1f,             "two-stage drain produces audible R PCM");
 
@@ -4361,13 +4324,10 @@ static void test_chip_canned_pcm_constant_byte(void)
     hw_audio_render_events(hw, &batch, &ring, L, R, N);
 
     /* Expected post-mix L value (after warmup):
-     *   pcm_byte_normalized = +64 / 128 = +0.5
-     *   × kDmaChanScale (0.5) → 0.25
-     *   × a_l (= dma_a_vol = 1.0 with code = 1, routed to L)
-     *   + bias_offset (0 with default 0x200)
-     *   = +0.25
+     *   mGBA sample count = +64 << 2 = 256
+     *   final output = 256 × 48 / 32768 = +0.375
      * R is silent (DMA A not routed there, DMA B disabled, no PSG). */
-    const float expected_L = 0.25f;
+    const float expected_L = 0.375f;
     const float dc_eps     = 5e-5f;
     const int   warmup     = 64;
 
@@ -4380,7 +4340,7 @@ static void test_chip_canned_pcm_constant_byte(void)
         if (dL > dc_eps) { L_steady = false; fail_idx = i; break; }
         if (dR > dc_eps) { R_steady = false; fail_idx = i; break; }
     }
-    ASSERT(L_steady,                 "L holds at +0.25 (= 64/128 × kDmaChanScale × vol × routing)");
+    ASSERT(L_steady,                 "L holds at +0.375 (= (64 << 2) × 48 / 32768)");
     ASSERT(R_steady,                 "R is silent (no PCM routed there)");
     (void)fail_idx;
 
@@ -4436,9 +4396,9 @@ static void test_chip_canned_pcm_first_byte_consumed(void)
         if (L[i] > 0.0f) sum_pos_L += L[i];
     }
     /* Threshold rationale: ring[0]=100 drives ~10 internal-rate
-     * samples × normalized 100/128 × kDmaChanScale 0.5 × routing 1
-     * = ~0.39 of total signal energy at internal rate; resampled +
-     * smeared this still produces a sum well above 0.001. */
+     * samples × (100 << 2) × 48/32768 = ~5.86 of total signal energy
+     * at internal rate; resampled + smeared this still produces a sum
+     * well above 0.001. */
     ASSERT(sum_pos_L > 0.001f,       "ring[0] consumed at session start (positive transient present)");
 
     hw_audio_destroy(hw);
@@ -4689,6 +4649,7 @@ int main(void)
     test_chip_canned_noise_dac_off_silences();
     test_chip_canned_soundbias_dc_offset();
     test_chip_canned_soundbias_clip_asymmetric();
+    test_hw_mix_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_resample_antialias();

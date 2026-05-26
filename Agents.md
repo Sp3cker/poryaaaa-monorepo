@@ -60,6 +60,14 @@ cmake -B build
 cmake --build build --target poryaaaa
 ```
 
+On macOS, the `poryaaaa` target installs the freshly built CLAP bundle after every successful build. By default it copies to the user CLAP directory, `~/Library/Audio/Plug-Ins/CLAP/poryaaaa.clap`, so normal builds do not require elevated permissions.
+
+```bash
+cmake --build build --target poryaaaa
+```
+
+To install system-wide instead, configure with `-DPORYAAAA_CLAP_INSTALL_DIR=/Library/Audio/Plug-Ins/CLAP` and run the build with permissions that can write there. If install fails, say that the built plugin was not installed and include the stale/installed path status.
+
 Primary validation command after code changes:
 
 ```bash
@@ -81,9 +89,10 @@ A task is not complete until all applicable items are done:
 
 1. Build the touched target or targets.
 2. Run `poryaaaa_unit_tests`.
-3. Run any additional affected test or executable if the change is integration-sensitive.
-4. If validation cannot run, say exactly what was skipped and why.
-5. Report any platform caveats or follow-up work.
+3. If the CLAP plugin target was built or plugin/audio behavior changed, verify the post-build copy installed the freshly built `poryaaaa.clap` to the configured CLAP plugin directory before DAW/manual validation.
+4. Run any additional affected test or executable if the change is integration-sensitive.
+5. If validation or install cannot run, say exactly what was skipped and why.
+6. Report any platform caveats or follow-up work.
 
 Testing rules:
 

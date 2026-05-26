@@ -43,7 +43,7 @@ extern "C" {
  *     bits 12-15 pan_mask_left      bit i = chan (i+1) routed left
  *
  *   SOUNDCNT_H  (0x4000082):
- *     bits  0-1  psg_volume_code    00=25%, 01=50%, 10=100%, 11=reserved
+ *     bits  0-1  psg_volume_code    00=25%, 01=50%, 10=100%, 11=200% in mGBA
  *     bit   2    dma_a_vol_code     0=50%, 1=100%
  *     bit   3    dma_b_vol_code     0=50%, 1=100%
  *     bit   8    dma_a_enable_right
@@ -57,14 +57,12 @@ extern "C" {
  *     bits  1-9  bias_level         0..0x3FF (default 0x200 = mid-DAC)
  *     bits 14-15 sampling_cycle     0..3 → quirk rate 32k/65k/131k/262k
  *
- * The bias-add + clip stage models the GBA's PWM DAC: the chip
- * outputs unsigned 10-bit values 0..0x3FF, with bias_level (typically
- * 0x200) as the DC reference.  Mix-bus output (in [-1, +1]) is
- * mapped into "DAC-normalized" space relative to bias_level, the
- * 10-bit range is enforced (clamping anything that would underflow
- * to 0 or overflow past 0x3FF), then mapped back to a bipolar float
- * signal centered on (bias_level - 0x200) / 0x200.  Default bias
- * 0x200 produces symmetric ±1 clipping; non-default bias offsets DC. */
+ * The bias-add + clip stage models the GBA's PWM DAC in mGBA's native
+ * signed sample-count domain: routed PSG and DMA samples are summed,
+ * bias_level is added, the unsigned 10-bit range 0..0x3FF is enforced,
+ * bias_level is subtracted again, then the final mGBA output gain is
+ * applied to produce normalized float output.  Non-default bias changes
+ * the clipping window but does not inject DC into silent output. */
 
 typedef struct {
     /* SOUNDCNT_L (NR50 / NR51) — PSG master vol + per-PSG-channel pan. */
@@ -74,7 +72,7 @@ typedef struct {
     uint8_t  pan_mask_right;
 
     /* SOUNDCNT_H — PSG/DMA bus volumes + DMA L/R routing. */
-    uint8_t  psg_volume_code;     /* 0..2 (3 reserved → treat as 100%) */
+    uint8_t  psg_volume_code;     /* 0..3; code 3 follows mGBA's 200% path */
     uint8_t  dma_a_vol_code;      /* 0 = 50%, 1 = 100% */
     uint8_t  dma_b_vol_code;
     bool     dma_a_left;
@@ -95,8 +93,8 @@ void hw_mix_apply_event(HwMixBus *mix, const M4ARegWrite *ev);
 
 /* Combine the six per-channel mono buffers into stereo with full
  * SOUNDCNT_L/H routing+scaling + SOUNDBIAS bias-add + clip pipeline.
- * Each input is host-rate dipolar in approximately [-1, +1] (PSG:
- * dipolar duty/wave/noise × env_vol/15; PCM: s8 / 128.0).
+ * Each PSG input is unipolar in [0, env_vol/15] or equivalent; each
+ * PCM input is dipolar in approximately [-1, +1] (s8 / 128.0).
  *
  * Outputs are WRITTEN (not summed) to outL/outR.  Pass NULL for any
  * input buffer to treat that channel as silent. */

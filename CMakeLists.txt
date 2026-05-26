@@ -160,12 +160,27 @@ elseif(APPLE)
         BUNDLE TRUE
         BUNDLE_EXTENSION "clap"
     )
+
+    set(PORYAAAA_CLAP_INSTALL_DIR
+        "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP"
+        CACHE PATH "Directory where the poryaaaa CLAP bundle is copied after build")
+
     # MACOSX_BUNDLE_INFO_PLIST only works for MACOSX_BUNDLE (app bundles).
     # For a generic BUNDLE (.clap), copy Info.plist manually.
     add_custom_command(TARGET poryaaaa POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
             "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Info.plist"
+    )
+    add_custom_command(TARGET poryaaaa POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${PORYAAAA_CLAP_INSTALL_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "${PORYAAAA_CLAP_INSTALL_DIR}/poryaaaa.clap"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "$<TARGET_BUNDLE_DIR:poryaaaa>"
+            "${PORYAAAA_CLAP_INSTALL_DIR}/poryaaaa.clap"
+        COMMENT "Installing poryaaaa.clap to ${PORYAAAA_CLAP_INSTALL_DIR}"
     )
 endif()
 
@@ -201,6 +216,7 @@ endif()
 # ---- Unit Tests ----
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
+    test/test_hw_mix.c
     plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
 )

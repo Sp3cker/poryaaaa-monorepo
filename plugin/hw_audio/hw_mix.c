@@ -53,9 +53,15 @@ void hw_mix_apply_event(HwMixBus *mix, const M4ARegWrite *ev) {
     }
 }
 
-/* PSG bus volume code → linear factor (SOUNDCNT_H bits 1-0).
- *   00 = 25%, 01 = 50%, 10 = 100%, 11 = reserved (treat as 100%). */
-static const float kPsgVolFactor[4] = { 0.25f, 0.50f, 1.00f, 1.00f };
+static float gba_apply_bias(float sample, uint16_t bias_level) {
+    sample += (float)bias_level;
+    if (sample >= 1024.0f) {
+        sample = 1023.0f;
+    } else if (sample < 0.0f) {
+        sample = 0.0f;
+    }
+    return sample - (float)bias_level;
+}
 
 void hw_mix_render(const HwMixBus *mix,
                    const float *in_sq1,
@@ -67,118 +73,68 @@ void hw_mix_render(const HwMixBus *mix,
                    float *outL, float *outR, int frames) {
     if (frames <= 0) return;
 
-    /* Per-side scalars: NR50 master vol (0..7 → 0..1) × SOUNDCNT_H PSG
-     * volume code.  Computed once per render call; SOUNDCNT_L / H
-     * events are applied at segment boundaries by the caller, so
-     * within a segment these are constant. */
-    const float master_l = (float)mix->master_vol_left  / 7.0f;
-    const float master_r = (float)mix->master_vol_right / 7.0f;
-    const float psg_vol  = kPsgVolFactor[mix->psg_volume_code & 3];
-    const float a_vol    = (mix->dma_a_vol_code ? 1.0f : 0.5f);
-    const float b_vol    = (mix->dma_b_vol_code ? 1.0f : 0.5f);
+    /* From here until the final output write, L/R are mGBA sample counts:
+     * the same signed integer domain that gba/audio.c passes into
+     * _applyBias().  That keeps the GBA DAC clip point in its native unit
+     * and avoids pre-scaling individual voices into final float output. */
+    const uint8_t psg_code = (uint8_t)(mix->psg_volume_code & 3);
+    const float psg_shift = (float)(1u << (4u - psg_code));
+    const float psg_unit = (15.0f * 8.0f) / psg_shift;
+    const float dma_a_unit = mix->dma_a_vol_code ? 512.0f : 256.0f;
+    const float dma_b_unit = mix->dma_b_vol_code ? 512.0f : 256.0f;
 
     /* NR51 pan-mask bit positions: sq1=bit0, sq2=bit1, wave=bit2, noise=bit3.
      * Pre-multiply with the side scalars so the inner loop is a sum of
      * masked products, no per-sample branches. */
-    const float sq1_l   = ((mix->pan_mask_left  & 0x01) ? master_l * psg_vol : 0.0f);
-    const float sq1_r   = ((mix->pan_mask_right & 0x01) ? master_r * psg_vol : 0.0f);
-    const float sq2_l   = ((mix->pan_mask_left  & 0x02) ? master_l * psg_vol : 0.0f);
-    const float sq2_r   = ((mix->pan_mask_right & 0x02) ? master_r * psg_vol : 0.0f);
-    const float wave_l  = ((mix->pan_mask_left  & 0x04) ? master_l * psg_vol : 0.0f);
-    const float wave_r  = ((mix->pan_mask_right & 0x04) ? master_r * psg_vol : 0.0f);
-    const float noise_l = ((mix->pan_mask_left  & 0x08) ? master_l * psg_vol : 0.0f);
-    const float noise_r = ((mix->pan_mask_right & 0x08) ? master_r * psg_vol : 0.0f);
+    const float psg_l = psg_unit * (float)(mix->master_vol_left  + 1);
+    const float psg_r = psg_unit * (float)(mix->master_vol_right + 1);
+    const float sq1_l   = ((mix->pan_mask_left  & 0x01) ? psg_l : 0.0f);
+    const float sq1_r   = ((mix->pan_mask_right & 0x01) ? psg_r : 0.0f);
+    const float sq2_l   = ((mix->pan_mask_left  & 0x02) ? psg_l : 0.0f);
+    const float sq2_r   = ((mix->pan_mask_right & 0x02) ? psg_r : 0.0f);
+    const float wave_l  = ((mix->pan_mask_left  & 0x04) ? psg_l : 0.0f);
+    const float wave_r  = ((mix->pan_mask_right & 0x04) ? psg_r : 0.0f);
+    const float noise_l = ((mix->pan_mask_left  & 0x08) ? psg_l : 0.0f);
+    const float noise_r = ((mix->pan_mask_right & 0x08) ? psg_r : 0.0f);
 
-    const float a_l = (mix->dma_a_left  ? a_vol : 0.0f);
-    const float a_r = (mix->dma_a_right ? a_vol : 0.0f);
-    const float b_l = (mix->dma_b_left  ? b_vol : 0.0f);
-    const float b_r = (mix->dma_b_right ? b_vol : 0.0f);
+    const float a_l = (mix->dma_a_left  ? dma_a_unit : 0.0f);
+    const float a_r = (mix->dma_a_right ? dma_a_unit : 0.0f);
+    const float b_l = (mix->dma_b_left  ? dma_b_unit : 0.0f);
+    const float b_r = (mix->dma_b_right ? dma_b_unit : 0.0f);
 
-    /* Per-channel headroom budget.  PSG channels (now unipolar 0..env_vol/
-     * 15 per hw_psg.c) sum positively across up to 4 channels per side.
-     * DMA channels are signed [-1, +1].  kPsgChanScale=0.25 caps the
-     * 4-channel PSG sum at ~+1 of DAC space; kDmaChanScale=0.5 caps each
-     * DMA at ±0.5 so DMA A+B sum at ±1.  Absolute level tuning vs mGBA
-     * captures is a follow-on parity item — see plan §12 "PSG unipolar
-     * synth rework". */
-    const float kPsgChanScale = 0.25f;
-    const float kDmaChanScale = 0.5f;
-
-    /* SOUNDBIAS _applyBias model (mirrors mGBA src/gba/audio.c:343,
-     * `_applyBias()`).  Real GBA DAC is unsigned 10-bit (0..0x3FF) with
-     * `bias_level` (default 0x200) as the DC reference.  mGBA's logic is:
-     *   sample += bias_level
-     *   if (sample >= 0x400) sample = 0x3FF
-     *   else if (sample < 0)  sample = 0
-     *   return sample - bias_level   // signed output, no embedded DC
-     *
-     * In our normalized [-1, +1] DAC-bipolar space (where value V
-     * corresponds to DAC integer V * 0x200):
-     *   bias_norm = bias_level / 0x200       (default = 1.0)
-     *   max_norm  = 0x3FF / 0x200            (≈ 1.998, post-shift max)
-     *   threshold = 0x400 / 0x200            (= 2.0,   clip-to-max edge)
-     *
-     * Per-sample:
-     *   shifted = signal + bias_norm
-     *   if (shifted >= threshold) shifted = max_norm
-     *   else if (shifted < 0)      shifted = 0
-     *   output = shifted - bias_norm
-     *
-     * For default bias=0x200 this is mathematically equivalent to
-     * "clip signal to [-1, +1023/512]" with no DC offset.  For non-
-     * default bias the clip window remains the same width but slides
-     * relative to the input — which is what mGBA does, and which the
-     * earlier `bias_offset += clip` form got slightly wrong (it left
-     * the bias offset embedded in the output for non-default bias). */
-    const float bias_norm = (float)mix->bias_level / 512.0f;
-    const float max_norm  = 1023.0f / 512.0f;
-    const float threshold = 1024.0f / 512.0f;   /* = 2.0 */
+    /* mGBA's default GBA masterVolume is 0x100; _applyBias returns
+     * (sample * masterVolume * 3) >> 4.  Normalize int16 output here. */
+    const float output_scale = 48.0f / 32768.0f;
 
     for (int i = 0; i < frames; i++) {
         float L = 0.0f, R = 0.0f;
 
         if (in_sq1) {
-            float s = in_sq1[i] * kPsgChanScale;
-            L += s * sq1_l;
-            R += s * sq1_r;
+            L += in_sq1[i] * sq1_l;
+            R += in_sq1[i] * sq1_r;
         }
         if (in_sq2) {
-            float s = in_sq2[i] * kPsgChanScale;
-            L += s * sq2_l;
-            R += s * sq2_r;
+            L += in_sq2[i] * sq2_l;
+            R += in_sq2[i] * sq2_r;
         }
         if (in_wave) {
-            float s = in_wave[i] * kPsgChanScale;
-            L += s * wave_l;
-            R += s * wave_r;
+            L += in_wave[i] * wave_l;
+            R += in_wave[i] * wave_r;
         }
         if (in_noise) {
-            float s = in_noise[i] * kPsgChanScale;
-            L += s * noise_l;
-            R += s * noise_r;
+            L += in_noise[i] * noise_l;
+            R += in_noise[i] * noise_r;
         }
         if (in_dma_a) {
-            float s = in_dma_a[i] * kDmaChanScale;
-            L += s * a_l;
-            R += s * a_r;
+            L += in_dma_a[i] * a_l;
+            R += in_dma_a[i] * a_r;
         }
         if (in_dma_b) {
-            float s = in_dma_b[i] * kDmaChanScale;
-            L += s * b_l;
-            R += s * b_r;
+            L += in_dma_b[i] * b_l;
+            R += in_dma_b[i] * b_r;
         }
 
-        /* _applyBias: shift, clip to unsigned 10-bit DAC, subtract bias. */
-        float L_dac = L + bias_norm;
-        float R_dac = R + bias_norm;
-        if (L_dac >= threshold) L_dac = max_norm;
-        else if (L_dac < 0.0f)  L_dac = 0.0f;
-        if (R_dac >= threshold) R_dac = max_norm;
-        else if (R_dac < 0.0f)  R_dac = 0.0f;
-        L = L_dac - bias_norm;
-        R = R_dac - bias_norm;
-
-        if (outL) outL[i] = L;
-        if (outR) outR[i] = R;
+        if (outL) outL[i] = gba_apply_bias(L, mix->bias_level) * output_scale;
+        if (outR) outR[i] = gba_apply_bias(R, mix->bias_level) * output_scale;
     }
 }
