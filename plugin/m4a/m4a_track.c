@@ -76,16 +76,6 @@ static ToneData *resolve_voice(ToneData *voice, uint8_t key) {
     return voice;
 }
 
-static bool note_on_reset_lfo_delay(M4ADriverTrack *track) {
-    track->lfoDelayC = track->lfoDelay;
-    if (track->lfoDelay == 0)
-        return false;
-
-    track->modM = 0;
-    track->lfoSpeedC = 0;
-    return true;
-}
-
 /* Re-push pitch into every active PCM channel on this track.  Mirrors
  * v1 refresh_channel_pitches' PCM half: recompute fw step from the
  * track's keyM/pitM, applying the same divFreq scaling note_on uses. */
@@ -224,6 +214,13 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
             rhythmPan = (int8_t)((voice->panSweep - 0xC0) * 2);
     }
 
+    /* Refresh derived track values before computing channel state. */
+    m4a_trk_vol_pit_set(t);
+
+    int32_t finalKey = (int32_t)useKey + t->keyM;
+    if (finalKey < 0)   finalKey = 0;
+    if (finalKey > 127) finalKey = 127;
+
     uint8_t combinedPriority = t->priority;
 
     if (voiceType >= 1 && voiceType <= 4) {
@@ -236,19 +233,6 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
             if (ch->priority > combinedPriority)                                 return;
             if (ch->priority == combinedPriority && ch->trackIndex < track)      return;
         }
-
-        bool lfoReset = note_on_reset_lfo_delay(t);
-        m4a_trk_vol_pit_set(t);
-        if (lfoReset) {
-            refresh_cgb_volumes(drv, track);
-            refresh_cgb_pitches(drv, track);
-            refresh_pcm_volumes(drv, track);
-            refresh_pcm_pitches(drv, track);
-        }
-
-        int32_t finalKey = (int32_t)useKey + t->keyM;
-        if (finalKey < 0)   finalKey = 0;
-        if (finalKey > 127) finalKey = 127;
 
         ch->midiKey   = key;
         ch->key       = useKey;
@@ -352,19 +336,6 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
             if (!bestIsStopping && combinedPriority < bestPriority) return;
             ch = bestSteal;
         }
-
-        bool lfoReset = note_on_reset_lfo_delay(t);
-        m4a_trk_vol_pit_set(t);
-        if (lfoReset) {
-            refresh_cgb_volumes(drv, track);
-            refresh_cgb_pitches(drv, track);
-            refresh_pcm_volumes(drv, track);
-            refresh_pcm_pitches(drv, track);
-        }
-
-        int32_t finalKey = (int32_t)useKey + t->keyM;
-        if (finalKey < 0)   finalKey = 0;
-        if (finalKey > 127) finalKey = 127;
 
         ch->midiKey       = key;
         ch->key           = useKey;
@@ -601,7 +572,20 @@ void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
         }
         break;
     case 0x1A:  /* LFODL */
-        t->lfoDelay = value;
+        if (t->lfoDelay != value || t->lfoDelayC != value
+            || t->lfoSpeedC != 0 || t->modM != 0) {
+            t->lfoDelay = value;
+            t->lfoDelayC = value;
+            t->lfoSpeedC = 0;
+            if (t->modM != 0) {
+                t->modM = 0;
+                m4a_trk_vol_pit_set(t);
+                refresh_cgb_volumes(drv, track);
+                refresh_cgb_pitches(drv, track);
+                refresh_pcm_volumes(drv, track);
+                refresh_pcm_pitches(drv, track);
+            }
+        }
         break;
     case 0x1D:  /* XCMD payload byte (part 1) */
     case 0x1F: { /* XCMD payload byte (alternate) */
