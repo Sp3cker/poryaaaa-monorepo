@@ -854,11 +854,16 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
     newName[0] = '\0';
     snprintf(newRecorderPath, sizeof(newRecorderPath), "%s", data->recorderPath);
 
-    uint32_t version, rootLen, nameLen;
+    uint32_t versionOrRootLen, rootLen, nameLen;
+    bool legacyState = false;
 
-    if (stream->read(stream, &version, sizeof(version)) != sizeof(version)) return false;
-    if (version != M4A_PLUGIN_STATE_VERSION) return false;
-    if (stream->read(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen)) return false;
+    if (stream->read(stream, &versionOrRootLen, sizeof(versionOrRootLen)) != sizeof(versionOrRootLen)) return false;
+    if (versionOrRootLen == M4A_PLUGIN_STATE_VERSION) {
+        if (stream->read(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen)) return false;
+    } else {
+        legacyState = true;
+        rootLen = versionOrRootLen;
+    }
     if (rootLen >= sizeof(newRoot)) return false;
     if (rootLen > 0 && stream->read(stream, newRoot, rootLen) != (int64_t)rootLen) return false;
     newRoot[rootLen] = '\0';
@@ -868,8 +873,22 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
     if (nameLen > 0 && stream->read(stream, newName, nameLen) != (int64_t)nameLen) return false;
     newName[nameLen] = '\0';
 
-    if (stream->read(stream, &newVolume, 1) != 1) return false;
-    if (stream->read(stream, &newReverbAmount, 1) != 1) return false;
+    if (legacyState) {
+        uint8_t oldMasterVolume = 15;
+        uint8_t oldAnalogFilter = 1;
+        uint8_t oldMaxPcmChannels = 12;
+        if (stream->read(stream, &newReverbAmount, 1) != 1) return false;
+        if (stream->read(stream, &oldMasterVolume, 1) != 1) return false;
+        if (stream->read(stream, &newVolume, 1) != 1) return false;
+        stream->read(stream, &oldAnalogFilter, 1);
+        stream->read(stream, &oldMaxPcmChannels, 1);
+        (void)oldMasterVolume;
+        (void)oldAnalogFilter;
+        (void)oldMaxPcmChannels;
+    } else {
+        if (stream->read(stream, &newVolume, 1) != 1) return false;
+        if (stream->read(stream, &newReverbAmount, 1) != 1) return false;
+    }
     for (int i = 0; i < MAX_TRACKS; ++i) {
         uint8_t program = 0;
         stream->read(stream, &program, 1);
