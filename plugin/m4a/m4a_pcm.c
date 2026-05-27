@@ -72,12 +72,13 @@ static void pcm_channel_tick(M4ADriverPcmChan *ch, uint8_t masterVolume) {
     }
 
     if (ch->status & M4A_CHN_IEC) {
+        if (ch->pseudoEchoLength == 0) { ch->status = 0; return; }
         ch->pseudoEchoLength--;
         if (ch->pseudoEchoLength == 0) { ch->status = 0; return; }
     } else if (ch->status & M4A_CHN_STOP) {
         envVol = (uint8_t)(((uint32_t)envVol * ch->release) >> 8);
         if (envVol <= ch->pseudoEchoVolume) {
-            if (ch->pseudoEchoVolume == 0) { ch->status = 0; return; }
+            if (ch->pseudoEchoVolume == 0 || ch->pseudoEchoLength == 0) { ch->status = 0; return; }
             envVol = ch->pseudoEchoVolume;
             ch->status |= M4A_CHN_IEC;
         }
@@ -88,7 +89,7 @@ static void pcm_channel_tick(M4ADriverPcmChan *ch, uint8_t masterVolume) {
             if (envVol <= ch->sustain) {
                 envVol = ch->sustain;
                 if (envVol == 0) {
-                    if (ch->pseudoEchoVolume == 0) { ch->status = 0; return; }
+                    if (ch->pseudoEchoVolume == 0 || ch->pseudoEchoLength == 0) { ch->status = 0; return; }
                     envVol = ch->pseudoEchoVolume;
                     ch->status = (ch->status & ~M4A_CHN_ENV_MASK) | M4A_CHN_IEC;
                 } else {

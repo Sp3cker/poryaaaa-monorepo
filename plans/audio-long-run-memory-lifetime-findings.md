@@ -4,18 +4,15 @@ Date: 2026-05-27
 
 Scope: review of memory leaks, resource lifetime bugs, realtime allocation/blocking, and state accumulation paths that could degrade long-running `poryaaaa` audio. Four read-only subagents reviewed engine/driver, hardware audio, plugin/UI/recorder, and loader/renderer slices. The normal unit suite passed after the review (`415/415 tests passed`). An ASan/UBSan build ran far enough to expose a test callback lifetime bug, then aborted before completing the suite.
 
-## Recommended Fix Order
+## Remaining Recommended Fix Order
 
-1. Fix the ASan-blocking test-only xCmd callback lifetime bug.
-2. Fix test-created PCM fixtures that violate the loader sentinel contract.
-3. Fix PCM pseudo-echo zero-length underflow.
-4. Decide whether PCM interpolation should defensively support non-loader `WaveData` without a sentinel.
-5. Fix `m4a_engine_process()` event-queue chunking.
-6. Fix realtime recorder allocation/blocking.
-7. Fix GUI voice editing ownership/race.
-8. Fix SQ2 enable semantics and other lower-risk cleanup paths.
+1. Decide whether PCM interpolation should defensively support non-loader `WaveData` without a sentinel.
+2. Fix `m4a_engine_process()` event-queue chunking.
+3. Fix realtime recorder allocation/blocking.
+4. Fix GUI voice editing ownership/race.
+5. Fix SQ2 enable semantics and other lower-risk cleanup paths.
 
-This order gets sanitizer coverage working first, then attacks the smallest note-off/release-adjacent production bug, then moves into broader architecture changes.
+The sanitizer blockers and the smallest note-off/release-adjacent production bug are fixed. The remaining order moves from the last PCM memory-safety decision into broader engine and realtime architecture changes.
 
 ## Findings
 
@@ -43,6 +40,8 @@ Likely fix:
 ### 2. PCM pseudo-echo length zero underflows during release
 
 Severity: Medium/high. This is note-off/release-adjacent.
+
+Status: Fixed in `plugin/m4a/m4a_pcm.c`. PCM pseudo-echo now stops immediately when `pseudoEchoLength == 0`, both when entering IEC and while already in IEC, instead of wrapping the length byte to 255. `test/test_engine.c` covers zero-length immediate stop and preserves the nonzero countdown behavior.
 
 Evidence:
 

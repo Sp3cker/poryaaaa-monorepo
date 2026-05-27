@@ -15,6 +15,8 @@
  * own .c files. */
 #include "m4a/m4a_internal.h"
 
+extern void m4a_sound_main_ram(M4ADriver *drv);
+
 extern void m4a_trk_vol_pit_set(M4ADriverTrack *track);
 #endif
 #if defined(HW_AUDIO_V2)
@@ -1215,6 +1217,143 @@ static void test_v2_pcm_reverb_pipeline(void)
     ASSERT(wet_in_range,             "reverb output stays in int8 range");
 
     m4a_driver_destroy(drv_wet);
+    free(wd);
+}
+
+static WaveData *make_v2_pcm_echo_test_wave(void)
+{
+    int dataSize = 64;
+    WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    if (!wd)
+        return NULL;
+
+    wd->status = 0xC000;          /* looping sample */
+    wd->loopStart = 0;
+    wd->freq = 22050u << 10;
+    wd->size = dataSize;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+    for (int i = 0; i < dataSize; i++)
+        wd->data[i] = (int8_t)((i & 1) ? 80 : -80);
+    wd->data[dataSize] = wd->data[0];
+
+    return wd;
+}
+
+static M4ADriverPcmChan *find_active_pcm_channel(M4ADriver *drv)
+{
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+        if (drv->pcmChans[i].status & M4A_CHN_ON)
+            return &drv->pcmChans[i];
+    return NULL;
+}
+
+static void init_pcm_echo_test_voice(ToneData *voices, WaveData *wd)
+{
+    memset(voices, 0, sizeof(ToneData) * 128);
+    voices[0].type    = VOICE_DIRECTSOUND;
+    voices[0].key     = 60;
+    voices[0].wav     = wd;
+    voices[0].attack  = 0xFF;
+    voices[0].decay   = 0;
+    voices[0].sustain = 0xFF;
+    voices[0].release = 0;
+}
+
+static void test_v2_pcm_pseudo_echo_zero_length_stops(void)
+{
+    printf("Testing v2 PCM pseudo-echo length 0 stops immediately...\n");
+
+    WaveData *wd = make_v2_pcm_echo_test_wave();
+    ASSERT(wd != NULL, "PCM pseudo-echo test wave allocated");
+    if (!wd)
+        return;
+
+    ToneData voices[128];
+    init_pcm_echo_test_voice(voices, wd);
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "PCM pseudo-echo zero-length driver allocated");
+    if (!drv) {
+        free(wd);
+        return;
+    }
+    m4a_set_master_volume(drv, 15);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    drv->tracks[0].pseudoEchoVolume = 0x20;
+    drv->tracks[0].pseudoEchoLength = 0;
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan *pcm = find_active_pcm_channel(drv);
+    ASSERT(pcm != NULL, "PCM pseudo-echo zero-length test starts a note");
+    if (pcm) {
+        m4a_note_off(drv, 0, 60);
+        m4a_sound_main_ram(drv);
+        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0,
+                  "PCM pseudo-echo length 0 stops on release tick");
+        ASSERT_EQ(pcm->pseudoEchoLength, 0,
+                  "PCM pseudo-echo length 0 does not wrap to 255");
+    }
+
+    m4a_driver_destroy(drv);
+    free(wd);
+}
+
+static void test_v2_pcm_pseudo_echo_nonzero_length_counts_down(void)
+{
+    printf("Testing v2 PCM pseudo-echo nonzero length counts down...\n");
+
+    WaveData *wd = make_v2_pcm_echo_test_wave();
+    ASSERT(wd != NULL, "PCM pseudo-echo countdown test wave allocated");
+    if (!wd)
+        return;
+
+    ToneData voices[128];
+    init_pcm_echo_test_voice(voices, wd);
+
+    M4ADriver *drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "PCM pseudo-echo countdown driver allocated");
+    if (!drv) {
+        free(wd);
+        return;
+    }
+    m4a_set_master_volume(drv, 15);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    drv->tracks[0].pseudoEchoVolume = 0x20;
+    drv->tracks[0].pseudoEchoLength = 2;
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan *pcm = find_active_pcm_channel(drv);
+    ASSERT(pcm != NULL, "PCM pseudo-echo countdown test starts a note");
+    if (pcm) {
+        m4a_note_off(drv, 0, 60);
+        m4a_sound_main_ram(drv);
+        ASSERT(pcm->status & M4A_CHN_IEC,
+               "PCM pseudo-echo nonzero length enters IEC");
+        ASSERT_EQ(pcm->pseudoEchoLength, 2,
+                  "PCM pseudo-echo nonzero length is not decremented on entry");
+
+        m4a_sound_main_ram(drv);
+        ASSERT(pcm->status & M4A_CHN_ON,
+               "PCM pseudo-echo remains active before countdown reaches zero");
+        ASSERT_EQ(pcm->pseudoEchoLength, 1,
+                  "PCM pseudo-echo nonzero length decrements while in IEC");
+
+        m4a_sound_main_ram(drv);
+        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0,
+                  "PCM pseudo-echo nonzero length stops at countdown zero");
+        ASSERT_EQ(pcm->pseudoEchoLength, 0,
+                  "PCM pseudo-echo nonzero length reaches zero");
+    }
+
+    m4a_driver_destroy(drv);
     free(wd);
 }
 
@@ -4550,6 +4689,8 @@ int main(void)
     test_v2_cgb_pan_mask_routes();
     test_v2_pcm_cc7_refresh();
     test_v2_pcm_reverb_pipeline();
+    test_v2_pcm_pseudo_echo_zero_length_stops();
+    test_v2_pcm_pseudo_echo_nonzero_length_counts_down();
     test_v2_event_stream();
     test_v2_consume_clears_triggers();
     test_v2_wave_ram_events();
