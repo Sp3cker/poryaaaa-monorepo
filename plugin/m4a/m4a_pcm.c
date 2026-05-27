@@ -53,6 +53,10 @@ void m4a_drv_pcm_start(M4ADriverPcmChan *ch, WaveData *wav, uint8_t type) {
     ch->envelopeVolume = (uint8_t)envVol;
 }
 
+static bool pcm_can_pseudo_echo(const M4ADriverPcmChan *ch) {
+    return ch->pseudoEchoVolume != 0 && ch->pseudoEchoLength != 0;
+}
+
 /* Per-vblank envelope tick for a PCM channel.  Mirrors v1
  * m4a_pcm_channel_tick / pokeemerald SoundMainRAM envelope state machine.
  * Updates envelopeVolume + envelopeVolumeLeft/Right; the mixer reads the
@@ -78,7 +82,7 @@ static void pcm_channel_tick(M4ADriverPcmChan *ch, uint8_t masterVolume) {
     } else if (ch->status & M4A_CHN_STOP) {
         envVol = (uint8_t)(((uint32_t)envVol * ch->release) >> 8);
         if (envVol <= ch->pseudoEchoVolume) {
-            if (ch->pseudoEchoVolume == 0 || ch->pseudoEchoLength == 0) { ch->status = 0; return; }
+            if (!pcm_can_pseudo_echo(ch)) { ch->status = 0; return; }
             envVol = ch->pseudoEchoVolume;
             ch->status |= M4A_CHN_IEC;
         }
@@ -89,7 +93,7 @@ static void pcm_channel_tick(M4ADriverPcmChan *ch, uint8_t masterVolume) {
             if (envVol <= ch->sustain) {
                 envVol = ch->sustain;
                 if (envVol == 0) {
-                    if (ch->pseudoEchoVolume == 0 || ch->pseudoEchoLength == 0) { ch->status = 0; return; }
+                    if (!pcm_can_pseudo_echo(ch)) { ch->status = 0; return; }
                     envVol = ch->pseudoEchoVolume;
                     ch->status = (ch->status & ~M4A_CHN_ENV_MASK) | M4A_CHN_IEC;
                 } else {

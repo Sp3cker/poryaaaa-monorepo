@@ -12,7 +12,7 @@ Scope: review of memory leaks, resource lifetime bugs, realtime allocation/block
 4. Fix GUI voice editing ownership/race.
 5. Fix SQ2 enable semantics and other lower-risk cleanup paths.
 
-The sanitizer blockers and the smallest note-off/release-adjacent production bug are fixed. The remaining order moves from the last PCM memory-safety decision into broader engine and realtime architecture changes.
+The sanitizer blockers are fixed. The remaining order moves from the last PCM memory-safety decision into broader engine and realtime architecture changes.
 
 ## Findings
 
@@ -37,31 +37,7 @@ Likely fix:
 
 - Keep the capture object alive for the whole test, or clear/reassign the callback before leaving each scope.
 
-### 2. PCM pseudo-echo length zero underflows during release
-
-Severity: Medium/high. This is note-off/release-adjacent.
-
-Status: Fixed in `plugin/m4a/m4a_pcm.c`. PCM pseudo-echo now stops immediately when `pseudoEchoLength == 0`, both when entering IEC and while already in IEC, instead of wrapping the length byte to 255. `test/test_engine.c` covers zero-length immediate stop and preserves the nonzero countdown behavior.
-
-Evidence:
-
-- `plugin/m4a/m4a_pcm.c`: `pcm_channel_tick()` decrements `pseudoEchoLength` in IEC state before checking stop:
-  - `pseudoEchoLength--;`
-  - `if (pseudoEchoLength == 0) { ch->status = 0; return; }`
-- If `pseudoEchoVolume != 0` and `pseudoEchoLength == 0`, entering IEC makes the `uint8_t` length wrap to 255 and creates an unintended long pseudo-echo tail.
-- XCMD can set pseudo-echo volume and length independently in `plugin/m4a/m4a_track.c`.
-
-Impact:
-
-- A zero-length echo can hold PCM channel slots for about 256 vblanks.
-- Can sound like long-run degradation by leaving release tails and reducing available polyphony.
-
-Likely fix:
-
-- Add a unit test where note-off enters pseudo-echo with volume nonzero and length zero.
-- Make length zero stop immediately instead of wrapping.
-
-### 3. PCM interpolation reads one byte past tail sample
+### 2. PCM interpolation reads one byte past tail sample
 
 Severity: High for memory safety, medium for audible impact.
 
@@ -82,7 +58,7 @@ Likely fix:
 - Add a focused unit test with a tiny WaveData sample.
 - Clamp/interpolate against the last valid sample at segment end, preserving the existing extra sentinel behavior where it is valid.
 
-### 4. Engine process can overflow bounded event queue on large blocks
+### 3. Engine process can overflow bounded event queue on large blocks
 
 Severity: Medium.
 
@@ -102,7 +78,7 @@ Likely fix:
 - Move the chunking invariant into `m4a_engine_process()` so callers cannot violate it.
 - Keep the CLAP-level chunking if useful, but make the engine API safe by default.
 
-### 5. Realtime recorder path allocates and locks on the audio thread
+### 4. Realtime recorder path allocates and locks on the audio thread
 
 Severity: High for long-session plugin stability.
 
@@ -123,7 +99,7 @@ Likely fix:
 - Use a preallocated lock-free or single-producer queue from process to main/worker thread, then drain into the vector outside realtime.
 - Add a clear cap/backpressure policy for long recordings.
 
-### 6. GUI voice editor mutates live engine-owned voice data
+### 5. GUI voice editor mutates live engine-owned voice data
 
 Severity: High for data races and unstable audio while editing.
 
@@ -144,7 +120,7 @@ Likely fix:
 - Give GUI an editable copy/draft model.
 - Commit changes through an explicit main-to-audio command path at a safe boundary, or restart/reload the engine state atomically.
 
-### 7. SQ2 can be enabled by NR22 without a trigger
+### 6. SQ2 can be enabled by NR22 without a trigger
 
 Severity: Medium.
 
@@ -163,7 +139,7 @@ Likely fix:
 - Add chip-level test: disable SQ2, apply `NR22` without `NR24` trigger, assert silence.
 - Make `NR22` update envelope/DAC state but not enable the channel unless trigger semantics require it.
 
-### 8. Project asset index can go stale on project-root reload
+### 7. Project asset index can go stale on project-root reload
 
 Severity: Medium, not likely the core audio degradation.
 
@@ -181,7 +157,7 @@ Likely fix:
 
 - Rebuild or destroy/recreate `assetIndex` when project root changes.
 
-### 9. Renderer `--solo` error path leaks initialized resources
+### 8. Renderer `--solo` error path leaks initialized resources
 
 Severity: Medium for CLI error path, low for plugin audio.
 
@@ -197,7 +173,7 @@ Likely fix:
 
 - Route this path through the same cleanup block as later failures.
 
-### 10. Repeated override application retains old sample allocations
+### 9. Repeated override application retains old sample allocations
 
 Severity: Medium if overrides can be applied repeatedly to the same loaded voicegroup.
 
@@ -215,7 +191,7 @@ Likely fix:
 
 - Prefer rebuilding a fresh `LoadedVoiceGroup` for override application, or track per-override owned replacements so repeated replacement frees/reuses the previous one safely.
 
-### 11. Lower-risk cleanup items
+### 10. Lower-risk cleanup items
 
 - `hw_pcm_render()` has an unsafe helper-level `frames <= 0 || !ring` branch that would turn negative frames into a huge `memset` size if called directly. Main caller currently guards it.
 - Parser maps and registration helpers assign `realloc()` directly to owned pointers. On OOM this leaks the old owner and can dereference `NULL`.
@@ -237,4 +213,4 @@ Partial:
 Open:
 
 - Full sanitizer pass after fixing the test callback lifetime issue.
-- Targeted tests for pseudo-echo zero length, PCM tail interpolation, engine chunking, and SQ2 no-trigger enable behavior.
+- Targeted tests for PCM tail interpolation, engine chunking, and SQ2 no-trigger enable behavior.
