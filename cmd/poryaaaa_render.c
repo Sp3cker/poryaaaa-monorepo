@@ -1,5 +1,5 @@
 /*
- * poryaaaa_render - Standalone M4A MIDI renderer
+ * poryaaaa_render - M4A MIDI renderer
  *
  * Usage: poryaaaa_render <project_root> <voicegroup> --midi <file.mid> [options]
  *

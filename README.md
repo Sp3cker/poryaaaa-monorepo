@@ -9,14 +9,13 @@ Composing custom music for Pokémon GBA games normally requires a slow iteration
 These are the available poryaaaa tools:
 
 - **`poryaaaa.clap`**: a CLAP instrument plugin. Insert it on a MIDI track in your DAW and hear the GBA-accurate audio in real time as you compose.
-- **`poryaaaa_standalone(.exe)`**: a standalone GUI that wraps the CLAP plugin. It receives MIDI from any connected device or virtual cable and plays audio through your speakers.
-- **`poryaaaa_render(.exe)`**: a standalone command-line renderer. Feed it a MIDI file and a voicegroup name; it outputs a WAV file and/or plays audio through your speakers. Supports looping with configurable repeat count and fadeout.
+- **`poryaaaa_render(.exe)`**: a command-line renderer. Feed it a MIDI file and a voicegroup name; it outputs a WAV file and/or plays audio through your speakers. Supports looping with configurable repeat count and fadeout.
 
 All tools auto-discover the project structure and work with [pokeemerald](https://github.com/pret/pokeemerald), [pokefirered](https://github.com/pret/pokefirered), and forked projects (including those with custom sound data directories).
 
 ## Usage
 
-### `poryaaaa_render` -- Standalone command-line MIDI renderer
+### `poryaaaa_render` -- command-line MIDI renderer
 
 ```
 Usage: poryaaaa_render <project_root> <voicegroup> --midi <file.mid> [options]
@@ -78,50 +77,6 @@ When the MIDI file contains text events (Meta type 0x01) or marker events (Meta 
 - After the final repetition, audio continues playing from `[` while fading to silence over `--fadeout` seconds.
 
 `--total-duration-seconds` overrides `--loop-count` and sets the exact total render length. The fadeout still occupies the last `--fadeout` seconds of that duration.
-
-### Standalone executable
-
-`poryaaaa_standalone(.exe)` wraps the CLAP plugin as a self-contained application with its own audio output (via RtAudio) and MIDI input (via RtMidi). It presents the same ImGui settings GUI as the DAW plugin.  No DAW or config file is needed to run it.
-
-#### Running
-
-Simply launch the executable. The GUI window opens immediately:
-
-```bash
-# Linux
-./poryaaaa_standalone
-
-# Windows (or double click on it)
-poryaaaa_standalone.exe
-```
-
-- Edit **Project Root** and **Voicegroup** and press **Reload** to load a voicegroup.
-- Adjust **Song Volume** and **Reverb** live.
-- Close the window to exit.
-
-The app reads `poryaaaa.cfg` (located next to the executable) on startup as initial defaults, using the same format as the plugin. See the [Plugin config reference](#plugin-config-reference) below.
-
-#### Sending MIDI on Windows
-
-RtMidi uses the WinMM MIDI backend. Any device or virtual MIDI port visible in Windows will be detected on startup.
-
-To route MIDI from software (e.g. [Sekaiju](https://openmidiproject.osdn.jp/Sekaiju_en.html), a DAW, or other sequencer):
-
-1. Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and create a virtual port (e.g. `loopMIDI Port`).
-2. In your sequencer, set the MIDI output to the loopMIDI port.
-3. Launch `poryaaaa_standalone.exe` — it will automatically open all available MIDI inputs (e.g. loopMIDI ports).
-4. Play notes or send program changes from your sequencer.
-
-#### Sending MIDI on Linux
-
-RtMidi uses the ALSA sequencer backend. Create a virtual MIDI port with any tool and connect it to `poryaaaa_standalone`'s input:
-
-```bash
-# Example using aconnect (part of alsa-utils)
-aconnect <source_port> <poryaaaa_port>
-```
-
-Caveat: I haven't actually tested this on Linux.  It theoretically works...
 
 ### CLAP plugin in a DAW
 
@@ -198,7 +153,7 @@ Notes:
 
 #### GUI
 
-The plugin opens a settings panel built with [Dear ImGui](https://github.com/ocornut/imgui) and [GLFW](https://www.glfw.org/):
+The plugin opens a settings panel built with [Dear ImGui](https://github.com/ocornut/imgui) and [Pugl](https://drobilla.net/software/pugl):
 
 - **Project Root** / **Voicegroup**: edit and press **Reload** to apply
 - **Song Volume** (0–127), **Reverb** (0–127): take effect immediately
@@ -237,15 +192,14 @@ This produces the following targets:
 | Target | Output | Description |
 |--------|--------|-------------|
 | `poryaaaa` | `poryaaaa.clap` | CLAP instrument plugin |
-| `poryaaaa-standalone` | `poryaaaa_standalone(.exe)` | Standalone GUI |
-| `poryaaaa_render` | `poryaaaa_render(.exe)` | Standalone MIDI renderer |
+| `poryaaaa_render` | `poryaaaa_render(.exe)` | MIDI renderer |
 | `poryaaaa_test` | `poryaaaa` | Quick WAV export test (hardcoded sequence) |
 | `poryaaaa_unit_tests` | `poryaaaa_unit_tests` | Engine unit test suite |
 
 To build a single target:
 
 ```bash
-cmake --build build --target poryaaaa-standalone
+cmake --build build --target poryaaaa
 cmake --build build --target poryaaaa_render
 ```
 
@@ -269,17 +223,16 @@ Copy `build-windows/poryaaaa.clap` to your DAW's CLAP plugin directory (e.g. `%A
 
 ```
 cmd/
-  poryaaaa_render.c           Standalone MIDI renderer (CLI tool)
+  poryaaaa_render.c           MIDI renderer (CLI tool)
 
 plugin/
   m4a_plugin.c/.h             CLAP entry point, MIDI event handling, extension dispatch
-  m4a_gui.cpp/.h              Dear ImGui + GLFW settings GUI (C++ with C interface)
+  m4a_gui.cpp/.h              Dear ImGui + Pugl settings GUI (C++ with C interface)
   m4a_engine.c/.h             Public engine wrapper: MIDI routing and v2 driver/chip ownership
   m4a/                        M4A software driver: tracks, commands, PCM/CGB event generation
   hw_audio/                   GBA audio hardware emulation: PSG, DirectSound, mixing, reverb
   m4a_tables.c/.h             Frequency/scale tables (from m4a_tables.c)
   voicegroup_loader.c/.h      Project discovery, .inc/.s parser, sample loader
-  standalone_main_win32.cpp   Custom Win32 entry point for the standalone executable
 
 test/
   test_engine.c          Unit tests for engine algorithms
@@ -289,8 +242,6 @@ third_party/
   miniaudio.h            Single-header audio I/O library (used by poryaaaa_render)
 
 clap-sdk/                CLAP plugin SDK (submodule)
-clap-wrapper/            Wraps the CLAP plugin as a standalone app (submodule)
-glfw/                    GLFW 3.4 (submodule)
 imgui/                   Dear ImGui (submodule)
 ```
 

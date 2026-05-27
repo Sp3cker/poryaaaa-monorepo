@@ -101,8 +101,8 @@ void m4a_program_change(M4ADriver *drv, int track, uint8_t program);
 void m4a_all_notes_off(M4ADriver *drv, int track);
 void m4a_all_sound_off(M4ADriver *drv);
 
-/* Engine-level params.  Mirror the same surface plugin/standalone uses
- * to push host/GUI config into the v1 engine. */
+/* Engine-level params. Mirror the same surface the plugin uses to push
+ * host/GUI config into the v1 engine. */
 void m4a_set_song_volume(M4ADriver *drv, uint8_t volume);
 void m4a_set_master_volume(M4ADriver *drv, uint8_t volume);   /* 0..15 m4a master */
 void m4a_set_reverb_amount(M4ADriver *drv, uint8_t amount);   /* 0..127 */

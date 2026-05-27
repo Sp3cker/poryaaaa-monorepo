@@ -131,13 +131,6 @@ struct M4AGuiState {
     /* Status message shown after a save attempt */
     char recorderStatus[256];
 
-    /* Audio device callbacks (standalone wires these; DAW build leaves NULL).
-     * Cached device list is repopulated on first render and on Refresh so we
-     * don't re-enumerate CoreAudio every frame. */
-    M4AHostAudioApi audioApi;
-    bool            audioDevicesDirty;
-    int             audioDeviceCount;
-    M4AAudioDeviceInfo audioDevices[32];
 };
 
 /* ---- Internal helpers ---- */
@@ -313,41 +306,6 @@ static void render_general_tab(M4AGuiState *gui)
         }
     }
 
-    /* ---- Output Device (standalone only) ----
-     * audioApi.list_outputs is wired by the standalone entry to RtAudio.
-     * In a DAW-hosted CLAP build the host owns audio routing, so the
-     * callbacks stay NULL and this whole control is hidden. */
-    if (gui->audioApi.list_outputs && gui->audioApi.set_output) {
-        if (gui->audioDevicesDirty) {
-            gui->audioDeviceCount = gui->audioApi.list_outputs(
-                gui->audioApi.ctx, gui->audioDevices,
-                (int)(sizeof(gui->audioDevices) / sizeof(gui->audioDevices[0])));
-            gui->audioDevicesDirty = false;
-        }
-        unsigned int currentID = gui->audioApi.current_id
-            ? gui->audioApi.current_id(gui->audioApi.ctx) : 0u;
-        const char *currentName = "(unknown)";
-        for (int i = 0; i < gui->audioDeviceCount; i++) {
-            if (gui->audioDevices[i].id == currentID) {
-                currentName = gui->audioDevices[i].name;
-                break;
-            }
-        }
-        if (ImGui::BeginCombo("Output Device", currentName)) {
-            for (int i = 0; i < gui->audioDeviceCount; i++) {
-                bool selected = (gui->audioDevices[i].id == currentID);
-                if (ImGui::Selectable(gui->audioDevices[i].name, selected)) {
-                    gui->audioApi.set_output(gui->audioApi.ctx,
-                                              gui->audioDevices[i].id);
-                }
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Refresh##audiodev"))
-            gui->audioDevicesDirty = true;
-    }
 }
 
 /* Portable case-insensitive substring search (strcasestr is not on Windows). */
@@ -1174,18 +1132,6 @@ void m4a_gui_set_plugin_data(M4AGuiState *gui, void *plugin_data)
 {
     if (!gui) return;
     gui->plugin_data = plugin_data;
-}
-
-void m4a_gui_set_audio_api(M4AGuiState *gui, const M4AHostAudioApi *api)
-{
-    if (!gui) return;
-    if (api) {
-        gui->audioApi = *api;
-        gui->audioDevicesDirty = true;
-    } else {
-        memset(&gui->audioApi, 0, sizeof(gui->audioApi));
-        gui->audioDeviceCount = 0;
-    }
 }
 
 bool m4a_gui_poll_sample_swap(M4AGuiState *gui, int *voiceIndex,

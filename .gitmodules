@@ -4,6 +4,3 @@
 [submodule "imgui"]
 	path = imgui
 	url = https://github.com/ocornut/imgui.git
-[submodule "clap-wrapper"]
-	path = clap-wrapper
-	url = https://github.com/free-audio/clap-wrapper.git

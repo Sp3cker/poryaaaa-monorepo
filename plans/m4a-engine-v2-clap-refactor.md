@@ -340,7 +340,6 @@ Update config parsing:
   - voicegroup
   - reverb
   - volume
-  - standalone audio output if it still lives in this config path
 
 ## Phase 6 - Tests For CLAP-First Pass
 
@@ -395,7 +394,7 @@ cmake --build build --target poryaaaa
 git diff --check
 ```
 
-If the CLAP target builds but standalone/renderer break because they still use
+If the CLAP target builds but renderer tests break because they still use
 removed fields, make the smallest compatibility update needed or leave a clear
 follow-up only if those targets are not built by the CLAP target.
 

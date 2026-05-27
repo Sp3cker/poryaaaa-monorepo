@@ -124,12 +124,6 @@ static void load_config_file(M4APluginData *data)
             if (v < 0) v = 0;
             if (v > MAX_SONG_VOLUME) v = MAX_SONG_VOLUME;
             data->volume = (uint8_t)v;
-        } else if (strcmp(key, "audio_output") == 0) {
-            /* Standalone audio device name (e.g. "BlackHole 2ch"). Substring
-             * matched against RtAudio's device enumeration at startup. */
-            while (*value == ' ') value++;
-            snprintf(data->audioOutputName, sizeof(data->audioOutputName),
-                     "%s", value);
         } else if (strcmp(key, "sound_data_paths") == 0) {
             /* Semicolon-separated list of extra .inc files, relative to project_root */
             char tmp[600];
@@ -214,7 +208,6 @@ static bool plugin_init(const clap_plugin_t *plugin)
     atomic_init(&data->recorderSeenPC,  0u);
     atomic_init(&data->recorderSeenVol, 0u);
     atomic_init(&data->recorderSeenPan, 0u);
-    data->audioOutputName[0] = '\0';
     data->extClockSampleCounter = 0;
     data->extClockLastSampleTime = 0;
     data->extClockBpm = 0.0;
@@ -624,9 +617,9 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
     if (!data->activated)
         return CLAP_PROCESS_ERROR;
 
-    /* Read tempo from host transport when present (DAW with a CLAP transport).
-     * In standalone — and in any host that doesn't supply a transport — tempo
-     * comes from external MIDI clock instead; see process_midi_clock_pulse. */
+    /* Read tempo from host transport when present. In any host that doesn't
+     * supply a transport, tempo comes from external MIDI clock instead; see
+     * process_midi_clock_pulse. */
     bool host_has_tempo = process->transport
         && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO);
     if (host_has_tempo) {
@@ -996,8 +989,8 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
     if (!data->gui)
         return;
     /* If the host supports timers, only respond to our registered timer.
-     * If not (e.g. standalone without native timer support), accept any id
-     * so an external driver can call on_timer to pump the GUI. */
+     * If not, accept any id so an external driver can call on_timer to pump
+     * the GUI. */
     if (data->guiTimerId != CLAP_INVALID_ID && timer_id != data->guiTimerId)
         return;
 
@@ -1069,7 +1062,6 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
         while (m4a_gui_poll_sample_swap(data->gui, &swapVoice, &swapKind, swapFileName, sizeof(swapFileName))) {
             if (data->assetIndex) {
                 project_asset_index_set_override(data->assetIndex, swapVoice, swapKind, swapFileName);
-                data->restartRequested = true;
                 data->host->request_restart(data->host);
             }
         }
@@ -1100,7 +1092,6 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
         /* Reload clears all sample overrides — user gets fresh voicegroup */
         if (data->assetIndex)
             project_asset_index_clear_all_overrides(data->assetIndex);
-        data->restartRequested = true;
         data->host->request_restart(data->host);
     }
 
@@ -1357,46 +1348,6 @@ static const clap_plugin_gui_t s_gui = {
 static const clap_plugin_timer_support_t s_timer_support = {
     .on_timer = timer_on_timer,
 };
-
-/* Standalone helper: check and clear the restart-requested flag */
-bool m4a_plugin_take_restart_request(const clap_plugin_t *plugin)
-{
-    if (!plugin) return false;
-    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    if (!data->restartRequested) return false;
-    data->restartRequested = false;
-    return true;
-}
-
-/* Standalone helper: check if the plugin's GUI window was closed by the user */
-bool m4a_plugin_gui_was_closed(const clap_plugin_t *plugin)
-{
-    if (!plugin) return false;
-    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    return data->gui && m4a_gui_was_closed(data->gui);
-}
-
-/* Standalone helper: preferred audio output device name from poryaaaa.cfg
- * (`audio_output=` key). Returns an empty string if unset — caller should
- * then fall back to the system default. Returned pointer is owned by the
- * plugin and valid for the plugin's lifetime. */
-const char *m4a_plugin_audio_output_name(const clap_plugin_t *plugin)
-{
-    if (!plugin) return "";
-    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    return data->audioOutputName;
-}
-
-/* Standalone helper: wire audio-device callbacks into the GUI so the
- * Settings tab can render an output-device dropdown. CLAP-in-DAW callers
- * should leave this unset — the host owns audio routing there. */
-void m4a_plugin_set_audio_api(const clap_plugin_t *plugin, const M4AHostAudioApi *api)
-{
-    if (!plugin) return;
-    M4APluginData *data = (M4APluginData *)plugin->plugin_data;
-    if (data && data->gui)
-        m4a_gui_set_audio_api(data->gui, api);
-}
 
 /* Extension dispatcher */
 static const void *plugin_get_extension(const clap_plugin_t *plugin, const char *id)

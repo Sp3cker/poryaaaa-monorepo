@@ -1055,14 +1055,14 @@ Combinations:
 ```cmake
 if(M4A_DRIVER_V2)
     foreach(tgt poryaaaa poryaaaa_test poryaaaa_render
-                poryaaaa_unit_tests poryaaaa-standalone)
+                poryaaaa_unit_tests)
         target_link_libraries(${tgt} PRIVATE m4a_driver)
         target_compile_definitions(${tgt} PRIVATE M4A_DRIVER_V2=1)
     endforeach()
 endif()
 if(HW_AUDIO_V2)
     foreach(tgt poryaaaa poryaaaa_test poryaaaa_render
-                poryaaaa_unit_tests poryaaaa-standalone)
+                poryaaaa_unit_tests)
         target_link_libraries(${tgt} PRIVATE hw_audio)
         target_compile_definitions(${tgt} PRIVATE HW_AUDIO_V2=1)
     endforeach()

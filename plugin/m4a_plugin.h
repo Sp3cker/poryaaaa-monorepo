@@ -49,10 +49,6 @@ typedef struct {
     unsigned int guiPendingXcmdSeqSeen;
     unsigned int guiLatestXcmdSeqSeen;
 
-    /* Set when the plugin calls request_restart (e.g. after Reload).
-     * The standalone polls this to perform the actual restart cycle. */
-    bool restartRequested;
-
     /* Recorder UI/wire state. The RecorderCore is plugin-owned.
      * `recorderArmed` gates the audio thread's push calls.
      * `recorderPath` is the last-typed filename (persisted via CLAP state).
@@ -66,12 +62,7 @@ typedef struct {
     atomic_uint recorderSeenVol;
     atomic_uint recorderSeenPan;
 
-    /* Standalone-only: preferred audio output device name, read from
-     * poryaaaa.cfg's `audio_output=` key. Empty string = use system default.
-     * Consumed by the macOS standalone entry before startAudioThread runs. */
-    char        audioOutputName[128];
-
-    /* External MIDI clock sync (standalone or any host without transport).
+    /* External MIDI clock sync for hosts without transport.
      * Driven by 0xF8 (24 PPQ), 0xFA/FB/FC start/continue/stop, 0xF2 SPP. */
     uint64_t extClockSampleCounter;   /* running sample-time, +=frames each block */
     uint64_t extClockLastSampleTime;  /* sample-time of last 0xF8 */

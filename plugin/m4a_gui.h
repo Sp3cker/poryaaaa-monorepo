@@ -159,29 +159,6 @@ bool m4a_gui_poll_sample_swap(M4AGuiState *gui, int *voiceIndex,
                               ProjectAssetKind *kind,
                               char *fileName, int fileNameSize);
 
-/*
- * Audio device callback surface for the in-GUI Output Device dropdown.
- * Provided by the standalone (which owns RtAudio) and ignored by the
- * CLAP-in-DAW build — when api->list_outputs is NULL the dropdown stays
- * hidden so the DAW remains the source of truth for audio routing.
- */
-typedef struct {
-    unsigned int id;
-    char name[128];
-} M4AAudioDeviceInfo;
-
-typedef struct {
-    /* Fill `out` with up to `max` available output devices. Return count. */
-    int (*list_outputs)(void *ctx, M4AAudioDeviceInfo *out, int max);
-    /* RtAudio device ID currently driving the audio thread. */
-    unsigned int (*current_id)(void *ctx);
-    /* Switch the audio thread to the given device ID (restart is fine). */
-    void (*set_output)(void *ctx, unsigned int id);
-    void *ctx;
-} M4AHostAudioApi;
-
-void m4a_gui_set_audio_api(M4AGuiState *gui, const M4AHostAudioApi *api);
-
 #ifdef __cplusplus
 }
 #endif

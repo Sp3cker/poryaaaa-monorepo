@@ -4,10 +4,9 @@ Instructions for coding agents working in this repository.
 
 ## Purpose
 
-`poryaaaa` is a Game Boy Advance m4a audio synthesizer with three shipped artifacts:
+`poryaaaa` is a Game Boy Advance m4a audio synthesizer with two shipped artifacts:
 
 - `poryaaaa.clap`: CLAP instrument plugin
-- `poryaaaa_standalone`: standalone GUI app with MIDI I/O
 - `poryaaaa_render`: CLI MIDI-to-WAV renderer
 
 Core audio logic is C11. GUI and platform entry points are C++.
@@ -32,7 +31,6 @@ Start in these paths unless the task clearly points elsewhere:
 - CLAP plugin behavior and state: `plugin/m4a_plugin.c`, `plugin/m4a_plugin.h`
 - Parameters: `plugin/m4a_params.c`, `plugin/m4a_params.h`
 - GUI: `plugin/m4a_gui.cpp`, `plugin/m4a_gui.h`, `plugin/imgui_impl_pugl.cpp`, `plugin/imgui_impl_pugl.h`
-- Standalone app entry points: `plugin/standalone_main_*.cpp`
 - CLI renderer: `cmd/poryaaaa_render.c`
 - Tests: `test/test_engine.c`, `test/test_wav_export.c`
 - Build changes only when necessary: `CMakeLists.txt`
@@ -44,7 +42,6 @@ Vendor trees and build outputs are large. Search narrowly — scope to `plugin/`
 Do not edit these unless the task explicitly requires it:
 
 - `clap-sdk/`
-- `clap-wrapper/`
 - `imgui/`
 - `third_party/`
 - `build*/`
@@ -78,7 +75,6 @@ cmake --build build --target poryaaaa_unit_tests
 Relevant targets:
 
 - `poryaaaa`: CLAP plugin bundle
-- `poryaaaa-standalone`: standalone GUI target (note: produces `poryaaaa_standalone` executable)
 - `poryaaaa_render`: CLI renderer
 - `poryaaaa_unit_tests`: engine/unit test binary
 - `poryaaaa_test`: WAV export integration test (not a general unit test binary)

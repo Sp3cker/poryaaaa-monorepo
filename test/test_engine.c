@@ -263,6 +263,9 @@ static void test_xcmd_subcommands(void)
     M4ADriver *drv = m4a_engine_driver(&engine);
     ASSERT(drv != NULL, "xcmd test driver accessor returns non-null");
 
+    XcmdCapture xcmd_cap = {0};
+    m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xcmd_cap);
+
     int dataSize = 4;
     WaveData *wd = calloc(1, sizeof(WaveData) + dataSize + 1);
     wd->type = 0;
@@ -287,17 +290,12 @@ static void test_xcmd_subcommands(void)
     m4a_engine_set_voicegroup(&engine, voices);
     m4a_engine_program_change(&engine, 0, 0);
 
-    {
-        XcmdCapture xcmd_cap = {0};
-
-        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xcmd_cap);
-        send_xcmd_select(&engine, 0, 0x04);
-        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x7A }, 1);
-        ASSERT_EQ(xcmd_cap.called, 1, "xcmd callback fires on successful apply");
-        ASSERT_EQ(xcmd_cap.trackIndex, 0, "xcmd callback reports track index");
-        ASSERT_EQ(xcmd_cap.selector, 0x04, "xcmd callback reports selector");
-        ASSERT_EQ(xcmd_cap.value, 0x7A, "xcmd callback reports value");
-    }
+    send_xcmd_select(&engine, 0, 0x04);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x7A }, 1);
+    ASSERT_EQ(xcmd_cap.called, 1, "xcmd callback fires on successful apply");
+    ASSERT_EQ(xcmd_cap.trackIndex, 0, "xcmd callback reports track index");
+    ASSERT_EQ(xcmd_cap.selector, 0x04, "xcmd callback reports selector");
+    ASSERT_EQ(xcmd_cap.value, 0x7A, "xcmd callback reports value");
 
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x7A, "xatta updates attack");
 
@@ -351,34 +349,28 @@ static void test_xcmd_subcommands(void)
     send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x12 }, 1);
     ASSERT_EQ(drv->tracks[0].extendedValue, 0x12345678, "xcmd 0D stores little-endian value");
 
-    {
-        WaveData *wavBefore = drv->tracks[0].currentVoice.wav;
-        XcmdCapture xwave_cap = {0};
+    WaveData *wavBefore = drv->tracks[0].currentVoice.wav;
+    memset(&xcmd_cap, 0, sizeof(xcmd_cap));
 
-        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xwave_cap);
-        send_xcmd_select(&engine, 0, 0x01);
-        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE }, 3);
-        ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
-               "xwave partial payload does not mutate currentVoice.wav");
-        ASSERT_EQ(xwave_cap.called, 0, "xwave partial payload does not notify");
-        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xCA }, 1);
-        /* v2 xWAVE is notify-only: the raw payload is a ROM address, not a host WaveData*. */
-        ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
-               "xwave complete payload remains notify-only in v2");
-        ASSERT_EQ(xwave_cap.called, 1, "xwave complete payload fires callback");
-        ASSERT_EQ(xwave_cap.selector, 0x01, "xwave callback reports selector");
-        ASSERT_EQ(xwave_cap.value, 0xCAFEBABE, "xwave callback carries assembled little-endian value");
-    }
+    send_xcmd_select(&engine, 0, 0x01);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xBE, 0xBA, 0xFE }, 3);
+    ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
+           "xwave partial payload does not mutate currentVoice.wav");
+    ASSERT_EQ(xcmd_cap.called, 0, "xwave partial payload does not notify");
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0xCA }, 1);
+    /* v2 xWAVE is notify-only: the raw payload is a ROM address, not a host WaveData*. */
+    ASSERT(drv->tracks[0].currentVoice.wav == wavBefore,
+           "xwave complete payload remains notify-only in v2");
+    ASSERT_EQ(xcmd_cap.called, 1, "xwave complete payload fires callback");
+    ASSERT_EQ(xcmd_cap.selector, 0x01, "xwave callback reports selector");
+    ASSERT_EQ(xcmd_cap.value, 0xCAFEBABE, "xwave callback carries assembled little-endian value");
 
-    {
-        XcmdCapture wait_cap = {0};
+    memset(&xcmd_cap, 0, sizeof(xcmd_cap));
 
-        m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &wait_cap);
-        send_xcmd_select(&engine, 0, 0x0C);
-        send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
-        ASSERT_EQ(wait_cap.called, 0,
-                  "xcmd 0C is unimplemented in v2 MIDI ingress and does not notify");
-    }
+    send_xcmd_select(&engine, 0, 0x0C);
+    send_xcmd_bytes(&engine, 0, (uint8_t[]){ 0x02, 0x00 }, 2);
+    ASSERT_EQ(xcmd_cap.called, 0,
+              "xcmd 0C is unimplemented in v2 MIDI ingress and does not notify");
 
     m4a_engine_destroy(&engine);
     free(wd);
@@ -952,7 +944,7 @@ static void test_v2_pcm_frequency_scale(void)
     WaveData wav = { 0 };
     wav.freq = 22050u << 10;
     wav.size = 1024;
-    static int8_t fakeData[1024];
+    static int8_t fakeData[1025];
     wav.data = fakeData;
 
     ToneData voices[128];
@@ -988,6 +980,7 @@ static void test_v2_pcm_frequency_scale(void)
      * essentially zero samples and produce a constant ring value. */
     fakeData[0] = 100;
     for (int i = 1; i < 1024; i++) fakeData[i] = (int8_t)((-100) + (i & 1) * 200);
+    fakeData[1024] = fakeData[1023];
 
     v2_advance_chunked(drv, 4096);
 

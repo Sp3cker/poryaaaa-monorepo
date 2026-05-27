@@ -2,11 +2,11 @@
 
 ## Context
 
-The recorder (`RecorderCore` + `smf_writer`) originated as a standalone
+The recorder (`RecorderCore` + `smf_writer`) originated as a separate
 `ccomidi_recorder.clap` plugin in the sibling `ccomidi` repo
 (`/Users/spencer/dev/cProjects/ccomidi/`). ccomidi commit `e51e1af`
 deleted those sources claiming they had "moved to ../poryaaaa/", but
-that migration never actually landed in the standalone poryaaaa repo on
+that migration never actually landed in the poryaaaa repo on
 this machine. The only canonical copy still alive was inside the M4L
 wrapper at
 `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/`.
@@ -37,7 +37,6 @@ Files modified:
 - `CMakeLists.txt`
   - Added `add_subdirectory(plugin/recorder)` after the voicegroup subdir.
   - Appended `recorder` to `target_link_libraries(poryaaaa PRIVATE ...)`.
-  - Appended `recorder` to `target_link_libraries(poryaaaa-standalone PRIVATE ...)`.
   - Did **not** link recorder into `poryaaaa_test`, `poryaaaa_render`,
     or `poryaaaa_unit_tests`. Those don't process MIDI and have no
     use for it.
@@ -115,7 +114,7 @@ What is **not** scaffolded:
    - Drop the wrapper-side `recorder` target from
      `poryaaaa-m4l`'s CMakeLists.
    - Wrapper-side tests under `source/audio/poryaaaa~/tests/` that
-     hit RecorderCore directly may move into the standalone repo if
+     hit RecorderCore directly may move into this repo if
      we want, but that's a follow-up.
 
 ## Open questions

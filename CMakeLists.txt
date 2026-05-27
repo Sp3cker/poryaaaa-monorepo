@@ -8,19 +8,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(clap-sdk)
 
-# ---- clap-wrapper (standalone support) ----
-set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE CACHE BOOL "" FORCE)
-add_subdirectory(clap-wrapper)
-# clap-wrapper enables -Werror but its own fsutil.cpp triggers -Wreturn-type
-# with MinGW cross-compilation, so relax that specific warning.
-# Also ensure _WIN32_WINNT targets Vista+ for SHGetKnownFolderPath.
-if(TARGET clap-wrapper-compile-options)
-    target_compile_options(clap-wrapper-compile-options INTERFACE -Wno-error=return-type)
-    if(WIN32 AND MINGW)
-        target_compile_definitions(clap-wrapper-compile-options INTERFACE _WIN32_WINNT=0x0600)
-    endif()
-endif()
-
 # ---- Pugl ----
 set(PUGL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/pugl)
 
@@ -70,7 +57,7 @@ endif()
 # Pure C, no audio-engine dependencies. Defined in its own
 # CMakeLists so external projects (ccomidi etc.) can add_subdirectory
 # just the library without dragging in poryaaaa's plugin /
-# standalone / test targets.
+# renderer / test targets.
 add_subdirectory(plugin/voicegroup)
 
 # ---- Recorder (MIDI capture + SMF writer) ----
@@ -96,7 +83,7 @@ if(HW_AUDIO_V2)
     add_subdirectory(plugin/hw_audio)
 endif()
 
-# m4a audio engine sources (shared between plugin, standalone, tests).
+# m4a audio engine sources (shared between plugin, renderer, tests).
 set(ENGINE_SOURCES
     plugin/m4a_engine.c
     plugin/m4a_tables.c
@@ -184,7 +171,7 @@ elseif(APPLE)
     )
 endif()
 
-# ---- Standalone Test (WAV export) ----
+# ---- WAV Export Test ----
 add_executable(poryaaaa_test
     test/test_wav_export.c
     ${ENGINE_SOURCES}
@@ -196,7 +183,7 @@ target_include_directories(poryaaaa_test PRIVATE
 
 target_link_libraries(poryaaaa_test PRIVATE m voicegroup_loader)
 
-# ---- Standalone Renderer ----
+# ---- CLI Renderer ----
 add_executable(poryaaaa_render
     cmd/poryaaaa_render.c
     ${ENGINE_SOURCES}
@@ -227,99 +214,12 @@ target_include_directories(poryaaaa_unit_tests PRIVATE
 
 target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader recorder)
 
-# ---- Standalone (clap-wrapper) ----
-add_executable(poryaaaa-standalone
-    plugin/m4a_plugin.c
-    plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
-    plugin/voicegroup/project_asset_index.c
-    plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
-    ${IMGUI_SOURCES}
-    ${PUGL_SOURCES}
-)
-target_include_directories(poryaaaa-standalone PRIVATE
-    plugin
-    ${IMGUI_DIR}
-    ${IMGUI_DIR}/backends
-    ${PUGL_DIR}/include
-    ${PUGL_DIR}/src
-)
-set_target_properties(poryaaaa-standalone PROPERTIES
-    LINKER_LANGUAGE CXX
-)
-
-# Build Pugl as a static library (not a DLL) on all platforms
-target_compile_definitions(poryaaaa-standalone PRIVATE PUGL_STATIC)
-target_link_libraries(poryaaaa-standalone PRIVATE clap voicegroup_loader recorder)
-
-# On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
-if(APPLE)
-    set_source_files_properties(plugin/m4a_gui.cpp PROPERTIES LANGUAGE OBJCXX)
-endif()
-
-if(UNIX AND NOT APPLE)
-    target_link_libraries(poryaaaa-standalone PRIVATE m GL X11 Xcursor Xrandr Xext)
-elseif(APPLE)
-    target_link_libraries(poryaaaa-standalone PRIVATE "-framework Metal" "-framework QuartzCore" "-framework Cocoa")
-elseif(WIN32)
-    target_link_libraries(poryaaaa-standalone PRIVATE opengl32 dwmapi -static-libgcc -static-libstdc++)
-endif()
-
-target_add_standalone_wrapper(
-    TARGET poryaaaa-standalone
-    OUTPUT_NAME "poryaaaa_standalone"
-    STATICALLY_LINKED_CLAP_ENTRY TRUE
-    PLUGIN_ID "com.huderlem.poryaaaa"
-)
-set_target_properties(poryaaaa-standalone PROPERTIES OUTPUT_NAME "poryaaaa_standalone")
-
-# clap-wrapper's native Win32 standalone requires WinRT/WIL (MSVC/Clang only).
-# For MinGW, replace the generic wrapasstandalone.cpp with our own lightweight
-# Win32 entry point that handles GUI hosting and timer firing.
-if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    get_target_property(_sa_sources poryaaaa-standalone SOURCES)
-    list(FILTER _sa_sources EXCLUDE REGEX "wrapasstandalone\\.cpp$")
-    set_target_properties(poryaaaa-standalone PROPERTIES SOURCES "${_sa_sources}")
-    target_sources(poryaaaa-standalone PRIVATE plugin/standalone_main_win32.cpp)
-    target_include_directories(poryaaaa-standalone PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/clap-wrapper/src
-    )
-endif()
-
-if(UNIX AND NOT APPLE)
-    get_target_property(_sa_sources_lin poryaaaa-standalone SOURCES)
-    list(FILTER _sa_sources_lin EXCLUDE REGEX "wrapasstandalone\\.cpp$")
-    set_target_properties(poryaaaa-standalone PROPERTIES SOURCES "${_sa_sources_lin}")
-    target_sources(poryaaaa-standalone PRIVATE plugin/standalone_main_linux.cpp)
-    target_include_directories(poryaaaa-standalone PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/clap-wrapper/src
-    )
-
-    # Our standalone uses Pugl (not GTK), so strip GTK3 from the
-    # clap-wrapper standalone library to prevent assert(gtkGui) crash
-    # when gtkmm-3.0 happens to be installed on the build system.
-    set(_salib poryaaaa-standalone-clap-wrapper-standalone-lib)
-    get_target_property(_salib_sources ${_salib} SOURCES)
-    if(_salib_sources)
-        list(FILTER _salib_sources EXCLUDE REGEX "gtkutils\\.cpp$")
-        set_target_properties(${_salib} PROPERTIES SOURCES "${_salib_sources}")
-    endif()
-    foreach(_prop COMPILE_DEFINITIONS INTERFACE_COMPILE_DEFINITIONS)
-        get_target_property(_defs ${_salib} ${_prop})
-        if(_defs)
-            list(REMOVE_ITEM _defs "CLAP_WRAPPER_HAS_GTK3")
-            set_target_properties(${_salib} PROPERTIES ${_prop} "${_defs}")
-        endif()
-    endforeach()
-endif()
-
 # ---- v2 link wiring ----
 # Each executable target picks up the v2 libraries / compile defines
 # whichever flags are set.  When neither flag is set, this is a no-op
 # and v1 behaviour is exactly unchanged.
 set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
-                         poryaaaa_unit_tests poryaaaa-standalone)
+                         poryaaaa_unit_tests)
 
 if(M4A_DRIVER_V2)
     foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
