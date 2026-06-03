@@ -32,7 +32,7 @@ static const char *s_features[] = {
 };
 
 static const clap_plugin_descriptor_t s_descriptor = {
-    .clap_version = CLAP_VERSION,
+    .clap_version = CLAP_VERSION_INIT,
     .id = "com.huderlem.poryaaaa",
     .name = "poryaaaa",
     .vendor = "pokeemerald",
@@ -1474,7 +1474,7 @@ static const void *entry_get_factory(const char *factory_id)
 }
 
 CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
-    .clap_version = CLAP_VERSION,
+    .clap_version = CLAP_VERSION_INIT,
     .init = entry_init,
     .deinit = entry_deinit,
     .get_factory = entry_get_factory,

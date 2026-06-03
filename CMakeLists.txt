@@ -1,8 +1,28 @@
 cmake_minimum_required(VERSION 3.24)
-project(poryaaaa C CXX OBJC OBJCXX)
+project(poryaaaa C CXX)
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+    add_compile_options("$<$<COMPILE_LANG_AND_ID:C,MSVC>:/experimental:c11atomics>")
+endif()
+
+function(poryaaaa_enable_msvc_c_atomics target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE
+            "$<$<COMPILE_LANGUAGE:C>:/std:c11>"
+            "$<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>")
+    endif()
+endfunction()
+
+if(MSVC)
+    set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_params.c
+        PROPERTIES COMPILE_OPTIONS "/std:c11;/experimental:c11atomics")
+endif()
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -100,6 +120,7 @@ add_library(poryaaaa MODULE
     ${IMGUI_SOURCES}
     ${PUGL_SOURCES}
 )
+poryaaaa_enable_msvc_c_atomics(poryaaaa)
 
 target_include_directories(poryaaaa PRIVATE
     plugin
@@ -141,7 +162,10 @@ endif()
 
 # Platform-specific settings
 if(WIN32)
-    target_link_libraries(poryaaaa PRIVATE dwmapi -static-libgcc -static-libstdc++)
+    target_link_libraries(poryaaaa PRIVATE dwmapi)
+    if(MINGW)
+        target_link_libraries(poryaaaa PRIVATE -static-libgcc -static-libstdc++)
+    endif()
 elseif(APPLE)
     set_target_properties(poryaaaa PROPERTIES
         BUNDLE TRUE
@@ -176,20 +200,28 @@ add_executable(poryaaaa_test
     test/test_wav_export.c
     ${ENGINE_SOURCES}
 )
+poryaaaa_enable_msvc_c_atomics(poryaaaa_test)
 
 target_include_directories(poryaaaa_test PRIVATE
     plugin
 )
 
-target_link_libraries(poryaaaa_test PRIVATE m voicegroup_loader)
+target_link_libraries(poryaaaa_test PRIVATE voicegroup_loader)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_test PRIVATE m)
+endif()
 
 # ---- CLI Renderer ----
 add_executable(poryaaaa_render
     cmd/poryaaaa_render.c
     ${ENGINE_SOURCES}
 )
+poryaaaa_enable_msvc_c_atomics(poryaaaa_render)
 target_include_directories(poryaaaa_render PRIVATE plugin third_party)
-target_link_libraries(poryaaaa_render PRIVATE m voicegroup_loader)
+target_link_libraries(poryaaaa_render PRIVATE voicegroup_loader)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_render PRIVATE m)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa_render PRIVATE pthread dl)
 endif()
@@ -197,7 +229,9 @@ if(APPLE)
     target_link_libraries(poryaaaa_render PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
 endif()
 if(WIN32)
-    target_link_libraries(poryaaaa_render PRIVATE -static-libgcc)
+    if(MINGW)
+        target_link_libraries(poryaaaa_render PRIVATE -static-libgcc)
+    endif()
 endif()
 
 # ---- Unit Tests ----
@@ -207,12 +241,16 @@ add_executable(poryaaaa_unit_tests
     plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
 )
+poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
 
 target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin
 )
 
-target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader recorder)
+target_link_libraries(poryaaaa_unit_tests PRIVATE voicegroup_loader recorder)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_unit_tests PRIVATE m)
+endif()
 
 # ---- v2 link wiring ----
 # Each executable target picks up the v2 libraries / compile defines
