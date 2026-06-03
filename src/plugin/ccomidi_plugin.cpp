@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -504,14 +505,30 @@ void push_midi_event(std::uint32_t time, std::uint8_t status,
   outEvents->try_push(outEvents, &event.header);
 }
 
+long long steady_time_ms() {
+  using Clock = std::chrono::steady_clock;
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             Clock::now().time_since_epoch())
+      .count();
+}
+
 void reload_voicegroup_if_changed(Plugin *plugin) {
   if (!plugin)
     return;
   const long long diskMtime = voicegroup_bridge_state_mtime();
-  if (diskMtime == plugin->voiceLoad.mtimeNs)
+  const bool retryMissingState =
+      diskMtime == 0 && !plugin->voiceLoad.error.empty();
+  const long long nowMs = steady_time_ms();
+  if (diskMtime == plugin->voiceLoad.mtimeNs &&
+      (!retryMissingState || nowMs < plugin->nextVoiceStateRetryMs))
     return;
+
   std::lock_guard<std::mutex> lock(plugin->stateMutex);
   plugin->voiceLoad = voicegroup_bridge_load_state();
+  if (plugin->voiceLoad.mtimeNs == 0 && !plugin->voiceLoad.error.empty())
+    plugin->nextVoiceStateRetryMs = nowMs + 1000;
+  else
+    plugin->nextVoiceStateRetryMs = 0;
 }
 
 void request_host_param_sync(Plugin *plugin) {
@@ -1506,6 +1523,7 @@ void plugin_on_main_thread(const clap_plugin_t *plugin) {
   Plugin *self = from_plugin(plugin);
   if (!self)
     return;
+  reload_voicegroup_if_changed(self);
   if (self->pendingParamInfoRescan) {
     const auto *hostParams = static_cast<const clap_host_params_t *>(
         self->host->get_extension(self->host, CLAP_EXT_PARAMS));
@@ -1513,7 +1531,6 @@ void plugin_on_main_thread(const clap_plugin_t *plugin) {
     if (hostParams && hostParams->rescan)
       hostParams->rescan(self->host, CLAP_PARAM_RESCAN_INFO);
   }
-  (void)self;
 }
 
 std::uint32_t factory_get_plugin_count(const clap_plugin_factory_t *factory) {
@@ -1545,6 +1562,8 @@ const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *factory,
   self->clapPlugin = s_pluginPrototype;
   self->clapPlugin.plugin_data = self;
   self->voiceLoad = voicegroup_bridge_load_state();
+  if (!self->voiceLoad.error.empty() && host->request_callback)
+    host->request_callback(host);
   return &self->clapPlugin;
 }
 

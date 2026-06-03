@@ -246,6 +246,7 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
   UiSnapshot snapshot = {};
   fill_ui_snapshot(plugin, &snapshot);
+  reload_voicegroup_if_changed(plugin);
 
   ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
   ImGui::SetNextWindowSize(

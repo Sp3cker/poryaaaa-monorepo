@@ -46,6 +46,7 @@ struct Plugin {
   std::vector<std::pair<clap_id, double>> pendingUiParamEvents = {};
   bool pendingParamInfoRescan = false;
   VoiceSlotLoad voiceLoad = {};
+  long long nextVoiceStateRetryMs = 0;
   // PC sidechannel writer. Opened in plugin_activate; survives across the
   // plugin's lifetime. publish() is RT-safe.
   ipc::PCBus pcBus = {};
