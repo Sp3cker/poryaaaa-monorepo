@@ -25,6 +25,23 @@
 #include <time.h>
 #include <span>
 
+#if defined(__clang__)
+#define GUI_LOG_DISABLE_FORMAT_NONLITERAL \
+    _Pragma("clang diagnostic push") \
+    _Pragma("clang diagnostic ignored \"-Wformat-nonliteral\"")
+#define GUI_LOG_RESTORE_FORMAT_NONLITERAL \
+    _Pragma("clang diagnostic pop")
+#elif defined(__GNUC__)
+#define GUI_LOG_DISABLE_FORMAT_NONLITERAL \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wformat-nonliteral\"")
+#define GUI_LOG_RESTORE_FORMAT_NONLITERAL \
+    _Pragma("GCC diagnostic pop")
+#else
+#define GUI_LOG_DISABLE_FORMAT_NONLITERAL
+#define GUI_LOG_RESTORE_FORMAT_NONLITERAL
+#endif
+
 /* Timer ID for the internal render timer 
     Bitwig does not give the plugin a timer, 
     so we use a timer from Pugl to drive GUI updates */
@@ -44,7 +61,9 @@ static void gui_log(const char *fmt, ...)
     fprintf(f, "[%s] ", tbuf);
     va_list ap;
     va_start(ap, fmt);
+    GUI_LOG_DISABLE_FORMAT_NONLITERAL;
     vfprintf(f, fmt, ap);
+    GUI_LOG_RESTORE_FORMAT_NONLITERAL;
     va_end(ap);
     fputc('\n', f);
     fclose(f);
@@ -1106,9 +1125,7 @@ void m4a_gui_start_internal_timer(M4AGuiState *gui)
     if (!gui || !gui->view || !gui->realized)
         return;
 
-    PuglStatus st = puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
-
-
+    (void)puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
 }
 
 void m4a_gui_stop_internal_timer(M4AGuiState *gui)

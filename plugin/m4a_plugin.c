@@ -15,6 +15,23 @@
 #include "voicegroup/voicegroup_state.h"
 #include "m4a_gui.h"
 
+#if defined(__clang__)
+#define PLUGIN_LOG_DISABLE_FORMAT_NONLITERAL \
+    _Pragma("clang diagnostic push") \
+    _Pragma("clang diagnostic ignored \"-Wformat-nonliteral\"")
+#define PLUGIN_LOG_RESTORE_FORMAT_NONLITERAL \
+    _Pragma("clang diagnostic pop")
+#elif defined(__GNUC__)
+#define PLUGIN_LOG_DISABLE_FORMAT_NONLITERAL \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wformat-nonliteral\"")
+#define PLUGIN_LOG_RESTORE_FORMAT_NONLITERAL \
+    _Pragma("GCC diagnostic pop")
+#else
+#define PLUGIN_LOG_DISABLE_FORMAT_NONLITERAL
+#define PLUGIN_LOG_RESTORE_FORMAT_NONLITERAL
+#endif
+
 /*
  * M4A VSTi Plugin - CLAP implementation
  *
@@ -32,7 +49,7 @@ static const char *s_features[] = {
 };
 
 static const clap_plugin_descriptor_t s_descriptor = {
-    .clap_version = CLAP_VERSION,
+    .clap_version = CLAP_VERSION_INIT,
     .id = "com.huderlem.poryaaaa",
     .name = "poryaaaa",
     .vendor = "pokeemerald",
@@ -248,6 +265,9 @@ static void plugin_destroy(const clap_plugin_t *plugin)
 static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
                             uint32_t min_frames, uint32_t max_frames)
 {
+    (void)min_frames;
+    (void)max_frames;
+
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     if (!m4a_engine_init(&data->engine, (float)sample_rate))
         return false;
@@ -336,6 +356,7 @@ static void plugin_deactivate(const clap_plugin_t *plugin)
 
 static bool plugin_start_processing(const clap_plugin_t *plugin)
 {
+    (void)plugin;
     return true;
 }
 
@@ -759,12 +780,14 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
 /* Audio ports extension */
 static uint32_t audio_ports_count(const clap_plugin_t *plugin, bool is_input)
 {
+    (void)plugin;
     return is_input ? 0 : 1;
 }
 
 static bool audio_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is_input,
                             clap_audio_port_info_t *info)
 {
+    (void)plugin;
     if (is_input || index != 0) return false;
     info->id = 0;
     snprintf(info->name, sizeof(info->name), "Audio Output");
@@ -783,12 +806,14 @@ static const clap_plugin_audio_ports_t s_audio_ports = {
 /* Note ports extension */
 static uint32_t note_ports_count(const clap_plugin_t *plugin, bool is_input)
 {
+    (void)plugin;
     return is_input ? 1 : 0;
 }
 
 static bool note_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is_input,
                            clap_note_port_info_t *info)
 {
+    (void)plugin;
     if (!is_input || index != 0) return false;
     info->id = 0;
     snprintf(info->name, sizeof(info->name), "MIDI Input");
@@ -975,7 +1000,9 @@ static void plugin_log(const char *fmt, ...)
     if (!f) return;
     va_list ap;
     va_start(ap, fmt);
+    PLUGIN_LOG_DISABLE_FORMAT_NONLITERAL;
     vfprintf(f, fmt, ap);
+    PLUGIN_LOG_RESTORE_FORMAT_NONLITERAL;
     va_end(ap);
     fputc('\n', f);
     fclose(f);
@@ -1205,11 +1232,6 @@ static bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_flo
 
     plugin_log("gui_create: success");
 
-    /* Register a ~60 Hz timer to drive GUI rendering */
-    const clap_host_timer_support_t *timerExt =
-        (const clap_host_timer_support_t *)data->host->get_extension(
-            data->host, CLAP_EXT_TIMER_SUPPORT);
-
     return true;
 }
 
@@ -1221,10 +1243,6 @@ static void gui_destroy(const clap_plugin_t *plugin)
 
     /* Unregister the render timer */
     if (data->guiTimerId != CLAP_INVALID_ID) {
-        const clap_host_timer_support_t *timerExt =
-            (const clap_host_timer_support_t *)data->host->get_extension(
-                data->host, CLAP_EXT_TIMER_SUPPORT);
-
         data->guiTimerId = CLAP_INVALID_ID;
     }
 
@@ -1352,6 +1370,7 @@ static const clap_plugin_timer_support_t s_timer_support = {
 /* Extension dispatcher */
 static const void *plugin_get_extension(const clap_plugin_t *plugin, const char *id)
 {
+    (void)plugin;
     if (strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)   return &s_audio_ports;
     if (strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)    return &s_note_ports;
     if (strcmp(id, CLAP_EXT_PARAMS) == 0)        return m4a_params_extension();
@@ -1363,18 +1382,21 @@ static const void *plugin_get_extension(const clap_plugin_t *plugin, const char 
 
 static void plugin_on_main_thread(const clap_plugin_t *plugin)
 {
+    (void)plugin;
 }
 
 /* ---- Factory ---- */
 
 static uint32_t factory_get_plugin_count(const clap_plugin_factory_t *factory)
 {
+    (void)factory;
     return 1;
 }
 
 static const clap_plugin_descriptor_t *factory_get_plugin_descriptor(
     const clap_plugin_factory_t *factory, uint32_t index)
 {
+    (void)factory;
     if (index == 0) return &s_descriptor;
     return NULL;
 }
@@ -1382,6 +1404,7 @@ static const clap_plugin_descriptor_t *factory_get_plugin_descriptor(
 static const clap_plugin_t *factory_create_plugin(
     const clap_plugin_factory_t *factory, const clap_host_t *host, const char *plugin_id)
 {
+    (void)factory;
     if (strcmp(plugin_id, s_descriptor.id) != 0)
         return NULL;
 
@@ -1474,7 +1497,7 @@ static const void *entry_get_factory(const char *factory_id)
 }
 
 CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
-    .clap_version = CLAP_VERSION,
+    .clap_version = CLAP_VERSION_INIT,
     .init = entry_init,
     .deinit = entry_deinit,
     .get_factory = entry_get_factory,

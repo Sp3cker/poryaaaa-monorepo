@@ -16,6 +16,12 @@ add_library(recorder STATIC
     ${MIDIFILE_DIR}/src/Options.cpp
 )
 target_compile_features(recorder PRIVATE cxx_std_23)
+if(COMMAND poryaaaa_enable_project_source_warnings)
+    poryaaaa_enable_project_source_warnings(
+        ${CMAKE_CURRENT_SOURCE_DIR}/recorder_core.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/smf_writer.cpp
+    )
+endif()
 
 # PUBLIC so consumers can write `#include "recorder/recorder_core.h"`.
 target_include_directories(recorder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

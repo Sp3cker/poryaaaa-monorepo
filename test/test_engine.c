@@ -155,7 +155,6 @@ static void test_midi_key_to_freq(void)
     ASSERT_NEAR(ratio, 1.0595, 0.01, "semitone ratio 61/60");
 
     /* Key clamping at 178 */
-    uint32_t freq178 = m4a_midi_key_to_freq(&wd, 178, 0);
     uint32_t freq200 = m4a_midi_key_to_freq(&wd, 200, 0);
     ASSERT_EQ(freq200, m4a_midi_key_to_freq(&wd, 178, 255),
               "key > 178 should clamp");
@@ -2664,7 +2663,7 @@ static void test_v2_no_event_drops_over_long_run(void)
 
     /* Set up three tracks each with their own program. */
     for (int t = 0; t < 3; t++) {
-        m4a_program_change(drv, t, t);
+        m4a_program_change(drv, t, (uint8_t)t);
         m4a_cc(drv, t, 7, 127);
         m4a_cc(drv, t, 10, 64);
     }

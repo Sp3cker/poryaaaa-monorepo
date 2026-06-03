@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+#if defined(__clang__) || defined(__GNUC__)
+#define HW_PSG_FALLTHROUGH __attribute__((fallthrough))
+#else
+#define HW_PSG_FALLTHROUGH
+#endif
+
 /* GB square duty patterns.  Top 3 bits of the 32-bit phase index into
  * an 8-bit pattern; bit value (0/1) → ±amplitude.  Patterns chosen to
  * match real GB output (bit 0 = first emitted sample). */
@@ -79,11 +85,11 @@ static void hw_psg_tick_frame_sequencer(HwPsgSynth *psg) {
     psg->frame_seq_ticks++;
 
     switch (psg->frame_seq_step) {
-    case 2:
-    case 6:
-        hw_psg_frame_sweep(psg);
-        /* Fall through. */
-    case 0:
+	case 2:
+	case 6:
+		hw_psg_frame_sweep(psg);
+		HW_PSG_FALLTHROUGH;
+	case 0:
     case 4:
         hw_psg_frame_length(psg);
         break;

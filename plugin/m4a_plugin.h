@@ -1,7 +1,16 @@
 #ifndef M4A_PLUGIN_H
 #define M4A_PLUGIN_H
 
+#ifdef __cplusplus
+#include <atomic>
+using atomic_uint = std::atomic_uint;
+using atomic_uchar = std::atomic<unsigned char>;
+using atomic_bool = std::atomic_bool;
+using std::atomic_load;
+using std::atomic_store;
+#else
 #include <stdatomic.h>
+#endif
 #include "m4a_engine.h"
 #include "m4a_engine_recorder.h"
 #include "voicegroup/voicegroup_loader.h"

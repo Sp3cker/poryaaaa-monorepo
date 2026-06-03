@@ -5,6 +5,15 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#endif
+
 void pathlist_add(PathList *list, const char *path)
 {
     if (list->count >= VG_MAX_DISCOVERED_PATHS) return;

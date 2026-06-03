@@ -5,6 +5,9 @@ add_library(hw_audio STATIC
     hw_mix.c
     hw_resample.c
 )
+if(COMMAND poryaaaa_enable_project_warnings)
+    poryaaaa_enable_project_warnings(hw_audio)
+endif()
 
 target_include_directories(hw_audio PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -1,7 +1,7 @@
 #include "vg_discovery.h"
 #include "vg_log.h"
+#include "vg_dirent.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 
