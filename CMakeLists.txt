@@ -4,7 +4,7 @@ if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 23)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
     add_compile_options("$<$<COMPILE_LANG_AND_ID:C,MSVC>:/experimental:c11atomics>")
@@ -120,6 +120,8 @@ set(IMGUI_SOURCES
 )
 if(APPLE)
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_metal.mm
+        PROPERTIES COMPILE_OPTIONS -Wno-arc-bridge-casts-disallowed-in-nonarc)
 else()
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()

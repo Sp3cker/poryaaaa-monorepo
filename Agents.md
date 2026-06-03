@@ -50,6 +50,10 @@ If you must touch one of these, ask for consent first, explaining why.
 
 ## Build And Test
 
+Always use the `build` directory for CMake builds. Do not create alternate
+build directories such as `build-release`, `build-debug`, or other `build-*`
+directories unless the user explicitly requests one.
+
 Configure and build:
 
 ```bash
