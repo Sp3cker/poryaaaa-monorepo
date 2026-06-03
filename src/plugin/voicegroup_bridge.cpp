@@ -11,25 +11,55 @@ namespace ccomidi {
 
 namespace {
 
+std::string env_value(const char *name) {
+#if defined(_WIN32)
+  char *value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, name) != 0 || !value)
+    return {};
+  std::string result(value);
+  std::free(value);
+  return result;
+#else
+  const char *value = std::getenv(name);
+  return value ? std::string(value) : std::string{};
+#endif
+}
+
+std::FILE *open_file_read_binary(const std::string &path) {
+#if defined(_WIN32)
+  std::FILE *file = nullptr;
+  if (fopen_s(&file, path.c_str(), "rb") != 0)
+    return nullptr;
+  return file;
+#else
+  return std::fopen(path.c_str(), "rb");
+#endif
+}
+
 // Fixed per-user location, independent of whether poryaaaa/ccomidi were
 // installed as CLAP, VST3, etc. Both plugins must agree on this path.
 std::string state_path() {
-  const char *home = std::getenv("HOME");
-  if (!home || !*home)
-    return {};
-#ifdef __APPLE__
-  return std::string(home) +
-         "/Library/Application Support/poryaaaa/state.json";
-#elif defined(_WIN32)
-  const char *appdata = std::getenv("APPDATA");
-  if (appdata && *appdata)
-    return std::string(appdata) + "\\poryaaaa\\state.json";
-  return std::string(home) + "\\AppData\\Roaming\\poryaaaa\\state.json";
+#if defined(_WIN32)
+  const std::string appdata = env_value("APPDATA");
+  if (!appdata.empty())
+    return appdata + "\\poryaaaa\\state.json";
+  const std::string userProfile = env_value("USERPROFILE");
+  if (!userProfile.empty())
+    return userProfile + "\\AppData\\Roaming\\poryaaaa\\state.json";
+  return {};
 #else
-  const char *xdg = std::getenv("XDG_CONFIG_HOME");
-  if (xdg && *xdg)
-    return std::string(xdg) + "/poryaaaa/state.json";
-  return std::string(home) + "/.config/poryaaaa/state.json";
+  const std::string home = env_value("HOME");
+  if (home.empty())
+    return {};
+#if defined(__APPLE__)
+  return home + "/Library/Application Support/poryaaaa/state.json";
+#else
+  const std::string xdg = env_value("XDG_CONFIG_HOME");
+  if (!xdg.empty())
+    return xdg + "/poryaaaa/state.json";
+  return home + "/.config/poryaaaa/state.json";
+#endif
 #endif
 }
 
@@ -40,6 +70,8 @@ long long mtime_ns(const std::string &path) {
 #if defined(__APPLE__)
   return static_cast<long long>(st.st_mtimespec.tv_sec) * 1000000000LL +
          st.st_mtimespec.tv_nsec;
+#elif defined(_WIN32)
+  return static_cast<long long>(st.st_mtime) * 1000000000LL;
 #else
   return static_cast<long long>(st.st_mtim.tv_sec) * 1000000000LL +
          st.st_mtim.tv_nsec;
@@ -89,7 +121,7 @@ bool find_key(const char *&src, const char *key) {
 }
 
 bool read_file_to_string(const std::string &path, std::string &out) {
-  std::FILE *f = std::fopen(path.c_str(), "rb");
+  std::FILE *f = open_file_read_binary(path);
   if (!f)
     return false;
   std::fseek(f, 0, SEEK_END);

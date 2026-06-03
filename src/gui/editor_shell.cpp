@@ -272,7 +272,7 @@ bool editor_shell_set_parent(EditorShell *shell, std::uintptr_t nativeParent) {
   if (!shell || !shell->view || shell->realized)
     return false;
 
-  puglSetParent(shell->view, reinterpret_cast<PuglNativeView>(nativeParent));
+  puglSetParent(shell->view, static_cast<PuglNativeView>(nativeParent));
   const PuglStatus status = puglRealize(shell->view);
   if (status != PUGL_SUCCESS)
     return false;

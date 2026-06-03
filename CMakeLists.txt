@@ -1,13 +1,41 @@
 cmake_minimum_required(VERSION 3.24)
-project(ccomidi C CXX OBJC OBJCXX)
+project(ccomidi C CXX)
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(PUGL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pugl")
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/imgui")
-add_compile_options(-Wall -Wextra -Wunused-variable -Wunused-function -g)
+
+function(ccomidi_enable_project_warnings target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE
+            /W4
+            /permissive-
+            /Zc:__cplusplus
+            /Zc:preprocessor
+            /MP
+        )
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Wshadow
+            -Wold-style-cast
+            -Woverloaded-virtual
+            -Wnon-virtual-dtor
+            -Wunused
+            -Wformat=2
+            -Wnull-dereference
+            -Wimplicit-fallthrough
+        )
+    endif()
+endfunction()
 
 # ---- CLAP SDK ----
 # CLAP-only build. clap-wrapper / VST3 rigging was removed; this project
@@ -62,6 +90,7 @@ endif()
 add_library(ccomidi_ipc STATIC
     src/ipc/pc_bus.cpp
 )
+ccomidi_enable_project_warnings(ccomidi_ipc)
 
 target_include_directories(ccomidi_ipc PUBLIC
     src
@@ -74,6 +103,7 @@ set_target_properties(ccomidi_ipc PROPERTIES
 add_library(ccomidi_core
     src/core/sender_core.cpp
 )
+ccomidi_enable_project_warnings(ccomidi_core)
 
 target_include_directories(ccomidi_core PUBLIC
     src
@@ -82,6 +112,7 @@ target_include_directories(ccomidi_core PUBLIC
 add_executable(ccomidi_core_tests
     src/tests/test_sender_core.cpp
 )
+ccomidi_enable_project_warnings(ccomidi_core_tests)
 
 target_link_libraries(ccomidi_core_tests PRIVATE
     ccomidi_core
@@ -116,7 +147,7 @@ if(APPLE)
         "-framework QuartzCore"
     )
 elseif(WIN32)
-    target_link_libraries(ccomidi_gui PUBLIC opengl32)
+    target_link_libraries(ccomidi_gui PUBLIC opengl32 dwmapi)
 else()
     target_link_libraries(ccomidi_gui PUBLIC GL X11 Xcursor Xrandr Xext)
 endif()
@@ -126,6 +157,7 @@ add_library(ccomidi MODULE
     src/plugin/voicegroup_bridge.cpp
     src/gui/ccomidi_editor.cpp
 )
+ccomidi_enable_project_warnings(ccomidi)
 
 target_link_libraries(ccomidi PRIVATE
     ccomidi_core
@@ -152,6 +184,11 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "$<TARGET_BUNDLE_DIR:ccomidi>"
             "${CLAP_INSTALL_DIR}/ccomidi.clap"
+    )
+else()
+    set_target_properties(ccomidi PROPERTIES
+        PREFIX ""
+        SUFFIX ".clap"
     )
 endif()
 

@@ -19,7 +19,11 @@
 
 #include <vector>
 
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "core/command_spec.h"
 #include "core/sender_core.h"
@@ -610,7 +614,11 @@ void publish_program_changes(const PlannedEvents &planned,
   if (!bus || !bus->is_open())
     return;
 
+#ifdef _WIN32
+  const std::uint32_t pid = static_cast<std::uint32_t>(_getpid());
+#else
   const std::uint32_t pid = static_cast<std::uint32_t>(getpid());
+#endif
 
   for (std::size_t i = 0; i < planned.count; ++i) {
     const MidiEvent &ev = planned.events[i];
