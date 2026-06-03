@@ -15,6 +15,7 @@ function(ccomidi_enable_project_warnings target_name)
     if(MSVC)
         target_compile_options(${target_name} PRIVATE
             /W4
+            /WX
             /permissive-
             /Zc:__cplusplus
             /Zc:preprocessor
@@ -25,8 +26,8 @@ function(ccomidi_enable_project_warnings target_name)
             -Wall
             -Wextra
             -Wpedantic
+            -Werror
             -Wshadow
-            -Wold-style-cast
             -Woverloaded-virtual
             -Wnon-virtual-dtor
             -Wunused
