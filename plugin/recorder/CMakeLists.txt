@@ -1,5 +1,5 @@
 # recorder — MIDI capture core + SMF writer vendored from the
-# ccomidi_recorder.clap project.  Pure C++17, no audio-engine
+# ccomidi_recorder.clap project.  Pure C++23, no audio-engine
 # dependencies; the engine will own a RecorderCore instance and
 # expose it via a small accessor in a future turn.
 
@@ -15,6 +15,7 @@ add_library(recorder STATIC
     ${MIDIFILE_DIR}/src/MidiMessage.cpp
     ${MIDIFILE_DIR}/src/Options.cpp
 )
+target_compile_features(recorder PRIVATE cxx_std_23)
 
 # PUBLIC so consumers can write `#include "recorder/recorder_core.h"`.
 target_include_directories(recorder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

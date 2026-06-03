@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <span>
 
 /* Timer ID for the internal render timer 
     Bitwig does not give the plugin a timer, 
@@ -62,6 +63,7 @@ static void gui_log(const char *fmt, ...)
 
 static const int GUI_W = 540;
 static const int GUI_H = 500;
+static const int VOICE_SLOT_COUNT = 128;
 
 /* ---- GUI state ---- */
 
@@ -105,18 +107,15 @@ struct M4AGuiState {
     void *internalTimerUserData;
 
     /* Voice editor state */
-    ToneData *liveVoices;
-    const ToneData *originalVoices;
-    bool *voiceOverrides;
+    std::span<ToneData> liveVoices;
+    std::span<bool> voiceOverrides;
     int selectedVoice;
     int pendingRestoreVoice;  /* -1 = none */
     bool voicesDirty;         /* set when any voice param is edited */
 
     /* Sample swapper state */
-    const ProjectAssetEntry *directsoundAssets;
-    int directsoundAssetCount;
-    const ProjectAssetEntry *progWaveAssets;
-    int progWaveAssetCount;
+    std::span<const ProjectAssetEntry> directsoundAssets;
+    std::span<const ProjectAssetEntry> progWaveAssets;
     const ProjectAssetOverride *assetOverrides;
     char sampleFilterText[256];
 
@@ -141,6 +140,13 @@ static void sync_buffers(M4AGuiState *gui)
              "%s", gui->settings.projectRoot);
     snprintf(gui->voicegroupBuf, sizeof(gui->voicegroupBuf),
              "%s", gui->settings.voicegroupName);
+}
+
+static std::span<const ProjectAssetEntry> project_asset_span(const ProjectAssetEntry *assets, int assetCount)
+{
+    if (!assets || assetCount <= 0)
+        return {};
+    return { assets, static_cast<size_t>(assetCount) };
 }
 
 /* ---- Voice type helpers ---- */
@@ -325,9 +331,9 @@ static const char *ci_strstr(const char *haystack, const char *needle)
  */
 static void render_sample_selector(M4AGuiState *gui, int voiceIndex,
                                    const char *label, ProjectAssetKind kind,
-                                   const ProjectAssetEntry *assets, int assetCount)
+                                   std::span<const ProjectAssetEntry> assets)
 {
-    if (!assets || assetCount <= 0) return;
+    if (assets.empty()) return;
 
     ImGui::Spacing();
     ImGui::SeparatorText(label);
@@ -350,17 +356,17 @@ static void render_sample_selector(M4AGuiState *gui, int voiceIndex,
 
         ImGui::Separator();
 
-        for (int i = 0; i < assetCount; i++) {
+        for (const ProjectAssetEntry &asset : assets) {
             if (gui->sampleFilterText[0] != '\0' &&
-                ci_strstr(assets[i].fileName, gui->sampleFilterText) == NULL)
+                ci_strstr(asset.fileName, gui->sampleFilterText) == NULL)
                 continue;
 
-            bool isSelected = (currentName && strcmp(assets[i].fileName, currentName) == 0);
-            if (ImGui::Selectable(assets[i].fileName, isSelected)) {
+            bool isSelected = (currentName && strcmp(asset.fileName, currentName) == 0);
+            if (ImGui::Selectable(asset.fileName, isSelected)) {
                 gui->pendingSampleSwap = true;
                 gui->pendingSwapVoice = voiceIndex;
                 gui->pendingSwapKind = kind;
-                strncpy(gui->pendingSwapFileName, assets[i].fileName,
+                strncpy(gui->pendingSwapFileName, asset.fileName,
                         sizeof(gui->pendingSwapFileName) - 1);
                 gui->pendingSwapFileName[sizeof(gui->pendingSwapFileName) - 1] = '\0';
                 ImGui::CloseCurrentPopup();
@@ -375,7 +381,7 @@ static void render_sample_selector(M4AGuiState *gui, int voiceIndex,
 
 static void render_voices_tab(M4AGuiState *gui)
 {
-    if (!gui->liveVoices) {
+    if (gui->liveVoices.empty()) {
         ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "No voicegroup loaded");
         return;
     }
@@ -392,6 +398,7 @@ static void render_voices_tab(M4AGuiState *gui)
     int idx = gui->selectedVoice;
     ToneData *voice = &gui->liveVoices[idx];
     uint8_t type = voice->type;
+    bool hasVoiceOverrides = !gui->voiceOverrides.empty();
 
     /* Type label */
     ImGui::Text("Type: %s (0x%02X)", voice_type_name(type), type);
@@ -401,7 +408,7 @@ static void render_voices_tab(M4AGuiState *gui)
     }
 
     /* Modified indicator */
-    if (gui->voiceOverrides[idx]) {
+    if (hasVoiceOverrides && gui->voiceOverrides[idx]) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "(modified)");
     }
@@ -428,7 +435,7 @@ static void render_voices_tab(M4AGuiState *gui)
         }
 
         render_sample_selector(gui, idx, "Sample", PROJECT_ASSET_DIRECTSOUND,
-                               gui->directsoundAssets, gui->directsoundAssetCount);
+                               gui->directsoundAssets);
     } else if (baseType == 0x01) {
         /* Square 1 */
         int key = voice->key;
@@ -460,7 +467,7 @@ static void render_voices_tab(M4AGuiState *gui)
         changed |= edit_cgb_adsr(voice);
 
         render_sample_selector(gui, idx, "Wave", PROJECT_ASSET_PROG_WAVE,
-                               gui->progWaveAssets, gui->progWaveAssetCount);
+                               gui->progWaveAssets);
     } else if (baseType == 0x04) {
         /* Noise */
         int key = voice->key;
@@ -487,12 +494,13 @@ static void render_voices_tab(M4AGuiState *gui)
     }
 
     if (changed) {
-        gui->voiceOverrides[idx] = true;
+        if (hasVoiceOverrides)
+            gui->voiceOverrides[idx] = true;
         gui->voicesDirty = true;
     }
 
     /* Restore button */
-    if (gui->voiceOverrides[idx]) {
+    if (hasVoiceOverrides && gui->voiceOverrides[idx]) {
         ImGui::Spacing();
         if (ImGui::Button("Restore Original")) {
             gui->pendingRestoreVoice = idx;
@@ -773,7 +781,6 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
     // gui_log("m4a_gui_create: begin");
 
     M4AGuiState *gui = new M4AGuiState();
-    memset(gui, 0, sizeof(*gui));
     gui->host         = host;
     gui->cachedWidth  = (uint32_t)GUI_W;
     gui->cachedHeight = (uint32_t)GUI_H;
@@ -1070,9 +1077,9 @@ void m4a_gui_set_voice_data(M4AGuiState *gui,
                              bool *overrides)
 {
     if (!gui) return;
-    gui->liveVoices     = liveVoices;
-    gui->originalVoices = originalVoices;
-    gui->voiceOverrides = overrides;
+    (void)originalVoices;
+    gui->liveVoices = liveVoices ? std::span<ToneData>(liveVoices, VOICE_SLOT_COUNT) : std::span<ToneData>();
+    gui->voiceOverrides = overrides ? std::span<bool>(overrides, VOICE_SLOT_COUNT) : std::span<bool>();
     if (!liveVoices)
         gui->pendingRestoreVoice = -1;
 }
@@ -1121,10 +1128,8 @@ void m4a_gui_set_project_assets(M4AGuiState *gui,
                                 const ProjectAssetOverride *overrides)
 {
     if (!gui) return;
-    gui->directsoundAssets = directsoundAssets;
-    gui->directsoundAssetCount = directsoundCount;
-    gui->progWaveAssets = progWaveAssets;
-    gui->progWaveAssetCount = progWaveCount;
+    gui->directsoundAssets = project_asset_span(directsoundAssets, directsoundCount);
+    gui->progWaveAssets = project_asset_span(progWaveAssets, progWaveCount);
     gui->assetOverrides = overrides;
 }
 

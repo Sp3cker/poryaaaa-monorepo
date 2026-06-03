@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.24)
 project(poryaaaa C CXX OBJC OBJCXX)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -61,7 +60,7 @@ endif()
 add_subdirectory(plugin/voicegroup)
 
 # ---- Recorder (MIDI capture + SMF writer) ----
-# Vendored from the old ccomidi_recorder.clap project.  Pure C++17.
+# Vendored from the old ccomidi_recorder.clap project.  Pure C++23.
 # Engine will own a RecorderCore instance; M4L wrapper consumes it via
 # the engine accessor.  See recorder integration plan.md.
 add_subdirectory(plugin/recorder)
@@ -100,6 +99,7 @@ add_library(poryaaaa MODULE
     ${IMGUI_SOURCES}
     ${PUGL_SOURCES}
 )
+target_compile_features(poryaaaa PRIVATE cxx_std_23)
 
 target_include_directories(poryaaaa PRIVATE
     plugin
@@ -207,6 +207,7 @@ add_executable(poryaaaa_unit_tests
     plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
 )
+target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 
 target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin
@@ -214,12 +215,26 @@ target_include_directories(poryaaaa_unit_tests PRIVATE
 
 target_link_libraries(poryaaaa_unit_tests PRIVATE m voicegroup_loader recorder)
 
+# ---- Engine lifecycle/leak harness ----
+add_executable(poryaaaa_engine_lifecycle
+    test/test_engine_lifecycle.c
+    plugin/m4a_engine_recorder.cpp
+    ${ENGINE_SOURCES}
+)
+target_compile_features(poryaaaa_engine_lifecycle PRIVATE cxx_std_23)
+
+target_include_directories(poryaaaa_engine_lifecycle PRIVATE
+    plugin
+)
+
+target_link_libraries(poryaaaa_engine_lifecycle PRIVATE m voicegroup_loader recorder)
+
 # ---- v2 link wiring ----
 # Each executable target picks up the v2 libraries / compile defines
 # whichever flags are set.  When neither flag is set, this is a no-op
 # and v1 behaviour is exactly unchanged.
 set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
-                         poryaaaa_unit_tests)
+                         poryaaaa_unit_tests poryaaaa_engine_lifecycle)
 
 if(M4A_DRIVER_V2)
     foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
