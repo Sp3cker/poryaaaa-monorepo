@@ -6,6 +6,7 @@ add_library(m4a_driver STATIC
     m4a_pcm.c
     m4a_main.c
 )
+poryaaaa_enable_project_warnings(m4a_driver)
 
 # The parent dir (plugin/) gives consumers `#include "m4a/..."` and also
 # `#include "voicegroup/voicegroup_types.h"` for ToneData.  We do not

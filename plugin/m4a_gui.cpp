@@ -1099,9 +1099,7 @@ void m4a_gui_start_internal_timer(M4AGuiState *gui)
     if (!gui || !gui->view || !gui->realized)
         return;
 
-    PuglStatus st = puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
-
-
+    (void)puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
 }
 
 void m4a_gui_stop_internal_timer(M4AGuiState *gui)

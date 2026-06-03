@@ -13,6 +13,7 @@ add_library(voicegroup_loader STATIC
     vg_parser.c
     voicegroup_state.c
 )
+poryaaaa_enable_project_warnings(voicegroup_loader)
 
 # PUBLIC so consumers pick up the "voicegroup/xxx.h" prefix we use
 # throughout the project.

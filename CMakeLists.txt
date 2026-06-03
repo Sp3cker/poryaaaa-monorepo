@@ -19,6 +19,58 @@ function(poryaaaa_enable_msvc_c_atomics target_name)
     endif()
 endfunction()
 
+function(poryaaaa_enable_project_warnings target_name)
+    if(MSVC)
+        target_compile_definitions(${target_name} PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _CRT_NONSTDC_NO_WARNINGS)
+        target_compile_options(${target_name} PRIVATE
+            /W4
+            /WX
+            /MP
+            "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+            "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
+            "$<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>")
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Werror
+            -Wshadow
+            -Wunused
+            -Wformat=2
+            -Wnull-dereference
+            -Wimplicit-fallthrough
+            "$<$<COMPILE_LANGUAGE:CXX>:-Woverloaded-virtual>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>")
+    endif()
+endfunction()
+
+function(poryaaaa_enable_project_source_warnings)
+    if(MSVC)
+        set_property(SOURCE ${ARGN} APPEND PROPERTY COMPILE_OPTIONS
+            /W4
+            /WX
+            "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+            "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
+            "$<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>")
+    else()
+        set_property(SOURCE ${ARGN} APPEND PROPERTY COMPILE_OPTIONS
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Werror
+            -Wshadow
+            -Wunused
+            -Wformat=2
+            -Wnull-dereference
+            -Wimplicit-fallthrough
+            "$<$<COMPILE_LANGUAGE:CXX>:-Woverloaded-virtual>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>")
+    endif()
+endfunction()
+
 if(MSVC)
     set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_params.c
         PROPERTIES COMPILE_OPTIONS "/std:c11;/experimental:c11atomics")
@@ -121,6 +173,19 @@ add_library(poryaaaa MODULE
     ${PUGL_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa)
+if(MSVC)
+    target_compile_definitions(poryaaaa PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        _CRT_NONSTDC_NO_WARNINGS)
+endif()
+poryaaaa_enable_project_source_warnings(
+    plugin/m4a_plugin.c
+    plugin/m4a_params.c
+    plugin/m4a_engine_recorder.cpp
+    plugin/voicegroup/project_asset_index.c
+    plugin/m4a_gui.cpp
+    ${ENGINE_SOURCES}
+)
 
 target_include_directories(poryaaaa PRIVATE
     plugin
@@ -201,6 +266,7 @@ add_executable(poryaaaa_test
     ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_test)
+poryaaaa_enable_project_warnings(poryaaaa_test)
 
 target_include_directories(poryaaaa_test PRIVATE
     plugin
@@ -217,6 +283,7 @@ add_executable(poryaaaa_render
     ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_render)
+poryaaaa_enable_project_warnings(poryaaaa_render)
 target_include_directories(poryaaaa_render PRIVATE plugin third_party)
 target_link_libraries(poryaaaa_render PRIVATE voicegroup_loader)
 if(NOT MSVC)
@@ -242,6 +309,7 @@ add_executable(poryaaaa_unit_tests
     ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
+poryaaaa_enable_project_warnings(poryaaaa_unit_tests)
 
 target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin

@@ -30,8 +30,8 @@ void m4a_trk_vol_pit_set(M4ADriverTrack *track) {
     if (y < -128) y = -128;
     else if (y > 127) y = 127;
 
-    track->volMR = (uint32_t)((y + 128) * x) >> 8;
-    track->volML = (uint32_t)((127 - y) * x) >> 8;
+    track->volMR = (uint8_t)(((uint32_t)((y + 128) * x)) >> 8);
+    track->volML = (uint8_t)(((uint32_t)((127 - y) * x)) >> 8);
 
     int32_t bend = (int32_t)track->bend * track->bendRange;
     int32_t pitchVal = (track->tune + bend) * 4

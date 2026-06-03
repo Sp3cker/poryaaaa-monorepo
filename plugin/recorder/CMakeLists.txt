@@ -15,6 +15,10 @@ add_library(recorder STATIC
     ${MIDIFILE_DIR}/src/MidiMessage.cpp
     ${MIDIFILE_DIR}/src/Options.cpp
 )
+poryaaaa_enable_project_source_warnings(
+    ${CMAKE_CURRENT_SOURCE_DIR}/recorder_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/smf_writer.cpp
+)
 
 # PUBLIC so consumers can write `#include "recorder/recorder_core.h"`.
 target_include_directories(recorder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
