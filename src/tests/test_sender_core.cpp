@@ -53,10 +53,37 @@ AutomationEvent make_event(std::uint32_t time, ParamKind kind, std::uint8_t row,
   return event;
 }
 
+void disable_default_fixed_rows(SenderCore *core) {
+  core->set_row_enabled(kVolumeRow, 0.0);
+  core->set_row_enabled(kPanRow, 0.0);
+}
+
 void configure_volume_row(SenderCore *core) {
   core->set_output_channel(2.0);
+  core->set_row_enabled(kPanRow, 0.0);
   core->set_row_enabled(kVolumeRow, 1.0);
   core->set_row_value(kVolumeRow, 0, 100.0);
+}
+
+void test_defaults_initialize_volume_and_pan() {
+  SenderCore core;
+  PlannedEvents planned;
+
+  ASSERT_TRUE(core.row_enabled(kVolumeRow), "default volume row is enabled");
+  ASSERT_TRUE(core.row_enabled(kPanRow), "default pan row is enabled");
+  ASSERT_EQ(static_cast<int>(core.row_value_raw(kVolumeRow, 0)), 64,
+            "default volume row value is 64");
+  ASSERT_EQ(static_cast<int>(core.row_value_raw(kPanRow, 0)), 64,
+            "default pan row value is 64");
+
+  core.process_block(TransportState{true}, nullptr, 0, &planned);
+
+  ASSERT_EQ(planned.count, 3,
+            "default snapshot emits program change, volume, and pan");
+  ASSERT_EQ(planned.events[1].data1, 0x07, "default volume emits CC 7");
+  ASSERT_EQ(planned.events[1].data2, 64, "default volume emits value 64");
+  ASSERT_EQ(planned.events[2].data1, 0x0A, "default pan emits CC 10");
+  ASSERT_EQ(planned.events[2].data2, 64, "default pan emits value 64");
 }
 
 void test_start_of_playback_emits_snapshot() {
@@ -80,6 +107,7 @@ void test_start_of_playback_emits_snapshot() {
 void test_fixed_rows_emit_expected_controllers() {
   SenderCore core;
   PlannedEvents planned;
+  disable_default_fixed_rows(&core);
   core.set_row_enabled(kPanRow, 1.0);
   core.set_row_value(kPanRow, 0, 64.0);
   core.set_row_enabled(kModRow, 1.0);
@@ -154,6 +182,7 @@ void test_channel_change_resends_snapshot() {
 void test_compound_xcmd_row_reemits_full_sequence() {
   SenderCore core;
   PlannedEvents planned;
+  disable_default_fixed_rows(&core);
   core.set_output_channel(3.0);
   core.set_row_enabled(kFirstConfigurableRow, 1.0);
   core.set_row_type(kFirstConfigurableRow,
@@ -207,6 +236,7 @@ void test_stopped_automation_is_applied_on_next_start() {
 void test_memacc_reemits_full_canonical_sequence() {
   SenderCore core;
   PlannedEvents planned;
+  disable_default_fixed_rows(&core);
   core.set_output_channel(1.0);
   core.set_row_enabled(kFirstConfigurableRow, 1.0);
   core.set_row_type(kFirstConfigurableRow,
@@ -329,6 +359,7 @@ void test_channel_switch_keeps_single_command_bank() {
 void test_xcmd_atta_emits_selector_and_data() {
   SenderCore core;
   PlannedEvents planned;
+  disable_default_fixed_rows(&core);
   core.set_output_channel(0.0);
   core.set_row_enabled(kFirstConfigurableRow, 1.0);
   core.set_row_type(kFirstConfigurableRow,
@@ -383,6 +414,7 @@ void test_full_snapshot_with_4byte_xcmds_does_not_truncate() {
 void test_xcmd_0d_emits_four_data_bytes() {
   SenderCore core;
   PlannedEvents planned;
+  disable_default_fixed_rows(&core);
   core.set_output_channel(0.0);
   core.set_row_enabled(kFirstConfigurableRow, 1.0);
   core.set_row_type(kFirstConfigurableRow,
@@ -416,6 +448,7 @@ void test_configurable_rows_reject_fixed_command_types() {
 } // namespace
 
 int main() {
+  test_defaults_initialize_volume_and_pan();
   test_start_of_playback_emits_snapshot();
   test_fixed_rows_emit_expected_controllers();
   test_floor_quantization_deduplicates_automation();

@@ -5,6 +5,8 @@
 
 #include <clap/host.h>
 
+struct ImFont;
+
 namespace ccomidi {
 
 struct EditorShell;
@@ -35,6 +37,8 @@ bool editor_shell_show(EditorShell *shell);
 bool editor_shell_hide(EditorShell *shell);
 bool editor_shell_set_size(EditorShell *shell, std::uint32_t width,
                            std::uint32_t height);
+void editor_shell_set_title(EditorShell *shell, const char *title);
+ImFont *editor_shell_bold_font(EditorShell *shell);
 void editor_shell_get_size(const EditorShell *shell, std::uint32_t *width,
                            std::uint32_t *height);
 bool editor_shell_can_resize(const EditorShell *shell);

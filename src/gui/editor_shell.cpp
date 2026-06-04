@@ -1,6 +1,7 @@
 #include "gui/editor_shell.h"
 
 #include <cstdint>
+#include <string>
 
 #ifdef __APPLE__
 #include "gui/metal/pugl_mac_metal.h"
@@ -23,13 +24,20 @@ namespace {
 
 constexpr std::uintptr_t kRenderTimerId = 1;
 
-bool is_plain_space_key(const PuglEvent *event) {
-  if (!event || event->type != PUGL_KEY_PRESS)
-    return false;
-  const PuglMods mods = event->key.state;
-  return event->key.key == PUGL_KEY_SPACE &&
-         (mods & (PUGL_MOD_SHIFT | PUGL_MOD_CTRL | PUGL_MOD_ALT |
+bool has_plain_modifiers(PuglMods mods) {
+  return (mods & (PUGL_MOD_SHIFT | PUGL_MOD_CTRL | PUGL_MOD_ALT |
                   PUGL_MOD_SUPER)) == 0;
+}
+
+bool is_plain_space_event(const PuglEvent *event) {
+  if (!event)
+    return false;
+  if (event->type == PUGL_KEY_PRESS || event->type == PUGL_KEY_RELEASE)
+    return event->key.key == PUGL_KEY_SPACE &&
+           has_plain_modifiers(event->key.state);
+  if (event->type == PUGL_TEXT)
+    return event->text.character == ' ' && has_plain_modifiers(event->text.state);
+  return false;
 }
 
 } // namespace
@@ -40,6 +48,7 @@ struct EditorShell {
   PuglWorld *world = nullptr;
   PuglView *view = nullptr;
   ImGuiContext *imgui = nullptr;
+  ImFont *boldFont = nullptr;
   bool realized = false;
   bool renderInited = false;
   bool embedded = false;
@@ -159,7 +168,9 @@ PuglStatus on_pugl_event(PuglView *view, const PuglEvent *event) {
     ImGui_ImplPugl_ProcessEvent(event);
     break;
   case PUGL_KEY_PRESS:
-    if (shell->embedded && is_plain_space_key(event) &&
+  case PUGL_KEY_RELEASE:
+  case PUGL_TEXT:
+    if (shell->embedded && is_plain_space_event(event) &&
         !ImGui::GetIO().WantTextInput)
       return PUGL_UNSUPPORTED;
     ImGui_ImplPugl_ProcessEvent(event);
@@ -227,8 +238,20 @@ EditorShell *editor_shell_create(const clap_host_t *host,
   ImGuiIO &io = ImGui::GetIO();
   io.IniFilename = nullptr;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  const std::string fontDir = CCOMIDI_FONT_DIR;
+  ImFont *regularFont =
+      io.Fonts->AddFontFromFileTTF((fontDir + "/Calamity-Regular.ttf").c_str(),
+                                   13.0f);
+  shell->boldFont =
+      io.Fonts->AddFontFromFileTTF((fontDir + "/Calamity-Bold.ttf").c_str(),
+                                   13.0f);
+  if (regularFont)
+    io.FontDefault = regularFont;
   ImGui::StyleColorsDark();
-  ImGui::GetStyle().ScaleAllSizes(config.uiScale);
+  ImGuiStyle &style = ImGui::GetStyle();
+  style.ScaleAllSizes(config.uiScale);
+  style.FramePadding.x += config.uiScale;
+  style.FramePadding.y += config.uiScale;
   io.FontGlobalScale = config.uiScale;
   ImGui_ImplPugl_Init(shell->view);
 
@@ -317,6 +340,16 @@ bool editor_shell_set_size(EditorShell *shell, std::uint32_t width,
                   static_cast<PuglSpan>(width * scale),
                   static_cast<PuglSpan>(height * scale));
   return true;
+}
+
+void editor_shell_set_title(EditorShell *shell, const char *title) {
+  if (!shell || !shell->view || !title)
+    return;
+  puglSetViewString(shell->view, PUGL_WINDOW_TITLE, title);
+}
+
+ImFont *editor_shell_bold_font(EditorShell *shell) {
+  return shell ? shell->boldFont : nullptr;
 }
 
 void editor_shell_get_size(const EditorShell *shell, std::uint32_t *width,

@@ -16,7 +16,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
-#include <stdexcept>
 
 #include <vector>
 
@@ -49,10 +48,6 @@ const char *fixed_row_name(std::size_t row) {
   return command_type_name(fixed_command_type_for_row(row));
 }
 
-bool row_has_dynamic_type(std::size_t row) {
-  return !is_fixed_command_row(row);
-}
-
 CommandType sanitize_param_row_type(std::size_t row, CommandType type) {
   if (is_fixed_command_row(row))
     return fixed_command_type_for_row(row);
@@ -64,53 +59,14 @@ CommandType sanitize_param_row_type(std::size_t row, CommandType type) {
 bool should_rescan_param_info(const ParamAddress &address) {
   return address.kind == ParamKind::OutputChannel ||
          (address.kind == ParamKind::RowType &&
-          row_has_dynamic_type(address.row));
-};
+          !is_fixed_command_row(address.row));
+}
 
 const char *command_field_name(CommandType type, std::uint32_t field) {
-  // const CommandSpec &spec = command_spec(type);
-  // if (field > spec.fieldCount) {
-  //   throw std::out_of_range(
-  //       "command_field_name: CC command does not have field number");
-  // };
-  switch (type) {
-  case CommandType::MemAcc0C:
-  case CommandType::MemAcc10:
-    switch (field) {
-    case 0:
-      return "Op";
-    case 1:
-      return "Arg1";
-    case 2:
-      return "Arg2";
-    case 3:
-      return "Data";
-    default:
-      return "Value";
-    }
-  case CommandType::Xcmd0D:
-    switch (field) {
-    case 0:
-      return "B0";
-    case 1:
-      return "B1";
-    case 2:
-      return "B2";
-    case 3:
-      return "B3";
-    default:
-      return "Value";
-    }
-  case CommandType::None:
-    break;
-  default:
-    if (field == 0)
-      return command_type_name(type);
-    break;
-  }
+  const CommandSpec &spec = command_spec(type);
+  if (field < spec.fieldCount && spec.fields[field].name)
+    return spec.fields[field].name;
 
-  (void)command_spec(type);  // reserved for future multi-param naming
-  // When not a multi-param cc AND
   switch (field) {
   case 0:
     return "Value A";
@@ -149,45 +105,6 @@ void schedule_param_info_rescan(Plugin *plugin) {
   plugin->pendingParamInfoRescan = true;
   if (plugin->host->request_callback)
     plugin->host->request_callback(plugin->host);
-}
-
-void set_param_value(Plugin *plugin, clap_id paramId, double value) {
-  if (!plugin)
-    return;
-
-  ParamAddress address = {};
-  if (!decode_param_id(paramId, &address))
-    return;
-
-  switch (address.kind) {
-  case ParamKind::OutputChannel:
-    plugin->core.set_output_channel(value);
-    break;
-  case ParamKind::Program:
-    plugin->core.set_program(value);
-    break;
-  case ParamKind::ProgramEnabled:
-    plugin->core.set_program_enabled(value);
-    break;
-  case ParamKind::RowEnabled:
-    plugin->core.set_row_enabled(address.row, value);
-    break;
-  case ParamKind::RowType:
-    plugin->core.set_row_type(address.row, value);
-    break;
-  case ParamKind::RowValue0:
-    plugin->core.set_row_value(address.row, 0, value);
-    break;
-  case ParamKind::RowValue1:
-    plugin->core.set_row_value(address.row, 1, value);
-    break;
-  case ParamKind::RowValue2:
-    plugin->core.set_row_value(address.row, 2, value);
-    break;
-  case ParamKind::RowValue3:
-    plugin->core.set_row_value(address.row, 3, value);
-    break;
-  }
 }
 
 void apply_ui_param_change(Plugin *plugin, clap_id paramId, double value) {
@@ -415,7 +332,7 @@ void describe_param(const Plugin *plugin, clap_id id, clap_param_info_t *info) {
           static_cast<unsigned>(address.row - kFixedCommandRowCount + 1));
     info->min_value = 0.0;
     info->max_value = 1.0;
-    info->default_value = 0.0;
+    info->default_value = isVolOrPan(address.row) ? 1.0 : 0.0;
     break;
   case ParamKind::RowType:
     if (is_fixed_command_row(address.row)) {
@@ -456,7 +373,7 @@ void describe_param(const Plugin *plugin, clap_id id, clap_param_info_t *info) {
           command_field_name(rowCommand, field));
     info->min_value = 0.0;
     info->max_value = 127.0;
-    info->default_value = 0.0;
+    info->default_value = default_row_value(address.row, field);
     break;
   }
   case ParamKind::OutputChannel:
@@ -665,17 +582,6 @@ void push_planned_events(const PlannedEvents &planned, std::uint32_t timeOffset,
   }
 }
 
-void push_midi_events(const std::vector<MidiEvent> &events,
-                      std::uint32_t timeOffset,
-                      const clap_output_events_t *outEvents) {
-  if (!outEvents)
-    return;
-
-  for (const MidiEvent &event : events)
-    push_midi_event(event.time + timeOffset, event.status, event.data1,
-                    event.data2, outEvents);
-}
-
 void push_merged_events(const PlannedEvents &planned,
                         const std::vector<MidiEvent> &forwarded,
                         std::uint32_t timeOffset,
@@ -714,14 +620,12 @@ clap_process_status plugin_process(const clap_plugin_t *plugin,
   const bool initialPlaying =
       process->transport &&
       ((process->transport->flags & CLAP_TRANSPORT_IS_PLAYING) != 0);
-  bool wasPlaying = false;
   bool pendingUiChannelChange = false;
   bool pendingUiProgramChange = false;
   std::array<bool, kMaxCommandRows> pendingUiRowChanged = {};
   PlannedEvents pendingUiEvents = {};
   {
     std::lock_guard<std::mutex> lock(self->stateMutex);
-    wasPlaying = self->core.runtime_was_playing();
     pendingUiChannelChange = self->pendingUiChannelChange;
     pendingUiProgramChange = self->pendingUiProgramChange;
     pendingUiRowChanged = self->pendingUiRowChanged;
@@ -731,7 +635,6 @@ clap_process_status plugin_process(const clap_plugin_t *plugin,
     self->core.emit_preapplied_changes(
         initialPlaying, pendingUiChannelChange, pendingUiRowChanged, 0,
         &pendingUiEvents, pendingUiProgramChange);
-    (void)wasPlaying;
   }
 
   push_planned_events(pendingUiEvents, 0, process->out_events);
@@ -889,9 +792,9 @@ const char *s_features[] = {
 
 const clap_plugin_descriptor_t s_descriptor = {
     .clap_version = CLAP_VERSION,
-    .id = "com.sallegrezza.ccomidi",
+    .id = "com.specker.ccomidi",
     .name = "ccomidi",
-    .vendor = "sallegrezza",
+    .vendor = "specker",
     .url = "",
     .manual_url = "",
     .support_url = "",

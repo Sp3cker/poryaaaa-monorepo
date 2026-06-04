@@ -25,7 +25,7 @@ inline constexpr std::array<CommandSpec, 23> kCommandSpecs = {{
   // Mod = 1
   {"Mod",         1, {{{"Mod Amt",   0, 127,  0}}}},
   // Volume = 2
-  {"Volume",      1, {{{"Level",     0, 127,  0}}}},
+  {"Volume",      1, {{{"Level",     0, 127, 64}}}},
   // Pan = 3
   {"Pan",         1, {{{"Position",  0, 127, 64}}}},
   // BendRange = 4

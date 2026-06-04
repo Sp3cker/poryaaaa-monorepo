@@ -37,6 +37,25 @@ constexpr bool is_fixed_command_type(CommandType type) {
          type == CommandType::Mod || type == CommandType::LfoSpeed;
 }
 
+constexpr bool isVolOrPan(std::size_t row) {
+  return row == 0 || row == 1;
+}
+
+inline double default_row_value(std::size_t row, std::size_t field) {
+  if (field >= kMaxCommandFields)
+    return 0.0;
+
+  const CommandType type = fixed_command_type_for_row(row);
+  if (type == CommandType::None)
+    return 0.0;
+
+  const CommandSpec &spec = command_spec(type);
+  if (field >= spec.fieldCount)
+    return 0.0;
+
+  return static_cast<double>(spec.fields[field].defaultValue);
+}
+
 enum class ParamKind : std::uint8_t {
   OutputChannel = 0,
   RowEnabled = 1,
@@ -127,7 +146,6 @@ public:
                           const std::array<bool, kMaxCommandRows> &rowChanged,
                           std::uint32_t time, PlannedEvents *out,
                           bool programChanged = false);
-  bool runtime_was_playing() const;
 
 private:
   struct RowState {

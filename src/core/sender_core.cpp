@@ -43,6 +43,12 @@ void SenderCore::reset() {
   programValue_ = 0.0;
   programEnabledValue_ = 1.0;
   rows_ = {};
+  for (std::size_t row = 0; row < kFixedCommandRowCount; ++row) {
+    rows_[row].enabledValue = isVolOrPan(row) ? 1.0 : 0.0;
+    rows_[row].typeValue = static_cast<double>(fixed_command_type_for_row(row));
+    for (std::size_t field = 0; field < kMaxCommandFields; ++field)
+      rows_[row].fieldValues[field] = default_row_value(row, field);
+  }
   reset_runtime_state();
 }
 
@@ -501,7 +507,5 @@ void SenderCore::emit_preapplied_changes(
     emit_changed_rows(time, rowChanged, out);
   }
 }
-
-bool SenderCore::runtime_was_playing() const { return lastTransportPlaying_; }
 
 } // namespace ccomidi

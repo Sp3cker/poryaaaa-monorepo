@@ -13,10 +13,38 @@
 
 namespace ccomidi {
 
+struct EditorState {
+  Plugin *plugin = nullptr;
+  EditorShell *shell = nullptr;
+  std::string windowTitle = {};
+};
+
 namespace {
 
 constexpr std::uint32_t kDefaultWidth = 980;
 constexpr std::uint32_t kDefaultHeight = 620;
+
+ImU32 output_channel_color(std::uint8_t outputChannel) {
+  static constexpr ImU32 kChannelColors[] = {
+      IM_COL32(0x61, 0xAF, 0xEF, 0xFF),
+      IM_COL32(0xFF, 0x95, 0x80, 0xFF),
+      IM_COL32(0x8A, 0xFF, 0x80, 0xFF),
+      IM_COL32(0xFF, 0xFF, 0x80, 0xFF),
+      IM_COL32(0x95, 0x80, 0xFF, 0xFF),
+      IM_COL32(0xFF, 0x80, 0xBF, 0xFF),
+      IM_COL32(0x80, 0xFF, 0xEA, 0xFF),
+      IM_COL32(0xF8, 0xF8, 0xF2, 0xFF),
+      IM_COL32(0x79, 0x70, 0xA9, 0xFF),
+      IM_COL32(0xFF, 0xBF, 0xB3, 0xFF),
+      IM_COL32(0xB9, 0xFF, 0xB3, 0xFF),
+      IM_COL32(0xFF, 0xFF, 0xB3, 0xFF),
+      IM_COL32(0xBF, 0xB3, 0xFF, 0xFF),
+      IM_COL32(0xFF, 0xB3, 0xD9, 0xFF),
+      IM_COL32(0xB3, 0xFF, 0xF2, 0xFF),
+      IM_COL32(0xFF, 0xFF, 0xFF, 0xFF),
+  };
+  return kChannelColors[std::clamp<int>(outputChannel, 0, 15)];
+}
 
 int field_count_for_type(CommandType type) {
   switch (type) {
@@ -69,130 +97,11 @@ bool is_table_command_type(CommandType type) {
   return type == CommandType::None || !is_fixed_command_type(type);
 }
 
-void append_preview_triplet(std::string *preview, std::uint8_t channel,
-                            std::uint8_t controller, std::uint8_t value) {
-  if (!preview)
-    return;
-  char buffer[32];
-  std::snprintf(buffer, sizeof(buffer), "B%X %02X %02X", channel, controller,
-                value);
-  if (!preview->empty())
-    preview->append("  ");
-  preview->append(buffer);
-}
-
-std::string preview_for_row(const UiSnapshot &snapshot, std::size_t row) {
-  const CommandType type = static_cast<CommandType>(
-      static_cast<int>(std::floor(snapshot.rows[row].type)));
-  const bool enabled = std::floor(snapshot.rows[row].enabled) >= 1.0;
-  if (!enabled || type == CommandType::None)
-    return "-";
-
-  const std::uint8_t channel = floor_to_u8(snapshot.outputChannel, 0, 15);
-  const std::uint8_t value0 = floor_to_u8(snapshot.rows[row].values[0], 0, 127);
-  const std::uint8_t value1 = floor_to_u8(snapshot.rows[row].values[1], 0, 127);
-  const std::uint8_t value2 = floor_to_u8(snapshot.rows[row].values[2], 0, 127);
-  const std::uint8_t value3 = floor_to_u8(snapshot.rows[row].values[3], 0, 127);
-
-  std::string preview =
-      "Ch " + std::to_string(static_cast<unsigned>(channel + 1)) + ": ";
-  switch (type) {
-  case CommandType::Mod:
-    append_preview_triplet(&preview, channel, 0x01, value0);
-    break;
-  case CommandType::Volume:
-    append_preview_triplet(&preview, channel, 0x07, value0);
-    break;
-  case CommandType::Pan:
-    append_preview_triplet(&preview, channel, 0x0A, value0);
-    break;
-  case CommandType::BendRange:
-    append_preview_triplet(&preview, channel, 0x14, value0);
-    break;
-  case CommandType::LfoSpeed:
-    append_preview_triplet(&preview, channel, 0x15, value0);
-    break;
-  case CommandType::ModType:
-    append_preview_triplet(&preview, channel, 0x16, value0);
-    break;
-  case CommandType::Tune:
-    append_preview_triplet(&preview, channel, 0x18, value0);
-    break;
-  case CommandType::LfoDelay:
-    append_preview_triplet(&preview, channel, 0x1A, value0);
-    break;
-  case CommandType::Priority21:
-    append_preview_triplet(&preview, channel, 0x21, value0);
-    break;
-  case CommandType::Priority27:
-    append_preview_triplet(&preview, channel, 0x27, value0);
-    break;
-  case CommandType::XcmdIecv:
-    append_preview_triplet(&preview, channel, 0x1E, 0x08);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdIecl:
-    append_preview_triplet(&preview, channel, 0x1E, 0x09);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::MemAcc0C:
-    append_preview_triplet(&preview, channel, 0x0D, value0);
-    append_preview_triplet(&preview, channel, 0x0E, value1);
-    append_preview_triplet(&preview, channel, 0x0F, value2);
-    append_preview_triplet(&preview, channel, 0x0C, value3);
-    break;
-  case CommandType::MemAcc10:
-    append_preview_triplet(&preview, channel, 0x0D, value0);
-    append_preview_triplet(&preview, channel, 0x0E, value1);
-    append_preview_triplet(&preview, channel, 0x0F, value2);
-    append_preview_triplet(&preview, channel, 0x10, value3);
-    break;
-  case CommandType::XcmdType:
-    append_preview_triplet(&preview, channel, 0x1E, 0x02);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdAtta:
-    append_preview_triplet(&preview, channel, 0x1E, 0x04);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdDeca:
-    append_preview_triplet(&preview, channel, 0x1E, 0x05);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdSust:
-    append_preview_triplet(&preview, channel, 0x1E, 0x06);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdRele:
-    append_preview_triplet(&preview, channel, 0x1E, 0x07);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdLeng:
-    append_preview_triplet(&preview, channel, 0x1E, 0x0A);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::XcmdSwee:
-    append_preview_triplet(&preview, channel, 0x1E, 0x0B);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    break;
-  case CommandType::Xcmd0D:
-    append_preview_triplet(&preview, channel, 0x1E, 0x0D);
-    append_preview_triplet(&preview, channel, 0x1D, value0);
-    append_preview_triplet(&preview, channel, 0x1D, value1);
-    append_preview_triplet(&preview, channel, 0x1D, value2);
-    append_preview_triplet(&preview, channel, 0x1D, value3);
-    break;
-  case CommandType::None:
-    break;
-  }
-
-  return preview;
-}
-
 void draw_parameter_controls(Plugin *plugin, std::size_t row, CommandType type,
                              const UiRowSnapshot &rowSnapshot) {
   const int activeFields = field_count_for_type(type);
   if (activeFields == 0) {
+    ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("-");
     return;
   }
@@ -240,7 +149,8 @@ void draw_parameter_controls(Plugin *plugin, std::size_t row, CommandType type,
 }
 
 void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
-  auto *plugin = static_cast<Plugin *>(userData);
+  auto *editor = static_cast<EditorState *>(userData);
+  Plugin *plugin = editor ? editor->plugin : nullptr;
   if (!plugin)
     return;
 
@@ -257,76 +167,133 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
   ImGui::Begin("##ccomidi", nullptr, flags);
 
+  const std::uint8_t outputChannelIndex =
+      floor_to_u8(snapshot.outputChannel, 0, 15);
+  int outputChannel = static_cast<int>(outputChannelIndex) + 1;
+  outputChannel = std::clamp(outputChannel, 1, 16);
+  const std::string windowTitle =
+      "ccomidi - Chn " + std::to_string(outputChannel);
+  if (editor->windowTitle != windowTitle) {
+    editor->windowTitle = windowTitle;
+    editor_shell_set_title(editor->shell, editor->windowTitle.c_str());
+  }
+  ImFont *boldFont = editor_shell_bold_font(editor->shell);
+
+  if (boldFont)
+    ImGui::PushFont(boldFont, 0.0f);
   ImGui::TextUnformatted("ccomidi");
-  ImGui::SameLine();
-  ImGui::TextDisabled("MIDI CC sender");
+  if (boldFont)
+    ImGui::PopFont();
   ImGui::Separator();
 
-  int outputChannel = static_cast<int>(std::floor(snapshot.outputChannel)) + 1;
-  if (ImGui::SliderInt("Output Channel", &outputChannel, 1, 16))
-    apply_ui_param_change(plugin, kParamOutputChannel,
-                          static_cast<double>(outputChannel - 1));
-
   bool programEnabled = std::floor(snapshot.programEnabled) >= 1.0;
-  if (ImGui::Checkbox("Emit Program Change", &programEnabled))
-    apply_ui_param_change(plugin, kParamProgramEnabled,
-                          programEnabled ? 1.0 : 0.0);
-
   int program = static_cast<int>(std::floor(snapshot.program));
   program = std::clamp(program, 0, 127);
-  ImGui::BeginDisabled(!programEnabled);
-  if (!plugin->voiceLoad.slots.empty()) {
-    const VoiceSlot *current = nullptr;
-    for (const VoiceSlot &slot : plugin->voiceLoad.slots) {
-      if (slot.program == program) {
-        current = &slot;
-        break;
-      }
-    }
-    char preview[288];
-    if (current)
-      std::snprintf(preview, sizeof(preview), "%03d  %s", current->program,
-                    current->name.c_str());
-    else
-      std::snprintf(preview, sizeof(preview), "%03d  (empty slot)", program);
-    if (ImGui::BeginCombo("Program", preview)) {
-      for (const VoiceSlot &slot : plugin->voiceLoad.slots) {
-        char label[288];
-        std::snprintf(label, sizeof(label), "%03d  %s", slot.program,
-                      slot.name.c_str());
-        const bool selected = slot.program == program;
-        if (ImGui::Selectable(label, selected))
-          apply_ui_param_change(plugin, kParamProgram,
-                                static_cast<double>(slot.program));
-        if (selected)
-          ImGui::SetItemDefaultFocus();
-      }
-      ImGui::EndCombo();
-    }
-  } else {
-    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Voicegroup: %s",
-                       plugin->voiceLoad.error.c_str());
-    if (!plugin->voiceLoad.statePath.empty())
-      ImGui::TextDisabled("state: %s", plugin->voiceLoad.statePath.c_str());
-  }
-  ImGui::EndDisabled();
+  const bool hasVoices = !plugin->voiceLoad.slots.empty();
+  const char *reloadVoicesLabel = "Reload Voices";
+  const float reloadVoicesWidth =
+      ImGui::CalcTextSize(reloadVoicesLabel).x +
+      ImGui::GetStyle().FramePadding.x * 2.0f;
+  if (ImGui::BeginTable("program_row", 3,
+                        ImGuiTableFlags_SizingStretchProp,
+                        ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+    ImGui::TableSetupColumn("##emit_program_col",
+                            ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::GetFrameHeight());
+    ImGui::TableSetupColumn("##program_col",
+                            ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##reload_voices_col",
+                            ImGuiTableColumnFlags_WidthFixed,
+                            reloadVoicesWidth);
+    ImGui::TableNextRow();
 
-  ImGui::SameLine();
-  if (ImGui::Button("Reload voicegroup")) {
-    std::lock_guard<std::mutex> lock(plugin->stateMutex);
-    plugin->voiceLoad = voicegroup_bridge_load_state();
+    ImGui::TableSetColumnIndex(0);
+    if (ImGui::Checkbox("##emit_program", &programEnabled))
+      apply_ui_param_change(plugin, kParamProgramEnabled,
+                            programEnabled ? 1.0 : 0.0);
+
+    ImGui::TableSetColumnIndex(1);
+    ImGui::BeginDisabled(!programEnabled);
+    if (hasVoices) {
+      const VoiceSlot *current = nullptr;
+      for (const VoiceSlot &slot : plugin->voiceLoad.slots) {
+        if (slot.program == program) {
+          current = &slot;
+          break;
+        }
+      }
+      char preview[288];
+      if (current)
+        std::snprintf(preview, sizeof(preview), "%03d  %s", current->program,
+                      current->name.c_str());
+      else
+        std::snprintf(preview, sizeof(preview), "%03d  (empty slot)", program);
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+      if (boldFont)
+        ImGui::PushFont(boldFont, 0.0f);
+      const bool comboOpen = ImGui::BeginCombo("##program", preview);
+      if (boldFont)
+        ImGui::PopFont();
+      if (comboOpen) {
+        for (const VoiceSlot &slot : plugin->voiceLoad.slots) {
+          char label[288];
+          std::snprintf(label, sizeof(label), "%03d  %s", slot.program,
+                        slot.name.c_str());
+          const bool selected = slot.program == program;
+          if (ImGui::Selectable(label, selected))
+            apply_ui_param_change(plugin, kParamProgram,
+                                  static_cast<double>(slot.program));
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+    } else {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Voicegroup: %s",
+                         plugin->voiceLoad.error.c_str());
+      if (!plugin->voiceLoad.statePath.empty())
+        ImGui::TextDisabled("state: %s", plugin->voiceLoad.statePath.c_str());
+    }
+    ImGui::EndDisabled();
+
+    ImGui::TableSetColumnIndex(2);
+    if (ImGui::Button(reloadVoicesLabel)) {
+      std::lock_guard<std::mutex> lock(plugin->stateMutex);
+      plugin->voiceLoad = voicegroup_bridge_load_state();
+    }
+    ImGui::EndTable();
   }
 
   ImGui::Spacing();
 
-  if (ImGui::BeginTable("fixed_rows", 4,
+  if (boldFont)
+    ImGui::PushFont(boldFont, 0.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Channel");
+  if (boldFont)
+    ImGui::PopFont();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(-1.0f);
+  ImVec4 channelColor =
+      ImGui::ColorConvertU32ToFloat4(output_channel_color(outputChannelIndex));
+  channelColor.w = 0.5f;
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, channelColor);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, channelColor);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, channelColor);
+  if (ImGui::SliderInt("##output_channel", &outputChannel, 1, 16))
+    apply_ui_param_change(plugin, kParamOutputChannel,
+                          static_cast<double>(outputChannel - 1));
+  ImGui::PopStyleColor(3);
+
+  ImGui::Spacing();
+
+  if (ImGui::BeginTable("fixed_rows", 3,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
     ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_WidthFixed,
                             120.0f);
     ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.8f);
-    ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthStretch,
-                            2.2f);
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 
     for (std::size_t row = 0; row < kFixedCommandRowCount; ++row) {
@@ -334,6 +301,7 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
+      ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted(command_type_name(type));
 
       ImGui::TableSetColumnIndex(1);
@@ -347,9 +315,6 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
       ImGui::TableSetColumnIndex(2);
       draw_parameter_controls(plugin, row, type, snapshot.rows[row]);
-
-      ImGui::TableSetColumnIndex(3);
-      ImGui::TextWrapped("%s", preview_for_row(snapshot, row).c_str());
     }
 
     ImGui::EndTable();
@@ -357,17 +322,14 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
   ImGui::Spacing();
   ImGui::TextUnformatted("Additional Commands");
-  if (ImGui::BeginTable("rows", 5,
+  if (ImGui::BeginTable("rows", 3,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY)) {
-    ImGui::TableSetupColumn("Row", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_WidthStretch,
                             1.4f);
     ImGui::TableSetupColumn("Parameters", ImGuiTableColumnFlags_WidthStretch,
                             2.2f);
-    ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthStretch,
-                            2.8f);
     ImGui::TableHeadersRow();
 
     for (std::size_t row = kFixedCommandRowCount; row < kMaxCommandRows;
@@ -377,10 +339,6 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::Text("%02u",
-                  static_cast<unsigned>(row - kFixedCommandRowCount + 1));
-
-      ImGui::TableSetColumnIndex(1);
       bool enabled = std::floor(snapshot.rows[row].enabled) >= 1.0;
       if (ImGui::Checkbox(("##enabled" + std::to_string(row)).c_str(),
                           &enabled))
@@ -389,7 +347,7 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
                                            RowParamSlot::Enabled),
                               enabled ? 1.0 : 0.0);
 
-      ImGui::TableSetColumnIndex(2);
+      ImGui::TableSetColumnIndex(1);
       int typeIndex = static_cast<int>(type);
       if (ImGui::BeginCombo(("##type" + std::to_string(row)).c_str(),
                             command_type_name(type))) {
@@ -412,11 +370,8 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
         ImGui::EndCombo();
       }
 
-      ImGui::TableSetColumnIndex(3);
+      ImGui::TableSetColumnIndex(2);
       draw_parameter_controls(plugin, row, type, snapshot.rows[row]);
-
-      ImGui::TableSetColumnIndex(4);
-      ImGui::TextWrapped("%s", preview_for_row(snapshot, row).c_str());
     }
 
     ImGui::EndTable();
@@ -427,24 +382,20 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
 
 } // namespace
 
-struct EditorState {
-  Plugin *plugin = nullptr;
-  EditorShell *shell = nullptr;
-};
-
 EditorState *editor_create(Plugin *plugin) {
   auto *editor = new EditorState();
   editor->plugin = plugin;
 
   EditorShellConfig config = {};
-  config.title = "ccomidi";
+  editor->windowTitle = "ccomidi - Chn 1";
+  config.title = editor->windowTitle.c_str();
   config.className = "ccomidi";
 
 
 
 
   EditorShellCallbacks callbacks = {};
-  callbacks.userData = plugin;
+  callbacks.userData = editor;
   callbacks.drawFrame = &draw_frame;
 
   editor->shell = editor_shell_create(plugin ? plugin->host : nullptr, config,

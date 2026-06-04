@@ -138,6 +138,7 @@ target_link_libraries(ccomidi_gui PUBLIC clap)
 
 target_compile_definitions(ccomidi_gui PUBLIC
     PUGL_STATIC
+    CCOMIDI_FONT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 if(APPLE)
