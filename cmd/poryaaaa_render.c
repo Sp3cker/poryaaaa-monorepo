@@ -12,8 +12,23 @@
  * When both are found the song loops with a configurable count and fadeout.
  */
 
+ /* Clang Bullshit so it builds */
+#if defined(__clang__) 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
