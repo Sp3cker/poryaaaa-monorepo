@@ -1,7 +1,9 @@
 #include "vg_keysplit.h"
+#include "vg_alloc.h"
 #include "vg_log.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,12 +38,33 @@ KeySplitDef *vg_keysplit_map_find(const KeySplitMap *map, const char *name)
  * Append a zeroed KeySplitDef and return its address. Both format
  * parsers call this when encountering a new table header.
  */
+static bool keysplit_map_reserve(KeySplitMap *map, int needed)
+{
+    if (needed <= map->capacity)
+        return true;
+
+    int newCapacity = map->capacity ? map->capacity : INITIAL_CAPACITY;
+    while (newCapacity < needed) {
+        if (newCapacity > INT_MAX / 2)
+            return false;
+        newCapacity *= 2;
+    }
+
+    KeySplitDef *entries = vg_realloc_array(map->entries, (size_t)newCapacity,
+                                            sizeof(*map->entries));
+    if (!entries)
+        return false;
+
+    map->entries = entries;
+    map->capacity = newCapacity;
+    return true;
+}
+
 static KeySplitDef *append_entry(KeySplitMap *map, const char *name, int startNote)
 {
-    if (map->count >= map->capacity) {
-        map->capacity = map->capacity ? map->capacity * 2 : INITIAL_CAPACITY;
-        map->entries = realloc(map->entries, sizeof(KeySplitDef) * map->capacity);
-    }
+    if (!keysplit_map_reserve(map, map->count + 1))
+        return NULL;
+
     KeySplitDef *entry = &map->entries[map->count++];
     memset(entry, 0, sizeof(KeySplitDef));
     strncpy(entry->name, name, VG_MAX_SYMBOL_LEN - 1);
@@ -70,7 +93,7 @@ static void set_one(KeySplitDef *entry, int at, uint8_t value)
  * pokeemerald macro format. Matches lines starting with "keysplit " or
  * "split ". Returns silently if the line doesn't match.
  */
-static void parse_emerald_line(const char *trimmed, KeySplitMap *map,
+static bool parse_emerald_line(const char *trimmed, KeySplitMap *map,
                                KeySplitDef **current, int *lastNote)
 {
     if (strncmp(trimmed, "keysplit ", 9) == 0) {
@@ -81,9 +104,11 @@ static void parse_emerald_line(const char *trimmed, KeySplitMap *map,
             char fullName[VG_MAX_SYMBOL_LEN];
             snprintf(fullName, sizeof(fullName), "keysplit_%s", name);
             *current = append_entry(map, fullName, startNote);
+            if (!*current)
+                return false;
             *lastNote = startNote;
         }
-        return;
+        return true;
     }
     if (strncmp(trimmed, "split ", 6) == 0 && *current) {
         int index, endNote;
@@ -92,13 +117,14 @@ static void parse_emerald_line(const char *trimmed, KeySplitMap *map,
             *lastNote = endNote;
         }
     }
+    return true;
 }
 
 /*
  * pokefirered raw format. Matches lines starting with ".set " (new
  * table) or ".byte " (per-note values, possibly multiple per line).
  */
-static void parse_firered_line(const char *trimmed, KeySplitMap *map,
+static bool parse_firered_line(const char *trimmed, KeySplitMap *map,
                                KeySplitDef **current, int *lastNote)
 {
     if (strncmp(trimmed, ".set ", 5) == 0) {
@@ -107,9 +133,11 @@ static void parse_firered_line(const char *trimmed, KeySplitMap *map,
         if (sscanf(trimmed + 5, "%[^,], . - %d", name, &startNote) == 2) {
             vg_rtrim(name);
             *current = append_entry(map, name, startNote);
+            if (!*current)
+                return false;
             *lastNote = startNote;
         }
-        return;
+        return true;
     }
     if (strncmp(trimmed, ".byte ", 6) == 0 && *current) {
         const char *p = trimmed + 6;
@@ -125,6 +153,7 @@ static void parse_firered_line(const char *trimmed, KeySplitMap *map,
             while (isspace((unsigned char)*p)) p++;
         }
     }
+    return true;
 }
 
 /*
@@ -133,12 +162,12 @@ static void parse_firered_line(const char *trimmed, KeySplitMap *map,
  * A file may even mix formats — the parser just follows whichever
  * keyword it sees.
  */
-static void parse_keysplit_file(const char *filePath, KeySplitMap *map)
+static bool parse_keysplit_file(const char *filePath, KeySplitMap *map)
 {
     FILE *f = fopen(filePath, "r");
     if (!f) {
         vg_err("cannot open %s", filePath);
-        return;
+        return true;
     }
 
     char line[VG_MAX_LINE];
@@ -149,15 +178,23 @@ static void parse_keysplit_file(const char *filePath, KeySplitMap *map)
         vg_strip_comment(line);
         vg_rtrim(line);
         char *trimmed = vg_ltrim(line);
-        parse_emerald_line(trimmed, map, &current, &lastNote);
-        parse_firered_line(trimmed, map, &current, &lastNote);
+        if (!parse_emerald_line(trimmed, map, &current, &lastNote) ||
+            !parse_firered_line(trimmed, map, &current, &lastNote)) {
+            vg_err("out of memory while parsing keysplits in %s", filePath);
+            fclose(f);
+            return false;
+        }
     }
 
     fclose(f);
+    return true;
 }
 
-void vg_parse_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map)
+bool vg_parse_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map)
 {
-    for (int i = 0; i < disc->keySplitTableFiles.count; i++)
-        parse_keysplit_file(disc->keySplitTableFiles.paths[i], map);
+    for (int i = 0; i < disc->keySplitTableFiles.count; i++) {
+        if (!parse_keysplit_file(disc->keySplitTableFiles.paths[i], map))
+            return false;
+    }
+    return true;
 }

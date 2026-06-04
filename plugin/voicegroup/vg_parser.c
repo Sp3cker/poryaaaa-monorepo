@@ -1,4 +1,5 @@
 #include "vg_parser.h"
+#include "vg_alloc.h"
 #include "vg_log.h"
 #include "vg_paths.h"
 #include "vg_wav.h"
@@ -6,6 +7,7 @@
 #include "voicegroup_types.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,40 +29,84 @@ typedef struct {
 /* Each register_* call appends to an owned list on the
  * LoadedVoiceGroup; voicegroup_free() frees those lists. */
 
-static void register_wavedata(LoadedVoiceGroup *vg, WaveData *wd)
+static bool next_capacity(int current, int needed, int *out)
+{
+    int newCapacity = current ? current : INITIAL_CAPACITY;
+    while (newCapacity < needed) {
+        if (newCapacity > INT_MAX / 2)
+            return false;
+        newCapacity *= 2;
+    }
+    *out = newCapacity;
+    return true;
+}
+
+static bool register_wavedata(LoadedVoiceGroup *vg, WaveData *wd)
 {
     if (vg->waveDataCount >= vg->waveDataCapacity) {
-        vg->waveDataCapacity = vg->waveDataCapacity ? vg->waveDataCapacity * 2 : INITIAL_CAPACITY;
-        vg->waveDatas = realloc(vg->waveDatas, sizeof(WaveData *) * vg->waveDataCapacity);
+        int newCapacity;
+        if (!next_capacity(vg->waveDataCapacity, vg->waveDataCount + 1, &newCapacity))
+            return false;
+        WaveData **items = vg_realloc_array(vg->waveDatas, (size_t)newCapacity,
+                                            sizeof(*vg->waveDatas));
+        if (!items)
+            return false;
+        vg->waveDatas = items;
+        vg->waveDataCapacity = newCapacity;
     }
     vg->waveDatas[vg->waveDataCount++] = wd;
+    return true;
 }
 
-static void register_progwave(LoadedVoiceGroup *vg, uint32_t *pw)
+static bool register_progwave(LoadedVoiceGroup *vg, uint32_t *pw)
 {
     if (vg->progWaveCount >= vg->progWaveCapacity) {
-        vg->progWaveCapacity = vg->progWaveCapacity ? vg->progWaveCapacity * 2 : INITIAL_CAPACITY;
-        vg->progWaves = realloc(vg->progWaves, sizeof(uint32_t *) * vg->progWaveCapacity);
+        int newCapacity;
+        if (!next_capacity(vg->progWaveCapacity, vg->progWaveCount + 1, &newCapacity))
+            return false;
+        uint32_t **items = vg_realloc_array(vg->progWaves, (size_t)newCapacity,
+                                            sizeof(*vg->progWaves));
+        if (!items)
+            return false;
+        vg->progWaves = items;
+        vg->progWaveCapacity = newCapacity;
     }
     vg->progWaves[vg->progWaveCount++] = pw;
+    return true;
 }
 
-static void register_subgroup(LoadedVoiceGroup *vg, ToneData *sg)
+static bool register_subgroup(LoadedVoiceGroup *vg, ToneData *sg)
 {
     if (vg->subGroupCount >= vg->subGroupCapacity) {
-        vg->subGroupCapacity = vg->subGroupCapacity ? vg->subGroupCapacity * 2 : INITIAL_CAPACITY;
-        vg->subGroups = realloc(vg->subGroups, sizeof(ToneData *) * vg->subGroupCapacity);
+        int newCapacity;
+        if (!next_capacity(vg->subGroupCapacity, vg->subGroupCount + 1, &newCapacity))
+            return false;
+        ToneData **items = vg_realloc_array(vg->subGroups, (size_t)newCapacity,
+                                            sizeof(*vg->subGroups));
+        if (!items)
+            return false;
+        vg->subGroups = items;
+        vg->subGroupCapacity = newCapacity;
     }
     vg->subGroups[vg->subGroupCount++] = sg;
+    return true;
 }
 
-static void register_keysplittable(LoadedVoiceGroup *vg, uint8_t *ks)
+static bool register_keysplittable(LoadedVoiceGroup *vg, uint8_t *ks)
 {
     if (vg->keySplitTableCount >= vg->keySplitTableCapacity) {
-        vg->keySplitTableCapacity = vg->keySplitTableCapacity ? vg->keySplitTableCapacity * 2 : INITIAL_CAPACITY;
-        vg->keySplitTables = realloc(vg->keySplitTables, sizeof(uint8_t *) * vg->keySplitTableCapacity);
+        int newCapacity;
+        if (!next_capacity(vg->keySplitTableCapacity, vg->keySplitTableCount + 1, &newCapacity))
+            return false;
+        uint8_t **items = vg_realloc_array(vg->keySplitTables, (size_t)newCapacity,
+                                           sizeof(*vg->keySplitTables));
+        if (!items)
+            return false;
+        vg->keySplitTables = items;
+        vg->keySplitTableCapacity = newCapacity;
     }
     vg->keySplitTables[vg->keySplitTableCount++] = ks;
+    return true;
 }
 
 /* ---- Parse context ---- */
@@ -77,6 +123,7 @@ typedef struct {
     const ProjectDiscovery *disc;
     LoadedVoiceGroup *vg;
     WaveCache *waveCache;
+    bool allocationFailed;
     /* Trailing "@ ..." comment from the current voice macro's line, trimmed
      * of surrounding whitespace. NULL/empty if the line had no comment.
      * Valid only for the duration of the current dispatch; handlers that
@@ -94,7 +141,7 @@ typedef struct {
  * .incbin'd samples are part of the build. Cached within the
  * ParseCtx so the same .wav isn't loaded twice per voicegroup.
  */
-static WaveData *resolve_sample(const ParseCtx *ctx, const char *symbol)
+static WaveData *resolve_sample(ParseCtx *ctx, const char *symbol)
 {
     const char *samplePath = vg_symbol_map_find(ctx->dsMap, symbol);
     if (samplePath) {
@@ -116,7 +163,11 @@ static WaveData *resolve_sample(const ParseCtx *ctx, const char *symbol)
 
         WaveData *wd = vg_load_sample(ctx->projectRoot, samplePath);
         if (wd) {
-            register_wavedata(ctx->vg, wd);
+            if (!register_wavedata(ctx->vg, wd)) {
+                free(wd);
+                ctx->allocationFailed = true;
+                return NULL;
+            }
             vg_wave_cache_insert(ctx->waveCache, absWavPath, wd);
             return wd;
         }
@@ -129,12 +180,16 @@ static WaveData *resolve_sample(const ParseCtx *ctx, const char *symbol)
  * Load a programmable-wave symbol and register it with the voicegroup.
  * Returns NULL if not found.
  */
-static uint32_t *resolve_prog_wave(const ParseCtx *ctx, const char *symbol)
+static uint32_t *resolve_prog_wave(ParseCtx *ctx, const char *symbol)
 {
     const char *wavePath = vg_symbol_map_find(ctx->pwMap, symbol);
     if (!wavePath) return NULL;
     uint32_t *pw = vg_load_prog_wave(ctx->projectRoot, wavePath);
-    if (pw) register_progwave(ctx->vg, pw);
+    if (pw && !register_progwave(ctx->vg, pw)) {
+        free(pw);
+        ctx->allocationFailed = true;
+        return NULL;
+    }
     return pw;
 }
 
@@ -167,12 +222,16 @@ static void record_sample_name(ParseCtx *ctx, ToneData *td,
  * — pokeemerald's cry samples are always referenced via the symbol map
  * and loaded once per voicegroup.
  */
-static WaveData *resolve_cry_sample(const ParseCtx *ctx, const char *symbol)
+static WaveData *resolve_cry_sample(ParseCtx *ctx, const char *symbol)
 {
     const char *samplePath = vg_symbol_map_find(ctx->dsMap, symbol);
     if (!samplePath) return NULL;
     WaveData *wd = vg_load_bin_sample(ctx->projectRoot, samplePath);
-    if (wd) register_wavedata(ctx->vg, wd);
+    if (wd && !register_wavedata(ctx->vg, wd)) {
+        free(wd);
+        ctx->allocationFailed = true;
+        return NULL;
+    }
     return wd;
 }
 
@@ -372,8 +431,12 @@ static ToneData *load_sub_voicegroup(const char *vgSymbol, ParseCtx *ctx)
         return NULL;
     }
 
-    ToneData *subVg = calloc(VOICEGROUP_SIZE, sizeof(ToneData));
-    if (!subVg) return NULL;
+    ToneData *subVg = vg_malloc_array(VOICEGROUP_SIZE, sizeof(ToneData));
+    if (!subVg) {
+        ctx->allocationFailed = true;
+        return NULL;
+    }
+    memset(subVg, 0, sizeof(ToneData) * VOICEGROUP_SIZE);
 
     /* parse_voicegroup_file writes into vg->voices and, via
      * record_sample_name, into vg->voiceSampleNames. Save/restore both
@@ -398,7 +461,11 @@ static ToneData *load_sub_voicegroup(const char *vgSymbol, ParseCtx *ctx)
     memcpy(ctx->vg->voices, savedVoices, sizeof(savedVoices));
     memcpy(ctx->vg->voiceSampleNames, savedNames, sizeof(savedNames));
 
-    register_subgroup(ctx->vg, subVg);
+    if (!register_subgroup(ctx->vg, subVg)) {
+        ctx->allocationFailed = true;
+        free(subVg);
+        return NULL;
+    }
     return subVg;
 }
 
@@ -549,10 +616,18 @@ static void handle_keysplit(ToneData *td, uint8_t voiceType,
 
     KeySplitDef *ksDef = vg_keysplit_map_find(ctx->ksMap, ksSymbol);
     if (ksDef) {
-        uint8_t *table = malloc(128);
+        uint8_t *table = vg_malloc_array(128, sizeof(*table));
+        if (!table) {
+            ctx->allocationFailed = true;
+            return;
+        }
         memcpy(table, ksDef->table, 128);
+        if (!register_keysplittable(ctx->vg, table)) {
+            ctx->allocationFailed = true;
+            free(table);
+            return;
+        }
         td->keySplitTable = table;
-        register_keysplittable(ctx->vg, table);
     }
 }
 
@@ -715,6 +790,10 @@ static int parse_voicegroup_file(const char *filePath, const char *startLabel, P
 
         ToneData *td = &ctx->vg->voices[voiceIndex];
         if (dispatch_voice_macro(trimmed, td, ctx)) {
+            if (ctx->allocationFailed) {
+                fclose(f);
+                return -1;
+            }
             voiceIndex++;
             voicesInSection++;
         }
@@ -771,7 +850,10 @@ WaveData *voicegroup_loader_load_sample(const char *projectRoot,
 {
     WaveData *wd = vg_load_sample(projectRoot, relPath);
     if (!wd) wd = vg_load_bin_sample(projectRoot, relPath);
-    if (wd) register_wavedata(vg, wd);
+    if (wd && !register_wavedata(vg, wd)) {
+        free(wd);
+        return NULL;
+    }
     return wd;
 }
 
@@ -780,6 +862,9 @@ uint32_t *voicegroup_loader_load_prog_wave(const char *projectRoot,
                                            LoadedVoiceGroup *vg)
 {
     uint32_t *pw = vg_load_prog_wave(projectRoot, relPath);
-    if (pw) register_progwave(vg, pw);
+    if (pw && !register_progwave(vg, pw)) {
+        free(pw);
+        return NULL;
+    }
     return pw;
 }

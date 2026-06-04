@@ -4,6 +4,8 @@
 #include "vg_discovery.h"
 #include "vg_paths.h"
 
+#include <stdbool.h>
+
 /*
  * Symbol map: associates an assembly label (symbol) with the file
  * path it points at via .incbin. Built by scanning a project's
@@ -29,7 +31,7 @@ const char *vg_symbol_map_find(const SymbolMap *map, const char *symbol);
  * file discovered in disc; append symbol -> path mappings to *map.
  * Both files share the same <label>:: + .incbin syntax.
  */
-void vg_parse_direct_sound_data(const ProjectDiscovery *disc, SymbolMap *map);
-void vg_parse_prog_wave_data(const ProjectDiscovery *disc, SymbolMap *map);
+bool vg_parse_direct_sound_data(const ProjectDiscovery *disc, SymbolMap *map);
+bool vg_parse_prog_wave_data(const ProjectDiscovery *disc, SymbolMap *map);
 
 #endif /* VG_SYMBOLS_H */

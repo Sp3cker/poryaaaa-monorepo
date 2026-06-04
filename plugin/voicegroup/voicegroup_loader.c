@@ -1,5 +1,6 @@
 #include "voicegroup_loader.h"
 
+#include "vg_alloc.h"
 #include "vg_discovery.h"
 #include "vg_keysplit.h"
 #include "vg_log.h"
@@ -53,14 +54,15 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     vg_symbol_map_init(&pwMap);
     vg_keysplit_map_init(&ksMap);
 
-    vg_parse_direct_sound_data(disc, &dsMap);
-    vg_parse_prog_wave_data(disc, &pwMap);
-    vg_parse_keysplit_tables(disc, &ksMap);
+    bool mapsOk = vg_parse_direct_sound_data(disc, &dsMap) &&
+                  vg_parse_prog_wave_data(disc, &pwMap) &&
+                  vg_parse_keysplit_tables(disc, &ksMap);
     vg_log("voicegroup_load: symbol maps - ds=%d pw=%d ks=%d",
            dsMap.count, pwMap.count, ksMap.count);
 
-    int rc = vg_parse_voicegroup(projectRoot, voicegroupName, vg,
-                                 &dsMap, &pwMap, &ksMap, disc);
+    int rc = mapsOk ? vg_parse_voicegroup(projectRoot, voicegroupName, vg,
+                                          &dsMap, &pwMap, &ksMap, disc)
+                    : -1;
 
     vg_symbol_map_free(&dsMap);
     vg_symbol_map_free(&pwMap);
@@ -109,16 +111,18 @@ static void fill_asset_entry(ProjectAssetEntry *out, ProjectAssetKind kind,
     strncpy(out->fileName, vg_path_basename(src->filePath), sizeof(out->fileName) - 1);
 }
 
-static void build_asset_array(const SymbolMap *map, ProjectAssetKind kind,
+static bool build_asset_array(const SymbolMap *map, ProjectAssetKind kind,
                               ProjectAssetEntry **outArray, int *outCount)
 {
-    if (map->count <= 0) return;
-    ProjectAssetEntry *arr = calloc((size_t)map->count, sizeof(ProjectAssetEntry));
-    if (!arr) return;
+    if (map->count <= 0) return true;
+    ProjectAssetEntry *arr = vg_malloc_array((size_t)map->count, sizeof(ProjectAssetEntry));
+    if (!arr) return false;
+    memset(arr, 0, sizeof(ProjectAssetEntry) * (size_t)map->count);
     for (int i = 0; i < map->count; i++)
         fill_asset_entry(&arr[i], kind, &map->entries[i]);
     *outArray = arr;
     *outCount = map->count;
+    return true;
 }
 
 bool voicegroup_loader_collect_project_assets(const char *projectRoot,
@@ -134,18 +138,22 @@ bool voicegroup_loader_collect_project_assets(const char *projectRoot,
     SymbolMap dsMap, pwMap;
     vg_symbol_map_init(&dsMap);
     vg_symbol_map_init(&pwMap);
-    vg_parse_direct_sound_data(disc, &dsMap);
-    vg_parse_prog_wave_data(disc, &pwMap);
+    bool ok = vg_parse_direct_sound_data(disc, &dsMap) &&
+              vg_parse_prog_wave_data(disc, &pwMap);
 
-    build_asset_array(&dsMap, PROJECT_ASSET_DIRECTSOUND,
-                      &out->directsound, &out->directsoundCount);
-    build_asset_array(&pwMap, PROJECT_ASSET_PROG_WAVE,
-                      &out->progWave, &out->progWaveCount);
+    if (ok)
+        ok = build_asset_array(&dsMap, PROJECT_ASSET_DIRECTSOUND,
+                               &out->directsound, &out->directsoundCount);
+    if (ok)
+        ok = build_asset_array(&pwMap, PROJECT_ASSET_PROG_WAVE,
+                               &out->progWave, &out->progWaveCount);
 
     vg_symbol_map_free(&dsMap);
     vg_symbol_map_free(&pwMap);
     free(disc);
-    return true;
+    if (!ok)
+        voicegroup_loader_free_project_assets(out);
+    return ok;
 }
 
 void voicegroup_loader_free_project_assets(VoicegroupProjectAssets *assets)

@@ -4,6 +4,7 @@
 #include "vg_discovery.h"
 #include "vg_paths.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -38,6 +39,6 @@ void vg_keysplit_map_free(KeySplitMap *map);
 KeySplitDef *vg_keysplit_map_find(const KeySplitMap *map, const char *name);
 
 /* Parse every keysplit_tables.inc file in disc; append entries to *map. */
-void vg_parse_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map);
+bool vg_parse_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map);
 
 #endif /* VG_KEYSPLIT_H */

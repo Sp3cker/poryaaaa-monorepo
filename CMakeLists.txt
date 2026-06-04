@@ -5,6 +5,7 @@ if(APPLE)
 endif()
 
 set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
     add_compile_options("$<$<COMPILE_LANG_AND_ID:C,MSVC>:/experimental:c11atomics>")
@@ -13,7 +14,6 @@ endif()
 function(poryaaaa_enable_msvc_c_atomics target_name)
     if(MSVC)
         target_compile_options(${target_name} PRIVATE
-            "$<$<COMPILE_LANGUAGE:C>:/std:c11>"
             "$<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>")
     endif()
 endfunction()
@@ -72,7 +72,7 @@ endfunction()
 
 if(MSVC)
     set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_params.c
-        PROPERTIES COMPILE_OPTIONS "/std:c11;/experimental:c11atomics")
+        PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")
 endif()
 
 # ---- CLAP SDK ----
@@ -307,6 +307,7 @@ endif()
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
     test/test_hw_mix.c
+    test/test_voicegroup_loader.c
     plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
 )

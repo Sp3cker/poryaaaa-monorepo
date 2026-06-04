@@ -1,4 +1,5 @@
 #include "vg_wav.h"
+#include "vg_alloc.h"
 #include "vg_log.h"
 
 #include <math.h>
@@ -252,6 +253,22 @@ static int8_t convert_sample(const uint8_t *sp, int fmtTag, uint32_t bps)
     return (int8_t)si;
 }
 
+static WaveData *alloc_wavedata(uint32_t size)
+{
+    size_t dataBytes;
+    size_t totalBytes;
+    if (!vg_size_add((size_t)size, 1, &dataBytes))
+        return NULL;
+    if (!vg_size_add(sizeof(WaveData), dataBytes, &totalBytes))
+        return NULL;
+
+    WaveData *wd = malloc(totalBytes);
+    if (!wd)
+        return NULL;
+    wd->data = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
+    return wd;
+}
+
 WaveData *vg_load_wav_file(const char *absoluteWavPath)
 {
     FILE *f = fopen(absoluteWavPath, "rb");
@@ -277,7 +294,7 @@ WaveData *vg_load_wav_file(const char *absoluteWavPath)
 
     uint32_t freq = compute_freq(&c);
 
-    WaveData *wd = malloc(sizeof(WaveData) + (size_t)size + 1);
+    WaveData *wd = alloc_wavedata(size);
     if (!wd) {
         fclose(f);
         return NULL;
@@ -287,10 +304,14 @@ WaveData *vg_load_wav_file(const char *absoluteWavPath)
     wd->freq      = freq;
     wd->loopStart = c.smplLoopStart;
     wd->size      = size;
-    wd->data      = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
 
     /* Pull the raw sample bytes and convert. */
-    size_t rawBytes = (size_t)size * bps;
+    size_t rawBytes;
+    if (!vg_size_mul((size_t)size, (size_t)bps, &rawBytes)) {
+        free(wd);
+        fclose(f);
+        return NULL;
+    }
     uint8_t *rawData = NULL;
     if (rawBytes > 0) {
         rawData = malloc(rawBytes);
@@ -343,7 +364,7 @@ WaveData *vg_load_bin_sample(const char *projectRoot, const char *relativePath)
     uint32_t loopStart = read_u32_le(header + 8);
     uint32_t size      = read_u32_le(header + 12);
 
-    WaveData *wd = malloc(sizeof(WaveData) + size + 1);
+    WaveData *wd = alloc_wavedata(size);
     if (!wd) {
         fclose(f);
         return NULL;
@@ -353,7 +374,6 @@ WaveData *vg_load_bin_sample(const char *projectRoot, const char *relativePath)
     wd->freq      = freq;
     wd->loopStart = loopStart;
     wd->size      = size;
-    wd->data      = (int8_t *)((uint8_t *)wd + sizeof(WaveData));
 
     size_t bytesRead = fread(wd->data, 1, size, f);
     if (bytesRead < size)
@@ -401,7 +421,7 @@ uint32_t *vg_load_prog_wave(const char *projectRoot, const char *relativePath)
         return NULL;
     }
 
-    uint32_t *data = malloc(16);
+    uint32_t *data = vg_malloc_array(4, sizeof(*data));
     if (!data) {
         fclose(f);
         return NULL;
