@@ -4,7 +4,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-pretarget.cmak
 # ccomidi — MIDI effect: MIDI passthrough + m4a CC sender
 #############################################################
 
-set(CCO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../cProjects/ccomidi"
+set(CCO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../packages/ccomidi"
     CACHE PATH "Path to ccomidi repo root (the dir containing src/core/sender_core.cpp)")
 
 include_directories(

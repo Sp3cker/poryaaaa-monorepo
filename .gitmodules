@@ -1,0 +1,18 @@
+[submodule "packages/poryaaaa/clap-sdk"]
+	path = packages/poryaaaa/clap-sdk
+	url = https://github.com/free-audio/clap.git
+[submodule "packages/poryaaaa/imgui"]
+	path = packages/poryaaaa/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "packages/poryaaaa/tools/captures/mgba-headless-channel-mute/mgba"]
+	path = packages/poryaaaa/tools/captures/mgba-headless-channel-mute/mgba
+	url = https://github.com/mgba-emu/mgba.git
+[submodule "packages/ccomidi/third_party/clap"]
+	path = packages/ccomidi/third_party/clap
+	url = https://github.com/free-audio/clap
+[submodule "packages/ccomidi/third_party/clap-wrapper"]
+	path = packages/ccomidi/third_party/clap-wrapper
+	url = https://github.com/free-audio/clap-wrapper.git
+[submodule "packages/poryaaaa-m4l/source/max-sdk-base"]
+	path = packages/poryaaaa-m4l/source/max-sdk-base
+	url = https://github.com/Cycling74/max-sdk-base

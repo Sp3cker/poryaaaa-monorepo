@@ -1,6 +1,10 @@
-# CLAUDE.md
+# AGENTS.md - ccomidi
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+## Project Build Rule
+
+- Only build the Release configuration.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 

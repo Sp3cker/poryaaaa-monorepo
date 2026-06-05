@@ -6,7 +6,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-pretarget.cmak
 # All SMF/tempo/loop/validation lives in code-src/recorder_smf_writer.ts.
 #############################################################
 
-set(PORYA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../poryaaaa/poryaaaa"
+set(PORYA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../packages/poryaaaa"
     CACHE PATH "Path to poryaaaa engine repo root (the dir containing plugin/m4a_engine.c)")
 
 include_directories(
