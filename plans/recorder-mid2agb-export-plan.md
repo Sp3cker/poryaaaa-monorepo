@@ -4,7 +4,7 @@
 
 **Goal:** Make poryaaaa recorder exports reliably produce compact, mid2agb-friendly SMF files.
 
-**Architecture:** Make poryaaaa's `plugin/recorder/` module the shared recorder implementation for both CLAP and poryaaaa-m4l. Borrow the good export properties from poryaaaa-m4l: beat-relative export, 96 PPQ, stable per-channel sorting, event coalescing, and explicit mid2agb validation. Treat poryaaaa-m4l's recorder/export path as the better current reference, but not as a complete correctness oracle.
+**Architecture:** Make poryaaaa's `plugin/recorder/` module the shared recorder and SMF writer implementation for both CLAP and poryaaaa-m4l. Borrow the good export properties from poryaaaa-m4l: beat-relative export, 96 PPQ, stable per-channel sorting, event coalescing, and explicit mid2agb validation. Treat poryaaaa-m4l's recorder/export path as the better current reference, but not as a complete correctness oracle.
 
 **Tech Stack:** C++23 recorder code under `plugin/recorder/`, C CLAP integration under `plugin/m4a_plugin.c`, SMF validation via local `../ccomidi/mid2agb`, and poryaaaa unit tests under `test/`.
 
@@ -18,7 +18,7 @@ The important distinction is that poryaaaa-m4l's C++ recorder is only the captur
 
 ## Shared Code Direction
 
-The long-term goal is to share the recorder buffer and writer policy between poryaaaa and poryaaaa-m4l.
+The long-term goal is to share the recorder buffer and writer policy between poryaaaa and poryaaaa-m4l, with final SMF byte generation in C++ rather than TypeScript.
 
 poryaaaa should own the shared C++ recorder module under `plugin/recorder/`. poryaaaa-m4l should stop shadowing that recorder with wrapper-local C++ once the shared module supports beat-stamped capture and the M4L export behavior has been ported.
 
@@ -33,8 +33,9 @@ Recommended sharing path:
 
 1. Share the buffer/time model first by adding optional beat stamps to poryaaaa's recorder events.
 2. Port poryaaaa-m4l's proven SMF writer policy into poryaaaa's C++ writer.
-3. Keep poryaaaa-m4l JavaScript responsible for Live API queries, save orchestration, filename/range/marker UI, and status reporting.
-4. Replace poryaaaa-m4l's TypeScript SMF writer with calls into the shared C++ writer only after poryaaaa's C++ writer matches the current M4L behavior under tests.
+3. Teach the poryaaaa-m4l external to link/include the shared recorder writer and expose a save/write surface that accepts the save-time metadata it currently gets from TypeScript.
+4. Retire poryaaaa-m4l's TypeScript SMF writer only after poryaaaa's C++ writer matches the current M4L behavior under tests.
+5. Keep any remaining poryaaaa-m4l JavaScript as a temporary Live adapter for API queries, filename/range/marker UI, ccomidi state collection, and status reporting. Removing that recorder JS entirely is a separate step: the Max patch or external needs another way to provide the same save metadata and ccomidi initial state.
 
 ## Evidence
 
@@ -88,9 +89,10 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 - `plugin/m4a_plugin.c`: process-time recorder advancement, CLAP beat timeline capture, and transport tempo/loop capture.
 - `test/test_recorder_mid2agb.cpp` or an equivalent focused test file: recorder SMF structural tests and mid2agb conversion regression tests.
 - `CMakeLists.txt`: register the focused recorder test target if a new test file is added.
-- `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`: eventually stop shadowing poryaaaa's recorder C++ and link or include the shared module instead.
-- `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`: keep Live API/save orchestration, but stop owning final SMF writer policy after the shared C++ writer catches up.
-- `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`: current behavior reference and eventual deletion/retirement target.
+- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`: stop shadowing poryaaaa's recorder C++ and link or include the shared module instead.
+- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`: expose recorder save/write commands from the external once the shared C++ writer is ready.
+- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`: temporary Live API/save adapter; stop owning final SMF writer policy after the shared C++ writer catches up.
+- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`: current behavior reference and eventual deletion/retirement target.
 
 ## Task 1: Lock In mid2agb Export Tests
 
@@ -241,13 +243,13 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 ## Task 10: Port poryaaaa-m4l To The Shared Recorder/Writer
 
 **Files:**
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/package.json`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/midi_buffer.h`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/export_capture_tests.cpp`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
-- Modify in sibling repo: `/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/package.json`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/midi_buffer.h`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/export_capture_tests.cpp`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
+- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`
 
 - [ ] Add the omitted recorder-focused TypeScript tests to `npm test`.
 - [ ] Add a default command or script that runs the C++ recorder CTest suite, not only the TypeScript tests.
@@ -255,9 +257,14 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 - [ ] Fix the PRBY magic-byte comment to match ASCII file bytes.
 - [ ] Decide whether explicit marker fields remain the only loop-marker source, or whether Live loop state should generate markers by default.
 - [ ] Keep the constant-tempo limitation documented until tempo automation is implemented.
-- [ ] Keep M4L JavaScript responsible for Live API queries, export range parsing, loop marker parsing, output path management, and status messages.
-- [ ] Move final SMF byte generation from TypeScript to poryaaaa's shared C++ writer after behavioral parity tests pass.
+- [ ] Define the C++ writer input shape that replaces `buildSmf()` arguments: beat-stamped MIDI events, tempo, time signature, export range, explicit loop markers, ccomidi initial PC/CC state, anchor mode, and output path.
+- [ ] Add a poryaaaa recorder C or C++ API that writes a complete SMF from a beat-stamped snapshot plus the save-time metadata above.
+- [ ] Link the poryaaaa-m4l external against the shared poryaaaa recorder/writer instead of the wrapper-local recorder implementation.
+- [ ] Replace the M4L `dump <path>` / PRBY / TypeScript byte-rendering path with an external-owned `save` or `write_smf` command that emits status replies.
+- [ ] Keep M4L JavaScript temporarily responsible for Live API queries, export range parsing, loop marker parsing, output path management, ccomidi state collection, and status messages.
+- [ ] Delete `recorder_smf_writer.ts` after behavioral parity tests prove the external-written SMF matches the current TypeScript writer for the covered cases.
 - [ ] Remove wrapper-local recorder shadowing from poryaaaa-m4l's CMake once the shared poryaaaa recorder covers the M4L behavior.
+- [ ] If the goal is to remove `ccomidi_recorder.ts` entirely, move its remaining responsibilities into Max patch wiring or external messages before deleting it.
 - [ ] Keep the M4L `beats <float>` message as the host timing adapter into the shared recorder model.
 
 ## Completion Criteria
@@ -269,6 +276,7 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 - Exporting after a long silent/disarmed lead-in does not generate an erroneously large `.s`.
 - Same-tick CC/PC cleanup reduces noise without corrupting GBA extended-command pairs.
 - Held-note flush handles overlapping same-pitch notes correctly.
-- poryaaaa-m4l can use poryaaaa's shared recorder/writer while keeping JS-owned Live API and save orchestration.
+- poryaaaa-m4l can use poryaaaa's shared recorder/writer, with final SMF bytes generated by the external instead of TypeScript.
+- Any remaining poryaaaa-m4l recorder JavaScript is limited to host/UI metadata plumbing, or has been replaced by Max patch/external message plumbing.
 - Unit tests pass: `cmake --build build --target poryaaaa_unit_tests` and `./build/poryaaaa_unit_tests`.
 - The recorder mid2agb validation test either passes with local mid2agb or skips with a clear message when mid2agb is unavailable.

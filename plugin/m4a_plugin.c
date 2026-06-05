@@ -221,6 +221,7 @@ static bool plugin_init(const clap_plugin_t *plugin)
     if (!data->recorder)
         return false;
     atomic_init(&data->recorderArmed, false);
+    data->recorderTempoBpm = 0.0;
     data->recorderPath[0] = '\0';
     atomic_init(&data->recorderSeenPC,  0u);
     atomic_init(&data->recorderSeenVol, 0u);
@@ -271,7 +272,6 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate,
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
     if (!m4a_engine_init(&data->engine, (float)sample_rate))
         return false;
-    m4a_recorder_set_sample_rate(data->recorder, sample_rate);
     m4a_engine_set_xcmd_callback(&data->engine, plugin_engine_xcmd, data);
     plugin_apply_engine_settings(data);
     if (data->extClockBpm > 0.0)
@@ -409,8 +409,8 @@ static void process_midi_clock_pulse(M4APluginData *data, uint32_t sample_in_blo
     else
         data->extClockBpm = data->extClockBpm * 0.85 + instBpm * 0.15;
 
+    data->recorderTempoBpm = data->extClockBpm;
     m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
-    m4a_recorder_set_tempo(data->recorder, sample_in_block, data->extClockBpm);
 }
 
 /* Status bytes 0xF0..0xFF have no channel nibble. Handle the subset that's
@@ -419,13 +419,8 @@ static void process_midi_system_event(M4APluginData *data, const uint8_t *msg,
                                        uint32_t sample_in_block)
 {
     switch (msg[0]) {
-    case 0xF2: {  /* Song Position Pointer: data1|data2<<7 = 16th-note count */
-        if (data->extClockBpm <= 0.0) break;  /* need a tempo before we can seek */
-        uint32_t sixteenths = (uint32_t)msg[1] | ((uint32_t)msg[2] << 7);
-        double posSec = ((double)sixteenths * 60.0) / (data->extClockBpm * 4.0);
-        m4a_recorder_update_loop(data->recorder, false, 0.0, 0.0, posSec);
+    case 0xF2:  /* Song Position Pointer */
         break;
-    }
     case 0xF8:  /* MIDI Clock (24 PPQ) */
         process_midi_clock_pulse(data, sample_in_block);
         break;
@@ -448,7 +443,8 @@ static void process_midi_system_event(M4APluginData *data, const uint8_t *msg,
 }
 
 static void process_midi_event(M4APluginData *data, const uint8_t *msg,
-                               uint32_t sample_in_block)
+                               uint32_t sample_in_block,
+                               bool has_recorder_beats, double recorder_beats)
 {
     /* System messages (0xF0..0xFF) have no channel nibble — route separately
      * so they don't pulse a phantom channel-LED or get masked as a no-op. */
@@ -500,16 +496,13 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg,
     }
     }
 
-    /* Record MIDI to the embedded recorder when armed. The recorder's
-     * samplePosition advances every block regardless of armed (tape-recorder
-     * model: time keeps flowing, the toggle only decides whether the current
-     * moment gets stamped into the buffer), so the displayed duration always
-     * reflects elapsed session time, and disarmed periods leave wall-time
-     * gaps in the SMF. samplePosition is monotonic so no reorder is possible.
-     * While capturing, latch the recorder-tab per-channel PC/Vol/Pan
-     * indicators so the GUI can show what's been captured. */
-    if (atomic_load(&data->recorderArmed)) {
-        m4a_recorder_push(data->recorder, sample_in_block, msg[0], msg[1], msg[2]);
+    /* Record MIDI to the embedded recorder when armed. Beat positions come
+     * from the host transport, so hosts without a beat timeline can still
+     * drive the engine but do not stamp recorder events. While capturing,
+     * latch the recorder-tab per-channel PC/Vol/Pan indicators so the GUI can
+     * show what's been captured. */
+    if (atomic_load(&data->recorderArmed) && has_recorder_beats) {
+        m4a_recorder_push_beats(data->recorder, recorder_beats, msg[0], msg[1], msg[2]);
         unsigned bit = 1u << channel;
         if (status == 0xC0) atomic_fetch_or(&data->recorderSeenPC, bit);
         else if (status == 0xB0 && msg[1] == 0x07) atomic_fetch_or(&data->recorderSeenVol, bit);
@@ -518,7 +511,7 @@ static void process_midi_event(M4APluginData *data, const uint8_t *msg,
 }
 
 static void process_clap_note_event(M4APluginData *data, const clap_event_note_t *ev,
-                                    uint32_t sample_in_block)
+                                    bool has_recorder_beats, double recorder_beats)
 {
     int channel = ev->channel >= 0 ? ev->channel : 0;
     if (channel >= MAX_TRACKS) channel = 0;
@@ -535,7 +528,7 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
     }
 
     /* Record CLAP note events to the embedded recorder when armed. */
-    if (atomic_load(&data->recorderArmed)) {
+    if (atomic_load(&data->recorderArmed) && has_recorder_beats) {
         uint8_t status, d1, d2;
         if (ev->header.type == CLAP_EVENT_NOTE_ON) {
             status = 0x90 | (channel & 0x0F);
@@ -547,7 +540,7 @@ static void process_clap_note_event(M4APluginData *data, const clap_event_note_t
             d1 = (uint8_t)ev->key;
             d2 = 0;
         }
-        m4a_recorder_push(data->recorder, sample_in_block, status, d1, d2);
+        m4a_recorder_push_beats(data->recorder, recorder_beats, status, d1, d2);
     }
 }
 
@@ -630,6 +623,91 @@ static void plugin_format_pending_xcmd(char *buf, size_t buf_size, unsigned int 
 
 /* ---- Audio processing ---- */
 
+static double clap_beats_to_double(clap_beattime beats)
+{
+    return (double)beats / (double)CLAP_BEATTIME_FACTOR;
+}
+
+typedef struct {
+    bool hasTempo;
+    bool hasBeats;
+    double sampleRate;
+    uint32_t segmentFrame;
+    double segmentBeats;
+    double tempoBpm;
+    double tempoInc;
+} RecorderBeatMapper;
+
+static bool transport_has_tempo(const clap_event_transport_t *transport)
+{
+    return transport
+        && (transport->flags & CLAP_TRANSPORT_HAS_TEMPO)
+        && transport->tempo > 0.0;
+}
+
+static bool transport_has_beats_timeline(const clap_event_transport_t *transport)
+{
+    return transport
+        && (transport->flags & CLAP_TRANSPORT_HAS_BEATS_TIMELINE);
+}
+
+static void recorder_beat_mapper_init(RecorderBeatMapper *mapper, double sampleRate)
+{
+    memset(mapper, 0, sizeof(*mapper));
+    mapper->sampleRate = sampleRate;
+}
+
+static double recorder_beat_mapper_beats_at(const RecorderBeatMapper *mapper,
+                                            uint32_t frame)
+{
+    if (!mapper->hasBeats || !mapper->hasTempo || mapper->sampleRate <= 0.0)
+        return 0.0;
+
+    double deltaFrames = frame > mapper->segmentFrame
+        ? (double)(frame - mapper->segmentFrame) : 0.0;
+    double beatDelta = (mapper->tempoBpm * deltaFrames
+        + 0.5 * mapper->tempoInc * deltaFrames * deltaFrames)
+        / (60.0 * mapper->sampleRate);
+    return mapper->segmentBeats + beatDelta;
+}
+
+static void plugin_apply_host_tempo(M4APluginData *data, double tempoBpm)
+{
+    m4a_engine_set_tempo_bpm(&data->engine, tempoBpm);
+    data->recorderTempoBpm = tempoBpm;
+    /* Host transport wins: drop any externally-derived clock state so we
+     * don't fight it on the next clock pulse. */
+    data->extClockInitialized = false;
+}
+
+static void recorder_beat_mapper_apply_transport(M4APluginData *data,
+                                                 RecorderBeatMapper *mapper,
+                                                 const clap_event_transport_t *transport,
+                                                 uint32_t frame)
+{
+    if (!transport)
+        return;
+
+    double currentBeats = recorder_beat_mapper_beats_at(mapper, frame);
+    if (transport_has_tempo(transport)) {
+        mapper->hasTempo = true;
+        mapper->tempoBpm = transport->tempo;
+        mapper->tempoInc = transport->tempo_inc;
+        plugin_apply_host_tempo(data, transport->tempo);
+    }
+
+    if (transport_has_beats_timeline(transport)) {
+        mapper->segmentBeats = clap_beats_to_double(transport->song_pos_beats);
+        mapper->segmentFrame = frame;
+    } else if (mapper->hasBeats) {
+        mapper->segmentBeats = currentBeats;
+        mapper->segmentFrame = frame;
+    }
+    mapper->hasBeats = mapper->hasTempo
+        && mapper->sampleRate > 0.0
+        && (mapper->hasBeats || transport_has_beats_timeline(transport));
+}
+
 static clap_process_status plugin_process(const clap_plugin_t *plugin,
                                            const clap_process_t *process)
 {
@@ -638,35 +716,12 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
     if (!data->activated)
         return CLAP_PROCESS_ERROR;
 
-    /* Read tempo from host transport when present. In any host that doesn't
-     * supply a transport, tempo comes from external MIDI clock instead; see
-     * process_midi_clock_pulse. */
-    bool host_has_tempo = process->transport
-        && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO);
-    if (host_has_tempo) {
-        m4a_engine_set_tempo_bpm(&data->engine, process->transport->tempo);
-        m4a_recorder_set_tempo(data->recorder, 0, process->transport->tempo);
-        /* Host transport wins: drop any externally-derived clock state so we
-         * don't fight it on the next clock pulse. */
-        data->extClockInitialized = false;
-    }
-
-    /* Update recorder loop info from transport */
-    if (process->transport
-        && (process->transport->flags & CLAP_TRANSPORT_IS_LOOP_ACTIVE)
-        && (process->transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE)) {
-        double startSec = (double)process->transport->loop_start_seconds / CLAP_SECTIME_FACTOR;
-        double endSec   = (double)process->transport->loop_end_seconds   / CLAP_SECTIME_FACTOR;
-        double posSec   = (double)process->transport->song_pos_seconds   / CLAP_SECTIME_FACTOR;
-        m4a_recorder_update_loop(data->recorder, true, startSec, endSec, posSec);
-    } else if (process->transport
-               && (process->transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE)) {
-        double posSec = (double)process->transport->song_pos_seconds / CLAP_SECTIME_FACTOR;
-        m4a_recorder_update_loop(data->recorder, false, 0.0, 0.0, posSec);
-    }
-
     const uint32_t numFrames = process->frames_count;
     const uint32_t numEvents = process->in_events->size(process->in_events);
+    RecorderBeatMapper recorderMapper;
+    recorder_beat_mapper_init(&recorderMapper, (double)data->engine.sampleRate);
+    recorder_beat_mapper_apply_transport(data, &recorderMapper,
+                                         process->transport, 0);
 
     /* Get output buffers */
     float *outL = process->audio_outputs[0].data32[0];
@@ -688,12 +743,20 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
                 case CLAP_EVENT_NOTE_ON:
                 case CLAP_EVENT_NOTE_OFF:
                 case CLAP_EVENT_NOTE_CHOKE:
-                    process_clap_note_event(data, (const clap_event_note_t *)hdr, hdr->time);
+                {
+                    double recorder_beats = recorder_beat_mapper_beats_at(&recorderMapper,
+                                                                          hdr->time);
+                    process_clap_note_event(data, (const clap_event_note_t *)hdr,
+                                            recorderMapper.hasBeats, recorder_beats);
                     break;
+                }
                 case CLAP_EVENT_MIDI:
                 {
                     const clap_event_midi_t *midiEv = (const clap_event_midi_t *)hdr;
-                    process_midi_event(data, midiEv->data, hdr->time);
+                    double recorder_beats = recorder_beat_mapper_beats_at(&recorderMapper,
+                                                                          hdr->time);
+                    process_midi_event(data, midiEv->data, hdr->time,
+                                       recorderMapper.hasBeats, recorder_beats);
                     /* MIDI Program Change is the source of truth when it
                      * arrives; mirror it back out as a CLAP param event so
                      * the host's automation lane and saved state stay in
@@ -723,6 +786,11 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
                     }
                     break;
                 }
+                case CLAP_EVENT_TRANSPORT:
+                    recorder_beat_mapper_apply_transport(data, &recorderMapper,
+                                                         (const clap_event_transport_t *)hdr,
+                                                         hdr->time);
+                    break;
                 case CLAP_EVENT_PARAM_VALUE:
                     m4a_params_process_event(data, (const clap_event_param_value_t *)hdr);
                     break;
@@ -759,13 +827,6 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin,
 
         framePos = nextEventTime;
     }
-
-    /* Advance the recorder's sample clock by the full block. Runs every
-     * block — the duration display reflects total elapsed session time, not
-     * the captured buffer length. The Record toggle only gates push_event,
-     * so disarmed periods leave wall-time gaps in the SMF rather than
-     * compressing the timeline. */
-    m4a_recorder_advance(data->recorder, numFrames);
 
     /* Tick the running sample-time counter used to measure MIDI clock intervals.
      * Sample_in_block offsets stay valid because realtime events are stamped

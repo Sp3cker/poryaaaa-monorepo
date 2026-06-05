@@ -25,6 +25,7 @@ extern void m4a_trk_vol_pit_set(M4ADriverTrack *track);
 void test_hw_mix_run_all(void);
 #endif
 void test_voicegroup_loader_run_all(void);
+void test_recorder_core_run_all(void);
 
 #if defined(M4A_DRIVER_V2)
 /* Test helper: advance the driver in chunks no larger than the bounded
@@ -4762,6 +4763,7 @@ int main(void)
     test_chip_canned_soundbias_cycle_0_vs_3_levels();
 #endif
     test_voicegroup_loader_run_all();
+    test_recorder_core_run_all();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

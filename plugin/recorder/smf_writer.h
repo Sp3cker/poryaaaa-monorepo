@@ -9,8 +9,8 @@
 namespace ccomidi {
 
 struct SmfWriteOptions {
-  std::uint16_t ppq = 480;
-  double fallbackBpm = 120.0;
+  std::uint16_t ppq = 96;
+  double tempoBpm = 0.0;
 };
 
 bool write_smf1(const std::string &path,

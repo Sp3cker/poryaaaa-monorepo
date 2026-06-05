@@ -552,17 +552,27 @@ static void render_recorder_tab(M4AGuiState *gui)
 
     /* Status counters */
     uint64_t evCount = m4a_recorder_event_count(data->recorder);
-    double durSec    = m4a_recorder_duration_seconds(data->recorder);
-    ImGui::Text("Buffered: %llu events (%.2fs)", (unsigned long long)evCount, durSec);
+    ImGui::Text("Buffered: %llu events", (unsigned long long)evCount);
 
     /* Filename input */
     ImGui::InputText("Filename", data->recorderPath, sizeof(data->recorderPath));
 
     /* Save button */
     if (ImGui::Button("Save SMF")) {
-        bool ok = m4a_recorder_save_smf(data->recorder, data->recorderPath, 480, 120.0);
-        snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
-                 ok ? "Saved: %s" : "Failed: %s", data->recorderPath);
+        if (data->recorderTempoBpm <= 0.0) {
+            snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
+                     "Failed: host tempo required");
+#if !defined(_WIN32)
+        } else if (strchr(data->recorderPath, '\\')) {
+            snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
+                     "Failed: use / path separators");
+#endif
+        } else {
+            bool ok = m4a_recorder_save_smf(data->recorder, data->recorderPath, 96,
+                                            data->recorderTempoBpm);
+            snprintf(gui->recorderStatus, sizeof(gui->recorderStatus),
+                     ok ? "Saved: %s" : "Failed: %s", data->recorderPath);
+        }
     }
 
     if (gui->recorderStatus[0])

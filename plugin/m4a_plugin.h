@@ -66,6 +66,7 @@ typedef struct {
      * by the Clear button so they track the current buffer contents. */
     M4ARecorder *recorder;
     atomic_bool recorderArmed;
+    double      recorderTempoBpm;
     char        recorderPath[512];
     atomic_uint recorderSeenPC;
     atomic_uint recorderSeenVol;

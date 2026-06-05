@@ -307,6 +307,7 @@ endif()
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
     test/test_hw_mix.c
+    test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
     plugin/m4a_engine_recorder.cpp
     ${ENGINE_SOURCES}
