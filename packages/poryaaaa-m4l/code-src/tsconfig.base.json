@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "node16",
+        "moduleResolution": "node16",
+        "lib": ["es2020"],
+        "noEmit": true,
+        "strict": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "skipLibCheck": true,
+        "resolveJsonModule": true,
+        "paths": {
+            "midi-writer-js": ["../node_modules/midi-writer-js/build/types/main.d.ts"]
+        }
+    }
+}

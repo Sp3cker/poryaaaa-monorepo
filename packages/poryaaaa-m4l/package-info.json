@@ -1,0 +1,19 @@
+{
+    "author": "sallegrezza",
+    "description": "Max for Live devices for the poryaaaa GBA m4a sound engine and the ccomidi MIDI effect.",
+    "displayname": "poryaaaa-m4l",
+    "extends": "",
+    "extensible": 0,
+    "homepatcher": "",
+    "max_version_max": "none",
+    "max_version_min": "8.2.0",
+    "name": "poryaaaa-m4l",
+    "os": {
+        "macintosh": {
+            "platform": ["x64", "aarch64"],
+            "min_version": "10.13.x"
+        }
+    },
+    "tags": ["audio", "midi", "gba"],
+    "version": "0.1.0"
+}

@@ -1,0 +1,13 @@
+{
+    "extends": "./tsconfig.base.json",
+    "compilerOptions": {
+        "types": ["node"]
+    },
+    "include": [
+        "ccomidi_voicegroup_client.ts",
+        "poryaaaa_voicegroup_server.ts",
+        "poryaaaa-node/**/*.ts",
+        "scanner.ts",
+        "voice-slot-contract.ts"
+    ]
+}

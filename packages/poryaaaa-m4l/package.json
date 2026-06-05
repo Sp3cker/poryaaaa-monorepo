@@ -1,0 +1,40 @@
+{
+  "name": "poryaaaa-m4l",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript sources live in code-src/; esbuild bundles them to javascript/ for Max [v8] and [node.script].",
+  "engines": {
+    "node": ">=24.6.0"
+  },
+  "scripts": {
+    "build": "run-s build:js build:externals build:amxd install:max-package",
+    "build:js": "run-s build:v8 build:node",
+    "build:v8": "esbuild code-src/ccomidi_voices.ts code-src/ccomidi_recorder.ts --bundle --outdir=javascript --format=iife --platform=neutral --target=es2020 --log-level=warning",
+    "build:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --log-level=warning",
+    "build:externals": "cmake -G Xcode -B build -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON && cmake --build build --config  Release",
+    "build:amxd": "run-s build:amxd:poryaaaa build:amxd:ccomidi",
+    "build:amxd:voicegroups": "run-s build:amxd:poryaaaa build:amxd:ccomidi",
+    "build:amxd:poryaaaa": "scripts/.venv/bin/python scripts/gen_poryaaaa_amxd.py",
+    "build:amxd:ccomidi": "scripts/.venv/bin/python scripts/gen_ccomidi_amxd.py",
+    "install:max-package": "scripts/install_max_package.sh",
+    "probe:recorder-size": "tsx code-src/tools/recorder-midi-size-probe.ts",
+    "watch": "run-p watch:v8 watch:node",
+    "watch:v8": "esbuild code-src/ccomidi_voices.ts --bundle --outdir=javascript --format=iife --platform=neutral --target=es2020 --watch",
+    "watch:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --watch",
+    "check": "tsc -p code-src/tsconfig.v8.json --noEmit && tsc -p code-src/tsconfig.node.json --noEmit && tsc -p code-src/tsconfig.test.json --noEmit",
+    "test": "node --test-timeout=5000 --import tsx --test code-src/test/scanner.test.ts code-src/test/poryaaaa_node_voicegroup_parser.test.ts code-src/test/poryaaaa_node_project_store.test.ts code-src/test/poryaaaa_node_state.test.ts code-src/test/poryaaaa_node_websocket_state.test.ts code-src/test/ccomidi_voicegroup_client.test.ts code-src/test/ccomidi_voices.test.ts code-src/test/ccomidi_recorder.test.ts code-src/test/midi_writer_probe.test.ts code-src/test/recorder_smf_writer.test.ts"
+  },
+  "devDependencies": {
+    "@types/maxmsp": "^1.0.15",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.24.0",
+    "npm-run-all": "^4.1.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "midi-writer-js": "^3.2.1",
+    "ws": "^8.21.0"
+  }
+}

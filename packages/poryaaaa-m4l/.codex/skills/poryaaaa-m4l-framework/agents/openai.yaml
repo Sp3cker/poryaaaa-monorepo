@@ -1,0 +1,4 @@
+interface:
+  display_name: "poryaaaa-m4l Framework"
+  short_description: "Codex routing, specialists, and verification for poryaaaa Max for Live work"
+  default_prompt: "Use the poryaaaa-m4l framework to route this task"

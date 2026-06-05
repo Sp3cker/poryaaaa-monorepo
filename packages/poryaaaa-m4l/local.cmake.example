@@ -1,0 +1,18 @@
+# Per-machine source paths for the native externals.
+#
+# Copy this file to `local.cmake` (gitignored) and fill in absolute paths
+# to the poryaaaa engine and ccomidi repos as they live on your machine.
+# `local.cmake` is included by the top-level CMakeLists.txt before the
+# per-target subdirectories are added, so these values become the cache
+# defaults for PORYA_ROOT and CCO_ROOT.
+#
+# After editing local.cmake, blow away build/ (or pass -D overrides) so
+# the cache picks up the new values:
+#   rm -rf build && npm run build
+#
+# The poryaaaa~ external is expected to use the v2 audio path. `npm run build`
+# passes these explicitly so stale build caches cannot silently keep v1:
+#   -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON
+
+set(PORYA_ROOT "/absolute/path/to/poryaaaa"           CACHE PATH "" FORCE)
+set(CCO_ROOT   "/absolute/path/to/cProjects/ccomidi"  CACHE PATH "" FORCE)
