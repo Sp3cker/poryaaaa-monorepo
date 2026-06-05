@@ -8,8 +8,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(PUGL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pugl")
-set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/imgui")
+set(CCOMIDI_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(CCOMIDI_THIRD_PARTY_DIR "${CCOMIDI_MONOREPO_ROOT}/third_party")
+set(PUGL_DIR "${CCOMIDI_THIRD_PARTY_DIR}/pugl")
+set(IMGUI_DIR "${CCOMIDI_THIRD_PARTY_DIR}/imgui")
 
 function(ccomidi_enable_project_warnings target_name)
     if(MSVC)
@@ -40,10 +42,10 @@ endfunction()
 
 # ---- CLAP SDK ----
 # CLAP-only build. clap-wrapper / VST3 rigging was removed; this project
-# now ships exclusively as .clap. The vendored submodule under
+# now ships exclusively as .clap. The shared monorepo submodule under
 # third_party/clap provides the `clap` imported target consumed below.
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/clap)
+add_subdirectory("${CCOMIDI_THIRD_PARTY_DIR}/clap" "${CMAKE_CURRENT_BINARY_DIR}/third_party/clap")
 
 if(WIN32)
     set(PUGL_PLATFORM_SOURCES
@@ -80,6 +82,8 @@ set(IMGUI_SOURCES
 
 if(APPLE)
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_metal.mm
+        PROPERTIES COMPILE_OPTIONS -Wno-arc-bridge-casts-disallowed-in-nonarc)
 else()
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()

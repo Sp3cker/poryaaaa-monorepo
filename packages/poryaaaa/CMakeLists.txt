@@ -75,12 +75,15 @@ if(MSVC)
         PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")
 endif()
 
+set(PORYAAAA_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(PORYAAAA_THIRD_PARTY_DIR "${PORYAAAA_MONOREPO_ROOT}/third_party")
+
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(clap-sdk)
+add_subdirectory("${PORYAAAA_THIRD_PARTY_DIR}/clap" "${CMAKE_CURRENT_BINARY_DIR}/third_party/clap")
 
 # ---- Pugl ----
-set(PUGL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/pugl)
+set(PUGL_DIR "${PORYAAAA_THIRD_PARTY_DIR}/pugl")
 
 # Platform-specific Pugl sources
 if(WIN32)
@@ -110,7 +113,7 @@ set(PUGL_SOURCES
 )
 
 # ---- Dear ImGui ----
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
+set(IMGUI_DIR "${PORYAAAA_THIRD_PARTY_DIR}/imgui")
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp

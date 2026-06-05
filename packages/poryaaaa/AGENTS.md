@@ -41,8 +41,9 @@ Vendor trees and build outputs are large. Search narrowly — scope to `plugin/`
 
 Do not edit these unless the task explicitly requires it:
 
-- `clap-sdk/`
-- `imgui/`
+- `../../third_party/clap/`
+- `../../third_party/imgui/`
+- `../../third_party/pugl/`
 - `third_party/`
 - `build*/`
 
