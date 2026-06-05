@@ -1,6 +1,8 @@
 #ifndef VOICEGROUP_LOADER_H
 #define VOICEGROUP_LOADER_H
 
+#include <stddef.h>
+
 #include "voicegroup_types.h"
 
 #define VOICEGROUP_SIZE 128
@@ -76,6 +78,26 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
  * Free all resources associated with a loaded voicegroup.
  */
 void voicegroup_free(LoadedVoiceGroup *vg);
+
+/*
+ * Build the default path for a channel-extracted voicegroup:
+ *   <projectRoot>/sound/voicegroups/<voicegroupName>_channel.inc
+ */
+bool voicegroup_channel_export_default_path(const char *projectRoot,
+                                            const char *voicegroupName,
+                                            char *outPath,
+                                            size_t outPathSize);
+
+/*
+ * Re-read the current voicegroup source and write a new per-channel
+ * voicegroup. output slot N copies the source voice at programs[N].
+ * Missing source slots use a self-contained placeholder voice.
+ */
+bool voicegroup_export_channel_remap(const char *projectRoot,
+                                     const char *voicegroupName,
+                                     const VoicegroupLoaderConfig *config,
+                                     const uint8_t programs[12],
+                                     const char *outputPath);
 
 /*
  * Set an optional file path for diagnostic logging inside the voicegroup loader.

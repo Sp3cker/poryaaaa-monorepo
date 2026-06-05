@@ -1071,6 +1071,8 @@ static void plugin_log(const char *fmt, ...)
 
 /* ---- Timer support extension ---- */
 
+static void plugin_handle_extract_request(M4APluginData *data);
+
 static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
 {
     M4APluginData *data = (M4APluginData *)plugin->plugin_data;
@@ -1123,6 +1125,9 @@ static void timer_on_timer(const clap_plugin_t *plugin, clap_id timer_id)
 
     /* Render one GUI frame */
     m4a_gui_tick(data->gui);
+
+    if (m4a_gui_poll_extract_request(data->gui))
+        plugin_handle_extract_request(data);
 
     /* Handle voice restore requests from the voice editor */
     int restoreIdx;
@@ -1216,6 +1221,34 @@ static void gui_internal_timer_callback(void *user_data)
     look like a CLAP timer ID from the host
     looks like its arbitrarily 0...could be a bug in the future. */
     timer_on_timer((const clap_plugin_t *)user_data, 0);
+}
+
+static void plugin_handle_extract_request(M4APluginData *data)
+{
+    if (!data || !data->gui || !data->loadedVg)
+        return;
+
+    uint8_t programs[12];
+    for (int ch = 0; ch < 12; ch++)
+        programs[ch] = atomic_load(&data->programParams[ch]);
+
+    char outputPath[VG_MAX_PATH_LEN];
+    if (!voicegroup_channel_export_default_path(data->projectRoot,
+                                                data->voicegroupName,
+                                                outputPath,
+                                                sizeof(outputPath))) {
+        m4a_gui_set_extract_status(data->gui, "Failed: bad output path");
+        return;
+    }
+
+    bool ok = voicegroup_export_channel_remap(data->projectRoot,
+                                              data->voicegroupName,
+                                              &data->loaderConfig,
+                                              programs,
+                                              outputPath);
+    char status[256];
+    snprintf(status, sizeof(status), "%s: %s", ok ? "Saved" : "Failed", outputPath);
+    m4a_gui_set_extract_status(data->gui, status);
 }
 
 static bool gui_is_api_supported(const clap_plugin_t *plugin, const char *api, bool is_floating)
