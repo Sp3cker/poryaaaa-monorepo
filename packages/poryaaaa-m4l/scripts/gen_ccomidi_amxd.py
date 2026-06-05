@@ -593,8 +593,8 @@ def build_expression_controls_bpatcher(parent: Patcher):
     sync_recv = "r #1-sync"
 
     controls = [
-        ("Echo", "Echo", "Echo", [0, 32], 0, "Echo", "iecv $1", None),
-        ("Echo Vol", "Echo Volume", "EchoVol", [0, 32], 0, "EchoVolume", "iecl $1", None),
+        ("Echo Len", "Echo Length", "EchoLen", [0, 32], 0, "EchoLength", "iecl $1", None),
+        ("Echo Vol", "Echo Volume", "EchoVol", [0, 32], 0, "EchoVolume", "iecv $1", None),
         ("Bend Rng", "Bend Range", "BndRng", [0, 32], 0, "BendRange", "bend_range $1", None),
         ("Mod Type", "Mod Type", "ModTyp", [0, 2], 0, "ModType", "mod_type $1", None),
         ("Tune", "Tune", "Tune", [-64, 63], 0, "Tune", "tune $1", "expr $i1 + 64"),

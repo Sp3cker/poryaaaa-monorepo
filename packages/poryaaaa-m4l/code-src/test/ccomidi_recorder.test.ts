@@ -284,12 +284,48 @@ test("LOM snapshot: walks ccomidi devices and maps VIdx plus ccomidi shortname c
         { channel: 2, cc: 0x16, value: 2 },
         { channel: 2, cc: 0x18, value: 62 },
         { channel: 2, cc: 0x1E, value: 0x08 },
-        { channel: 2, cc: 0x1D, value: 22 },
-        { channel: 2, cc: 0x1E, value: 0x09 },
         { channel: 2, cc: 0x1D, value: 23 },
+        { channel: 2, cc: 0x1E, value: 0x09 },
+        { channel: 2, cc: 0x1D, value: 22 },
         { channel: 2, cc: 0x21, value: 21 },
         { channel: 5, cc: 0x07, value: 70 },
         { channel: 5, cc: 0x0A, value: 64 },
+    ]);
+});
+
+test("LOM snapshot: maps echo volume and length to the matching XCMD selectors", () => {
+    const nodes: Record<string, LomNode> = {
+        "live_set": {
+            children: {
+                tracks: ["live_set tracks 0"],
+            },
+        },
+        "live_set tracks 0": {
+            props: {
+                output_routing_channel: { display_name: "1", identifier: "1" },
+            },
+            children: {
+                devices: ["live_set tracks 0 devices 0"],
+            },
+        },
+    };
+    addDevice(nodes, "live_set tracks 0 devices 0", { name: "ccomidi" }, [
+        ["VIdx", 12],
+        ["Vol", 64],
+        ["Pan", 64],
+        ["EchoVol", 22],
+        ["EchoLen", 23],
+    ]);
+
+    const snap = collectCcomidiStateViaLom(makeLiveApiFactory(nodes));
+
+    assert.deepEqual(snap.initialCcs, [
+        { channel: 0, cc: 0x07, value: 64 },
+        { channel: 0, cc: 0x0A, value: 64 },
+        { channel: 0, cc: 0x1E, value: 0x08 },
+        { channel: 0, cc: 0x1D, value: 22 },
+        { channel: 0, cc: 0x1E, value: 0x09 },
+        { channel: 0, cc: 0x1D, value: 23 },
     ]);
 });
 

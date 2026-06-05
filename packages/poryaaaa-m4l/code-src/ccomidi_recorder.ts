@@ -544,8 +544,8 @@ function ccomidiDeviceState(params: Map<string, number>, channel: number): { pro
     pushOptionalCc(ccs, channel, 0x16, findParam(params, "ModTyp"));
     const tuneSigned = clampInt(findParam(params, "Tune"), -64, 63);
     if (tuneSigned !== null && tuneSigned !== 0) pushCc(ccs, channel, 0x18, tuneSigned + 64);
-    pushOptionalXcmd(ccs, channel, 0x08, findParam(params, "Echo"));
-    pushOptionalXcmd(ccs, channel, 0x09, findParam(params, "EchoVol"));
+    pushOptionalXcmd(ccs, channel, 0x08, findParam(params, "EchoVol"));
+    pushOptionalXcmd(ccs, channel, 0x09,  findParam(params, "Echo"));
 
     const priority21 = clampInt(findParam(params, "P21"), 0, 1) ?? 0;
     const priority27 = clampInt(findParam(params, "P27"), 0, 1) ?? 0;
