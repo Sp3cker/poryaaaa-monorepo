@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CCOMIDI_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(CCOMIDI_THIRD_PARTY_DIR "${CCOMIDI_MONOREPO_ROOT}/third_party")
+set(CCOMIDI_SHARED_GUI_DIR "${CCOMIDI_MONOREPO_ROOT}/shared/gui/pugl")
 set(PUGL_DIR "${CCOMIDI_THIRD_PARTY_DIR}/pugl")
 set(IMGUI_DIR "${CCOMIDI_THIRD_PARTY_DIR}/imgui")
 
@@ -57,7 +58,7 @@ elseif(APPLE)
     set(PUGL_PLATFORM_SOURCES
         ${PUGL_DIR}/src/mac.m
         ${PUGL_DIR}/src/mac_stub.m
-        src/gui/metal/pugl_mac_metal.m
+        ${CCOMIDI_SHARED_GUI_DIR}/pugl_mac_metal.m
     )
 else()
     set(PUGL_PLATFORM_SOURCES
@@ -132,6 +133,7 @@ add_library(ccomidi_gui STATIC
 
 target_include_directories(ccomidi_gui PUBLIC
     src
+    ${CCOMIDI_SHARED_GUI_DIR}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include

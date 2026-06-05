@@ -10,7 +10,7 @@
 #include <pugl/pugl.h>
 
 #ifdef __APPLE__
-#include "metal/pugl_mac_metal.h"
+#include "pugl_mac_metal.h"
 #include "imgui_impl_metal.h"
 #else
 #include <pugl/gl.h>

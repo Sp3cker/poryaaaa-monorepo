@@ -4,7 +4,7 @@
 #include <string>
 
 #ifdef __APPLE__
-#include "gui/metal/pugl_mac_metal.h"
+#include "pugl_mac_metal.h"
 #include "imgui_impl_metal.h"
 #else
 #include "backends/imgui_impl_opengl3.h"

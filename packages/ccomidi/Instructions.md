@@ -1,6 +1,6 @@
 - Refer to Agents.md for your approach. Your work is influenced strongly by Agents.md.
 - Build a CLAP plugin for buffering MIDI notes, including Pitch Bend commands and CC events, preserving target MIDI channels, into an in-memory buffer. Upon user command, the buffer will be written to a specified file as a MIDI type 1 file.
-- The plugin will use Pugl with a Metal backend available in this repo `src/gui/metal`.
+- The plugin will use Pugl with the shared Metal backend in `../../shared/gui/pugl`.
 - The plugin will use Imgui with Pugl, implentation available at `src/gui/imgui_impl_pugl.cpp`
 - The plugin will be a seperate target of the plugin in this repo. Share as much code as possible.
 - If the in-memory buffer exceeds over 500 lines of code to implement, a 3rd party library MUST be used. All work will stop at this stage of implentation to choose a library to use.

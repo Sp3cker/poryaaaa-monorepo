@@ -77,6 +77,7 @@ endif()
 
 set(PORYAAAA_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(PORYAAAA_THIRD_PARTY_DIR "${PORYAAAA_MONOREPO_ROOT}/third_party")
+set(PORYAAAA_SHARED_GUI_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/gui/pugl")
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -96,7 +97,7 @@ elseif(APPLE)
     set(PUGL_PLATFORM_SOURCES
         ${PUGL_DIR}/src/mac.m
         ${PUGL_DIR}/src/mac_stub.m
-        plugin/metal/pugl_mac_metal.m
+        ${PORYAAAA_SHARED_GUI_DIR}/pugl_mac_metal.m
     )
 else()
     set(PUGL_PLATFORM_SOURCES
@@ -194,6 +195,7 @@ poryaaaa_enable_project_source_warnings(
 
 target_include_directories(poryaaaa PRIVATE
     plugin
+    ${PORYAAAA_SHARED_GUI_DIR}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
