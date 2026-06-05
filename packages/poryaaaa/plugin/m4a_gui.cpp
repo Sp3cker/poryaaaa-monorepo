@@ -18,12 +18,15 @@
 #endif
 
 #include "imgui.h"
+#include "imfilebrowser.h"
 #include "imgui_impl_pugl.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <filesystem>
 #include <span>
+#include <string>
 
 #if defined(__clang__)
 #define GUI_LOG_DISABLE_FORMAT_NONLITERAL \
@@ -46,6 +49,59 @@
     Bitwig does not give the plugin a timer, 
     so we use a timer from Pugl to drive GUI updates */
 static const uintptr_t RENDER_TIMER_ID = 1;
+
+static bool copy_path_utf8(char *dst, size_t dstSize, const std::filesystem::path &path)
+{
+    if (!dst || dstSize == 0)
+        return false;
+
+    auto utf8 = path.u8string();
+#if defined(__cpp_char8_t)
+    const char *text = reinterpret_cast<const char *>(utf8.c_str());
+#else
+    const char *text = utf8.c_str();
+#endif
+    if (strlen(text) >= dstSize)
+        return false;
+
+    snprintf(dst, dstSize, "%s", text);
+    return true;
+}
+
+static bool open_project_root_browser(ImGui::FileBrowser &browser, const char *path)
+{
+    try {
+        if (path && path[0])
+            browser.SetDirectory(path);
+        browser.Open();
+        return true;
+    } catch (const std::exception &) {
+        return false;
+    }
+}
+
+static void display_project_root_browser(ImGui::FileBrowser &browser)
+{
+    try {
+        browser.Display();
+    } catch (const std::exception &) {
+        browser.Close();
+    }
+}
+
+static bool project_root_button(const char *label, const ImVec2 &size)
+{
+    bool pressed = ImGui::Button("##projectRootButton", size);
+    ImVec2 min = ImGui::GetItemRectMin();
+    ImVec2 max = ImGui::GetItemRectMax();
+    ImGui::PushClipRect(min, max, true);
+    ImVec2 textSize = ImGui::CalcTextSize(label);
+    ImVec2 textPos(min.x + ImGui::GetStyle().FramePadding.x,
+                   min.y + (max.y - min.y - textSize.y) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), label);
+    ImGui::PopClipRect();
+    return pressed;
+}
 
 /* ---- Debug logging ---- */
 static const char *s_logPath = nullptr;
@@ -105,6 +161,14 @@ struct M4AGuiState {
     /* Editable text buffers (not applied until "Reload" is clicked) */
     char projectRootBuf[512];
     char voicegroupBuf[256];
+    ImGui::FileBrowser projectRootBrowser{
+        ImGuiFileBrowserFlags_SelectDirectory |
+        ImGuiFileBrowserFlags_HideRegularFiles |
+        ImGuiFileBrowserFlags_EditPathString |
+        ImGuiFileBrowserFlags_CloseOnEsc |
+        ImGuiFileBrowserFlags_SkipItemsCausingError,
+        "."
+    };
 
     /* Pending change flags (cleared by poll_changes) */
     bool settingsChanged;
@@ -281,8 +345,22 @@ static void render_general_tab(M4AGuiState *gui)
     ImGui::AlignTextToFramePadding();
     ImGui::Text("Project Root:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##root", gui->projectRootBuf, sizeof(gui->projectRootBuf));
+    const char *rootLabel = gui->projectRootBuf[0] ? gui->projectRootBuf : "Choose Project Root";
+    if (project_root_button(rootLabel, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+        open_project_root_browser(gui->projectRootBrowser, gui->projectRootBuf);
+    display_project_root_browser(gui->projectRootBrowser);
+    if (gui->projectRootBrowser.HasSelected()) {
+        if (copy_path_utf8(gui->projectRootBuf, sizeof(gui->projectRootBuf),
+                           gui->projectRootBrowser.GetSelected())) {
+            snprintf(gui->settings.projectRoot, sizeof(gui->settings.projectRoot),
+                     "%s", gui->projectRootBuf);
+            snprintf(gui->settings.voicegroupName, sizeof(gui->settings.voicegroupName),
+                     "%s", gui->voicegroupBuf);
+            gui->settingsChanged = true;
+            gui->reloadRequested = true;
+        }
+        gui->projectRootBrowser.ClearSelected();
+    }
 
     ImGui::AlignTextToFramePadding();
     ImGui::Text("Voicegroup:  ");
@@ -815,6 +893,8 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
     gui->cachedHeight = (uint32_t)GUI_H;
     gui->selectedVoice       = 0;
     gui->pendingRestoreVoice = -1;
+    gui->projectRootBrowser.SetTitle("Choose Project Root");
+    gui->projectRootBrowser.SetWindowSize(700, 450);
 
     if (initial) {
         gui->settings = *initial;

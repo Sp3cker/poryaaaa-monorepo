@@ -78,6 +78,7 @@ endif()
 set(PORYAAAA_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(PORYAAAA_THIRD_PARTY_DIR "${PORYAAAA_MONOREPO_ROOT}/third_party")
 set(PORYAAAA_SHARED_GUI_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/gui/pugl")
+set(PORYAAAA_FILEBROWSER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui-filebrowser")
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -120,7 +121,7 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
-    plugin/imgui_impl_pugl.cpp
+    ${PORYAAAA_SHARED_GUI_DIR}/imgui_impl_pugl.cpp
 )
 if(APPLE)
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
@@ -200,6 +201,9 @@ target_include_directories(poryaaaa PRIVATE
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
     ${PUGL_DIR}/src
+)
+target_include_directories(poryaaaa SYSTEM PRIVATE
+    ${PORYAAAA_FILEBROWSER_DIR}
 )
 
 # Build Pugl as a static library (not a DLL) on all platforms

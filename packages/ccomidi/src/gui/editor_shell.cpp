@@ -16,7 +16,7 @@
 
 #include "imgui.h"
 
-#include "gui/imgui_impl_pugl.h"
+#include "imgui_impl_pugl.h"
 
 namespace ccomidi {
 

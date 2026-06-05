@@ -10,6 +10,8 @@
 #include <string>
 #include <string.h>
 #include <float.h>
+#include <stddef.h>
+#include <stdint.h>
 
 struct ImGui_ImplPugl_Data {
     PuglView*   View;

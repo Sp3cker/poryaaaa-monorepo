@@ -127,7 +127,7 @@ target_link_libraries(ccomidi_core_tests PRIVATE
 add_library(ccomidi_gui STATIC
     ${PUGL_SOURCES}
     ${IMGUI_SOURCES}
-    src/gui/imgui_impl_pugl.cpp
+    ${CCOMIDI_SHARED_GUI_DIR}/imgui_impl_pugl.cpp
     src/gui/editor_shell.cpp
 )
 

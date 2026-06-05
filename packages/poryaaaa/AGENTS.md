@@ -30,7 +30,7 @@ Start in these paths unless the task clearly points elsewhere:
 - Voicegroup and sample discovery: `plugin/voicegroup_loader.c`, `plugin/voicegroup_loader.h`
 - CLAP plugin behavior and state: `plugin/m4a_plugin.c`, `plugin/m4a_plugin.h`
 - Parameters: `plugin/m4a_params.c`, `plugin/m4a_params.h`
-- GUI: `plugin/m4a_gui.cpp`, `plugin/m4a_gui.h`, `plugin/imgui_impl_pugl.cpp`, `plugin/imgui_impl_pugl.h`
+- GUI: `plugin/m4a_gui.cpp`, `plugin/m4a_gui.h`, shared ImGui/Pugl backend in `../../shared/gui/pugl/`
 - CLI renderer: `cmd/poryaaaa_render.c`
 - Tests: `test/test_engine.c`, `test/test_wav_export.c`
 - Build changes only when necessary: `CMakeLists.txt`
