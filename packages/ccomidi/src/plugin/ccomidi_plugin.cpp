@@ -287,7 +287,7 @@ void describe_param(const Plugin *plugin, clap_id id, clap_param_info_t *info) {
     std::snprintf(info->name, sizeof(info->name), "Output Channel");
     std::snprintf(info->module, sizeof(info->module), "Global");
     info->min_value = 0.0;
-    info->max_value = 15.0;
+    info->max_value = static_cast<double>(kMaxSelectableOutputChannelIndex);
     info->default_value = 0.0;
     return;
   }
@@ -386,8 +386,8 @@ void describe_param(const Plugin *plugin, clap_id id, clap_param_info_t *info) {
 std::uint8_t quantize_channel(double value) {
   if (value <= 0.0)
     return 0;
-  if (value >= 15.0)
-    return 15;
+  if (value >= static_cast<double>(kMaxSelectableOutputChannelIndex))
+    return kMaxSelectableOutputChannelIndex;
   return static_cast<std::uint8_t>(std::floor(value));
 }
 
@@ -1138,7 +1138,8 @@ bool params_text_to_value(const clap_plugin_t *plugin, clap_id paramId,
     const double parsed = std::strtod(display, &end);
     if (end == display)
       return false;
-    *value = std::clamp(parsed - 1.0, 0.0, 15.0);
+    *value = std::clamp(parsed - 1.0, 0.0,
+                        static_cast<double>(kMaxSelectableOutputChannelIndex));
     return true;
   }
 
@@ -1381,7 +1382,8 @@ bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream) {
       }
     } else {
       const std::size_t selectedChannel = quantize_channel(outputChannel);
-      for (std::size_t channel = 0; channel < kMidiChannelCount; ++channel) {
+      for (std::size_t channel = 0; channel < kLegacyStateMidiChannelCount;
+           ++channel) {
         for (std::size_t row = 0; row < kMaxCommandRows; ++row) {
           double values[6] = {};
           if (!read_row_state(stream, values))

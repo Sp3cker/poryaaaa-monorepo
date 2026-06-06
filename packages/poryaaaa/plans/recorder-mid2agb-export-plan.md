@@ -1,223 +1,169 @@
 # Recorder mid2agb Export Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Goal:** Make recorder exports from `poryaaaa` and `poryaaaa-m4l` reliably
+produce compact, mid2agb-friendly SMF files, with final MIDI byte generation
+owned by the shared C++ recorder/writer.
 
-**Goal:** Make poryaaaa recorder exports reliably produce compact, mid2agb-friendly SMF files.
+**Current architecture:** `packages/poryaaaa/plugin/recorder/` is the shared
+recorder and SMF writer module. `poryaaaa` already records beat-stamped events
+from the CLAP adapter and writes SMF bytes in C++. `poryaaaa-m4l` still uses its
+wrapper-local recorder buffer plus TypeScript SMF writer, and that current M4L
+output remains the migration oracle until parity tests prove otherwise.
 
-**Architecture:** Make poryaaaa's `plugin/recorder/` module the shared recorder and SMF writer implementation for both CLAP and poryaaaa-m4l. Borrow the good export properties from poryaaaa-m4l: beat-relative export, 96 PPQ, stable per-channel sorting, event coalescing, and explicit mid2agb validation. Treat poryaaaa-m4l's recorder/export path as the better current reference, but not as a complete correctness oracle.
+**Tech stack:** C++23 recorder code under `packages/poryaaaa/plugin/recorder/`,
+C CLAP adapter code under `packages/poryaaaa/plugin/m4a_plugin.c`, poryaaaa
+unit tests under `packages/poryaaaa/test/`, TypeScript M4L save/export adapter
+code under `packages/poryaaaa-m4l/code-src/`, and local mid2agb validation from
+the `packages/ccomidi/mid2agb` source/tool when available.
 
-**Tech Stack:** C++23 recorder code under `plugin/recorder/`, C CLAP integration under `plugin/m4a_plugin.c`, SMF validation via local `../ccomidi/mid2agb`, and poryaaaa unit tests under `test/`.
+## Current State
 
----
+### Completed in poryaaaa
 
-## Current Answer
+- `RecorderCore` stores beat-stamped MIDI events as `MidiRecord { beats, status, data1, data2 }`.
+- `m4a_recorder_push_beats()` exposes a C API for CLAP/plugin code to push beat-stamped events.
+- `plugin/m4a_plugin.c` has a CLAP-side `RecorderBeatMapper` that reads block-start `process->transport`, handles mid-block `CLAP_EVENT_TRANSPORT`, and maps event frame positions to beat positions.
+- Recorder capture is gated by `recorderArmed` and currently records only when host beat timing is available.
+- `m4a_recorder_save_smf()` writes through the shared C++ `write_smf1()` path.
+- `plugin/m4a_gui.cpp` saves recorder SMFs with `ppq = 96`.
+- `smf_writer.cpp` anchors export time at the floored first real Note On beat.
+- Note events round to the nearest 96 PPQ tick.
+- Controller/program/pitch-style events use the backward coarse-grid path, coalesce latest values per same-tick cell, and preserve GBA extended-command CC bytes `0x1D`, `0x1E`, and `0x1F`.
+- Music-track events are collected into pending per-channel descriptors and stable-sorted before writing, instead of depending on unsafe whole-track MidiFile sorting.
+- `test/test_recorder_core.cpp` covers beat recording, bridge push counting, POSIX path rejection, coarse-grid/coalescing behavior, XCMD preservation, and note tick normalization.
 
-Yes: poryaaaa-m4l's recorder/export path is better for mid2agb than poryaaaa's current recorder.
+### Still true in poryaaaa
 
-The important distinction is that poryaaaa-m4l's C++ recorder is only the capture buffer. Its TypeScript SMF writer owns ticks, tempo, loop markers, state replay, validation, and final MIDI bytes. That split currently gives poryaaaa-m4l the better mid2agb-facing behavior.
+- `SmfWriteOptions` only carries `ppq` and `tempoBpm`; it does not yet model time signature, export range, loop markers, ccomidi initial state, or an explicit anchor mode.
+- The default 96 PPQ value is passed from GUI/bridge call sites rather than named as a shared recorder constant.
+- Hosts that do not provide a beat timeline can still drive the engine, but the recorder does not stamp or export those events today.
+- Tempo automation is not a full recorder export feature. Beat-stamped event timing is independent of tempo, and tempo is currently conductor metadata for export.
+- Held-note tracking still uses one held note per channel/pitch key, so overlapping same-pitch notes on one channel are not represented as separate lifetimes.
+- There is no dedicated mid2agb round-trip validation target yet.
 
-## Shared Code Direction
+### Still true in poryaaaa-m4l
 
-The long-term goal is to share the recorder buffer and writer policy between poryaaaa and poryaaaa-m4l, with final SMF byte generation in C++ rather than TypeScript.
+- `code-src/recorder_smf_writer.ts` remains the current production SMF byte writer.
+- The M4L external receives raw MIDI bytes plus a latched `beats <float>` value from `[plugsync~]`.
+- The TypeScript writer uses `PPQ = 96`, beat-relative timing, export range anchoring, state replay, loop-marker support when explicit marker fields are supplied, and writer-specific M4L tick compensation.
+- `code-src/ccomidi_recorder.ts` remains the Live API/save adapter. It collects export range, output path, ccomidi voicemap, initial CC state, status reporting, and the dumped PRBY buffer.
+- Several recorder-focused TypeScript tests exist but are not all included in the default `npm test` command.
+- Wrapper-local recorder C++ under `source/audio/poryaaaa~/recorder/` still shadows the shared poryaaaa recorder module.
 
-poryaaaa should own the shared C++ recorder module under `plugin/recorder/`. poryaaaa-m4l should stop shadowing that recorder with wrapper-local C++ once the shared module supports beat-stamped capture and the M4L export behavior has been ported.
+## Migration Rule
 
-Each host should only provide a timing adapter:
+Treat current M4L output as the oracle for M4L migration. The first safe
+migration check is:
 
-- M4L source: `[plugsync~]` outlet 6 sends `beats <float>` into `poryaaaa~`; captured events use the latest latched beat value.
-- CLAP source: when `process->transport` has `CLAP_TRANSPORT_HAS_BEATS_TIMELINE`, use `song_pos_beats` as the block-start beat position.
-- CLAP event conversion: `event_beats = block_start_beats + sample_in_block * tempo / (60.0 * sample_rate)`.
-- CLAP fallback: if the host does not provide beats, keep the current sample-time plus tempo path.
+1. Capture or construct one PRBY/event fixture.
+2. Write SMF bytes with `packages/poryaaaa-m4l/code-src/recorder_smf_writer.ts`.
+3. Write SMF bytes with the shared C++ writer from the same beat-stamped events and save-time metadata.
+4. Compare parsed SMF structure and timing, not raw bytes unless the writer implementation is expected to be byte-identical.
 
-Recommended sharing path:
-
-1. Share the buffer/time model first by adding optional beat stamps to poryaaaa's recorder events.
-2. Port poryaaaa-m4l's proven SMF writer policy into poryaaaa's C++ writer.
-3. Teach the poryaaaa-m4l external to link/include the shared recorder writer and expose a save/write surface that accepts the save-time metadata it currently gets from TypeScript.
-4. Retire poryaaaa-m4l's TypeScript SMF writer only after poryaaaa's C++ writer matches the current M4L behavior under tests.
-5. Keep any remaining poryaaaa-m4l JavaScript as a temporary Live adapter for API queries, filename/range/marker UI, ccomidi state collection, and status reporting. Removing that recorder JS entirely is a separate step: the Max patch or external needs another way to provide the same save metadata and ccomidi initial state.
-
-## Evidence
-
-### Why poryaaaa-m4l is better today
-
-- `poryaaaa-m4l/code-src/recorder_smf_writer.ts` writes on a fixed `PPQ = 96` grid and writes the SMF header with the same `ticksPerBeat`.
-- Captured events are beat-stamped, then converted with `Math.round((beats - anchor) * PPQ)`, so export timing is song/grid-oriented instead of host-sample-duration-oriented.
-- The writer can rebase tick 0 to an explicit export range or to the first real note, which avoids large empty lead-in regions.
-- It does stable per-channel sorting before byte emission.
-- It coalesces same-tick CC/PC noise and preserves ordered GBA extended-command CC pairs.
-- It flushes held notes and can replay PC/CC state at loop boundaries.
-- It already has focused TypeScript tests for SMF tick placement, save flow, CC dedupe, PRBY parsing, and writer quirks.
-
-### Why poryaaaa is worse today
-
-- `plugin/m4a_gui.cpp` saves with `ppq = 480`, not 96.
-- `plugin/recorder/smf_writer.cpp` converts raw sample time to ticks using seconds, BPM, and PPQ, with no mid2agb-specific grid quantization.
-- `plugin/m4a_plugin.c` advances the recorder sample clock every block, even when recording is disarmed, so disarmed time becomes exported empty MIDI time.
-- Host tempo is sampled every process block and deduped only by exact double equality in recorder state.
-- Tempo events and MIDI events are converted using the current BPM at each event rather than integrating elapsed ticks across a tempo map.
-- Music tracks are intentionally not sorted because the current dependency's sorter corrupts GBA extended-command CC ordering.
-- Held notes are tracked with a set keyed by channel and pitch, so overlapping same-pitch notes on one channel are not represented as separate note lifetimes.
-
-### Why poryaaaa-m4l is not perfect
-
-- `poryaaaa-m4l/package.json` omits several recorder tests from the default `npm test` script.
-- `poryaaaa-m4l/source/audio/poryaaaa~/recorder/export_capture_tests.cpp` accepts non-monotonic beat snapshots; the JS writer later sorts events, but first-note anchor selection still uses event order.
-- Tempo automation is explicitly unsupported in poryaaaa-m4l's SMF writer v0.
-- Live loop state is ignored for SMF loop markers unless explicit marker fields are supplied.
-- `midi_buffer.h` has a stale PRBY magic-byte comment, although implementation and JS parsing use the correct ASCII bytes.
+Any M4L-specific one-tick compensation belongs in the M4L adapter/export bridge,
+not in `RecorderCore` or generic `smf_writer.cpp`.
 
 ## mid2agb Constraint
 
-The local mid2agb source at `../ccomidi/mid2agb` scales MIDI ticks like this:
+The local mid2agb source scales MIDI ticks like this:
 
 - event time: `(24 * g_clocksPerBeat * event.time) / g_midiTimeDiv`
 - note duration: `(24 * g_clocksPerBeat * event.param2) / g_midiTimeDiv`
 - default `g_clocksPerBeat = 1`, so the default target is 24 clocks per quarter note
 - `-X` changes this to 48 clocks per quarter note
 
-For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durations should land on multiples of 4 MIDI ticks to avoid integer truncation. A 96 PPQ export is still the right base because it matches poryaaaa-m4l and Live display expectations, but poryaaaa should add an explicit "mid2agb grid" quantization policy instead of merely changing the header.
+For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and
+durations should land on multiples of 4 MIDI ticks to avoid integer truncation.
+The shared writer already uses a 4-tick coarse grid for controller/program/pitch
+state events. Remaining work is to explicitly test note starts/durations against
+mid2agb scaling and decide whether note durations should also be quantized to a
+mid2agb grid.
 
 ## File Responsibilities
 
-- `plugin/recorder/smf_writer.cpp`: SMF tick conversion, sorting, state replay, event coalescing, and held-note flush.
-- `plugin/recorder/smf_writer.h`: options for PPQ, quantization mode, and export anchoring.
-- `plugin/recorder/recorder_core.cpp`: captured recorder state, sample clock, tempo dedupe, and snapshot shape.
-- `plugin/recorder/recorder_core.h`: snapshot/options API exposed to GUI and plugin code.
-- `plugin/m4a_engine_recorder.cpp` and `plugin/m4a_engine_recorder.h`: C API bridge from CLAP/engine code into the C++ recorder.
-- `plugin/m4a_gui.cpp`: Save SMF UI options and status text.
-- `plugin/m4a_plugin.c`: process-time recorder advancement, CLAP beat timeline capture, and transport tempo/loop capture.
-- `test/test_recorder_mid2agb.cpp` or an equivalent focused test file: recorder SMF structural tests and mid2agb conversion regression tests.
-- `CMakeLists.txt`: register the focused recorder test target if a new test file is added.
-- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`: stop shadowing poryaaaa's recorder C++ and link or include the shared module instead.
-- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`: expose recorder save/write commands from the external once the shared C++ writer is ready.
-- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`: temporary Live API/save adapter; stop owning final SMF writer policy after the shared C++ writer catches up.
-- `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`: current behavior reference and eventual deletion/retirement target.
+- `packages/poryaaaa/plugin/recorder/recorder_core.{h,cpp}`: host-neutral beat-stamped capture buffer and snapshot shape.
+- `packages/poryaaaa/plugin/recorder/smf_writer.{h,cpp}`: SMF tick conversion, per-channel ordering, state coalescing, held-note flush, and future export metadata.
+- `packages/poryaaaa/plugin/m4a_engine_recorder.{h,cpp}`: C bridge from plugin/GUI code into the C++ recorder and writer.
+- `packages/poryaaaa/plugin/m4a_plugin.c`: CLAP timing adapter, recorder gating, MIDI/CLAP event conversion, and host tempo handling.
+- `packages/poryaaaa/plugin/m4a_gui.cpp`: recorder tab UI and save call.
+- `packages/poryaaaa/test/test_recorder_core.cpp`: current focused recorder and SMF writer tests.
+- `packages/poryaaaa/CMakeLists.txt`: recorder target and test target wiring.
+- `packages/poryaaaa-m4l/code-src/recorder_smf_writer.ts`: current M4L writer oracle and eventual retirement target.
+- `packages/poryaaaa-m4l/code-src/ccomidi_recorder.ts`: temporary Live API/save adapter and future caller of the shared writer surface.
+- `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`: M4L external surface for future shared-writer save/write commands.
+- `packages/poryaaaa-m4l/source/audio/poryaaaa~/recorder/`: wrapper-local recorder buffer implementation to retire after parity.
 
-## Task 1: Lock In mid2agb Export Tests
+## Task 1: Update And Preserve poryaaaa Recorder Baseline
 
 **Files:**
-- Create: `test/test_recorder_mid2agb.cpp`
-- Modify: `CMakeLists.txt`
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.h`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
+- Modify only if needed: `packages/poryaaaa/plugin/m4a_gui.cpp`
 
-- [ ] Add a test helper that writes a short recorder snapshot to a temporary `.mid`.
-- [ ] Parse the generated SMF header and assert `ticksPerBeat == 96`.
+- [x] Store beat-stamped events in `RecorderCore`.
+- [x] Add C bridge support for beat-stamped pushes.
+- [x] Use CLAP transport beat timing in the plugin adapter.
+- [x] Save recorder SMFs at 96 PPQ from the GUI.
+- [x] Add tests for beat capture, note tick rounding, coarse-grid controller behavior, coalescing, and XCMD preservation.
+- [ ] Add a named shared constant such as `kDefaultRecorderPpq = 96` and use it from GUI/bridge call sites.
+- [ ] Add a test that reads the generated SMF header and asserts `ticksPerBeat == 96`.
+- [ ] Add a test that documents current behavior for hosts without CLAP beat timeline: no recorder events are stamped/exported.
+- [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
+- [ ] Run `./build/poryaaaa_unit_tests`.
+
+## Task 2: Lock In mid2agb-Facing Writer Tests
+
+**Files:**
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
+- Create if the test grows too large: `packages/poryaaaa/test/test_recorder_mid2agb.cpp`
+- Modify if a new test target is created: `packages/poryaaaa/CMakeLists.txt`
+
+- [x] Test dense CC/PC coalescing while preserving ordered GBA extended-command CCs.
+- [x] Test near-grid note events rounding to the expected 96 PPQ ticks.
 - [ ] Add a one-note test at beat 0 with a one-quarter duration and assert all emitted music-track deltas are non-negative.
-- [ ] Add a quantization test where near-grid events snap to the expected 96 PPQ tick values.
-- [ ] Add a mid2agb scaling test that validates exported note starts and durations land on multiples of 4 MIDI ticks for default 24-clock mid2agb mode.
-- [ ] Add a dense CC/PC test that proves repeated same-tick state events are coalesced except for ordered GBA extended-command CC pairs `0x1E` then `0x1D`.
+- [ ] Add a mid2agb scaling test that validates exported note starts and durations land on multiples of 4 MIDI ticks for default 24-clock mid2agb mode, or explicitly documents why notes keep finer 96 PPQ placement.
 - [ ] Add a same-pitch overlap test that documents the current failure or expected new behavior before changing held-note tracking.
-- [ ] Register the test target in `CMakeLists.txt`.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
-- [ ] Run `./build/poryaaaa_unit_tests`.
-- [ ] Run the new recorder test target directly.
-
-## Task 2: Add Beat-Stamps To The Shared Recorder Model
-
-**Files:**
-- Modify: `plugin/recorder/recorder_core.h`
-- Modify: `plugin/recorder/recorder_core.cpp`
-- Modify: `plugin/m4a_engine_recorder.h`
-- Modify: `plugin/m4a_engine_recorder.cpp`
-- Modify: `plugin/m4a_plugin.c`
-- Modify: `test/test_recorder_mid2agb.cpp`
-
-- [ ] Extend the recorder event model so each MIDI event can carry either a host beat stamp or the current sample-time stamp.
-- [ ] Add a C API entry point that can push a MIDI event with a precomputed beat stamp.
-- [ ] In `plugin/m4a_plugin.c`, read `CLAP_TRANSPORT_HAS_BEATS_TIMELINE` and convert `song_pos_beats` from CLAP fixed point into double beats.
-- [ ] Compute per-event beat positions with `event_beats = block_start_beats + sample_in_block * tempo / (60.0 * sample_rate)` when both beats and tempo are available.
-- [ ] Preserve the sample-time path when the CLAP host does not provide a beat timeline.
-- [ ] Prefer `loop_start_beats` and `loop_end_beats` for recorder loop metadata when the CLAP host provides beat timeline loop data; fall back to the existing seconds loop path otherwise.
-- [ ] Add tests proving beat-stamped events round to expected 96 PPQ ticks without depending on sample rate.
-- [ ] Add tests proving the sample-time fallback still works when no host beat timeline is present.
+- [ ] If a new target is created, register it in `CMakeLists.txt`; otherwise keep these under `poryaaaa_unit_tests`.
 - [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
 - [ ] Run `./build/poryaaaa_unit_tests`.
 
-## Task 3: Switch poryaaaa SMF Exports To 96 PPQ
+## Task 3: Finish Shared Writer Export Metadata
 
 **Files:**
-- Modify: `plugin/m4a_gui.cpp`
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `plugin/recorder/smf_writer.h`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.h`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
 
-- [ ] Change the default save PPQ from 480 to 96.
-- [ ] Add a named default constant such as `kDefaultRecorderPpq = 96` in the recorder API instead of repeating the literal in GUI code.
-- [ ] Keep `SmfWriteOptions.ppq` for tests and future compatibility, but clamp invalid values to the default constant.
-- [ ] Re-run the header test and verify it fails before the implementation and passes after the implementation.
+- [ ] Extend `SmfWriteOptions` with the metadata M4L currently supplies to `buildSmf()`: time signature, export range, explicit loop markers, ccomidi initial PC/CC state, anchor mode, and any M4L tick-compensation mode.
+- [ ] Keep the default poryaaaa/CLAP path minimal: 96 PPQ, one tempo, no range unless requested.
+- [ ] Add an explicit anchor-mode option for current first-note anchoring versus explicit export-range anchoring.
+- [ ] Preserve pre-anchor PC/CC state by clamping it to tick 0 when using first-note or explicit-range anchoring.
+- [ ] Add tests for pre-note PC/CC setup at tick 0 and for long silent lead-in not generating a huge export.
 - [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
 - [ ] Run `./build/poryaaaa_unit_tests`.
 
-## Task 4: Add mid2agb Grid Quantization
+## Task 4: Decide And Test Tempo Policy
 
 **Files:**
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `plugin/recorder/smf_writer.h`
-- Modify: `test/test_recorder_mid2agb.cpp`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.h`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
+- Modify if adapter behavior changes: `packages/poryaaaa/plugin/m4a_plugin.c`
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
 
-- [ ] Add a writer option for mid2agb quantization using default 24 clocks per quarter note.
-- [ ] For 96 PPQ and 24 clocks per quarter note, snap emitted event ticks and note durations to a 4-tick grid.
-- [ ] Keep GBA extended-command CC pair ordering stable when both events land on the same quantized tick.
-- [ ] Ensure quantization never produces a negative delta.
-- [ ] Ensure note durations that would quantize to zero become one mid2agb clock, represented as 4 MIDI ticks at 96 PPQ.
-- [ ] Run the quantization and scaling tests.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
-- [ ] Run `./build/poryaaaa_unit_tests`.
-
-## Task 5: Rebase Recording Time At Export
-
-**Files:**
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `plugin/recorder/smf_writer.h`
-- Modify: `test/test_recorder_mid2agb.cpp`
-
-- [ ] Add export anchoring equivalent to poryaaaa-m4l's first-note mode: tick 0 can correspond to the first real Note On.
-- [ ] Preserve pre-anchor PC/CC state by clamping it to tick 0, so channel setup still survives.
-- [ ] Keep explicit loop marker positions relative to the same anchor.
-- [ ] Add a test where a long disarmed or silent period before the first note does not create a huge `.s` file.
-- [ ] Add a test where pre-note PC/CC setup appears at tick 0.
-- [ ] Run the new tests.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
-- [ ] Run `./build/poryaaaa_unit_tests`.
-
-## Task 6: Fix Tempo Handling Policy
-
-**Files:**
-- Modify: `plugin/recorder/recorder_core.cpp`
-- Modify: `plugin/recorder/recorder_core.h`
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `plugin/m4a_plugin.c`
-- Modify: `test/test_recorder_mid2agb.cpp`
-
-- [ ] Stop recording identical or near-identical host tempo samples every process block; use an epsilon or only record actual transport tempo changes.
-- [ ] Choose one export policy for tempo automation: either integrate ticks across the tempo map correctly, or reject/flatten tempo automation with a clear status message.
-- [ ] When beat-stamped recorder events are present, prefer beat stamps for event placement and use tempo only for conductor metadata.
-- [ ] Add a constant-tempo test where sample-to-tick conversion is stable.
+- [ ] State the current policy in code/tests: beat-stamped events determine placement; `tempoBpm` writes conductor metadata.
+- [ ] Decide whether tempo automation is unsupported, flattened, or integrated.
+- [ ] Add a constant-tempo test that proves beat-stamped event placement does not depend on sample rate.
 - [ ] Add a tempo-change test that captures the chosen policy.
-- [ ] Run the tempo tests.
+- [ ] Avoid moving CLAP-specific tempo reconstruction into `RecorderCore`.
 - [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
 - [ ] Run `./build/poryaaaa_unit_tests`.
 
-## Task 7: Replace Dependence On Unsafely Sorting MidiFile Tracks
+## Task 5: Fix Held-Note Lifetime Tracking
 
 **Files:**
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `test/test_recorder_mid2agb.cpp`
-
-- [ ] Build per-channel pending descriptors before creating MidiFile events.
-- [ ] Stable-sort descriptors by tick and insertion order.
-- [ ] Coalesce same-tick CC/PC noise before writing MidiFile events.
-- [ ] Preserve GBA extended-command CC pair order.
-- [ ] Keep conductor sorting separate from music event ordering.
-- [ ] Add a regression test that proves no negative deltas are emitted even when input recorder events arrive slightly out of order.
-- [ ] Run the sorting/coalescing tests.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
-- [ ] Run `./build/poryaaaa_unit_tests`.
-
-## Task 8: Fix Held-Note Lifetime Tracking
-
-**Files:**
-- Modify: `plugin/recorder/smf_writer.cpp`
-- Modify: `test/test_recorder_mid2agb.cpp`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
 
 - [ ] Replace the held-note set with a per-channel, per-pitch count or stack.
 - [ ] Ensure overlapping same-pitch Note On events require matching Note Off events before the note is considered closed.
@@ -226,13 +172,14 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 - [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
 - [ ] Run `./build/poryaaaa_unit_tests`.
 
-## Task 9: Add mid2agb Round-Trip Validation
+## Task 6: Add mid2agb Round-Trip Validation
 
 **Files:**
-- Modify: `test/test_recorder_mid2agb.cpp`
-- Modify: `CMakeLists.txt`
+- Modify: `packages/poryaaaa/test/test_recorder_core.cpp`
+- Create if needed: `packages/poryaaaa/test/test_recorder_mid2agb.cpp`
+- Modify: `packages/poryaaaa/CMakeLists.txt`
 
-- [ ] Detect local `../ccomidi/mid2agb/mid2agb` or build it as a test fixture when available.
+- [ ] Detect an existing local mid2agb executable or build one from `packages/ccomidi/mid2agb` as a test fixture when available.
 - [ ] For generated recorder MIDI fixtures, run mid2agb and assert the output `.s` file is produced.
 - [ ] Add a size guard for the `.s` output so obvious timing blowups fail the test.
 - [ ] Skip gracefully when the local mid2agb executable is unavailable.
@@ -240,43 +187,84 @@ For a 96 PPQ SMF at default mid2agb settings, meaningful event starts and durati
 - [ ] Run `cmake --build build --target poryaaaa_unit_tests`.
 - [ ] Run `./build/poryaaaa_unit_tests`.
 
-## Task 10: Port poryaaaa-m4l To The Shared Recorder/Writer
+## Task 7: Build M4L Writer Parity Harness
 
 **Files:**
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/package.json`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/midi_buffer.h`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/source/audio/poryaaaa~/recorder/export_capture_tests.cpp`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
-- Modify in sibling repo: `/Users/spencer/dev/maxProjects/poryaaaa-m4l/code-src/ccomidi_recorder.ts`
+- Modify: `packages/poryaaaa-m4l/package.json`
+- Modify: `packages/poryaaaa-m4l/code-src/test/*`
+- Modify or add harness support in: `packages/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
+- Modify or add shared-writer bridge fixtures under `packages/poryaaaa` only if needed.
 
-- [ ] Add the omitted recorder-focused TypeScript tests to `npm test`.
-- [ ] Add a default command or script that runs the C++ recorder CTest suite, not only the TypeScript tests.
+- [ ] Add currently omitted recorder-focused TypeScript tests to `npm test`.
+- [ ] Add fixture coverage for export range anchoring, first-note anchoring, loop markers, voicemap PC injection, initial CC replay, XCMD CC ordering, CC/PC dedupe, held-note flush, and M4L tick compensation.
+- [ ] Define a parsed-SMF comparison helper that compares semantic structure and timing rather than requiring byte-identical output.
+- [ ] Generate expected output through the current TypeScript writer first.
+- [ ] Add a way to call the shared C++ writer from the same fixture data, either through a small test binary or an external-owned command harness.
+- [ ] Mark any intentional differences explicitly before changing M4L save behavior.
+- [ ] Run `npm test` from `packages/poryaaaa-m4l`.
+
+## Task 8: Add Shared Writer Surface For M4L
+
+**Files:**
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.h`
+- Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
+- Modify: `packages/poryaaaa/plugin/m4a_engine_recorder.h`
+- Modify: `packages/poryaaaa/plugin/m4a_engine_recorder.cpp`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
+
+- [ ] Add a C or C++ writer API that accepts beat-stamped MIDI events plus save-time metadata and writes a complete SMF.
+- [ ] Link the poryaaaa-m4l external against the shared poryaaaa recorder/writer instead of the wrapper-local writer implementation.
+- [ ] Keep M4L JavaScript temporarily responsible for Live API queries, export range parsing, loop marker parsing, output path management, ccomidi state collection, and status messages.
+- [ ] Preserve the M4L `beats <float>` message as the host timing adapter into the shared recorder model.
+- [ ] Add external status replies that mirror current save success/failure behavior.
+- [ ] Run the poryaaaa unit tests.
+- [ ] Run the poryaaaa-m4l external build check from `packages/poryaaaa-m4l`.
+
+## Task 9: Port poryaaaa-m4l Save Flow To Shared Writer
+
+**Files:**
+- Modify: `packages/poryaaaa-m4l/code-src/ccomidi_recorder.ts`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/recorder/midi_buffer.h`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/recorder/export_capture_tests.cpp`
+- Modify only after parity: `packages/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
+
+- [ ] Replace the M4L `dump <path>` / PRBY / TypeScript byte-rendering path with an external-owned `save` or `write_smf` command.
+- [ ] Keep `ccomidi_recorder.ts` as the Live metadata adapter until every remaining responsibility has a non-JS owner.
 - [ ] Add a guard or sanitizer for non-monotonic beat snapshots before first-note anchor selection.
-- [ ] Fix the PRBY magic-byte comment to match ASCII file bytes.
+- [ ] Fix the PRBY magic-byte comment to match ASCII file bytes if the PRBY path still exists at this stage.
 - [ ] Decide whether explicit marker fields remain the only loop-marker source, or whether Live loop state should generate markers by default.
 - [ ] Keep the constant-tempo limitation documented until tempo automation is implemented.
-- [ ] Define the C++ writer input shape that replaces `buildSmf()` arguments: beat-stamped MIDI events, tempo, time signature, export range, explicit loop markers, ccomidi initial PC/CC state, anchor mode, and output path.
-- [ ] Add a poryaaaa recorder C or C++ API that writes a complete SMF from a beat-stamped snapshot plus the save-time metadata above.
-- [ ] Link the poryaaaa-m4l external against the shared poryaaaa recorder/writer instead of the wrapper-local recorder implementation.
-- [ ] Replace the M4L `dump <path>` / PRBY / TypeScript byte-rendering path with an external-owned `save` or `write_smf` command that emits status replies.
-- [ ] Keep M4L JavaScript temporarily responsible for Live API queries, export range parsing, loop marker parsing, output path management, ccomidi state collection, and status messages.
-- [ ] Delete `recorder_smf_writer.ts` after behavioral parity tests prove the external-written SMF matches the current TypeScript writer for the covered cases.
-- [ ] Remove wrapper-local recorder shadowing from poryaaaa-m4l's CMake once the shared poryaaaa recorder covers the M4L behavior.
+- [ ] Run the M4L parity harness before and after the save-flow change.
+- [ ] Run `npm test` from `packages/poryaaaa-m4l`.
+
+## Task 10: Retire M4L Shadow Writer/Recorder Pieces
+
+**Files:**
+- Delete when proven redundant: `packages/poryaaaa-m4l/code-src/recorder_smf_writer.ts`
+- Delete or shrink when proven redundant: `packages/poryaaaa-m4l/source/audio/poryaaaa~/recorder/`
+- Modify: `packages/poryaaaa-m4l/package.json`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
+
+- [ ] Delete `recorder_smf_writer.ts` only after behavioral parity tests prove the external-written SMF matches the current TypeScript writer for covered cases.
+- [ ] Remove wrapper-local recorder shadowing from poryaaaa-m4l CMake once the shared poryaaaa recorder covers the M4L behavior.
 - [ ] If the goal is to remove `ccomidi_recorder.ts` entirely, move its remaining responsibilities into Max patch wiring or external messages before deleting it.
-- [ ] Keep the M4L `beats <float>` message as the host timing adapter into the shared recorder model.
+- [ ] Remove obsolete tests only after equivalent shared-writer coverage exists.
+- [ ] Run `npm test` from `packages/poryaaaa-m4l`.
+- [ ] Run the poryaaaa-m4l external build check.
 
 ## Completion Criteria
 
-- poryaaaa's recorder can store host beat stamps when CLAP provides `CLAP_TRANSPORT_HAS_BEATS_TIMELINE`.
-- poryaaaa still falls back to sample-time recorder export when the CLAP host does not provide a beats timeline.
-- poryaaaa writes recorder SMFs with a 96 PPQ header.
-- Exported note starts and durations are quantized for default mid2agb conversion.
-- Exporting after a long silent/disarmed lead-in does not generate an erroneously large `.s`.
+- poryaaaa recorder baseline is covered by unit tests and uses a named 96 PPQ default.
+- poryaaaa exports beat-stamped recorder SMFs with stable note/controller timing and no negative deltas.
+- mid2agb-facing timing constraints are covered by tests or explicitly documented where the shared writer intentionally keeps finer 96 PPQ note placement.
+- Exporting after a long silent lead-in does not generate an erroneously large `.s`.
 - Same-tick CC/PC cleanup reduces noise without corrupting GBA extended-command pairs.
 - Held-note flush handles overlapping same-pitch notes correctly.
+- Tempo export policy is explicit and tested.
+- The M4L parity harness compares current TypeScript writer output to shared C++ writer output from the same fixture data.
 - poryaaaa-m4l can use poryaaaa's shared recorder/writer, with final SMF bytes generated by the external instead of TypeScript.
 - Any remaining poryaaaa-m4l recorder JavaScript is limited to host/UI metadata plumbing, or has been replaced by Max patch/external message plumbing.
-- Unit tests pass: `cmake --build build --target poryaaaa_unit_tests` and `./build/poryaaaa_unit_tests`.
+- Validation passes for touched packages: `cmake --build build --target poryaaaa_unit_tests`, `./build/poryaaaa_unit_tests`, and the relevant `packages/poryaaaa-m4l` test/build commands.
 - The recorder mid2agb validation test either passes with local mid2agb or skips with a clear message when mid2agb is unavailable.

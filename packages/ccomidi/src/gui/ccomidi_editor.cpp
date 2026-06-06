@@ -43,7 +43,8 @@ ImU32 output_channel_color(std::uint8_t outputChannel) {
       IM_COL32(0xB3, 0xFF, 0xF2, 0xFF),
       IM_COL32(0xFF, 0xFF, 0xFF, 0xFF),
   };
-  return kChannelColors[std::clamp<int>(outputChannel, 0, 15)];
+  return kChannelColors[std::clamp<int>(
+      outputChannel, 0, kMaxSelectableOutputChannelIndex)];
 }
 
 int field_count_for_type(CommandType type) {
@@ -168,9 +169,10 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
   ImGui::Begin("##ccomidi", nullptr, flags);
 
   const std::uint8_t outputChannelIndex =
-      floor_to_u8(snapshot.outputChannel, 0, 15);
+      floor_to_u8(snapshot.outputChannel, 0, kMaxSelectableOutputChannelIndex);
   int outputChannel = static_cast<int>(outputChannelIndex) + 1;
-  outputChannel = std::clamp(outputChannel, 1, 16);
+  outputChannel = std::clamp(
+      outputChannel, 1, static_cast<int>(kSelectableOutputChannelCount));
   const std::string windowTitle =
       "ccomidi - Chn " + std::to_string(outputChannel);
   if (editor->windowTitle != windowTitle) {
@@ -281,7 +283,8 @@ void draw_frame(void *userData, std::uint32_t width, std::uint32_t height) {
   ImGui::PushStyleColor(ImGuiCol_FrameBg, channelColor);
   ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, channelColor);
   ImGui::PushStyleColor(ImGuiCol_FrameBgActive, channelColor);
-  if (ImGui::SliderInt("##output_channel", &outputChannel, 1, 16))
+  if (ImGui::SliderInt("##output_channel", &outputChannel, 1,
+                       static_cast<int>(kSelectableOutputChannelCount)))
     apply_ui_param_change(plugin, kParamOutputChannel,
                           static_cast<double>(outputChannel - 1));
   ImGui::PopStyleColor(3);
