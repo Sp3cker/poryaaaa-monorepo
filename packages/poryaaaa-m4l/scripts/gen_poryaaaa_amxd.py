@@ -36,6 +36,7 @@ from pathlib import Path
 
 from py2max import Patcher
 from py2max.core import Box
+from py2max.core.common import Rect
 from py2max.m4l import add_to_presentation, ensure_amxd_project_block
 from poryaaaa_voicegroup_amxd import (
     NODE_FOR_MAX_BIN_ATTRS,
@@ -122,6 +123,37 @@ def add_raw(p, *, maxclass, numinlets, numoutlets, outlettype, patching_rect,
     ))
 
 
+def embedded_bpatcher(parent: Patcher, *, varname: str, patching_rect,
+                      pres_rect=None, args=None, numinlets=0, numoutlets=1):
+    """Create an embedded bpatcher whose inner patcher is generated inline."""
+    sub = Patcher(parent=parent)
+    sub.openinpresentation = 1
+    sub.default_fontsize = 12.0
+    sub.default_fontface = 0
+    sub.default_fontname = "Ableton Sans Medium"
+    sub.gridonopen = 2
+    sub.gridsize = [15.0, 15.0]
+    sub.gridsnaponopen = 2
+    sub.objectsnaponopen = 1
+    box = add_raw(
+        parent,
+        maxclass="bpatcher",
+        numinlets=numinlets,
+        numoutlets=numoutlets,
+        outlettype=[""] * numoutlets,
+        border=0,
+        offset=[0.0, 0.0],
+        patching_rect=patching_rect,
+        patcher=sub,
+        args=args or [],
+        embed=1,
+        varname=varname,
+    )
+    if pres_rect is not None:
+        add_to_presentation(box, pres_rect)
+    return box, sub
+
+
 def live_text_button(p, label, patching_rect, *, varname=None, pres_rect=None):
     """Momentary live.text button; not a Live parameter."""
     extra = {"varname": varname} if varname else {}
@@ -137,6 +169,93 @@ def live_text_button(p, label, patching_rect, *, varname=None, pres_rect=None):
     )
     if pres_rect is not None:
         add_to_presentation(box, pres_rect)
+    return box
+
+
+def build_voicegroup_export_bpatcher(parent: Patcher):
+    """Embedded UI for choosing and exporting a channel-map voicegroup file."""
+    box, sub = embedded_bpatcher(
+        parent,
+        varname="VoicegroupExportUI",
+        patching_rect=[960.0, 210.0, 230.0, 90.0],
+        pres_rect=[286, 78, 170, 40],
+        numinlets=2,
+        numoutlets=1,
+    )
+
+    success_in = sub.add_textbox(
+        "inlet",
+        patching_rect=[20.0, 20.0, 45.0, 22.0],
+        numinlets=0,
+        numoutlets=1,
+        outlettype=[""],
+    )
+    failed_in = sub.add_textbox(
+        "inlet",
+        patching_rect=[95.0, 20.0, 45.0, 22.0],
+        numinlets=0,
+        numoutlets=1,
+        outlettype=[""],
+    )
+    export_out = sub.add_textbox(
+        "outlet",
+        patching_rect=[185.0, 165.0, 45.0, 22.0],
+        numinlets=1,
+        numoutlets=0,
+        outlettype=[],
+    )
+
+    export_btn = live_text_button(
+        sub, "Export Voicegroup",
+        patching_rect=[20.0, 65.0, 130.0, 22.0],
+        varname="ExportVoicegroupBtn",
+        pres_rect=[0, 0, 118, 18],
+    )
+    export_dialog = sub.add_textbox(
+        "savedialog .inc",
+        patching_rect=[20.0, 105.0, 110.0, 22.0],
+        numoutlets=2,
+        outlettype=["", "bang"],
+    )
+    export_conform = sub.add_textbox(
+        "conformpath native absolute",
+        patching_rect=[145.0, 105.0, 160.0, 22.0],
+        numoutlets=2,
+        outlettype=["", "int"],
+    )
+    export_prep = sub.add_textbox(
+        "prepend exportvoicegroup",
+        patching_rect=[145.0, 135.0, 170.0, 22.0],
+    )
+
+    status = add_raw(
+        sub,
+        maxclass="comment",
+        text="",
+        numinlets=1,
+        numoutlets=0,
+        outlettype=[],
+        patching_rect=[20.0, 135.0, 140.0, 18.0],
+    )
+    add_to_presentation(status, [0, 22, 150, 18])
+    saved_msg = sub.add_message(
+        "set Exported",
+        patching_rect=[20.0, 165.0, 90.0, 22.0],
+    )
+    failed_msg = sub.add_message(
+        "set FAILED: $1",
+        patching_rect=[95.0, 165.0, 100.0, 22.0],
+    )
+
+    sub.add_line(export_btn, export_dialog)
+    sub.add_line(export_dialog, export_conform)
+    sub.add_line(export_conform, export_prep)
+    sub.add_line(export_prep, export_out)
+    sub.add_line(success_in, saved_msg)
+    sub.add_line(saved_msg, status)
+    sub.add_line(failed_in, failed_msg)
+    sub.add_line(failed_msg, status)
+    sub.rect = Rect(200.0, 200.0, 340.0, 230.0)
     return box
 
 
@@ -639,17 +758,19 @@ def build():
     # before poryaaaa~ so the external receives `voicegroup <root> <bank>`.
     p.add_line(voicegroup_controls.voicegroup_prepend, poryaaaa)
 
-    # poryaaaa~ outlet 2 emits recorder messages:
+    # poryaaaa~ outlet 2 emits recorder and voicegroup-export messages:
     #   - `dumped <path> <count>` after MidiBuffer::dump_to_file completes
     #     → recorder v8 (wired downstream in add_recorder_section).
     #   - `dumpfailed <path> <reason>` if a dump request cannot complete.
-    # [route dumped dumpfailed] strips selectors; re-prepend them for the
-    # recorder v8 global handlers.
+    #   - `voicegroupexported <path>` / `voicegroupexportfailed <reason>`
+    #     after the user-driven voicegroup export dialog flow.
+    # [route ...] strips selectors; re-prepend dump replies for the recorder
+    # v8 global handlers and route voicegroup export replies to the UI status.
     status_route = p.add_textbox(
-        "route dumped dumpfailed",
+        "route dumped dumpfailed voicegroupexported voicegroupexportfailed",
         patching_rect=[ENGINE_X, 295.0, 210.0, 22.0],
-        numoutlets=3,
-        outlettype=["", "", ""],
+        numoutlets=5,
+        outlettype=["", "", "", "", ""],
     )
     p.add_line(poryaaaa, status_route, outlet=2)
     # Re-prepend `dumped` for the recorder v8 so its global `dumped` handler
@@ -747,6 +868,12 @@ def build():
     )
     p.add_line(reload_btn, reload_msg)
     p.add_line(reload_msg, voicegroup_controls.scanner)
+
+    # ---- Export selected voicegroup channel map ----
+    export_vg_ui = build_voicegroup_export_bpatcher(p)
+    p.add_line(export_vg_ui, poryaaaa)
+    p.add_line(status_route, export_vg_ui, outlet=2, inlet=0)
+    p.add_line(status_route, export_vg_ui, outlet=3, inlet=1)
 
     # ---- Panic button ----
     panic_btn = live_text_button(

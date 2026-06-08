@@ -113,6 +113,8 @@ static void porya_beats(t_porya *x, double beats);
 static void porya_dump(t_porya *x, t_symbol *path);
 static void porya_dumpfailed(t_porya *x, t_symbol *path, const char *reason);
 static void porya_clear(t_porya *x);
+static void porya_exportvoicegroup(t_porya *x, t_symbol *path);
+static void porya_voicegroupexportfailed(t_porya *x, const char *reason);
 static void porya_anything(t_porya *x, t_symbol *s, long argc, t_atom *argv);
 
 /* attribute getters/setters */
@@ -156,6 +158,7 @@ extern "C" void ext_main(void *r)
     class_addmethod(c, (method)porya_beats,  "beats",  A_FLOAT, 0);
     class_addmethod(c, (method)porya_dump,   "dump",   A_SYM,   0);
     class_addmethod(c, (method)porya_clear,  "clear",  0);
+    class_addmethod(c, (method)porya_exportvoicegroup, "exportvoicegroup", A_SYM, 0);
     class_addmethod(c, (method)porya_anything, "anything", A_GIMME, 0);
 
     /* 16 program-slot attrs: prog0..prog15 — automatable from Live */
@@ -283,12 +286,12 @@ static void porya_free(t_porya *x)
 static void porya_assist(t_porya *x, void *b, long m, long a, char *s)
 {
     if (m == ASSIST_INLET) {
-        snprintf(s, 256, "raw MIDI bytes (int from [midiin]); messages: midievent program voicegroup tempo panic record beats dump");
+        snprintf(s, 256, "raw MIDI bytes (int from [midiin]); messages: midievent program voicegroup tempo panic record beats dump exportvoicegroup");
     } else {
         switch (a) {
             case 0:  snprintf(s, 256, "(signal) audio out L"); break;
             case 1:  snprintf(s, 256, "(signal) audio out R"); break;
-            default: snprintf(s, 256, "recorder replies: dumped <path> <count>, dumpfailed <path> <reason>"); break;
+            default: snprintf(s, 256, "status replies: dumped/dumpfailed, voicegroupexported/voicegroupexportfailed"); break;
         }
     }
 }
@@ -623,6 +626,48 @@ static void porya_dumpfailed(t_porya *x, t_symbol *path, const char *reason)
     outlet_anything(x->statusOutlet, gensym("dumpfailed"), 2, av);
 }
 
+static void porya_exportvoicegroup(t_porya *x, t_symbol *path)
+{
+    if (!x->loadedVg || !x->vgRoot || !x->vgRoot->s_name[0] ||
+        !x->vgName || !x->vgName->s_name[0]) {
+        object_error((t_object *)x, "poryaaaa~: exportvoicegroup requires a loaded voicegroup");
+        porya_voicegroupexportfailed(x, "no_voicegroup");
+        return;
+    }
+    if (!path || !path->s_name || !path->s_name[0]) {
+        object_error((t_object *)x, "poryaaaa~: exportvoicegroup requires a path");
+        porya_voicegroupexportfailed(x, "bad_path");
+        return;
+    }
+
+    uint8_t programs[12];
+    for (int ch = 0; ch < 12; ch++)
+        programs[ch] = (uint8_t)clamp_long(x->progSlot[ch], 0, 127);
+
+    bool ok = voicegroup_export_channel_remap(x->vgRoot->s_name,
+                                              x->vgName->s_name,
+                                              NULL,
+                                              programs,
+                                              path->s_name);
+    if (!ok) {
+        object_error((t_object *)x, "poryaaaa~: exportvoicegroup failed to write %s",
+                     path->s_name);
+        porya_voicegroupexportfailed(x, "write_failed");
+        return;
+    }
+
+    t_atom av[1];
+    atom_setsym(&av[0], path);
+    outlet_anything(x->statusOutlet, gensym("voicegroupexported"), 1, av);
+}
+
+static void porya_voicegroupexportfailed(t_porya *x, const char *reason)
+{
+    t_atom av[1];
+    atom_setsym(&av[0], gensym(reason ? reason : "export_failed"));
+    outlet_anything(x->statusOutlet, gensym("voicegroupexportfailed"), 1, av);
+}
+
 /* Wipe the buffer. Called by JS after a successful Save so the next take
  * starts fresh without requiring the user to cycle the Rec toggle. */
 static void porya_clear(t_porya *x)
@@ -656,6 +701,10 @@ static void porya_anything(t_porya *x, t_symbol *s, long argc, t_atom *argv)
     }
     if (s == gensym("clear")) {
         porya_clear(x);
+        return;
+    }
+    if (s == gensym("exportvoicegroup")) {
+        if (argc >= 1) porya_exportvoicegroup(x, atom_getsym(argv));
         return;
     }
     if (s == gensym("tempo")) {
