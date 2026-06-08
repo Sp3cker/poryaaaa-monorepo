@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <cstdint>
 namespace ccomidi {
-
-constexpr std::size_t kMidiChannelCount = 16;
+constexpr std::size_t kSelectableOutputChannelCount = 12;
+constexpr std::uint8_t kMaxSelectableOutputChannelIndex =
+    static_cast<std::uint8_t>(kSelectableOutputChannelCount - 1);
+constexpr std::size_t kLegacyStateMidiChannelCount = 16;
 constexpr std::size_t kMaxCommandRows = 16;
 constexpr std::size_t kMaxCommandFields = 4;
 constexpr std::size_t kMaxCommandMessages = 5;

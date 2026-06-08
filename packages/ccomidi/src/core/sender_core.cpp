@@ -64,7 +64,8 @@ void SenderCore::reset_runtime_state() {
 }
 
 void SenderCore::set_output_channel(double value) {
-  outputChannelValue_ = value;
+  outputChannelValue_ =
+      static_cast<double>(floor_to_u8(value, 0, kMaxSelectableOutputChannelIndex));
 }
 
 void SenderCore::set_program(double value) { programValue_ = value; }
@@ -120,7 +121,7 @@ double SenderCore::row_value_raw(std::size_t row, std::size_t field) const {
 }
 
 std::uint8_t SenderCore::output_channel() const {
-  return floor_to_u8(outputChannelValue_, 0, 15);
+  return floor_to_u8(outputChannelValue_, 0, kMaxSelectableOutputChannelIndex);
 }
 
 std::uint8_t SenderCore::program() const {
@@ -292,7 +293,7 @@ bool SenderCore::apply_event(const AutomationEvent &event, bool *channelChanged,
   switch (event.address.kind) {
   case ParamKind::OutputChannel: {
     const std::uint8_t before = output_channel();
-    outputChannelValue_ = event.value;
+    set_output_channel(event.value);
     const std::uint8_t after = output_channel();
     if (channelChanged)
       *channelChanged = (before != after);

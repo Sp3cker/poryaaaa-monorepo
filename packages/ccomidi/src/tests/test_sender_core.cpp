@@ -86,6 +86,30 @@ void test_defaults_initialize_volume_and_pan() {
   ASSERT_EQ(planned.events[2].data2, 64, "default pan emits value 64");
 }
 
+void test_output_channel_is_limited_to_twelve_channels() {
+  SenderCore core;
+
+  core.set_output_channel(11.9);
+  ASSERT_EQ(core.output_channel(), ccomidi::kMaxSelectableOutputChannelIndex,
+            "output channel floors to channel 12");
+  ASSERT_EQ(core.output_channel_value(), 11.0,
+            "stored output channel is floored to channel 12");
+
+  core.set_output_channel(12.0);
+  ASSERT_EQ(core.output_channel(), ccomidi::kMaxSelectableOutputChannelIndex,
+            "output channel clamps above channel 12");
+  ASSERT_EQ(core.output_channel_value(), 11.0,
+            "stored output channel is clamped to channel 12");
+
+  const AutomationEvent event = {
+      0, ParamAddress{ParamKind::OutputChannel, 0}, 15.0};
+  core.apply_parameter_change(event, nullptr, nullptr);
+  ASSERT_EQ(core.output_channel(), ccomidi::kMaxSelectableOutputChannelIndex,
+            "automated output channel clamps above channel 12");
+  ASSERT_EQ(core.output_channel_value(), 11.0,
+            "automated output channel stores the clamped value");
+}
+
 void test_start_of_playback_emits_snapshot() {
   SenderCore core;
   PlannedEvents planned;
@@ -449,6 +473,7 @@ void test_configurable_rows_reject_fixed_command_types() {
 
 int main() {
   test_defaults_initialize_volume_and_pan();
+  test_output_channel_is_limited_to_twelve_channels();
   test_start_of_playback_emits_snapshot();
   test_fixed_rows_emit_expected_controllers();
   test_floor_quantization_deduplicates_automation();
