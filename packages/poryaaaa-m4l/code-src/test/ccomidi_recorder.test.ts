@@ -242,6 +242,7 @@ test("LOM snapshot: walks ccomidi devices and maps VIdx plus ccomidi shortname c
         ["Tune", -2],
         ["Echo", 22],
         ["EchoVol", 23],
+        // Removed PRIO controls may still exist in old sets; snapshot ignores them.
         ["P21", 1],
         ["P27", 0],
     ]);
@@ -287,7 +288,6 @@ test("LOM snapshot: walks ccomidi devices and maps VIdx plus ccomidi shortname c
         { channel: 2, cc: 0x1D, value: 23 },
         { channel: 2, cc: 0x1E, value: 0x09 },
         { channel: 2, cc: 0x1D, value: 22 },
-        { channel: 2, cc: 0x21, value: 21 },
         { channel: 5, cc: 0x07, value: 70 },
         { channel: 5, cc: 0x0A, value: 64 },
     ]);

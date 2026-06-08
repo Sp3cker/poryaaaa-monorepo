@@ -187,13 +187,11 @@ def build_voice_picker_section(p: Patcher, ccomidi, thisdevice):
     PRES_ROUTE_W = 50
     PRES_SENDALL_W = 64
     PRES_CONN_W = 78
-    PRES_PRIORITY_W = 112
     PRES_DEV_W = 860
 
     PRES_NUMBOX_X = PRES_X0
     PRES_MENU_X = PRES_NUMBOX_X + PRES_NUMBOX_W + PRES_GAP
-    PRES_PRIORITY_X = PRES_DEV_W - PRES_PRIORITY_W - PRES_X0
-    PRES_SENDALL_X = PRES_PRIORITY_X - PRES_SENDALL_W - PRES_GAP
+    PRES_SENDALL_X = PRES_DEV_W - PRES_SENDALL_W - PRES_X0
     PRES_ROUTE_X = PRES_SENDALL_X - PRES_ROUTE_W - PRES_GAP
     PRES_RELOAD_X = PRES_ROUTE_X - PRES_RELOAD_W - PRES_GAP
     PRES_CONN_X = PRES_RELOAD_X - PRES_CONN_W - PRES_GAP
@@ -388,125 +386,6 @@ def build_voice_picker_section(p: Patcher, ccomidi, thisdevice):
     p.add_line(reroute_recv, v8)
 
     return v8
-
-
-def build_priority_controls(parent: Patcher, ccomidi):
-    """Two mutually exclusive priority toggles in the top-right corner."""
-
-    PX = 690.0
-    PY = 665.0
-    PRES_Y = 4
-    PRES_LABEL_X = 748
-    PRES_T21_X = 800
-    PRES_T27_X = 834
-
-    label = parent.add_comment(
-        "PRIO",
-        patching_rect=[PX, PY - 22, 50, 18],
-        justify="center",
-    )
-    add_to_presentation(label, [PRES_LABEL_X, PRES_Y + 3, 42, 16])
-
-    p21 = live_param(
-        parent,
-        maxclass="live.toggle",
-        longname="Priority 21",
-        shortname="P21",
-        ptype=1,
-        prange=[0, 1],
-        initial=0,
-        patching_rect=[PX, PY, 24, 24],
-        pres_rect=[PRES_T21_X, PRES_Y + 2, 18, 18],
-        varname="Priority21",
-    )
-    p27 = live_param(
-        parent,
-        maxclass="live.toggle",
-        longname="Priority 27",
-        shortname="P27",
-        ptype=1,
-        prange=[0, 1],
-        initial=0,
-        patching_rect=[PX + 60, PY, 24, 24],
-        pres_rect=[PRES_T27_X, PRES_Y + 2, 18, 18],
-        varname="Priority27",
-    )
-
-    l21 = parent.add_comment("21", patching_rect=[PX, PY + 30, 24, 18], justify="center")
-    l27 = parent.add_comment("27", patching_rect=[PX + 60, PY + 30, 24, 18], justify="center")
-    add_to_presentation(l21, [PRES_T21_X - 1, PRES_Y + 18, 22, 12])
-    add_to_presentation(l27, [PRES_T27_X - 1, PRES_Y + 18, 22, 12])
-
-    sel21 = parent.add_textbox(
-        "sel 1 0",
-        patching_rect=[PX, PY + 60, 60, 22],
-        numoutlets=3,
-        outlettype=["bang", "bang", ""],
-    )
-    sel27 = parent.add_textbox(
-        "sel 1 0",
-        patching_rect=[PX + 120, PY + 60, 60, 22],
-        numoutlets=3,
-        outlettype=["bang", "bang", ""],
-    )
-    parent.add_line(p21, sel21)
-    parent.add_line(p27, sel27)
-
-    trig21 = parent.add_textbox(
-        "t b b",
-        patching_rect=[PX, PY + 90, 50, 22],
-        numoutlets=2,
-        outlettype=["bang", "bang"],
-    )
-    trig27 = parent.add_textbox(
-        "t b b",
-        patching_rect=[PX + 120, PY + 90, 50, 22],
-        numoutlets=2,
-        outlettype=["bang", "bang"],
-    )
-    parent.add_line(sel21, trig21, outlet=0)
-    parent.add_line(sel27, trig27, outlet=0)
-
-    p21_on = parent.add_message("priority 21", patching_rect=[PX, PY + 120, 80, 22])
-    p27_on = parent.add_message("priority 27", patching_rect=[PX + 120, PY + 120, 80, 22])
-    p_off_21 = parent.add_message("priority 0", patching_rect=[PX, PY + 150, 80, 22])
-    p_off_27 = parent.add_message("priority 0", patching_rect=[PX + 120, PY + 150, 80, 22])
-    p21_zero = parent.add_message("0", patching_rect=[PX + 80, PY + 120, 30, 22])
-    p27_zero = parent.add_message("0", patching_rect=[PX + 200, PY + 120, 30, 22])
-
-    parent.add_line(trig21, p27_zero, outlet=1)
-    parent.add_line(p27_zero, p27)
-    parent.add_line(trig21, p21_on, outlet=0)
-    parent.add_line(p21_on, ccomidi)
-    parent.add_line(sel21, p_off_21, outlet=1)
-    parent.add_line(p_off_21, ccomidi)
-
-    parent.add_line(trig27, p21_zero, outlet=1)
-    parent.add_line(p21_zero, p21)
-    parent.add_line(trig27, p27_on, outlet=0)
-    parent.add_line(p27_on, ccomidi)
-    parent.add_line(sel27, p_off_27, outlet=1)
-    parent.add_line(p_off_27, ccomidi)
-
-    sync = parent.add_textbox(
-        "r #0-sync",
-        patching_rect=[PX + 240, PY, 80, 22],
-        numinlets=0,
-        numoutlets=1,
-        outlettype=["bang"],
-    )
-    p21_outputvalue = parent.add_message(
-        "outputvalue",
-        patching_rect=[PX + 330, PY, 80, 22],
-    )
-    p27_outputvalue = parent.add_message(
-        "outputvalue",
-        patching_rect=[PX + 330, PY + 30, 80, 22],
-    )
-    parent.add_line(sync, p21_outputvalue)
-    parent.add_line(p21_outputvalue, p21)
-    parent.add_line(sync, p27_outputvalue)
-    parent.add_line(p27_outputvalue, p27)
 
 
 def build_main_controls_bpatcher(parent: Patcher):
@@ -767,8 +646,6 @@ def build():
     p.add_line(expression_controls, ccomidi)
 
     voice_v8 = build_voice_picker_section(p, ccomidi, thisdevice)
-
-    build_priority_controls(p, ccomidi)
 
     voice_start_msg = p.add_message(
         "start",
