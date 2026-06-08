@@ -130,6 +130,7 @@ static void gui_log(const char *fmt, ...)
 #include "m4a_engine.h"
 #include "m4a_plugin.h"
 #include "m4a_engine_recorder.h"
+#include "m4a_gui_font_assets.h"
 
 /* CLAP GUI extension (for notifying host when floating window closes) */
 #include <clap/ext/gui.h>
@@ -146,6 +147,7 @@ struct M4AGuiState {
     PuglWorld     *world;
     PuglView      *view;
     ImGuiContext  *imguiCtx;
+    ImFont        *boldFont;
     const clap_host_t *host;
 
     bool           realized;   /* true after puglRealize succeeds */
@@ -345,7 +347,11 @@ static void render_general_tab(M4AGuiState *gui)
     ImGui::SeparatorText("Project Settings");
 
     ImGui::AlignTextToFramePadding();
+    if (gui->boldFont)
+        ImGui::PushFont(gui->boldFont, 0.0f);
     ImGui::Text("Project Root:");
+    if (gui->boldFont)
+        ImGui::PopFont();
     ImGui::SameLine();
     const char *rootLabel = gui->projectRootBuf[0] ? gui->projectRootBuf : "Choose Project Root";
     if (project_root_button(rootLabel, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
@@ -365,7 +371,11 @@ static void render_general_tab(M4AGuiState *gui)
     }
 
     ImGui::AlignTextToFramePadding();
+    if (gui->boldFont)
+        ImGui::PushFont(gui->boldFont, 0.0f);
     ImGui::Text("Voicegroup:  ");
+    if (gui->boldFont)
+        ImGui::PopFont();
     ImGui::SameLine();
     {
         float reloadW = 80.0f;
@@ -960,6 +970,12 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    {
+        ImFont *regularFont = io.Fonts->AddFontFromFileTTF(m4a_gui_regular_font_path(), 13.0f);
+        gui->boldFont = io.Fonts->AddFontFromFileTTF(m4a_gui_bold_font_path(), 13.0f);
+        if (regularFont)
+            io.FontDefault = regularFont;
+    }
     io.FontGlobalScale = 1.2f;
 
     ImGui::StyleColorsDark();

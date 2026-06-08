@@ -168,10 +168,13 @@ set(ENGINE_SOURCES
 )
 
 # ---- CLAP Plugin ----
+set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
+
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
     plugin/m4a_params.c
     plugin/m4a_engine_recorder.cpp
+    plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
@@ -189,6 +192,7 @@ poryaaaa_enable_project_source_warnings(
     plugin/m4a_plugin.c
     plugin/m4a_params.c
     plugin/m4a_engine_recorder.cpp
+    plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
     ${ENGINE_SOURCES}
@@ -207,7 +211,10 @@ target_include_directories(poryaaaa SYSTEM PRIVATE
 )
 
 # Build Pugl as a static library (not a DLL) on all platforms
-target_compile_definitions(poryaaaa PRIVATE PUGL_STATIC)
+target_compile_definitions(poryaaaa PRIVATE
+    PUGL_STATIC
+    PORYAAAA_FONT_DIR="${PORYAAAA_FONT_DIR}"
+)
 
 # On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
 if(APPLE)
@@ -315,15 +322,20 @@ endif()
 # ---- Unit Tests ----
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
+    test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
     plugin/m4a_engine_recorder.cpp
+    plugin/m4a_gui_font_assets.cpp
     ${ENGINE_SOURCES}
 )
 target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
 poryaaaa_enable_project_warnings(poryaaaa_unit_tests)
+target_compile_definitions(poryaaaa_unit_tests PRIVATE
+    PORYAAAA_FONT_DIR="${PORYAAAA_FONT_DIR}"
+)
 
 target_include_directories(poryaaaa_unit_tests PRIVATE
     plugin
