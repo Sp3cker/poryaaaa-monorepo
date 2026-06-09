@@ -13,25 +13,47 @@ interface RoutingDict {
     [key: string]: JsonValue;
 }
 
-function parseJson(text: string): JsonValue {
-    return JSON.parse(text) as JsonValue;
-}
 
-export function parseDictLike(value: DictLikeInput): JsonValue {
+export function parseDictLike(value: unknown) {
+    if (typeof Dict !== "undefined" && value instanceof Dict) {
+        try {
+            return JSON.parse(value.stringify());
+        } finally {
+            value.freepeer();
+        }
+    }
     if (Array.isArray(value)) {
-        const first = value[0];
-        if (value.length === 1 && typeof first === "string" && first.trim().startsWith("{")) {
-            return parseJson(first);
+        if (value.length === 1 && typeof value[0] === "string") {
+            const trimmed = value[0].trim();
+            if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+        }
+        for (let i = 0; i < value.length - 1; i += 1) {
+            if ((value[i] === "dictionary" || value[i] === "dict")
+                && typeof value[i + 1] === "string") {
+                const d = new Dict(value[i + 1]);
+                try {
+                    return JSON.parse(d.stringify());
+                } finally {
+                    d.freepeer();
+                }
+            }
         }
     }
     if (typeof value === "string") {
         const trimmed = value.trim();
-        if (trimmed.startsWith("{")) return parseJson(trimmed);
+        if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+        const d = new Dict(trimmed);
+        try {
+            return JSON.parse(d.stringify());
+        } finally {
+            d.freepeer();
+        }
     }
-    return value as JsonValue;
+    return value;
 }
 
-export function routingChoice(value: DictLikeInput): RoutingChoice {
+
+export function routingChoice(value: DictLikeInput){
     const parsed = parseDictLike(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("routing value is not a dictionary");
@@ -45,7 +67,7 @@ export function routingChoice(value: DictLikeInput): RoutingChoice {
     return { display_name: display, identifier };
 }
 
-export function routingChoices(value: DictLikeInput, key: string): RoutingChoice[] {
+export function routingChoices(value: DictLikeInput, key: string) {
     const parsed = parseDictLike(value) as RoutingDict;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error(`${key} must be the dictionary returned by track.get("${key}")`);

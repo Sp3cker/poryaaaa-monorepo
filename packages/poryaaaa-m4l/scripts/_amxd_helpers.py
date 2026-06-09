@@ -38,6 +38,16 @@ LIVE_IMPORTED_DIRS = {
 }
 
 
+def node_for_max_bin_attrs() -> str:
+    """Return node.script attrs for the Node/npm visible to this build."""
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        missing = "node" if not node else "npm"
+        raise RuntimeError(f"{missing} not found on PATH")
+    return f"@node_bin_path {node} @npm_bin_path {npm}"
+
+
 def pack_amxd_factory(json_text: str, device_type: str) -> bytes:
     """Pack a patcher JSON string into a factory-format .amxd binary."""
     tag = DEVICE_TYPE_TAG[device_type]
@@ -76,7 +86,11 @@ def install_amxd_into_live_library(amxd_path: Union[str, Path],
         return
     src = Path(amxd_path)
     dest = dest_dir / src.name
-    shutil.copy2(src, dest)
+    try:
+        shutil.copy2(src, dest)
+    except OSError as e:
+        print(f"skip Live install: {dest}: {e}")
+        return
     print(f"installed -> {dest}")
 
 

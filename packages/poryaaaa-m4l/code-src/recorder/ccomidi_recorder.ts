@@ -18,7 +18,7 @@ import {
     type MidiEvent,
     type SmfWriter,
 } from "./recorder_smf_writer";
-
+import {parseDictLike} from '../ccomidi_routing_dicts'
 export const RECORDER_DIR = "~/Music/poryaaaa-recordings/";
 
 // If the user typed (or restored) an absolute / ~-prefixed path, use it as-is.
@@ -320,43 +320,6 @@ interface RoutingChoice {
     identifier: string | number;
 }
 
-function parseDictLike(value: unknown): unknown {
-    if (typeof Dict !== "undefined" && value instanceof Dict) {
-        try {
-            return JSON.parse(value.stringify());
-        } finally {
-            value.freepeer();
-        }
-    }
-    if (Array.isArray(value)) {
-        if (value.length === 1 && typeof value[0] === "string") {
-            const trimmed = value[0].trim();
-            if (trimmed.startsWith("{")) return JSON.parse(trimmed);
-        }
-        for (let i = 0; i < value.length - 1; i += 1) {
-            if ((value[i] === "dictionary" || value[i] === "dict")
-                && typeof value[i + 1] === "string") {
-                const d = new Dict(value[i + 1]);
-                try {
-                    return JSON.parse(d.stringify());
-                } finally {
-                    d.freepeer();
-                }
-            }
-        }
-    }
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed.startsWith("{")) return JSON.parse(trimmed);
-        const d = new Dict(trimmed);
-        try {
-            return JSON.parse(d.stringify());
-        } finally {
-            d.freepeer();
-        }
-    }
-    return value;
-}
 
 function routingChoice(value: unknown): RoutingChoice {
     const parsed = parseDictLike(value);

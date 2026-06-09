@@ -2,12 +2,11 @@
 
 from typing import NamedTuple
 
+from _amxd_helpers import node_for_max_bin_attrs
 from py2max.m4l import add_to_presentation
 
 
-NODE_BIN_PATH = "/Users/spencer/.nvm/versions/node/v26.1.0/bin/node"
-NPM_BIN_PATH = "/Users/spencer/.nvm/versions/node/v26.1.0/bin/npm"
-NODE_FOR_MAX_BIN_ATTRS = f"@node_bin_path {NODE_BIN_PATH} @npm_bin_path {NPM_BIN_PATH}"
+NODE_FOR_MAX_BIN_ATTRS = node_for_max_bin_attrs()
 
 
 class NodeBootChain(NamedTuple):

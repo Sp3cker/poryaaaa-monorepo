@@ -1,18 +1,3 @@
 {
-    "extends": "./tsconfig.base.json",
-    "compilerOptions": {
-        "types": ["maxmsp", "node"]
-    },
-    "include": [
-        "bus.ts",
-        "scanner.ts",
-        "voice-slot-contract.ts",
-        "ccomidi_voices.ts",
-        "ccomidi_voicegroup_client.ts",
-        "ccomidi_routing_dicts.ts",
-        "recorder/*.ts",
-        "poryaaaa_voicegroup_server.ts",
-        "poryaaaa-node/**/*.ts",
-        "test/**/*.ts"
-    ]
+    "extends": "./tsconfig.json"
 }

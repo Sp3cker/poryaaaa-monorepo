@@ -63,8 +63,12 @@ def install_into_live_library(amxd_path: Path) -> None:
         print(f"skip Live install: {LIVE_IMPORTED_DIR} not found")
         return
     dest = LIVE_IMPORTED_DIR / amxd_path.name
-    shutil.copy2(amxd_path, dest)
-    print(f"installed → {dest}")
+    try:
+        shutil.copy2(amxd_path, dest)
+    except OSError as e:
+        print(f"skip Live install: {dest}: {e}")
+        return
+    print(f"installed -> {dest}")
 
 
 # py2max's pack_amxd uses an "mx@c" sub-block envelope which Max happily
