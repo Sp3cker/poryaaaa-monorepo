@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSmf, PPQ, type MidiEvent } from "../recorder_smf_writer";
+import { buildSmf, PPQ, type MidiEvent } from "../recorder/recorder_smf_writer";
 import {
     parseSmf, voiceEvents, byStatusNibble, metaEvents,
 } from "./_smf_parser";

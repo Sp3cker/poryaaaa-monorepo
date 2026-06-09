@@ -7,8 +7,8 @@
         "bus.ts",
         "ccomidi_voices.ts",
         "ccomidi_routing_dicts.ts",
-        "ccomidi_recorder.ts",
-        "recorder_smf_writer.ts",
+        "recorder/ccomidi_recorder.ts",
+        "recorder/recorder_smf_writer.ts",
         "max-events.ts",
         "scanner.ts",
         "voice-slot-contract.ts"

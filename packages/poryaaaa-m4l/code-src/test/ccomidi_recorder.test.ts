@@ -8,8 +8,8 @@ import {
     type LiveApiFactory,
     type LiveApiLike,
     type ServiceDeps,
-} from "../ccomidi_recorder";
-import type { InitialCc, SmfWriter } from "../recorder_smf_writer";
+} from "../recorder/ccomidi_recorder";
+import type { InitialCc, SmfWriter } from "../recorder/recorder_smf_writer";
 
 interface OutletCall {
     outletIndex: number;

@@ -10,8 +10,7 @@
         "ccomidi_voices.ts",
         "ccomidi_voicegroup_client.ts",
         "ccomidi_routing_dicts.ts",
-        "ccomidi_recorder.ts",
-        "recorder_smf_writer.ts",
+        "recorder/*.ts",
         "poryaaaa_voicegroup_server.ts",
         "poryaaaa-node/**/*.ts",
         "test/**/*.ts"

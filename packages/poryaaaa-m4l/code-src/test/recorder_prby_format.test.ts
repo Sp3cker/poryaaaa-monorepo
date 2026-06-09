@@ -16,8 +16,8 @@ import assert from "node:assert/strict";
 import {
     readBufferFileWith,
     type BinaryReader,
-} from "../ccomidi_recorder";
-import type { MidiEvent } from "../recorder_smf_writer";
+} from "../recorder/ccomidi_recorder";
+import type { MidiEvent } from "../recorder/recorder_smf_writer";
 
 // ---------------------------------------------------------------------------
 // JS port of the C++ writer (midi_buffer.cpp dump_to_file).

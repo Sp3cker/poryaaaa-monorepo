@@ -10,7 +10,7 @@
 // The C++ external no longer knows about ticks, tempo, loop, voicemap, or
 // SMF format. JS owns all of that.
 
-import type { MaxAtom } from "./max-events";
+import type { MaxAtom } from "../max-events";
 import {
     createSmfWriter,
     type InitialCc,

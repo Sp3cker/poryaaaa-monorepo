@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseBarBeatSixteenth, parseBeatNumber, buildSmf, PPQ } from "../recorder_smf_writer";
+import { parseBarBeatSixteenth, parseBeatNumber, buildSmf, PPQ } from "../recorder/recorder_smf_writer";
 
 // ---------------------------------------------------------------------------
 // Ableton bar.beat.sixteenth → quarter-beats parser. Honors time signature.

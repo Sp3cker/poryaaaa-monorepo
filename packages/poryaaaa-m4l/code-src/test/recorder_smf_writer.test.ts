@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSmf, PPQ, type MidiEvent } from "../recorder_smf_writer";
+import { buildSmf, PPQ, type MidiEvent } from "../recorder/recorder_smf_writer";
 
 // Walk the MTrk chunks and return a flat list of {status, d1, d2} for every
 // channel-voice event in track order. Skips meta-events and the MThd header.

@@ -24,10 +24,10 @@ import {
     type InitialCc,
     type LiveApiAdapter,
     type MidiEvent,
-} from "../recorder_smf_writer";
+} from "../recorder/recorder_smf_writer";
 import {
     createDumpHandshake,
-} from "../ccomidi_recorder";
+} from "../recorder/ccomidi_recorder";
 import { metaEvents, parseSmf, voiceEvents } from "./_smf_parser";
 
 // ---- helpers ---------------------------------------------------------------
