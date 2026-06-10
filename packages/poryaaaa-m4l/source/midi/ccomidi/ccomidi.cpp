@@ -15,6 +15,7 @@ extern "C" {
 }
 
 #include "ccomidi_parser.h"
+#include "ccomidi_bend.h"
 
 #include <array>
 #include <cstddef>
@@ -263,13 +264,11 @@ static void cco_pgm_in(t_cco *x, long program, long channel)
     emit_channel_event(x, kStatusProgram, (std::uint8_t)p, 0, channel);
 }
 
-static void cco_bend(t_cco *x, long val14, long channel)
+static void cco_bend(t_cco *x, long value, long channel)
 {
     if (x->restoreMode) return;
-    long v = clamp_long(val14, 0, 16383);
-    std::uint8_t lo = (std::uint8_t)(v & 0x7F);
-    std::uint8_t hi = (std::uint8_t)((v >> 7) & 0x7F);
-    emit_channel_event(x, 0xE0, lo, hi, channel);
+    BendBytes bend = encode_raw_bend_value(value);
+    emit_channel_event(x, 0xE0, bend.lsb, bend.msb, channel);
 }
 
 /* ---------- control messages ---------- */

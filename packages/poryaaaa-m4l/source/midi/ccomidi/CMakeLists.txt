@@ -40,6 +40,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-posttarget.cma
 
 add_executable(ccomidi_parser_tests
     tests/test_ccomidi_parser.cpp
+    ccomidi_bend.cpp
     ccomidi_parser.cpp
 )
 set_target_properties(ccomidi_parser_tests PROPERTIES

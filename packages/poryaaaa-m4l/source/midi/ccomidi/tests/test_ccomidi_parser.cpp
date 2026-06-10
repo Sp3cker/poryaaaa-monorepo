@@ -4,6 +4,7 @@
  */
 
 #include "../ccomidi_parser.h"
+#include "../ccomidi_bend.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,8 @@
 
 using ccomidi::ParserState;
 using ccomidi::ParserOutput;
+using ccomidi::BendBytes;
+using ccomidi::encode_raw_bend_value;
 using ccomidi::parse_byte;
 
 namespace {
@@ -147,6 +150,36 @@ void test_xcmd_cc_passes_through_unchanged()
     ASSERT_EQ(out[2], 77,   "XCMD value preserved");
 }
 
+void test_raw_bend_value_encodes_as_pitch_bend_msb()
+{
+    BendBytes min = encode_raw_bend_value(0);
+    ASSERT_EQ(min.lsb, 0, "bend raw 0 lsb");
+    ASSERT_EQ(min.msb, 0, "bend raw 0 msb");
+
+    BendBytes near_center = encode_raw_bend_value(63);
+    ASSERT_EQ(near_center.lsb, 0, "bend raw 63 lsb");
+    ASSERT_EQ(near_center.msb, 63, "bend raw 63 msb");
+
+    BendBytes center = encode_raw_bend_value(64);
+    ASSERT_EQ(center.lsb, 0, "bend raw 64 lsb");
+    ASSERT_EQ(center.msb, 64, "bend raw 64 msb");
+
+    BendBytes max = encode_raw_bend_value(127);
+    ASSERT_EQ(max.lsb, 0, "bend raw 127 lsb");
+    ASSERT_EQ(max.msb, 127, "bend raw 127 msb");
+}
+
+void test_raw_bend_value_clamps_to_midi_data_byte()
+{
+    BendBytes low = encode_raw_bend_value(-1);
+    ASSERT_EQ(low.lsb, 0, "bend below range lsb");
+    ASSERT_EQ(low.msb, 0, "bend below range clamps msb");
+
+    BendBytes high = encode_raw_bend_value(128);
+    ASSERT_EQ(high.lsb, 0, "bend above range lsb");
+    ASSERT_EQ(high.msb, 127, "bend above range clamps msb");
+}
+
 /* ----- system common / real-time ----- */
 
 void test_realtime_byte_passes_through_verbatim()
@@ -216,6 +249,8 @@ int main()
     RUN(test_pitch_bend_emits_three_bytes);
     RUN(test_cc_emits_three_bytes);
     RUN(test_xcmd_cc_passes_through_unchanged);
+    RUN(test_raw_bend_value_encodes_as_pitch_bend_msb);
+    RUN(test_raw_bend_value_clamps_to_midi_data_byte);
     RUN(test_realtime_byte_passes_through_verbatim);
     RUN(test_realtime_byte_does_not_disturb_running_status);
     RUN(test_orphan_data_byte_is_dropped);
