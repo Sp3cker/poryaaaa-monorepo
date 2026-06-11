@@ -21,7 +21,7 @@ Primary files:
 - Keep filesystem-heavy and WebSocket work in Node transport.
 - Keep GUI/controller behavior separate from authoritative voicegroup state.
 - When changing emitted or consumed messages, update tests and coordinate with
-  AMXD generator or Node transport as needed.
+  AMXD devices specialist or Node transport as needed.
 
 ## Verification
 

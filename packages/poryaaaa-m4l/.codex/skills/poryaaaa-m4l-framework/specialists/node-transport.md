@@ -22,7 +22,7 @@ Primary files:
   authoritative for slot state.
 - Do not move GUI/controller responsibilities from V8 into Node.
 - Check `docs/Max9-NodeForMax-API-en.md` when using Node-for-Max APIs.
-- If patcher routing changes, hand off to AMXD generator.
+- If patcher routing changes, hand off to AMXD devices specialist.
 
 ## Known Contract
 

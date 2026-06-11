@@ -33,7 +33,7 @@ changes you find.
 
 Use the poryaaaa-m4l framework rules:
 - edit TypeScript in code-src, not javascript bundles
-- validate generated .amxd structure after generator changes
+- validate device .amxd structure with amxd_inspect after hand edits in Max
 - use docs/max-ref before making Max object claims
 
 Return:

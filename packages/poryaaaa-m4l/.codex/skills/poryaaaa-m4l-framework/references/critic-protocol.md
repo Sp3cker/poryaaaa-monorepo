@@ -16,8 +16,8 @@ complete.
 1. **Domain compliance:** changed files match the responsible specialist.
 2. **Contract compliance:** route tags, status payloads, I/O counts, and Live
    parameters agree across domains.
-3. **Generated structure:** inspect `.amxd` for dangling endpoints and
-   out-of-range inlet/outlet use.
+3. **Device structure:** inspect `.amxd` (via amxd_inspect) for dangling
+   endpoints and out-of-range inlet/outlet use.
 4. **Max object accuracy:** object syntax and Live API claims are backed by
    `docs/max-ref/`, Max docs, or `docs/max-gotchas.md`.
 5. **Verification:** run the smallest relevant command set from

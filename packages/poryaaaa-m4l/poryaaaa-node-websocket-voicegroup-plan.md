@@ -359,14 +359,16 @@ Do not keep `ready`, `root`, `status`, or `get_voices` unless implementation dis
   - ccomidi generated patch contains no `r poryaaaa.state`
   - ccomidi generated patch contains no `get_voices` state request wiring
   - ccomidi generated patch contains `node.script ccomidi_voicegroup_client.js @autostart 1`
-  - generated AMXDs pass `scripts/amxd_inspect.py <device> validate`
-  - generated patchlines have valid serialized inlet/outlet metadata for `node.script`, `route`, and `prepend`
+  - AMXDs pass `scripts/amxd_inspect.py <device> validate` (after hand-saving
+    edits in Max)
+  - patchlines have valid serialized inlet/outlet metadata for `node.script`,
+    `route`, and `prepend`
 
 - Existing checks:
   - `npm run check`
   - `npm test`
   - `npm run build:js`
-  - regenerate poryaaaa and ccomidi AMXDs
+  - (Generators removed; edit devices in Max and validate with amxd_inspect)
   - copy both AMXDs to Ableton User Library and verify copies match
 
 ## Acceptance Criteria

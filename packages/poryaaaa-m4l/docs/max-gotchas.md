@@ -102,11 +102,13 @@ A `.amxd` is a `.maxpat` (JSON) wrapped in a small chunked binary header. Hand-r
 0x20+ patcher content       JSON bytes (or compressed mx@c-prefixed data)
 ```
 
-For our generators, meta value `1` + raw JSON is the only path we need. The JSON itself is a standard `.maxpat` document: `{"patcher": {"boxes": [...], "lines": [...], ...}}`.
+For the committed devices, meta value `1` + raw JSON is the layout used. The JSON itself is a standard `.maxpat` document: `{"patcher": {"boxes": [...], "lines": [...], ...}}`.
 
 **Indentation:** Max-saved files use tab indentation. `json.dumps(obj, indent="\t")` matches.
 
-**py2max binary packer doesn't work for instruments.** py2max's `pack_amxd` (also invoked by `Patcher.save_as` when the suffix is `.amxd`) wraps the JSON in an `mx@c` sub-block instead of the simple `meta` chunk shown above. Max accepts that envelope for `mmmm` (midi_effect) and `aaaa` (audio_effect) devices, but **rejects it for `iiii` (instrument)** with the cryptic error `parsing object, possible missing initial '{' character: line=1, char=2, text='...m'`. That error means Max gave up on the binary parse and read the file as raw JSON, hitting the `m` of `ampf` at byte 1 (1-indexed). Workaround: bypass `Patcher.save_as` and pack the binary yourself — see `pack_amxd_factory()` in `scripts/gen_poryaaaa_amxd.py`. Use py2max only to build the patcher dict and serialize the JSON; write the .amxd container manually.
+**py2max binary packer doesn't work for instruments.** py2max's `pack_amxd` (also invoked by `Patcher.save_as` when the suffix is `.amxd`) wraps the JSON in an `mx@c` sub-block instead of the simple `meta` chunk shown above. Max accepts that envelope for `mmmm` (midi_effect) and `aaaa` (audio_effect) devices, but **rejects it for `iiii` (instrument)** with the cryptic error `parsing object, possible missing initial '{' character: line=1, char=2, text='...m'`. That error means Max gave up on the binary parse and read the file as raw JSON, hitting the `m` of `ampf` at byte 1 (1-indexed).
+
+Historically the (now-removed) generators used a custom factory packer to emit the correct layout. Current devices are saved directly from Max, which produces the right ampf+meta+ptch+JSON container for instruments.
 
 ---
 

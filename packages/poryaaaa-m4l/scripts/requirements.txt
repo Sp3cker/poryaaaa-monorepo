@@ -1,1 +1,0 @@
-py2max @ git+https://github.com/shakfu/py2max.git

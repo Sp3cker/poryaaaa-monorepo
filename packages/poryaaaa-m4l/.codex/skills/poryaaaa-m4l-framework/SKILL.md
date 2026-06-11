@@ -1,6 +1,6 @@
 ---
 name: poryaaaa-m4l-framework
-description: Use when working in the poryaaaa-m4l repo on Max for Live devices, generated .amxd files, Max object references, TypeScript for V8 or Node for Max, WebSocket voicegroup transport, C++ Max externals, py2max generators, build/test workflows, or domain-routed subagent work.
+description: Use when working in the poryaaaa-m4l repo on Max for Live devices, hand-maintained .amxd files, Max object references, TypeScript for V8 or Node for Max, WebSocket voicegroup transport, C++ Max externals, build/test workflows, or domain-routed subagent work.
 ---
 
 # poryaaaa-m4l Codex Framework
@@ -29,10 +29,9 @@ for project rules; it has been replaced by this Codex skill.
   `javascript/*.js`.
 - Treat V8-controller TypeScript and Node-for-Max transport TypeScript as
   separate domains unless the task explicitly crosses their message contract.
-- After generator changes, regenerate the relevant `.amxd` and inspect it with
-  `scripts/amxd_inspect.py validate`.
-- Use factory-format `.amxd` helpers in `scripts/_amxd_helpers.py`; do not
-  replace them with py2max's default `.amxd` packer.
+- Devices in `devices/*.amxd` are hand-maintained. After editing a device in Max,
+  run `python3 scripts/amxd_inspect.py devices/<name>.amxd validate` and commit the
+  resulting binary.
 - Before recommending or wiring a Max/M4L object, check `docs/max-ref/` or
   explicitly state when no local reference exists.
 - Serialize non-UI Live API objects as `newobj` with `text`, not native
@@ -69,7 +68,8 @@ The default execution model for multi-domain work is:
 3. Give each subagent an explicit file/domain ownership boundary.
 4. Require each subagent to report findings, changed files, commands run, and
    unresolved risks.
-5. Do not spawn parallel writers over shared generated artifacts. Coordinate
-   generator/device writes in the main agent or run those tasks sequentially.
+5. Do not spawn parallel writers over shared device artifacts. Coordinate
+   device writes (hand-edited .amxd binaries) in the main agent or run those tasks
+   sequentially.
 
 Use `references/subagent-prompts.md` for prompt templates.

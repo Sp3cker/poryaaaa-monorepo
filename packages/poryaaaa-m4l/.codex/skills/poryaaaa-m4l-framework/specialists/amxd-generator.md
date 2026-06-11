@@ -1,27 +1,24 @@
-# AMXD Generator Specialist
+# AMXD Devices Specialist (formerly Generator)
 
 ## Scope
 
-Owns generated Max for Live devices, py2max patch construction, factory `.amxd`
-packing, and structural `.amxd` inspection.
+Owns the hand-maintained Max for Live devices, structural `.amxd` inspection
+with amxd_inspect, and patching/presentation conventions for these devices.
 
 Primary files:
 
-- `scripts/gen_poryaaaa_amxd.py`
-- `scripts/gen_ccomidi_amxd.py`
-- `scripts/poryaaaa_voicegroup_amxd.py`
-- `scripts/_amxd_helpers.py`
 - `scripts/amxd_inspect.py`
 - `devices/poryaaaa.amxd`
 - `devices/ccomidi.amxd`
 
 ## Rules
 
-- Use `py2max` for patcher construction.
-- Use `write_amxd_factory()` from `_amxd_helpers.py`; do not use py2max's
-  default `.amxd` packer for instrument devices.
+- Devices are edited directly: open the .amxd (from the repo or via the
+  installed Max package), edit in the patcher view (including inside bpatchers),
+  and Save to overwrite the file under `devices/`.
 - For native Max objects whose patchlines matter, use `add_raw(...)` with
-  explicit `numinlets`, `numoutlets`, and `outlettype`.
+  explicit `numinlets`, `numoutlets`, and `outlettype` (when reconstructing
+  or documenting).
 - Non-UI Live API objects (`live.thisdevice`, `live.path`, `live.object`,
   `live.observer`, `live.remote~`, `live.param~`, `live.modulate~`) serialize
   as `maxclass: "newobj"` with matching `text`.
@@ -30,6 +27,8 @@ Primary files:
 - Presentation-mode UI needs `presentation` and `presentation_rect`.
 - Helper objects belong in readable patching-mode columns away from the
   presentation UI.
+- After cord, object, or widget changes that affect serialized I/O, always
+  re-validate before committing.
 
 ## Inspection Commands
 
@@ -42,11 +41,11 @@ python3 scripts/amxd_inspect.py devices/ccomidi.amxd cords --from-text thisdevic
 
 ## Verification
 
-- `npm run build:amxd:poryaaaa`
-- `npm run build:amxd:ccomidi`
 - `python3 scripts/amxd_inspect.py devices/<device>.amxd validate`
+- (Devices are no longer produced by npm scripts; `npm run build` does not
+  touch them.)
 
 ## Output
 
-Report generator files changed, regenerated devices, validation results, and
-any Max object references that still need manual confirmation.
+Report device files inspected, validate results, boxes/cords findings, and
+any Max object syntax that still needs reference confirmation.

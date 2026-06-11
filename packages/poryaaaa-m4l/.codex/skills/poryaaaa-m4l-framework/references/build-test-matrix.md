@@ -21,20 +21,20 @@ Run commands from repo root.
   target when present. If no target is present, report that only build
   verification was available.
 
-## AMXD Generators
+## AMXD Devices (hand-maintained)
 
-- Poryaaaa instrument: `npm run build:amxd:poryaaaa`
-- ccomidi MIDI effect: `npm run build:amxd:ccomidi`
-- Validate poryaaaa: `python3 scripts/amxd_inspect.py devices/poryaaaa.amxd validate`
-- Validate ccomidi: `python3 scripts/amxd_inspect.py devices/ccomidi.amxd validate`
+- Inspect/validate after hand edits in Max:
+  `python3 scripts/amxd_inspect.py devices/poryaaaa.amxd validate`
+- Same for ccomidi: `python3 scripts/amxd_inspect.py devices/ccomidi.amxd validate`
+- No npm scripts rebuild devices (they are saved directly from Max).
 
 ## Full Build
 
 - `npm run build`
 
-This rebuilds JS bundles, externals, generated devices, and installs the Max
-package. It is appropriate after cross-domain changes, but use narrower commands
-for focused edits.
+This rebuilds JS bundles, externals, and installs the Max package. It is
+appropriate after cross-domain changes, but use narrower commands for focused
+edits. Devices are not part of the automated build.
 
 ## Skill Framework Changes
 
@@ -43,4 +43,4 @@ For `.codex/skills` and documentation-only changes:
 - Check files exist: `find .codex/skills/poryaaaa-m4l-framework -maxdepth 3 -type f -print`
 - Check skill metadata manually: `SKILL.md` must have YAML frontmatter with
   `name` and `description`.
-- No generated-device rebuild is required unless source/generator files changed.
+- No device rebuild is required for framework/doc-only changes.

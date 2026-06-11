@@ -27,7 +27,7 @@ plumbing (no `state.json`).
   in `code-src/service.ts:63` and `parseSlots` in
   `code-src/ccomidi_voices_service.ts:53` drop everything else.
 - Patcher prep work for the envelope UI is already in place
-  (`scripts/gen_ccomidi_amxd.py:413-510`):
+  (hand-edit in `devices/ccomidi.amxd`, formerly `scripts/gen_ccomidi_amxd.py:413-510`):
   - Four `live.dial`s (Attack/Decay/Sustain/Release) wired to rows `r5..r8`
     with `r{N}_v0 $1` into `[ccomidi]`.
   - `Send Env` `live.toggle` (persisted Live param) drives `r5_en..r8_en`
@@ -177,10 +177,11 @@ Extend the existing test file. New cases:
 `code-src/test/_mocks.ts` already exposes `MockBus` with `seedSnapshot()`
 and `deliver()` — sufficient for all of the above.
 
-## Patcher — `scripts/gen_ccomidi_amxd.py`
+## Patcher — `devices/ccomidi.amxd` (hand-maintained)
 
-Build on the existing envelope section (`build_envelope_section`,
-`gen_ccomidi_amxd.py:413-510`):
+Build on the existing envelope section (hand-edit the post-v8 route and
+envelope wiring directly in the .amxd; the old generator lived at
+`gen_ccomidi_amxd.py:413-510` historically):
 
 1. **Expand the `[route]` after the v8 outlet** from `slots program` to
    `slots program senvtoggle senvactive dialset`. Wire each new outlet:
@@ -255,8 +256,10 @@ This repo (`/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/`):
 - **Edit** `code-src/ccomidi_voices.ts` — wire the `senvchanged` inbound
   handler; expose it on the v8 entry.
 - **Edit** `code-src/test/ccomidi_voices.test.ts` — see Tests section.
-- **Edit** `scripts/gen_ccomidi_amxd.py` — expand `[route]`; add
-  `senvchanged` cord from toggle into v8; resolve scaling.
+- Hand-edit `devices/ccomidi.amxd` (open in Max): expand the `[route]` after
+  the v8, wire `senvchanged` / `senvtoggle` / `senvactive` / `dialset` paths
+  (including into the relevant bpatcher if the envelope section lives there),
+  then Save. (Generators have been removed; devices are hand-maintained.)
 - (Possibly) **Edit** `code-src/test/service.test.ts` — if
   `parseSlotsField` validation gets a dedicated test.
 
@@ -267,11 +270,11 @@ This repo (`/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/`):
    → JSON `null`). Confirm by feeding the JSON status to the v8 console or
    inspecting the snapshot Dict in real time.
 2. `npm test && npm run check && npm run build` clean in this repo.
-3. Rebuild `poryaaaa~` external (CMake `Release`). Regenerate
-   `devices/ccomidi.amxd`.
+3. Rebuild `poryaaaa~` external (CMake `Release`).
+   Hand-edit + save `devices/ccomidi.amxd` in Max with the new routing.
    `python3 scripts/amxd_inspect.py devices/ccomidi.amxd validate` returns
    ok. `cords --from-text v8` shows the new `senvtoggle / senvactive /
-   dialset` outlets.
+   dialset` outlets. (Note: generators removed; patcher changes are manual.)
 4. In Live, on a track running `ccomidi` with `poryaaaa` on a sibling
    track:
    - Click Reload. Pick an envelope-capable voice → ADSR dials snap to the
@@ -295,5 +298,4 @@ This repo (`/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/`):
 - `code-src/ccomidi_voices_service.ts` — `parseSlots`, `select`,
   new `senvchanged`
 - `code-src/test/_mocks.ts` — `MockBus` (sufficient as-is)
-- `scripts/gen_ccomidi_amxd.py` — `build_envelope_section`, the post-v8
-  `[route]`
+- `devices/ccomidi.amxd` (hand-edit the post-v8 route and envelope wiring)

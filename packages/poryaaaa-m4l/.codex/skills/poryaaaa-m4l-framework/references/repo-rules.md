@@ -4,7 +4,6 @@
 
 - Target runtime: Ableton Live 12.4, Max 9.
 - Node engine: `>=24.6.0`.
-- Python generator environment: `scripts/.venv/`.
 - The Max package install path is created by `scripts/install_max_package.sh`,
   which symlinks the repo into `~/Documents/Max 9/Packages/poryaaaa-m4l`.
 
@@ -18,11 +17,8 @@
   Node-for-Max bundles and transport support.
 - `source/audio/poryaaaa~/`: `poryaaaa~` audio external and recorder support.
 - `source/midi/ccomidi/`: `ccomidi` MIDI external and parser tests.
-- `scripts/gen_poryaaaa_amxd.py` and `scripts/gen_ccomidi_amxd.py`: generated
-  device definitions.
-- `scripts/_amxd_helpers.py`: shared factory `.amxd` packing and live-widget
-  helpers.
-- `devices/*.amxd`: generated binary devices.
+- `devices/*.amxd`: hand-maintained device binaries (opened/edited/saved directly
+  in Max; validated with amxd_inspect after changes).
 
 ## Voicegroup Boundary
 
@@ -37,7 +33,8 @@
 
 ## Max/M4L Rules
 
-- Prefer `py2max` for generated interfaces.
+- (Historical) py2max was used to construct the original device patchers; devices
+  are now hand-maintained by editing the .amxd directly in Max.
 - Use `[v8]` for in-device controller logic.
 - Use `[node.script]` for arbitrary filesystem access, long-running async work,
   WebSocket transport, and npm ecosystem code.
@@ -55,14 +52,20 @@
 - Generated patchlines depend on serialized `numinlets`, `numoutlets`, and
   `outlettype`; set them explicitly with `add_raw(...)` when wiring matters.
 
-## Generated Device Rules
+## Device Maintenance Rules
 
-- Use `pack_amxd_factory()` / `write_amxd_factory()` from
-  `scripts/_amxd_helpers.py`.
-- The generated `.amxd` format is factory-style `ampf + meta + ptch + JSON`.
-- Do not use py2max's default `.amxd` packer for instrument devices.
-- After generator changes, run the relevant generator and then:
-  `python3 scripts/amxd_inspect.py devices/<device>.amxd validate`.
+- Devices are edited by opening the .amxd from the repo in Max, making changes
+  to the patcher (patching rects, cords, bpatchers, live.* widgets, etc.), and
+  saving in place over the file in `devices/`.
+- After any structural change (especially cords or object counts), run
+  `python3 scripts/amxd_inspect.py devices/<device>.amxd validate` (plus boxes/
+  cords queries as needed) and commit the updated binary .amxd.
+- The `.amxd` files use the factory-style `ampf + meta + ptch + JSON` layout
+  produced by Max on save (historically also produced by custom pack helpers).
+- Non-UI Live API objects serialize as `maxclass: "newobj"` with the object name
+  in `text`; UI widgets (live.dial etc.) remain native maxclasses.
+- Presentation layout (`presentation` + `presentation_rect`) is part of the
+  deliverable for anything shown in Live's device strip.
 
 ## Feature Removal
 
