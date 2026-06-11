@@ -24,103 +24,7 @@ struct PendingMidiEvent {
   std::uint8_t coalesceData1 = 0;
 };
 
-bool is_channel_voice_status(std::uint8_t status) {
-  const std::uint8_t kind = status & 0xF0;
-  return kind >= 0x80 && kind <= 0xE0;
-}
 
-bool is_single_data_byte_status(std::uint8_t status) {
-  const std::uint8_t kind = status & 0xF0;
-  return kind == 0xC0 || kind == 0xD0;
-}
-
-bool is_note_on(const MidiRecord &record) {
-  return (record.status & 0xF0) == 0x90 && record.data2 > 0;
-}
-
-bool is_note_status(std::uint8_t status) {
-  const std::uint8_t kind = status & 0xF0;
-  return kind == 0x80 || kind == 0x90;
-}
-
-bool is_xcmd_cc(const MidiRecord &record) {
-  if ((record.status & 0xF0) != 0xB0)
-    return false;
-  return record.data1 == 0x1D || record.data1 == 0x1E ||
-         record.data1 == 0x1F;
-}
-
-bool uses_coarse_grid(const MidiRecord &record) {
-  const std::uint8_t kind = record.status & 0xF0;
-  return kind == 0xB0 || kind == 0xC0 || kind == 0xE0;
-}
-
-bool uses_latest_value_per_cell(const MidiRecord &record) {
-  const std::uint8_t kind = record.status & 0xF0;
-  if (kind == 0xB0)
-    return !is_xcmd_cc(record);
-  return kind == 0xC0 || kind == 0xE0;
-}
-
-double anchor_beats_for_snapshot(const RecorderCore::Snapshot &snapshot) {
-  for (const MidiRecord &record : snapshot.midi) {
-    if (is_note_on(record))
-      return std::floor(record.beats);
-  }
-  return 0.0;
-}
-
-double ticks_for_beats(double beats, double anchorBeats, std::uint16_t ppq) {
-  const double relativeBeats = beats - anchorBeats;
-  if (relativeBeats <= 0.0)
-    return 0.0;
-  return relativeBeats * static_cast<double>(ppq);
-}
-
-int floored_tick_for_beats(double beats, double anchorBeats, std::uint16_t ppq) {
-  return static_cast<int>(std::floor(ticks_for_beats(beats, anchorBeats, ppq) +
-                                     1.0e-9));
-}
-
-int nearest_tick_for_beats(double beats, double anchorBeats, std::uint16_t ppq) {
-  return static_cast<int>(std::floor(ticks_for_beats(beats, anchorBeats, ppq) +
-                                     0.5));
-}
-
-int coarse_grid_tick(int tick) {
-  constexpr int kCoarseGridTicks = 4;
-  return tick - tick % kCoarseGridTicks;
-}
-
-PendingMidiEvent make_pending_event(const MidiRecord &record, int tick,
-                                    std::uint64_t order) {
-  PendingMidiEvent event;
-  event.tick = tick;
-  event.order = order;
-  event.record = record;
-  event.coalesces = uses_latest_value_per_cell(record);
-  event.coalesceKind = record.status & 0xF0;
-  if (event.coalesceKind == 0xB0)
-    event.coalesceData1 = record.data1;
-  return event;
-}
-
-void append_pending_event(std::vector<PendingMidiEvent> &events,
-                          const PendingMidiEvent &event) {
-  if (event.coalesces) {
-    for (PendingMidiEvent &existing : events) {
-      if (!existing.coalesces)
-        continue;
-      if (existing.tick == event.tick &&
-          existing.coalesceKind == event.coalesceKind &&
-          existing.coalesceData1 == event.coalesceData1) {
-        existing = event;
-        return;
-      }
-    }
-  }
-  events.push_back(event);
-}
 
 } // namespace
 
@@ -131,7 +35,13 @@ bool write_smf1(const std::string &path,
     return false;
 
   const std::uint16_t ppq = options.ppq;
-  const double anchorBeats = anchor_beats_for_snapshot(snapshot);
+  double anchorBeats = 0.0;
+  for (const MidiRecord &record : snapshot.midi) {
+    if ((record.status & 0xF0) == 0x90 && record.data2 > 0) {
+      anchorBeats = std::floor(record.beats);
+      break;
+    }
+  }
 
   try {
     constexpr int kConductorTrack = 0;
@@ -141,11 +51,23 @@ bool write_smf1(const std::string &path,
       channelTrack[i] = -1;
     int nextTrack = 1;
     for (const MidiRecord &m : snapshot.midi) {
-      if (!is_channel_voice_status(m.status))
+      const std::uint8_t kind = m.status & 0xF0;
+      if (!(kind >= 0x80 && kind <= 0xE0))
         continue;
       const std::uint8_t channel = m.status & 0x0F;
       if (channelTrack[channel] < 0)
         channelTrack[channel] = nextTrack++;
+    }
+    // Also consider channels that only have explicit initial ccomidi state
+    // (e.g. voicemap PC or initial BENDR/TUNE/CCs with no captured events yet).
+    // This ensures a music track is created so the tick-0 setup is emitted.
+    for (const auto &ip : options.initialPrograms) {
+      if (ip.channel < 16 && channelTrack[ip.channel] < 0)
+        channelTrack[ip.channel] = nextTrack++;
+    }
+    for (const auto &ic : options.initialCcs) {
+      if (ic.channel < 16 && channelTrack[ic.channel] < 0)
+        channelTrack[ic.channel] = nextTrack++;
     }
     // Always keep at least one music track so MidiFile::write never calls
     // back() on an empty event list (UB) when nothing was recorded.
@@ -174,20 +96,89 @@ bool write_smf1(const std::string &path,
 
     std::vector<PendingMidiEvent> pendingEvents[16];
     std::uint64_t eventOrder = 0;
+
+    // Helper to decide if this event type coalesces to latest value per (tick, kind, data1)
+    auto coalesces = [](const MidiRecord &rec) {
+      const std::uint8_t kind = rec.status & 0xF0;
+      if (kind == 0xB0) {
+        if ((rec.status & 0xF0) != 0xB0) return false; // redundant but for clarity
+        const auto d1 = rec.data1;
+        return !(d1 == 0x1D || d1 == 0x1E || d1 == 0x1F);
+      }
+      return kind == 0xC0 || kind == 0xE0;
+    };
+
+    auto append_event = [&](std::vector<PendingMidiEvent> &events, const MidiRecord &rec, int tick) {
+      PendingMidiEvent ev;
+      ev.tick = tick;
+      ev.order = eventOrder++;
+      ev.record = rec;
+      ev.coalesces = coalesces(rec);
+      ev.coalesceKind = rec.status & 0xF0;
+      if (ev.coalesceKind == 0xB0)
+        ev.coalesceData1 = rec.data1;
+
+      if (ev.coalesces) {
+        for (PendingMidiEvent &existing : events) {
+          if (!existing.coalesces) continue;
+          if (existing.tick == ev.tick &&
+              existing.coalesceKind == ev.coalesceKind &&
+              existing.coalesceData1 == ev.coalesceData1) {
+            existing = ev;
+            return;
+          }
+        }
+      }
+      events.push_back(ev);
+    };
+
+    // Inject any explicit initial ccomidi parameters (PC, BENDR, TUNE, other
+    // non-default CCs, etc.) at tick 0. These get the earliest orders so they
+    // lead any other tick-0 events. Captured pre-anchor events for the same
+    // param will replace via the coalescing logic below.
+    for (const auto &ip : options.initialPrograms) {
+      if (ip.channel >= 16 || ip.program > 127) continue;
+      if (channelTrack[ip.channel] < 0) continue;
+      MidiRecord rec{};
+      rec.status = 0xC0 | ip.channel;
+      rec.data1 = ip.program;
+      rec.data2 = 0;
+      append_event(pendingEvents[ip.channel], rec, /*tick=*/0);
+    }
+    for (const auto &ic : options.initialCcs) {
+      if (ic.channel >= 16 || ic.cc > 127 || ic.value > 127) continue;
+      if (channelTrack[ic.channel] < 0) continue;
+      MidiRecord rec{};
+      rec.status = 0xB0 | ic.channel;
+      rec.data1 = ic.cc;
+      rec.data2 = ic.value;
+      append_event(pendingEvents[ic.channel], rec, /*tick=*/0);
+    }
+
     for (const MidiRecord &m : snapshot.midi) {
-      if (!is_channel_voice_status(m.status))
+      const std::uint8_t kind = m.status & 0xF0;
+      if (!(kind >= 0x80 && kind <= 0xE0))
         continue;
       const std::uint8_t channel = m.status & 0x0F;
       if (channelTrack[channel] < 0)
         continue;
 
-      int tick = is_note_status(m.status)
-          ? nearest_tick_for_beats(m.beats, anchorBeats, ppq)
-          : floored_tick_for_beats(m.beats, anchorBeats, ppq);
-      if (uses_coarse_grid(m) && !is_note_status(m.status))
-        tick = coarse_grid_tick(tick);
-      append_pending_event(pendingEvents[channel],
-                           make_pending_event(m, tick, eventOrder++));
+      int tick;
+      const bool is_note = (kind == 0x80 || kind == 0x90);
+      if (is_note) {
+        const double rel = m.beats - anchorBeats;
+        const double t = (rel <= 0.0) ? 0.0 : rel * static_cast<double>(ppq);
+        tick = static_cast<int>(std::floor(t + 0.5));
+      } else {
+        const double rel = m.beats - anchorBeats;
+        const double t = (rel <= 0.0) ? 0.0 : rel * static_cast<double>(ppq);
+        tick = static_cast<int>(std::floor(t + 1.0e-9));
+      }
+      if ((kind == 0xB0 || kind == 0xC0 || kind == 0xE0) && !is_note) {
+        tick = tick - (tick % 4);
+      }
+
+      append_event(pendingEvents[channel], m, tick);
     }
 
     for (auto &events : pendingEvents) {
@@ -211,7 +202,8 @@ bool write_smf1(const std::string &path,
         std::vector<uchar> bytes;
         bytes.push_back(static_cast<uchar>(m.status));
         bytes.push_back(static_cast<uchar>(m.data1));
-        if (!is_single_data_byte_status(m.status))
+        const std::uint8_t k = m.status & 0xF0;
+        if (!(k == 0xC0 || k == 0xD0))
           bytes.push_back(static_cast<uchar>(m.data2));
         midifile.addEvent(track, event.tick, bytes);
         if (event.tick > lastTickPerChannel[channel])
@@ -233,7 +225,15 @@ bool write_smf1(const std::string &path,
       const int track = channelTrack[channel];
       if (track < 0)
         continue;
-      const int releaseTick = lastTickPerChannel[channel] + 1;
+      // Place synthetic release on the 4-grid after the channel's last event.
+      // Using +1 (old) produced off-grid ticks; mid2agb's integer scaling of
+      // durations would then truncate, causing playback/rhythm errors in
+      // the generated GBA M4A data. Compute a clean later grid point.
+      int last = lastTickPerChannel[channel];
+      constexpr int g = 4;
+      int releaseTick = ((last / g) + 1) * g;
+      if (releaseTick <= last)
+        releaseTick = last + g;
       std::vector<uchar> bytes;
       bytes.push_back(static_cast<uchar>(0x80 | channel));
       bytes.push_back(static_cast<uchar>(note));

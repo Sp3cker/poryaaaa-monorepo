@@ -286,6 +286,44 @@ void test_smf_writer_normalizes_note_ticks()
 	std::remove(path);
 }
 
+// Test that explicit initial ccomidi params (non-default) are emitted at tick 0
+// even when the snapshot has no pre-note events for them (or no events at all).
+// This matches the M4L buildSmf(voicemap + initialCcs) contract and the
+// requirement that any ccomidi parameter that isn't default must appear at
+// tick-0 in the exported SMF for correct mid2agb / m4a track setup.
+void test_smf_writer_emits_initial_ccomidi_params_at_tick0()
+{
+	const char *path = "poryaaaa_smf_initial_state_test.mid";
+	std::remove(path);
+
+	ccomidi::RecorderCore::Snapshot snapshot;
+	// Only a note; no PC or special CCs in the captured events.
+	snapshot.midi.push_back({beat_for_tick(10), 0x90, 60, 100});
+	snapshot.midi.push_back({beat_for_tick(12), 0x80, 60, 0});
+
+	ccomidi::SmfWriteOptions options;
+	options.ppq = 96;
+	options.tempoBpm = 120.0;
+	// Provide initial for ch 0 (program 5) and a ccomidi param e.g. BENDR=4 (CC 0x14)
+	// plus a normal VOL for ch 3.
+	options.initialPrograms.push_back({0, 5});
+	options.initialCcs.push_back({0, 0x14, 4});  // BENDR
+	options.initialCcs.push_back({3, 0x07, 100});
+
+	ASSERT(ccomidi::write_smf1(path, snapshot, options), "writer with initial state");
+
+	std::vector<ParsedMidiEvent> events = parse_channel_events(path);
+
+	// PC for ch0 at tick 0
+	ASSERT(has_event(events, 0, {0xC0, 5}), "initial PC emitted at tick 0");
+	// BENDR CC for ch0 at tick 0
+	ASSERT(has_event(events, 0, {0xB0, 0x14, 4}), "initial BENDR (ccomidi param) at tick 0");
+	// The note itself is later
+	ASSERT(has_event(events, 10, {0x90, 60, 100}), "note after initial state");
+
+	std::remove(path);
+}
+
 } // namespace
 
 extern "C" void test_recorder_core_run_all(void)
@@ -296,4 +334,5 @@ extern "C" void test_recorder_core_run_all(void)
 	test_recorder_bridge_rejects_posix_backslashes();
 	test_smf_writer_coarse_grid_and_latest_value();
 	test_smf_writer_normalizes_note_ticks();
+	test_smf_writer_emits_initial_ccomidi_params_at_tick0();
 }
