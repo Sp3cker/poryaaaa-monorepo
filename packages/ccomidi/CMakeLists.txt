@@ -116,6 +116,15 @@ target_include_directories(ccomidi_core PUBLIC
     src
 )
 
+add_library(ccomidi_legatobend_core
+    src/legatobend/legatobend_core.cpp
+)
+ccomidi_enable_project_warnings(ccomidi_legatobend_core)
+
+target_include_directories(ccomidi_legatobend_core PUBLIC
+    src
+)
+
 add_executable(ccomidi_core_tests
     src/tests/test_sender_core.cpp
 )
@@ -123,6 +132,15 @@ ccomidi_enable_project_warnings(ccomidi_core_tests)
 
 target_link_libraries(ccomidi_core_tests PRIVATE
     ccomidi_core
+)
+
+add_executable(ccomidi_legatobend_core_tests
+    src/tests/test_legatobend_core.cpp
+)
+ccomidi_enable_project_warnings(ccomidi_legatobend_core_tests)
+
+target_link_libraries(ccomidi_legatobend_core_tests PRIVATE
+    ccomidi_legatobend_core
 )
 
 add_library(ccomidi_gui STATIC
@@ -174,6 +192,17 @@ target_link_libraries(ccomidi PRIVATE
     ccomidi_ipc
 )
 
+add_library(ccomidi_legatobend MODULE
+    src/plugin/legatobend_plugin.cpp
+    src/gui/legatobend_editor.cpp
+)
+ccomidi_enable_project_warnings(ccomidi_legatobend)
+
+target_link_libraries(ccomidi_legatobend PRIVATE
+    ccomidi_legatobend_core
+    ccomidi_gui
+)
+
 if(APPLE)
     set(CLAP_INSTALL_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP")
     set_target_properties(ccomidi PROPERTIES
@@ -194,8 +223,27 @@ if(APPLE)
             "$<TARGET_BUNDLE_DIR:ccomidi>"
             "${CLAP_INSTALL_DIR}/ccomidi.clap"
     )
+    set_target_properties(ccomidi_legatobend PROPERTIES
+        BUNDLE TRUE
+        BUNDLE_EXTENSION "clap"
+    )
+    add_custom_command(TARGET ccomidi_legatobend POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/LegatoBendInfo.plist"
+            "$<TARGET_BUNDLE_CONTENT_DIR:ccomidi_legatobend>/Info.plist"
+        COMMAND codesign -f -s - "$<TARGET_BUNDLE_DIR:ccomidi_legatobend>"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "${CLAP_INSTALL_DIR}/ccomidi_legatobend.clap"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "$<TARGET_BUNDLE_DIR:ccomidi_legatobend>"
+            "${CLAP_INSTALL_DIR}/ccomidi_legatobend.clap"
+    )
 else()
     set_target_properties(ccomidi PROPERTIES
+        PREFIX ""
+        SUFFIX ".clap"
+    )
+    set_target_properties(ccomidi_legatobend PROPERTIES
         PREFIX ""
         SUFFIX ".clap"
     )
