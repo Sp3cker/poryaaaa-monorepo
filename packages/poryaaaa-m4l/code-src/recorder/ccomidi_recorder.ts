@@ -21,13 +21,6 @@ import {
 import {parseDictLike} from '../ccomidi_routing_dicts'
 export const RECORDER_DIR = "~/Music/poryaaaa-recordings/";
 
-// If the user typed (or restored) an absolute / ~-prefixed path, use it as-is.
-// Bare filenames are resolved under RECORDER_DIR.
-function resolveSavePath(filename: string): string {
-    if (filename.startsWith("/") || filename.startsWith("~")) return filename;
-    return RECORDER_DIR + filename;
-}
-
 // Persisted export-range strings (raw user input from the device's Start/Length
 // textedit fields). Stored as strings so we don't lose format and so we can
 // apply the current values at save time.
@@ -513,19 +506,23 @@ function ccomidiDeviceState(params: Map<string, number>, channel: number): { pro
     return { program, ccs };
 }
 
-function ccValue(ccs: InitialCc[], cc: number): number | null {
-    const found = ccs.find((entry) => entry.cc === cc);
-    return found ? found.value : null;
-}
-
 function logFoundState(
     log: LomSnapshotLogger,
     devicePath: string,
     channel: number,
     state: { program: number; ccs: InitialCc[] },
 ): void {
-    const volume = ccValue(state.ccs, 0x07);
-    const pan = ccValue(state.ccs, 0x0A);
+    // Look up the current value for a specific CC (by number) from the list
+    // of initial CCs we captured via LOM at save time. Used only for the
+    // human-readable status log of what ccomidi state will be written.
+    const volume = (() => {
+        const found = state.ccs.find((entry) => entry.cc === 0x07);
+        return found ? found.value : null;
+    })();
+    const pan = (() => {
+        const found = state.ccs.find((entry) => entry.cc === 0x0A);
+        return found ? found.value : null;
+    })();
     log(
         `recorder: LOM ccomidi state ${devicePath} `
         + `ch${channel + 1} PC=${state.program} `
@@ -663,7 +660,13 @@ export function createRecorderService(deps: ServiceDeps): RecorderService {
     const smfWriter = deps.makeSmfWriter({
         voicemap:   () => activeSnapshot?.voicemap ?? new Map(),
         initialCcs: () => activeSnapshot?.initialCcs ?? [],
-        outputPath: () => currentFilename ? resolveSavePath(currentFilename) : "",
+        // Resolve the user-provided filename: keep absolute or ~-prefixed paths
+        // as-is; otherwise place bare names under the standard recordings directory.
+        outputPath: () => currentFilename
+            ? (currentFilename.startsWith("/") || currentFilename.startsWith("~")
+                ? currentFilename
+                : RECORDER_DIR + currentFilename)
+            : "",
         range:      () => ({ start: currentStartBeat, length: currentLengthBeats }),
         markerRange:() => ({ start: currentLoopStart, end: currentLoopEnd }),
     });
@@ -765,10 +768,6 @@ export function createRecorderService(deps: ServiceDeps): RecorderService {
 }
 
 // ---- Max runtime wiring ----------------------------------------------------
-
-function isMaxRuntime(): boolean {
-    return typeof outlet === "function" && typeof messnamed === "function";
-}
 
 function installMaxHandlers(): void {
     inlets = 1;
@@ -1172,4 +1171,7 @@ function installMaxHandlers(): void {
     Object.assign(globalThis, handlers);
 }
 
-if (isMaxRuntime()) installMaxHandlers();
+// Detect whether we are running inside Max's [v8] object (where the
+// global `outlet` and `messnamed` functions exist). In tests / plain
+// Node we skip installing the Max-specific handlers.
+if (typeof outlet === "function" && typeof messnamed === "function") installMaxHandlers();

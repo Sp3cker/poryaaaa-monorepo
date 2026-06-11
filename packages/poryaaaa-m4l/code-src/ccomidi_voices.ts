@@ -362,16 +362,7 @@ function installMaxHandlers(): void {
     routeTrack,
   });
 
-  function atomsToString(messageName: string, args: MaxAtom[]): string | null {
-    if (args.length === 0) {
-      post(`ccomidi_voices: ${messageName} requires a string argument\n`);
-      return null;
-    }
-    return args
-      .map((arg) => String(arg))
-      .join(" ")
-      .trim();
-  }
+
 
   function atomToInteger(messageName: string, args: MaxAtom[]): number | null {
     if (args.length !== 1 || typeof args[0] !== "number") {
@@ -440,8 +431,14 @@ function installMaxHandlers(): void {
   }
 
   function state(...args: MaxAtom[]): void {
-    const encoded = atomsToString("state", args);
-    if (encoded === null || !encoded) return;
+    // Convert message args to a single trimmed string (or null if none).
+    // Used for the "state" handler to pass encoded data to the service.
+    if (args.length === 0) {
+      post(`ccomidi_voices: state requires a string argument\n`);
+      return;
+    }
+    const encoded = args.map((arg) => String(arg)).join(" ").trim();
+    if (!encoded) return;
     service.state(encoded);
   }
 

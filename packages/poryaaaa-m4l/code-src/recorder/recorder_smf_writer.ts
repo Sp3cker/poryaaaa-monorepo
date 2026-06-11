@@ -141,12 +141,7 @@ export interface SmfWriter {
 // ---------------------------------------------------------------------------
 // Public factory
 
-// Extract the trailing path component (after the last `/`) for the status
-// line — the user wants to see "test2.mid" not the full Music path.
-function basename(p: string): string {
-    const i = p.lastIndexOf("/");
-    return i >= 0 ? p.slice(i + 1) : p;
-}
+
 
 // Class name of a thrown value, for the FAILED status string. Falls back to
 // "Error" for plain strings / numbers / null. Kept terse on purpose — the
@@ -406,7 +401,10 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                     return false;
                 }
                 deps.post(`recorder: wrote ${outPath} (${events.length} events)\n`);
-                status(`Saved: ${basename(outPath)} (${events.length} events)`);
+                // Extract basename for the status message (user sees "test2.mid" not full path).
+                const i = outPath.lastIndexOf("/");
+                const base = i >= 0 ? outPath.slice(i + 1) : outPath;
+                status(`Saved: ${base} (${events.length} events)`);
                 // Clear the C++ buffer so a subsequent take doesn't append to
                 // the saved one. Only fires on a confirmed write success —
                 // failure paths leave the buffer intact for a retry.

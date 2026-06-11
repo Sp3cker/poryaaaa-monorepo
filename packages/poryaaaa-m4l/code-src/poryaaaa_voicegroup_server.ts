@@ -13,9 +13,7 @@ type MaxApi = {
 
 const maxApi = require("max-api") as MaxApi;
 
-function atomsToString(args: unknown[]): string {
-  return args.map((arg) => String(arg)).join(" ").trim();
-}
+
 
 const store = new ProjectStore();
 const service = new PoryaaaaVoicegroupService({
@@ -32,11 +30,13 @@ service.startWebSocket().catch((err: unknown) => {
 });
 
 maxApi.addHandler("rawroot", (...args) => {
-  service.rawroot(atomsToString(args));
+  // Convert raw Max args to a single trimmed string for the service (common pattern for string messages).
+  service.rawroot(args.map((arg) => String(arg)).join(" ").trim());
 });
 
 maxApi.addHandler("bankselect", (...args) => {
-  service.bankselect(atomsToString(args));
+  // Convert raw Max args to a single trimmed string for the service (common pattern for string messages).
+  service.bankselect(args.map((arg) => String(arg)).join(" ").trim());
 });
 
 maxApi.addHandler("reload", () => {
