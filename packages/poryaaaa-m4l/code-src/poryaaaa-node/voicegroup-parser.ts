@@ -88,7 +88,9 @@ export function parseVoicegroupSource(
     const line = code.trim();
     if (!line) continue;
     if (line.startsWith(".")) continue;
-    if (isLabel(line)) continue;
+    // Skip "Label::" lines. These are section headers (common in decompiled
+    // voicegroup .s files) and never represent an actual instrument/voice slot.
+    if (/^[A-Za-z_.$][\w.$]*::$/.test(line)) continue;
 
     if (/^voice_group(?:\s|$)/.test(line)) {
       continue;
@@ -123,10 +125,6 @@ function stripLineComment(line: string): LineParts {
     code: line.slice(0, idx),
     comment: line.slice(idx + 1).trim(),
   };
-}
-
-function isLabel(line: string): boolean {
-  return /^[A-Za-z_.$][\w.$]*::$/.test(line);
 }
 
 const MACROS: MacroDef[] = [
@@ -253,7 +251,10 @@ function keysplit(
   if (!parsed) return null;
   return {
     program: -1,
-    name: comment || voicegroupNameFromKeysplitArgs(parsed),
+    // Prefer a "voicegroup_..." argument if one is present (this is how
+    // keysplit entries often name their target voicegroup table). Fall back
+    // to the second argument, or the first if nothing better is available.
+    name: comment || (parsed.find((arg) => arg.startsWith("voicegroup_")) ?? parsed[1] ?? parsed[0]),
     typeCode: VOICE_KEYSPLIT,
     envelope: null,
   };
@@ -294,10 +295,6 @@ function cry(typeCode: number): MacroParser {
   };
 }
 
-function voicegroupNameFromKeysplitArgs(args: string[]): string {
-  return args.find((arg) => arg.startsWith("voicegroup_")) ?? args[1] ?? args[0];
-}
-
 function parseCommaArgs(
   args: string,
   expectedCount: number,
@@ -322,8 +319,13 @@ function parseProgrammableWaveArgs(
 ) {
   const parsed = args.split(",").map((arg) => arg.trim()).filter(Boolean);
   if (parsed.length === 6) {
-    const fixedWaveAndAttack = splitMissingWaveAttackComma(parsed[2]);
-    if (fixedWaveAndAttack) parsed.splice(2, 1, ...fixedWaveAndAttack);
+    // Some "voice_programmable_wave" lines are written with the wave name and
+    // its attack value jammed together as a single space-separated token in
+    // the third field (e.g. "WaveData 0x80" instead of two comma fields).
+    // Detect and split it so we always have the expected 7 fields.
+    const field = parsed[2];
+    const match = field.match(/^(\S+)\s+([-+]?(?:\d+|0x[0-9a-f]+))$/i);
+    if (match) parsed.splice(2, 1, match[1], match[2]);
   }
   if (parsed.length !== 7) {
     diagnostics.push(
@@ -332,12 +334,6 @@ function parseProgrammableWaveArgs(
     return null;
   }
   return parsed;
-}
-
-function splitMissingWaveAttackComma(field: string) {
-  const match = field.match(/^(\S+)\s+([-+]?(?:\d+|0x[0-9a-f]+))$/i);
-  if (!match) return null;
-  return [match[1], match[2]];
 }
 
 function parseNumericField(
