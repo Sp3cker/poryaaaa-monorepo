@@ -3,12 +3,11 @@ import assert from "node:assert/strict";
 
 import {
     CcomidiVoicesService,
-    REROUTE_CHANNEL,
     routingChannelForTrackIndex,
     routingChoices,
     trackIndexFromPath,
 } from "../ccomidi_voices";
-import { makeMockVoicesDeps } from "./_mocks";
+import { makeMockVoicesDeps, routeWithBroadcast } from "./_mocks";
 
 function outletArgs(deps: ReturnType<typeof makeMockVoicesDeps>): unknown[][] {
     return deps.outletCalls.map((c) => c.args);
@@ -210,40 +209,37 @@ test("`route` asks Live routing helper to update Ableton track routing", () => {
         routeTrack: () => { routed++; },
     });
 
-    svc.route();
+    routeWithBroadcast(svc);
 
     assert.equal(routed, 1);
     assert.deepEqual(outletArgs(deps), [["autorouted", 1]]);
-    assert.equal(deps.busMock.sent.length, 1);
-    assert.equal(deps.busMock.sent[0].channel, REROUTE_CHANNEL);
 });
 
 test("`route` broadcasts a reroute request that other ccomidi instances apply", () => {
     const shared = makeMockVoicesDeps();
     let routedA = 0;
     let routedB = 0;
+    const b = new CcomidiVoicesService({
+        ...shared,
+        routeTrack: () => { routedB++; },
+    });
     const a = new CcomidiVoicesService({
         ...shared,
         routeTrack: () => { routedA++; },
     });
-    new CcomidiVoicesService({
-        ...shared,
-        routeTrack: () => { routedB++; },
-    }).start();
+    b.start();
     a.start();
     shared.reset();
 
-    a.route();
+    const encoded = routeWithBroadcast(a);
 
     assert.equal(routedA, 1);
     assert.equal(routedB, 0);
-    assert.equal(shared.busMock.sent.length, 1);
 
-    shared.busMock.deliver(REROUTE_CHANNEL, shared.busMock.sent[0].payload);
+    b.peerReroute(encoded);
 
     assert.equal(routedA, 1);
     assert.equal(routedB, 1);
-    assert.equal(shared.busMock.sent.length, 1);
 });
 
 test("`autorouteifnew(0)` routes once and marks the saved autoroute flag", () => {
@@ -258,7 +254,6 @@ test("`autorouteifnew(0)` routes once and marks the saved autoroute flag", () =>
 
     assert.equal(routed, 1);
     assert.deepEqual(outletArgs(deps), [["autorouted", 1]]);
-    assert.equal(deps.busMock.sent.length, 0);
 });
 
 test("`autorouteifnew(1)` preserves existing routing on Live Set load", () => {

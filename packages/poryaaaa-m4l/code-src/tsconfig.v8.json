@@ -4,7 +4,6 @@
         "types": ["maxmsp"]
     },
     "include": [
-        "bus.ts",
         "ccomidi_voices.ts",
         "ccomidi_routing_dicts.ts",
         "recorder/ccomidi_recorder.ts",

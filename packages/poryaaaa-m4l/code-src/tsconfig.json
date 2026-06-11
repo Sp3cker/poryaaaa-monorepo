@@ -4,7 +4,6 @@
         "types": ["maxmsp", "node"]
     },
     "include": [
-        "bus.ts",
         "scanner.ts",
         "voice-slot-contract.ts",
         "ccomidi_voices.ts",

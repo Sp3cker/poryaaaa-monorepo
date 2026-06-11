@@ -150,34 +150,42 @@ void test_xcmd_cc_passes_through_unchanged()
     ASSERT_EQ(out[2], 77,   "XCMD value preserved");
 }
 
-void test_raw_bend_value_encodes_as_pitch_bend_msb()
+void test_raw_bend_value_encodes_center_at_64()
 {
-    BendBytes min = encode_raw_bend_value(0);
-    ASSERT_EQ(min.lsb, 0, "bend raw 0 lsb");
-    ASSERT_EQ(min.msb, 0, "bend raw 0 msb");
+    // The UI bend dial sends 0 to mean "center" (which corresponds to MIDI MSB=64).
+    // Negative dial values (<0) must produce MSB <64 (pitch down).
+    // Positive values produce MSB >64 (pitch up).
+    BendBytes center = encode_raw_bend_value(0);
+    ASSERT_EQ(center.lsb, 0, "dial 0 (center) lsb");
+    ASSERT_EQ(center.msb, 64, "dial 0 (center) msb == 64");
 
-    BendBytes near_center = encode_raw_bend_value(63);
-    ASSERT_EQ(near_center.lsb, 0, "bend raw 63 lsb");
-    ASSERT_EQ(near_center.msb, 63, "bend raw 63 msb");
+    BendBytes neg = encode_raw_bend_value(-1);
+    ASSERT_EQ(neg.lsb, 0, "dial -1 lsb");
+    ASSERT_EQ(neg.msb, 63, "dial -1 < center msb");
 
-    BendBytes center = encode_raw_bend_value(64);
-    ASSERT_EQ(center.lsb, 0, "bend raw 64 lsb");
-    ASSERT_EQ(center.msb, 64, "bend raw 64 msb");
+    BendBytes pos = encode_raw_bend_value(1);
+    ASSERT_EQ(pos.lsb, 0, "dial +1 lsb");
+    ASSERT_EQ(pos.msb, 65, "dial +1 > center msb");
 
-    BendBytes max = encode_raw_bend_value(127);
-    ASSERT_EQ(max.lsb, 0, "bend raw 127 lsb");
-    ASSERT_EQ(max.msb, 127, "bend raw 127 msb");
+    // Full negative and positive of the current dial range
+    BendBytes min = encode_raw_bend_value(-64);
+    ASSERT_EQ(min.lsb, 0, "dial -64 lsb");
+    ASSERT_EQ(min.msb, 0, "dial -64 → full down");
+
+    BendBytes max = encode_raw_bend_value(64);
+    ASSERT_EQ(max.lsb, 0, "dial +64 lsb");
+    ASSERT_EQ(max.msb, 127, "dial +64 → full up (clamped)");
 }
 
-void test_raw_bend_value_clamps_to_midi_data_byte()
+void test_raw_bend_value_clamps()
 {
-    BendBytes low = encode_raw_bend_value(-1);
-    ASSERT_EQ(low.lsb, 0, "bend below range lsb");
-    ASSERT_EQ(low.msb, 0, "bend below range clamps msb");
+    BendBytes low = encode_raw_bend_value(-100);
+    ASSERT_EQ(low.lsb, 0, "way below range lsb");
+    ASSERT_EQ(low.msb, 0, "way below range msb");
 
-    BendBytes high = encode_raw_bend_value(128);
-    ASSERT_EQ(high.lsb, 0, "bend above range lsb");
-    ASSERT_EQ(high.msb, 127, "bend above range clamps msb");
+    BendBytes high = encode_raw_bend_value(100);
+    ASSERT_EQ(high.lsb, 0, "way above range lsb");
+    ASSERT_EQ(high.msb, 127, "way above range msb (clamped)");
 }
 
 /* ----- system common / real-time ----- */
@@ -249,8 +257,8 @@ int main()
     RUN(test_pitch_bend_emits_three_bytes);
     RUN(test_cc_emits_three_bytes);
     RUN(test_xcmd_cc_passes_through_unchanged);
-    RUN(test_raw_bend_value_encodes_as_pitch_bend_msb);
-    RUN(test_raw_bend_value_clamps_to_midi_data_byte);
+    RUN(test_raw_bend_value_encodes_center_at_64);
+    RUN(test_raw_bend_value_clamps);
     RUN(test_realtime_byte_passes_through_verbatim);
     RUN(test_realtime_byte_does_not_disturb_running_status);
     RUN(test_orphan_data_byte_is_dropped);

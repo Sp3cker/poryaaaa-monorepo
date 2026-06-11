@@ -11,7 +11,6 @@ Primary files:
 - `code-src/scanner.ts`
 - `code-src/recorder_smf_writer.ts`
 - `code-src/max-events.ts`
-- `code-src/bus.ts`
 - matching `code-src/test/*.test.ts`
 
 ## Rules

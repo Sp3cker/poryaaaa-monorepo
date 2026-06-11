@@ -5,8 +5,8 @@
 // Voice selection model:
 //   - `live.numbox VoiceIdx` (Live parameter) is the source of truth and is
 //     persisted automatically with the per-instance parameter blob. Its int
-//     value is an index into the slots array published over the v8 bus by
-//     poryaaaa. Every value change fires `pick <idx>` into this script.
+//     value is an index into the slots array published by poryaaaa over
+//     WebSocket. Every value change fires `pick <idx>` into this script.
 //   - `[umenu]` is the picker + display. Its outlet 0 is wired into the
 //     numbox so clicking a menu item drives the source of truth. v8 keeps
 //     the umenu visually in sync via `slots setsymbol <label>` after each
@@ -15,7 +15,6 @@
 //     This script looks up the selected slot and updates the menu label.
 //     Out-of-range picks show "(no voice)".
 
-import { createBus, type Bus, type BusTransport } from "./bus";
 import {
   parseDictLike,
   routingChoice,
@@ -27,10 +26,11 @@ export { parseDictLike, routingChoice, routingChoices };
 
 export const REROUTE_CHANNEL = "ccomidi.reroute";
 
+let nextInstanceId = 1;
+
 export interface ServiceDeps {
   outlet: (...args: unknown[]) => void;
   post: (msg: string) => void;
-  bus: Bus;
   routeTrack: () => void;
 }
 
@@ -41,6 +41,7 @@ export interface VoicesService {
   state: (encodedPayload: string) => void;
   pick: (idx: number) => void;
   route: () => void;
+  peerReroute: (encodedPayload: string) => void;
   autorouteifnew: (done: number) => void;
   free: () => void;
 }
@@ -49,13 +50,8 @@ interface StatePayload {
   slots?: unknown;
 }
 
-interface ReroutePayload {
-  source?: unknown;
-}
-
 const PLACEHOLDER_WAITING = "(waiting for poryaaaa)";
 const NO_VOICE_LABEL = "(no voice)";
-let nextInstanceId = 1;
 
 // `typeCode` is the raw GBA ToneData.type byte. Multiple values map to the
 // same musical family (DirectSound, Square 1, etc. with their _ALT variants).
@@ -120,10 +116,8 @@ function parseSlots(raw: unknown): Slot[] {
 }
 
 export class CcomidiVoicesService implements VoicesService {
-  private readonly instanceId = nextInstanceId++;
   private slots: Slot[] = [];
   private gated = true;
-  private subscribed = false;
   private pendingIdx: number | null = null;
 
   constructor(private readonly deps: ServiceDeps) {}
@@ -155,7 +149,6 @@ export class CcomidiVoicesService implements VoicesService {
   }
 
   private applyState(payload: StatePayload): void {
-    post("emitting menu")
     const next = parseSlots(payload.slots);
     if (next.length === 0) return;
     this.slots = next;
@@ -164,18 +157,7 @@ export class CcomidiVoicesService implements VoicesService {
     this.reapplyPending();
   }
 
-  private ensureSubscribed(): void {
-    if (this.subscribed) return;
-    this.subscribed = true;
-    this.deps.bus.on<ReroutePayload>(REROUTE_CHANNEL, (payload) => {
-      if (!payload || typeof payload !== "object") return;
-      if ((payload as ReroutePayload).source === this.instanceId) return;
-      this.routeLocal();
-    });
-  }
-
   private load(): void {
-    this.ensureSubscribed();
     if (this.gated) this.emitWaiting();
   }
 
@@ -219,9 +201,11 @@ export class CcomidiVoicesService implements VoicesService {
   }
 
   route(): void {
-    this.ensureSubscribed();
     this.routeLocal();
-    this.deps.bus.emit(REROUTE_CHANNEL, { source: this.instanceId });
+  }
+
+  peerReroute(_encodedPayload: string): void {
+    this.routeLocal();
   }
 
   autorouteifnew(done: number): void {
@@ -275,39 +259,18 @@ function isValidLiveApi(api: LiveAPI): boolean {
   return valid === undefined || valid === true || valid === 1;
 }
 
+function getThisDevice(): LiveAPI {
+  const api = new LiveAPI(null, "this_device");
+  if (!isValidLiveApi(api)) throw new Error("this_device is not valid");
+  return api;
+}
+
 function installMaxHandlers(): void {
   inlets = 1;
   outlets = 2;
 
-  const inboundHandlers = new Map<string, (encoded: string) => void>();
-
-  const transport: BusTransport = {
-    send: (channel, encoded) => {
-      messnamed(channel, "reroute", encoded);
-    },
-    subscribe: (channel, onEncoded) => {
-      inboundHandlers.set(channel, onEncoded);
-    },
-    readSnapshot: (name) => {
-      const d = new Dict(name);
-      try {
-        const raw = d.stringify();
-        return raw ? JSON.parse(raw) : null;
-      } catch (_) {
-        return null;
-      }
-    },
-    writeSnapshot: (name, value) => {
-      const d = new Dict(name);
-      d.parse(JSON.stringify(value));
-    },
-  };
-
-  const bus = createBus(transport, (err) => post(`${err}\n`));
-
   function routeTrack(): void {
-    const thisDevice = new LiveAPI(null, "this_device");
-    if (!isValidLiveApi(thisDevice)) throw new Error("this_device is not valid");
+    const thisDevice = getThisDevice();
     const devicePath = thisDevice.unquotedpath;
     const trackPath = containingTrackPath(devicePath);
     const track = new LiveAPI(null, trackPath);
@@ -356,10 +319,46 @@ function installMaxHandlers(): void {
     );
   }
 
+  function isRoutingCorrect(): boolean {
+    try {
+      const thisDevice = getThisDevice();
+      const devicePath = thisDevice.unquotedpath;
+      const trackPath = containingTrackPath(devicePath);
+      const track = new LiveAPI(null, trackPath);
+      if (!isValidLiveApi(track)) return false;
+
+      const myTrackIndex = trackIndexFromPath(trackPath);
+
+      // Check if currently routed to a poryaaaa target
+      const typeRaw = track.get("output_routing_type");
+      const typeParsed = parseDictLike(typeRaw);
+      const typeText = typeParsed && typeof typeParsed === "object" && !Array.isArray(typeParsed)
+        ? `${(typeParsed as any).identifier || ""}\n${(typeParsed as any).display_name || ""}`
+        : String(typeRaw || "");
+      if (!typeText.toLowerCase().includes("poryaaaa")) {
+        return false;
+      }
+
+      // Check if the current MIDI output channel number matches our track index
+      // (poryaaaa exposes one channel per track index)
+      const chRaw = track.get("output_routing_channel");
+      const chParsed = parseDictLike(chRaw);
+      let currentCh: number | null = null;
+      const candidate = chParsed && typeof chParsed === "object" && !Array.isArray(chParsed)
+        ? chParsed
+        : (Array.isArray(chRaw) && chRaw.length > 0 ? chRaw[0] : null);
+      if (candidate && typeof candidate === "object") {
+        currentCh = parseMidiChannel(candidate as RoutingChoice);
+      }
+      return currentCh === myTrackIndex;
+    } catch (_) {
+      return false;
+    }
+  }
+
   const service = new CcomidiVoicesService({
     outlet: (...args) => outlet(0, ...args),
     post: (msg) => post(msg),
-    bus,
     routeTrack,
   });
 
@@ -405,13 +404,38 @@ function installMaxHandlers(): void {
     service.pick(idx);
   }
 
+  function canRouteNow(): boolean {
+    try {
+      const api = new LiveAPI(null, "this_device");
+      return isValidLiveApi(api);
+    } catch (_) {
+      return false;
+    }
+  }
+
   function route(): void {
+    if (!canRouteNow()) {
+      post("ccomidi_voices: route ignored because this_device is not valid yet\n");
+      return;
+    }
     service.route();
+    messnamed(REROUTE_CHANNEL, "reroute");
   }
 
   function autorouteifnew(...args: MaxAtom[]): void {
     const done = atomToInteger("autorouteifnew", args);
     if (done === null) return;
+    if (done !== 0) {
+      service.autorouteifnew(done);
+      return;
+    }
+    // done === 0 means "perform autoroute now" (initial load case).
+    // This message can arrive very early during device/patcher initialization,
+    // before this_device is usable. Guard to avoid throwing.
+    if (!canRouteNow()) {
+      post("ccomidi_voices: autorouteifnew(0) ignored because this_device is not valid yet\n");
+      return;
+    }
     service.autorouteifnew(done);
   }
 
@@ -421,11 +445,9 @@ function installMaxHandlers(): void {
     service.state(encoded);
   }
 
-  function reroute(...args: MaxAtom[]): void {
-    const encoded = atomsToString("reroute", args);
-    if (encoded === null || !encoded) return;
-    const handler = inboundHandlers.get(REROUTE_CHANNEL);
-    if (handler) handler(encoded);
+  function reroute(..._args: MaxAtom[]): void {
+    if (isRoutingCorrect()) return;
+    service.peerReroute("");
   }
 
   // free — fired by live.thisdevice outlet 3 (device freed).
