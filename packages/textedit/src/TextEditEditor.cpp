@@ -1,7 +1,6 @@
 #include "TextEditEditor.h"
 
 #include "GruvboxTheme.h"
-#include "TextEditFileLoader.h"
 
 TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     : AudioProcessorEditor(processorToUse),
@@ -14,7 +13,7 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
 
     editor.setLineNumbersShown(true);
     editor.setTabSize(4, true);
-    editor.setFont(juce::Font(juce::FontOptions("Menlo", 15.0f, juce::Font::plain)));
+    editor.setFont(juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 15.0f, juce::Font::plain)));
     editor.setColour(juce::CodeEditorComponent::backgroundColourId, GruvboxTheme::background());
     editor.setColour(juce::CodeEditorComponent::highlightColourId, GruvboxTheme::selection());
     editor.setColour(juce::CodeEditorComponent::defaultTextColourId, GruvboxTheme::foreground());
@@ -96,17 +95,11 @@ void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
 
 void TextEditEditor::timerCallback()
 {
-    loadPendingSysexPath();
-
     const auto statusText = lspClient.getStatusText();
-    const auto displayText = fileStatusText.isEmpty()
-        ? statusText
-        : fileStatusText;
-
-    if (displayText != lastStatusText)
+    if (statusText != lastStatusText)
     {
-        lastStatusText = displayText;
-        statusLabel.setText(displayText, juce::dontSendNotification);
+        lastStatusText = statusText;
+        statusLabel.setText(statusText, juce::dontSendNotification);
     }
 }
 
@@ -146,37 +139,6 @@ void TextEditEditor::requestLspContext()
     lspClient.requestCompletion(line, character);
     lspClient.requestSignatureHelp(line, character);
     lspClient.requestHover(line, character);
-}
-
-void TextEditEditor::loadPendingSysexPath()
-{
-    const auto path = textProcessor.getLastSysexCommand();
-    if (path.isEmpty() || path == lastLoadedSysexPath)
-        return;
-
-    lastLoadedSysexPath = path;
-
-    juce::String text;
-    juce::String errorMessage;
-    if (!loadTextFileForEditor(path, text, errorMessage))
-    {
-        fileStatusText = "SysEx load failed: " + errorMessage;
-        return;
-    }
-
-    {
-        const juce::ScopedValueSetter<bool> scopedUpdate(updatingDocument, true);
-        document.replaceAllContent(text);
-        document.clearUndoHistory();
-        document.setSavePoint();
-    }
-
-    textProcessor.setDocumentText(text);
-
-    if (lspDocumentOpened)
-        lspClient.changeDocument(text);
-
-    fileStatusText = "Loaded: " + path;
 }
 
 void TextEditEditor::focusEditor()

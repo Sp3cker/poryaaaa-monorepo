@@ -25,6 +25,8 @@ private:
     {
         completion,
         hover,
+        initialize,
+        shutdown,
         signatureHelp
     };
 
@@ -43,6 +45,9 @@ private:
     void handleMessage(const juce::var& message);
     void handleResponse(const juce::var& message);
     void handleNotification(const juce::var& message);
+    void closePipes();
+    void markDisconnected(juce::String status);
+    void waitForChildProcess();
     void writeBytes(const juce::String& text);
 
     int childPid = -1;
@@ -59,6 +64,6 @@ private:
     bool running = false;
     bool documentOpen = false;
 
-    const juce::String serverPath = TEXTEDIT_VOICEGROUP_LSP_PATH;
+    const juce::String serverPath;
     const juce::String documentUri = "file:///textedit/voicegroup.inc";
 };

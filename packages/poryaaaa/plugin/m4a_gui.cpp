@@ -164,9 +164,6 @@ struct M4AGuiState {
     bool extractRequested;
     char extractStatus[256];
     double midiActivityUntil[16];
-    double xcmdActivityUntil;
-    double validXcmdUntil;
-    char latestXcmd[128];
 
     /* True after the user closes the floating window */
     bool wasClosed;
@@ -265,19 +262,7 @@ static bool edit_cgb_adsr(ToneData *voice)
 static void render_general_tab(M4AGuiState *gui)
 {
     double now = ImGui::GetTime();
-    bool xcmdActive = now < gui->xcmdActivityUntil;
-    bool validXcmdActive = now < gui->validXcmdUntil;
     ImDrawList *drawList = ImGui::GetWindowDrawList();
-    auto draw_led = [&](bool active, const ImVec4 &onColor, const ImVec4 &offColor, const char *label) {
-        ImVec2 ledCenter = ImGui::GetCursorScreenPos();
-        ledCenter.x += 7.0f;
-        ledCenter.y += 9.0f;
-        drawList->AddCircleFilled(ledCenter, 5.0f,
-                                  ImGui::GetColorU32(active ? onColor : offColor));
-        ImGui::Dummy(ImVec2(14.0f, 18.0f));
-        ImGui::SameLine();
-        ImGui::TextUnformatted(label);
-    };
 
     /* Per-channel MIDI activity: 16 compact LEDs in a row, one per MIDI
      * channel. Each LED pulses independently when its channel sees an event. */
@@ -285,12 +270,14 @@ static void render_general_tab(M4AGuiState *gui)
     static const ImVec4 kChanOff = ImVec4(0.18f, 0.24f, 0.20f, 1.0f);
     ImGui::TextUnformatted("MIDI Activity");
     {
-        const float ledSlot = 18.0f;
+        /* Slot must fit the widest channel label ("16") so the numbers
+         * stay centered under their LEDs at any font size. */
+        const float ledSlot = ImGui::CalcTextSize("16").x + 8.0f;
         ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
         for (int ch = 0; ch < 16; ch++) {
             bool active = now < gui->midiActivityUntil[ch];
             ImVec2 c;
-            c.x = rowOrigin.x + ch * ledSlot + 7.0f;
+            c.x = rowOrigin.x + (ch + 0.5f) * ledSlot;
             c.y = rowOrigin.y + 9.0f;
             drawList->AddCircleFilled(c, 5.0f,
                                        ImGui::GetColorU32(active ? kChanOn : kChanOff));
@@ -305,23 +292,12 @@ static void render_general_tab(M4AGuiState *gui)
             snprintf(buf, sizeof(buf), "%d", ch + 1);
             ImVec2 sz = ImGui::CalcTextSize(buf);
             ImVec2 p;
-            p.x = labelOrigin.x + ch * ledSlot + (14.0f - sz.x) * 0.5f;
+            p.x = labelOrigin.x + (ch + 0.5f) * ledSlot - sz.x * 0.5f;
             p.y = labelOrigin.y;
             drawList->AddText(p, ImGui::GetColorU32(ImGuiCol_TextDisabled), buf);
         }
         ImGui::Dummy(ImVec2(ledSlot * 16.0f, ImGui::GetTextLineHeight()));
     }
-    ImGui::Spacing();
-
-    draw_led(xcmdActive,
-             ImVec4(0.95f, 0.75f, 0.18f, 1.0f),
-             ImVec4(0.26f, 0.22f, 0.14f, 1.0f),
-             "XCMD Traffic");
-    draw_led(validXcmdActive,
-             ImVec4(0.18f, 0.75f, 0.95f, 1.0f),
-             ImVec4(0.15f, 0.22f, 0.28f, 1.0f),
-             "Valid XCMD");
-    ImGui::Text("XCMD Target: %s", gui->latestXcmd[0] ? gui->latestXcmd : "None");
     ImGui::Spacing();
 
     /* ---- Project Settings ---- */
@@ -878,8 +854,12 @@ bool m4a_gui_hide(M4AGuiState *gui)
 void m4a_gui_get_size(M4AGuiState *gui, uint32_t *width, uint32_t *height)
 {
     if (!gui) {
-        *width  = (uint32_t)GUI_W;
-        *height = (uint32_t)GUI_H;
+        if (width) {
+            *width = (uint32_t)GUI_W;
+        }
+        if (height) {
+            *height = (uint32_t)GUI_H;
+        }
         return;
     }
     poryaaaa::gui::imgui_pugl_shell_get_size(gui->shell, width, height);
@@ -911,30 +891,6 @@ void m4a_gui_pulse_midi_activity(M4AGuiState *gui, int channel)
         return;
     ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
     gui->midiActivityUntil[channel] = ImGui::GetTime() + 0.15;
-}
-
-void m4a_gui_pulse_xcmd_activity(M4AGuiState *gui)
-{
-    if (!gui || !gui->shell)
-        return;
-    ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
-    gui->xcmdActivityUntil = ImGui::GetTime() + 0.15;
-}
-
-void m4a_gui_pulse_valid_xcmd(M4AGuiState *gui)
-{
-    if (!gui || !gui->shell)
-        return;
-    ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
-    gui->validXcmdUntil = ImGui::GetTime() + 0.15;
-}
-
-void m4a_gui_set_latest_xcmd(M4AGuiState *gui, const char *text)
-{
-    if (!gui)
-        return;
-
-    snprintf(gui->latestXcmd, sizeof(gui->latestXcmd), "%s", text ? text : "");
 }
 
 bool m4a_gui_poll_changes(M4AGuiState *gui, M4AGuiSettings *out, bool *reload_voicegroup)

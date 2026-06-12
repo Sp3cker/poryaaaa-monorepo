@@ -35,7 +35,6 @@ public:
 
     juce::String getDocumentText() const;
     void setDocumentText(const juce::String& newText);
-    juce::String getLastSysexCommand() const;
 
     void addDocumentChangeListener(juce::ChangeListener* listener);
     void removeDocumentChangeListener(juce::ChangeListener* listener);
@@ -43,12 +42,9 @@ public:
 private:
     template <typename FloatType>
     void processAudio(juce::AudioBuffer<FloatType>& buffer, juce::MidiBuffer& midiMessages);
-    void handleMidiMessages(const juce::MidiBuffer& midiMessages);
 
     mutable juce::CriticalSection documentLock;
     juce::String documentText;
-    mutable juce::CriticalSection sysexLock;
-    juce::String lastSysexCommand;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditProcessor)
 };

@@ -7,7 +7,7 @@
 bool runTextEditFileLoaderTests()
 {
     auto tempFile = juce::File("/private/tmp")
-                        .getNonexistentChildFile("textedit-sysex-path", ".inc", false);
+                        .getNonexistentChildFile("textedit-file-loader", ".inc", false);
     const auto expectedText = juce::String("voice_directsound 60, 0\n");
     const auto* expectedBytes = expectedText.toRawUTF8();
 

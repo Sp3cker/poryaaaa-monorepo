@@ -29,7 +29,6 @@ private:
     void pullDocumentFromProcessor();
     void notifyLspTextChanged();
     void requestLspContext();
-    void loadPendingSysexPath();
     void focusEditor();
 
     TextEditProcessor& textProcessor;
@@ -39,8 +38,6 @@ private:
     juce::Label statusLabel;
     VoicegroupLspClient lspClient;
     juce::String lastStatusText;
-    juce::String lastLoadedSysexPath;
-    juce::String fileStatusText;
     bool updatingDocument = false;
     bool lspDocumentOpened = false;
 

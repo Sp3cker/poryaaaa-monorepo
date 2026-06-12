@@ -18,8 +18,8 @@ set(TEXTEDIT_MONOREPO_ROOT "${TEXTEDIT_ROOT}/../..")
 
 option(TEXTEDIT_FETCH_JUCE "Fetch JUCE with FetchContent when JUCE_ROOT is not set" ON)
 set(TEXTEDIT_JUCE_VERSION "8.0.6" CACHE STRING "JUCE release version used when TEXTEDIT_FETCH_JUCE is enabled")
-set(TEXTEDIT_VOICEGROUP_LSP_PATH "/Users/sallegrezza/dev/swiftProjects/voicegroup-lsp/.build/release/voicegroup-lsp"
-    CACHE FILEPATH "Path to the voicegroup-lsp server executable")
+set(TEXTEDIT_VOICEGROUP_LSP_PATH "voicegroup-lsp"
+    CACHE STRING "voicegroup-lsp executable name or path fallback")
 set(JUCE_ROOT "" CACHE PATH "Path to an existing JUCE checkout")
 
 if(NOT JUCE_ROOT)
@@ -59,7 +59,7 @@ endif()
 juce_add_plugin(textedit
     COMPANY_NAME "poryaaaa"
     IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT TRUE
+    NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
@@ -72,8 +72,8 @@ juce_add_plugin(textedit
 
 target_sources(textedit PRIVATE
     src/TextEditFileLoader.cpp
+    src/VoicegroupLspConfig.cpp
     src/GruvboxTheme.cpp
-    src/TextEditSysex.cpp
     src/TextEditEditor.cpp
     src/TextEditProcessor.cpp
     src/VoicegroupLspClient.cpp
@@ -105,24 +105,39 @@ target_link_libraries(textedit
 
 message(STATUS "textedit: configured as standalone JUCE VST3 plugin.")
 
-add_executable(textedit_sysex_tests
+add_executable(textedit_tests
     tests/TextEditFileLoaderTests.cpp
-    tests/TextEditSysexTests.cpp
+    tests/TextEditProcessorTests.cpp
+    tests/VoicegroupLspConfigTests.cpp
+    tests/TextEditTests.cpp
     src/TextEditFileLoader.cpp
-    src/TextEditSysex.cpp
+    src/GruvboxTheme.cpp
+    src/TextEditEditor.cpp
+    src/TextEditProcessor.cpp
+    src/VoicegroupLspClient.cpp
+    src/VoicegroupLspConfig.cpp
+    src/VoicegroupTokeniser.cpp
 )
 
-target_include_directories(textedit_sysex_tests PRIVATE
+target_include_directories(textedit_tests PRIVATE
     src
 )
 
-target_compile_features(textedit_sysex_tests PRIVATE cxx_std_17)
+target_compile_features(textedit_tests PRIVATE cxx_std_17)
 
-target_link_libraries(textedit_sysex_tests
+target_compile_definitions(textedit_tests
     PRIVATE
-        juce::juce_core
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        TEXTEDIT_VOICEGROUP_LSP_PATH="${TEXTEDIT_VOICEGROUP_LSP_PATH}"
+)
+
+target_link_libraries(textedit_tests
+    PRIVATE
+        juce::juce_audio_processors
+        juce::juce_gui_extra
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
 
-add_test(NAME textedit_sysex_tests COMMAND textedit_sysex_tests)
+add_test(NAME textedit_tests COMMAND textedit_tests)

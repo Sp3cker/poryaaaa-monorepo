@@ -1,6 +1,5 @@
 #include "TextEditProcessor.h"
 
-#include "TextEditSysex.h"
 #include "TextEditEditor.h"
 
 namespace {
@@ -57,32 +56,13 @@ void TextEditProcessor::processBlock(juce::AudioBuffer<double>& buffer, juce::Mi
 template <typename FloatType>
 void TextEditProcessor::processAudio(juce::AudioBuffer<FloatType>& buffer, juce::MidiBuffer& midiMessages)
 {
-    handleMidiMessages(midiMessages);
-    midiMessages.clear();
+    juce::ignoreUnused(midiMessages);
 
     const auto totalInputChannels = getTotalNumInputChannels();
     const auto totalOutputChannels = getTotalNumOutputChannels();
 
     for (auto channel = totalInputChannels; channel < totalOutputChannels; ++channel)
         buffer.clear(channel, 0, buffer.getNumSamples());
-}
-
-void TextEditProcessor::handleMidiMessages(const juce::MidiBuffer& midiMessages)
-{
-    for (const auto metadata : midiMessages)
-    {
-        const auto message = metadata.getMessage();
-        if (!message.isSysEx())
-            continue;
-
-        const auto command = decodePlainTextSysexPayload(message.getSysExData(),
-                                                        message.getSysExDataSize());
-        if (command.isEmpty())
-            continue;
-
-        const juce::ScopedLock lock(sysexLock);
-        lastSysexCommand = command;
-    }
 }
 
 juce::AudioProcessorEditor* TextEditProcessor::createEditor()
@@ -102,7 +82,7 @@ const juce::String TextEditProcessor::getName() const
 
 bool TextEditProcessor::acceptsMidi() const
 {
-    return true;
+    return false;
 }
 
 bool TextEditProcessor::producesMidi() const
@@ -183,12 +163,6 @@ void TextEditProcessor::setDocumentText(const juce::String& newText)
     }
 
     sendChangeMessage();
-}
-
-juce::String TextEditProcessor::getLastSysexCommand() const
-{
-    const juce::ScopedLock lock(sysexLock);
-    return lastSysexCommand;
 }
 
 void TextEditProcessor::addDocumentChangeListener(juce::ChangeListener* listener)

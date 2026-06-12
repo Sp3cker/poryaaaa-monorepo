@@ -1,5 +1,7 @@
 #include "VoicegroupLspClient.h"
 
+#include "VoicegroupLspConfig.h"
+
 #if JUCE_MAC || JUCE_LINUX
 #include <cerrno>
 #include <csignal>
@@ -34,7 +36,10 @@ juce::String valueFromMarkupContent(const juce::var& contents)
 
 } // namespace
 
-VoicegroupLspClient::VoicegroupLspClient() = default;
+VoicegroupLspClient::VoicegroupLspClient()
+    : serverPath(resolveVoicegroupLspServerPath(TEXTEDIT_VOICEGROUP_LSP_PATH))
+{
+}
 
 VoicegroupLspClient::~VoicegroupLspClient()
 {
@@ -58,7 +63,7 @@ bool VoicegroupLspClient::start()
     auto params = object();
     params->setProperty("processId", juce::var());
     params->setProperty("rootUri", juce::var());
-    sendRequest("initialize", params, RequestKind::hover);
+    sendRequest("initialize", params, RequestKind::initialize);
     return true;
 #else
     setStatus("LSP: stdio client is not implemented on this platform yet");
@@ -69,41 +74,41 @@ bool VoicegroupLspClient::start()
 void VoicegroupLspClient::stop()
 {
 #if JUCE_MAC || JUCE_LINUX
+    auto shouldSendShutdown = false;
+
     {
         const juce::ScopedLock scopedLock(lock);
         if (!running && childPid <= 0)
             return;
+
+        shouldSendShutdown = running;
     }
 
-    auto shutdownParams = object();
-    sendRequest("shutdown", shutdownParams, RequestKind::hover);
-    sendNotification("exit", object());
+    if (shouldSendShutdown)
+    {
+        auto shutdownParams = object();
+        sendRequest("shutdown", shutdownParams, RequestKind::shutdown);
+        sendNotification("exit", object());
+    }
 
     {
         const juce::ScopedLock scopedLock(lock);
         running = false;
+        documentOpen = false;
     }
 
-    if (childStdin >= 0)
     {
-        ::close(childStdin);
-        childStdin = -1;
-    }
-    if (childStdout >= 0)
-    {
-        ::close(childStdout);
-        childStdout = -1;
+        const juce::ScopedLock scopedLock(lock);
+        if (childPid > 0)
+            ::kill(childPid, SIGTERM);
     }
 
-    if (childPid > 0)
-    {
-        ::kill(childPid, SIGTERM);
-        ::waitpid(childPid, nullptr, WNOHANG);
-        childPid = -1;
-    }
+    closePipes();
 
     if (readerThread.joinable())
         readerThread.join();
+
+    waitForChildProcess();
 #else
     const juce::ScopedLock scopedLock(lock);
     running = false;
@@ -301,9 +306,18 @@ void VoicegroupLspClient::readerLoop()
 {
     char chunk[4096] = {};
 
-    while (isRunning() && childStdout >= 0)
+    while (isRunning())
     {
-        const auto bytesRead = ::read(childStdout, chunk, sizeof(chunk));
+        int fd = -1;
+        {
+            const juce::ScopedLock scopedLock(lock);
+            fd = childStdout;
+        }
+
+        if (fd < 0)
+            break;
+
+        const auto bytesRead = ::read(fd, chunk, sizeof(chunk));
         if (bytesRead > 0)
         {
             inputBuffer.append(chunk, static_cast<size_t>(bytesRead));
@@ -312,7 +326,10 @@ void VoicegroupLspClient::readerLoop()
         }
 
         if (bytesRead == 0 || errno != EINTR)
+        {
+            markDisconnected("LSP: disconnected");
             break;
+        }
     }
 }
 
@@ -371,6 +388,16 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
 
     const auto result = message["result"];
 
+    if (kind == RequestKind::initialize)
+    {
+        if (!result.isVoid())
+            setStatus("LSP: initialized");
+        return;
+    }
+
+    if (kind == RequestKind::shutdown)
+        return;
+
     if (kind == RequestKind::completion)
     {
         if (auto* resultObject = result.getDynamicObject())
@@ -418,10 +445,6 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
         if (hover.isNotEmpty())
             setStatus("LSP hover: " + hover);
     }
-    else if (result.isVoid())
-    {
-        setStatus("LSP: initialized");
-    }
 }
 
 void VoicegroupLspClient::handleNotification(const juce::var& message)
@@ -449,19 +472,105 @@ void VoicegroupLspClient::writeBytes(const juce::String& text)
     const auto* data = text.toRawUTF8();
     auto bytesRemaining = std::strlen(data);
 
-    while (bytesRemaining > 0 && childStdin >= 0)
+    while (bytesRemaining > 0)
     {
-        const auto written = ::write(childStdin, data, bytesRemaining);
+        int fd = -1;
+        {
+            const juce::ScopedLock scopedLock(lock);
+            fd = childStdin;
+        }
+
+        if (fd < 0)
+            break;
+
+        const auto written = ::write(fd, data, bytesRemaining);
         if (written <= 0)
         {
             if (errno == EINTR)
                 continue;
+
+            markDisconnected("LSP: disconnected");
             break;
         }
 
         data += written;
         bytesRemaining -= static_cast<size_t>(written);
     }
+}
+
+void VoicegroupLspClient::closePipes()
+{
+    const juce::ScopedLock scopedLock(lock);
+
+    if (childStdin >= 0)
+    {
+        ::close(childStdin);
+        childStdin = -1;
+    }
+
+    if (childStdout >= 0)
+    {
+        ::close(childStdout);
+        childStdout = -1;
+    }
+}
+
+void VoicegroupLspClient::markDisconnected(juce::String status)
+{
+    const juce::ScopedLock scopedLock(lock);
+
+    if (!running)
+        return;
+
+    running = false;
+    documentOpen = false;
+    statusText = std::move(status);
+
+    if (childStdin >= 0)
+    {
+        ::close(childStdin);
+        childStdin = -1;
+    }
+
+    if (childStdout >= 0)
+    {
+        ::close(childStdout);
+        childStdout = -1;
+    }
+}
+
+void VoicegroupLspClient::waitForChildProcess()
+{
+    auto pid = -1;
+    {
+        const juce::ScopedLock scopedLock(lock);
+        pid = childPid;
+    }
+
+    if (pid <= 0)
+        return;
+
+    ::kill(pid, SIGTERM);
+
+    for (auto attempt = 0; attempt < 20; ++attempt)
+    {
+        if (::waitpid(pid, nullptr, WNOHANG) == pid)
+        {
+            const juce::ScopedLock scopedLock(lock);
+            if (childPid == pid)
+                childPid = -1;
+            return;
+        }
+
+        ::usleep(10000);
+    }
+
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+
+    const juce::ScopedLock scopedLock(lock);
+    if (childPid == pid)
+        childPid = -1;
 }
 
 #else

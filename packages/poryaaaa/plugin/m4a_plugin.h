@@ -31,12 +31,6 @@ typedef struct {
      * channel's index whenever a MIDI/note event arrives for that channel;
      * the GUI polls them from the main thread and pulses the matching LED. */
     atomic_uint midiActivitySeq[MAX_TRACKS];
-    atomic_uint xcmdActivitySeq;
-    atomic_uint pendingXcmdSeq;
-    atomic_uint pendingXcmdMeta;
-    atomic_uint latestXcmdSeq;
-    atomic_uint latestXcmdMeta;
-    atomic_uint latestXcmdValue;
     /* CLAP param mirror for per-track program selection.
      * Kept outside the engine so params/state can read it without poking
      * directly at audio-thread-owned track state. */
@@ -54,9 +48,6 @@ typedef struct {
     M4AGuiState *gui;
     clap_id guiTimerId;
     unsigned int guiMidiActivitySeqSeen[MAX_TRACKS];
-    unsigned int guiXcmdActivitySeqSeen;
-    unsigned int guiPendingXcmdSeqSeen;
-    unsigned int guiLatestXcmdSeqSeen;
 
     /* Recorder UI/wire state. The RecorderCore is plugin-owned.
      * `recorderArmed` gates the audio thread's push calls.
