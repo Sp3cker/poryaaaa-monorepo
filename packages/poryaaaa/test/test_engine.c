@@ -3811,7 +3811,8 @@ static void test_chip_canned_soundcnth_psg_vol_codes(void)
 
     /* Same SQ2 trigger at four SOUNDCNT_H psg-vol codes.  Peak L
      * amplitude must scale 25% : 50% : 100% : 200% within float epsilon.
-     * Master vol is held at full to isolate the psg_vol_code factor. */
+     * Master vol is held at full to isolate the psg_vol_code factor, and
+     * envelope volume stays below the boosted 200% clipping threshold. */
     const uint8_t  codes[4]      = { 0x00, 0x01, 0x02, 0x03 };
     float          peakOf[4]     = { 0 };
 
@@ -3824,7 +3825,7 @@ static void test_chip_canned_soundcnth_psg_vol_codes(void)
             { 0, M4A_REG_SOUNDCNT_H, codes[k] },
             { 0, M4A_REG_SOUNDBIAS, 0x200 },
             { 0, M4A_REG_NR21, 0x80 },
-            { 0, M4A_REG_NR22, 0xF8 },
+            { 0, M4A_REG_NR22, 0x78 },
             { 0, M4A_REG_NR23, 1700 & 0xFF },
             { 0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7) },
         };

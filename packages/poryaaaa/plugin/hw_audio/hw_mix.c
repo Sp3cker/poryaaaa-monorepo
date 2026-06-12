@@ -86,8 +86,9 @@ void hw_mix_render(const HwMixBus *mix,
     /* NR51 pan-mask bit positions: sq1=bit0, sq2=bit1, wave=bit2, noise=bit3.
      * Pre-multiply with the side scalars so the inner loop is a sum of
      * masked products, no per-sample branches. */
-    const float psg_l = psg_unit * (float)(mix->master_vol_left  + 1);
-    const float psg_r = psg_unit * (float)(mix->master_vol_right + 1);
+    const float cgb_gain = 1.2f;
+    const float psg_l = psg_unit * (float)(mix->master_vol_left  + 1) * cgb_gain;
+    const float psg_r = psg_unit * (float)(mix->master_vol_right + 1) * cgb_gain;
     const float sq1_l   = ((mix->pan_mask_left  & 0x01) ? psg_l : 0.0f);
     const float sq1_r   = ((mix->pan_mask_right & 0x01) ? psg_r : 0.0f);
     const float sq2_l   = ((mix->pan_mask_left  & 0x02) ? psg_l : 0.0f);
