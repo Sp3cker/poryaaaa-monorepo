@@ -5,6 +5,18 @@
 #include "TextEditProcessor.h"
 #include "VoicegroupLspClient.h"
 #include "VoicegroupTokeniser.h"
+class TopToolBar final: public juce::Component
+{
+    public: TopToolBar();
+
+    void resized() override;
+    void paint (juce::Graphics& g) override;
+
+    juce::TextButton saveButton {"Save"};
+
+    private:
+        juce::FlexBox flex;
+};
 
 class TextEditEditor final : public juce::AudioProcessorEditor,
                              private juce::CodeDocument::Listener,
@@ -18,6 +30,7 @@ public:
     void resized() override;
     void parentHierarchyChanged() override;
     void visibilityChanged() override;
+    TopToolBar toolbar;
 
 private:
     void codeDocumentTextInserted(const juce::String& newText, int insertIndex) override;
@@ -27,7 +40,7 @@ private:
 
     void pushDocumentToProcessor();
     void pullDocumentFromProcessor();
-    void notifyLspTextChanged();
+    void notifyLocalEdit();
     void requestLspContext();
     void focusEditor();
 
@@ -39,7 +52,6 @@ private:
     VoicegroupLspClient lspClient;
     juce::String lastStatusText;
     bool updatingDocument = false;
-    bool lspDocumentOpened = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditEditor)
 };

@@ -33,12 +33,10 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
 
     document.addListener(this);
     textProcessor.addDocumentChangeListener(this);
-
+    addAndMakeVisible(toolbar);
+    // toolbar.saveButton.onClick = [this]();
     if (lspClient.start())
-    {
-        lspClient.openDocument(document.getAllContent());
-        lspDocumentOpened = true;
-    }
+        lspClient.syncDocument(document.getAllContent());
 
     startTimerHz(8);
 }
@@ -55,6 +53,8 @@ TextEditEditor::~TextEditEditor()
 void TextEditEditor::resized()
 {
     auto bounds = getLocalBounds();
+    const int toolbarHeight = 36;
+    toolbar.setBounds(bounds.removeFromTop(toolbarHeight));
     statusLabel.setBounds(bounds.removeFromBottom(24));
     editor.setBounds(bounds);
 }
@@ -73,8 +73,7 @@ void TextEditEditor::visibilityChanged()
 void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int insertIndex)
 {
     juce::ignoreUnused(newText, insertIndex);
-    pushDocumentToProcessor();
-    notifyLspTextChanged();
+    notifyLocalEdit();
 
     if (newText.containsAnyOf("_, "))
         requestLspContext();
@@ -83,8 +82,7 @@ void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int i
 void TextEditEditor::codeDocumentTextDeleted(int startIndex, int endIndex)
 {
     juce::ignoreUnused(startIndex, endIndex);
-    pushDocumentToProcessor();
-    notifyLspTextChanged();
+    notifyLocalEdit();
 }
 
 void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
@@ -109,6 +107,19 @@ void TextEditEditor::pushDocumentToProcessor()
         textProcessor.setDocumentText(document.getAllContent());
 }
 
+/* Local (typed) edits fan out to both consumers. `updatingDocument` only
+ * suppresses the echo during a processor-origin pull, where
+ * pullDocumentFromProcessor syncs the LSP itself. */
+void TextEditEditor::notifyLocalEdit()
+{
+    if (updatingDocument)
+        return;
+
+    const auto text = document.getAllContent();
+    textProcessor.setDocumentText(text);
+    lspClient.syncDocument(text);
+}
+
 void TextEditEditor::pullDocumentFromProcessor()
 {
     const auto processorText = textProcessor.getDocumentText();
@@ -117,18 +128,8 @@ void TextEditEditor::pullDocumentFromProcessor()
 
     const juce::ScopedValueSetter<bool> scopedUpdate(updatingDocument, true);
     document.replaceAllContent(processorText);
-    notifyLspTextChanged();
-}
 
-void TextEditEditor::notifyLspTextChanged()
-{
-    if (updatingDocument)
-        return;
-
-    if (!lspDocumentOpened)
-        return;
-
-    lspClient.changeDocument(document.getAllContent());
+    lspClient.syncDocument(processorText);
 }
 
 void TextEditEditor::requestLspContext()
@@ -145,4 +146,36 @@ void TextEditEditor::focusEditor()
 {
     if (editor.isShowing())
         editor.grabKeyboardFocus();
+}
+
+TopToolBar::TopToolBar()
+{
+    addAndMakeVisible(saveButton);
+    // Style to match your Gruvbox theme
+    // auto bg = GruvboxTheme::background();
+    auto fg = GruvboxTheme::foreground();
+
+    for (auto* b : { &saveButton })
+    {
+        b->setColour(juce::TextButton::buttonColourId,          GruvboxTheme::gutterBackground());
+        b->setColour(juce::TextButton::textColourOffId,         fg);
+        b->setColour(juce::TextButton::textColourOnId,          fg);
+    }
+}
+
+void TopToolBar::paint(juce::Graphics& g)
+{
+    g.fillAll(GruvboxTheme::gutterBackground()); // or a slightly different shade
+}
+
+void TopToolBar::resized()
+{
+    flex.items.clear();
+    flex.flexDirection = juce::FlexBox::Direction::row;
+    flex.justifyContent = juce::FlexBox::JustifyContent::spaceBetween;
+    flex.alignItems = juce::FlexBox::AlignItems::center;
+
+    flex.items.add(juce::FlexItem(saveButton).withMinWidth(60).withMinHeight(28));
+
+    flex.performLayout(getLocalBounds().reduced(4, 2));
 }

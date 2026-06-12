@@ -6,21 +6,25 @@ build target:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{target}}" in
-      poryaaaa|poryaaaa.clap)
+      poryaaaa)
         cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/poryaaaa/build --config Release --target poryaaaa
         ;;
-      ccomidi|ccomidi.clap)
+      ccomidi)
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/ccomidi/build --config Release --target ccomidi
         ;;
-      m4l|poryaaaa-m4l)
+      textedit)
+        cmake -S packages/{{target}} -B packages/{{target}}/build -DCMAKE_BUILD_TYPE=Release
+        cmake --build packages/{{target}}/build --config Release --target {{target}}
+        ;;
+      m4l)
         cd packages/poryaaaa-m4l
         npm run build
         ;;
       *)
         echo "unknown build target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, m4l" >&2
+        echo "known targets: poryaaaa, ccomidi, textedit, m4l" >&2
         exit 2
         ;;
     esac
@@ -30,21 +34,21 @@ install target:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{target}}" in
-      poryaaaa|poryaaaa.clap)
+      poryaaaa)
         cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/poryaaaa/build --config Release --target poryaaaa
         ;;
-      ccomidi|ccomidi.clap)
+      ccomidi)
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/ccomidi/build --config Release --target ccomidi
         ;;
-      m4l|poryaaaa-m4l)
+      m4l)
         cd packages/poryaaaa-m4l
         npm run install:max-package
         ;;
       *)
         echo "unknown install target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, m4l" >&2
+        echo "known targets: poryaaaa, ccomidi, textedit m4l" >&2
         exit 2
         ;;
     esac

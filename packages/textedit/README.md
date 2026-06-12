@@ -14,6 +14,7 @@ This is a completely standalone VST3 plugin whose only purpose is to be a code e
 ## Building
 
 ```bash
+swift build -c release --package-path packages/voicegroup-lsp
 cmake -S packages/textedit -B packages/textedit/build -DCMAKE_BUILD_TYPE=Release
 cmake --build packages/textedit/build --config Release --target textedit_VST3
 ```
@@ -33,7 +34,7 @@ The LSP server path is resolved in this order:
 The default compile-time fallback is:
 
 ```bash
-voicegroup-lsp
+packages/voicegroup-lsp/.build/release/voicegroup-lsp
 ```
 
 Override the compile-time fallback with:

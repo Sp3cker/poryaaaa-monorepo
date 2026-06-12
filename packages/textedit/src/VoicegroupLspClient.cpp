@@ -94,7 +94,11 @@ void VoicegroupLspClient::stop()
     {
         const juce::ScopedLock scopedLock(lock);
         running = false;
+        initialized = false;
         documentOpen = false;
+        documentVersion = 0;
+        pendingDocumentText.clear();
+        hasPendingDocumentText = false;
     }
 
     {
@@ -121,30 +125,62 @@ bool VoicegroupLspClient::isRunning() const
     return running;
 }
 
-void VoicegroupLspClient::openDocument(const juce::String& text)
+void VoicegroupLspClient::syncDocument(const juce::String& text)
 {
-    if (!isRunning())
-        return;
+    enum class Action { none, open, change };
+    auto action = Action::none;
+    int version = 0;
 
+    {
+        const juce::ScopedLock scopedLock(lock);
+        if (!running)
+            return;
+
+        if (!initialized)
+        {
+            pendingDocumentText = text;
+            hasPendingDocumentText = true;
+            return;
+        }
+
+        if (!documentOpen)
+        {
+            documentOpen = true;
+            documentVersion = 1;
+            version = documentVersion;
+            action = Action::open;
+        }
+        else
+        {
+            version = ++documentVersion;
+            action = Action::change;
+        }
+    }
+
+    if (action == Action::open)
+        sendDidOpen(text, version);
+    else if (action == Action::change)
+        sendDidChange(text, version);
+}
+
+void VoicegroupLspClient::sendDidOpen(const juce::String& text, int version)
+{
     auto textDocument = object();
     textDocument->setProperty("uri", documentUri);
     textDocument->setProperty("languageId", "voicegroup-inc");
-    textDocument->setProperty("version", 1);
+    textDocument->setProperty("version", version);
     textDocument->setProperty("text", text);
 
     auto params = object();
     params->setProperty("textDocument", juce::var(textDocument.get()));
     sendNotification("textDocument/didOpen", params);
-    documentOpen = true;
 }
 
-void VoicegroupLspClient::changeDocument(const juce::String& text)
+void VoicegroupLspClient::sendDidChange(const juce::String& text, int version)
 {
-    if (!isRunning() || !documentOpen)
-        return;
-
     auto textDocument = object();
     textDocument->setProperty("uri", documentUri);
+    textDocument->setProperty("version", version);
 
     auto change = object();
     change->setProperty("text", text);
@@ -160,20 +196,26 @@ void VoicegroupLspClient::changeDocument(const juce::String& text)
 
 void VoicegroupLspClient::requestCompletion(int line, int character)
 {
-    if (isRunning() && documentOpen)
+    if (isDocumentSynced())
         sendRequest("textDocument/completion", positionParams(line, character), RequestKind::completion);
 }
 
 void VoicegroupLspClient::requestHover(int line, int character)
 {
-    if (isRunning() && documentOpen)
+    if (isDocumentSynced())
         sendRequest("textDocument/hover", positionParams(line, character), RequestKind::hover);
 }
 
 void VoicegroupLspClient::requestSignatureHelp(int line, int character)
 {
-    if (isRunning() && documentOpen)
+    if (isDocumentSynced())
         sendRequest("textDocument/signatureHelp", positionParams(line, character), RequestKind::signatureHelp);
+}
+
+bool VoicegroupLspClient::isDocumentSynced() const
+{
+    const juce::ScopedLock scopedLock(lock);
+    return running && documentOpen;
 }
 
 juce::String VoicegroupLspClient::getStatusText() const
@@ -392,6 +434,7 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
     {
         if (!result.isVoid())
             setStatus("LSP: initialized");
+        handleInitializeResponse();
         return;
     }
 
@@ -447,6 +490,34 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
     }
 }
 
+void VoicegroupLspClient::handleInitializeResponse()
+{
+    juce::String stashedText;
+    bool shouldFlush = false;
+
+    {
+        const juce::ScopedLock scopedLock(lock);
+        if (!running || initialized)
+            return;
+
+        initialized = true;
+        if (hasPendingDocumentText)
+        {
+            stashedText = std::move(pendingDocumentText);
+            pendingDocumentText.clear();
+            hasPendingDocumentText = false;
+            shouldFlush = true;
+        }
+    }
+
+    /* Per the LSP spec, `initialized` must follow the initialize response and
+     * precede any other notification (including didOpen). */
+    sendNotification("initialized", object());
+
+    if (shouldFlush)
+        syncDocument(stashedText);
+}
+
 void VoicegroupLspClient::handleNotification(const juce::var& message)
 {
     if (message["method"].toString() != "textDocument/publishDiagnostics")
@@ -469,6 +540,12 @@ void VoicegroupLspClient::handleNotification(const juce::var& message)
 
 void VoicegroupLspClient::writeBytes(const juce::String& text)
 {
+    /* writeLock keeps frames from two threads (message thread, reader thread's
+     * post-initialize flush) from interleaving on the pipe. It is never taken
+     * while holding `lock`, and `lock` is only taken briefly inside the loop,
+     * so a blocked write cannot stall state access elsewhere. */
+    const juce::ScopedLock scopedWriteLock(writeLock);
+
     const auto* data = text.toRawUTF8();
     auto bytesRemaining = std::strlen(data);
 
@@ -523,7 +600,11 @@ void VoicegroupLspClient::markDisconnected(juce::String status)
         return;
 
     running = false;
+    initialized = false;
     documentOpen = false;
+    documentVersion = 0;
+    pendingDocumentText.clear();
+    hasPendingDocumentText = false;
     statusText = std::move(status);
 
     if (childStdin >= 0)

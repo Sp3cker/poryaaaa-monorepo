@@ -9,18 +9,31 @@ if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(TEXTEDIT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
-set(TEXTEDIT_MONOREPO_ROOT "${TEXTEDIT_ROOT}/../..")
+get_filename_component(TEXTEDIT_MONOREPO_ROOT "${TEXTEDIT_ROOT}/../.." ABSOLUTE)
 
 option(TEXTEDIT_FETCH_JUCE "Fetch JUCE with FetchContent when JUCE_ROOT is not set" ON)
 set(TEXTEDIT_JUCE_VERSION "8.0.6" CACHE STRING "JUCE release version used when TEXTEDIT_FETCH_JUCE is enabled")
-set(TEXTEDIT_VOICEGROUP_LSP_PATH "voicegroup-lsp"
-    CACHE STRING "voicegroup-lsp executable name or path fallback")
+set(TEXTEDIT_REPO_VOICEGROUP_LSP_PATH "${TEXTEDIT_MONOREPO_ROOT}/packages/voicegroup-lsp/.build/release/voicegroup-lsp")
+set(TEXTEDIT_LEGACY_REPO_VOICEGROUP_LSP_PATH "${TEXTEDIT_ROOT}/../../packages/voicegroup-lsp/.build/release/voicegroup-lsp")
+set(TEXTEDIT_VOICEGROUP_LSP_PATH "${TEXTEDIT_REPO_VOICEGROUP_LSP_PATH}"
+    CACHE STRING "voicegroup-lsp executable path fallback")
+if(TEXTEDIT_VOICEGROUP_LSP_PATH STREQUAL "voicegroup-lsp"
+   OR TEXTEDIT_VOICEGROUP_LSP_PATH STREQUAL TEXTEDIT_LEGACY_REPO_VOICEGROUP_LSP_PATH)
+    set(TEXTEDIT_VOICEGROUP_LSP_PATH "${TEXTEDIT_REPO_VOICEGROUP_LSP_PATH}"
+        CACHE STRING "voicegroup-lsp executable path fallback" FORCE)
+endif()
 set(JUCE_ROOT "" CACHE PATH "Path to an existing JUCE checkout")
+
+if(NOT EXISTS "${TEXTEDIT_VOICEGROUP_LSP_PATH}")
+    message(WARNING
+        "textedit: voicegroup-lsp not found at ${TEXTEDIT_VOICEGROUP_LSP_PATH}. "
+        "Build it with: swift build -c release --package-path ${TEXTEDIT_MONOREPO_ROOT}/packages/voicegroup-lsp")
+endif()
 
 if(NOT JUCE_ROOT)
     foreach(candidate
@@ -90,6 +103,7 @@ target_compile_definitions(textedit
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        TEXTEDIT_REPO_VOICEGROUP_LSP_PATH="${TEXTEDIT_REPO_VOICEGROUP_LSP_PATH}"
         TEXTEDIT_VOICEGROUP_LSP_PATH="${TEXTEDIT_VOICEGROUP_LSP_PATH}"
 )
 
@@ -129,6 +143,7 @@ target_compile_definitions(textedit_tests
     PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        TEXTEDIT_REPO_VOICEGROUP_LSP_PATH="${TEXTEDIT_REPO_VOICEGROUP_LSP_PATH}"
         TEXTEDIT_VOICEGROUP_LSP_PATH="${TEXTEDIT_VOICEGROUP_LSP_PATH}"
 )
 

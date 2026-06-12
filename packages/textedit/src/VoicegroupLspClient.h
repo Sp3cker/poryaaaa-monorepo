@@ -12,8 +12,14 @@ public:
     void stop();
 
     bool isRunning() const;
-    void openDocument(const juce::String& text);
-    void changeDocument(const juce::String& text);
+
+    /*
+     * Mirror the editor's full document text into the LSP session. The client
+     * owns all open/change sequencing: text arriving before the initialize
+     * response is stashed and flushed afterwards, the first sync sends
+     * didOpen, and later syncs send versioned didChange notifications.
+     */
+    void syncDocument(const juce::String& text);
     void requestCompletion(int line, int character);
     void requestHover(int line, int character);
     void requestSignatureHelp(int line, int character);
@@ -30,10 +36,14 @@ private:
         signatureHelp
     };
 
+    bool isDocumentSynced() const;
     int nextRequestId();
     void sendNotification(const juce::String& method, juce::DynamicObject::Ptr params);
     void sendRequest(const juce::String& method, juce::DynamicObject::Ptr params, RequestKind kind);
     void sendMessage(const juce::var& message);
+    void sendDidOpen(const juce::String& text, int version);
+    void sendDidChange(const juce::String& text, int version);
+    void handleInitializeResponse();
     juce::DynamicObject::Ptr textDocumentIdentifier() const;
     juce::DynamicObject::Ptr positionParams(int line, int character) const;
     void setStatus(juce::String newStatus);
@@ -58,11 +68,22 @@ private:
 #endif
 
     mutable juce::CriticalSection lock;
+    /* Serialises whole frames onto the child's stdin. Separate from `lock`
+     * (state) so a blocked pipe write can never stall the reader thread's
+     * state access. Both the message thread and the reader thread (pending
+     * flush after initialize) write frames. */
+    juce::CriticalSection writeLock;
     juce::HashMap<int, RequestKind> pendingRequests;
     juce::String statusText = "LSP: not started";
     int requestCounter = 0;
     bool running = false;
+
+    /* LSP session state, all guarded by `lock`. */
+    bool initialized = false;
     bool documentOpen = false;
+    int documentVersion = 0;
+    juce::String pendingDocumentText;
+    bool hasPendingDocumentText = false;
 
     const juce::String serverPath;
     const juce::String documentUri = "file:///textedit/voicegroup.inc";

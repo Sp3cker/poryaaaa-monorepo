@@ -22,6 +22,10 @@ bool runVoicegroupLspConfigTests()
 {
     auto passed = true;
 
+    passed &= expectEqual("compile-time LSP fallback",
+                          TEXTEDIT_VOICEGROUP_LSP_PATH,
+                          TEXTEDIT_REPO_VOICEGROUP_LSP_PATH);
+
     passed &= expectEqual("env override",
                           resolveVoicegroupLspServerPathForEnvironment("/compile/default/voicegroup-lsp",
                                                                        "/tmp/voicegroup-lsp",
