@@ -23,7 +23,7 @@ Primary references:
 - If no local reference exists, say so and avoid unverified inlet/outlet or
   message vocabulary claims.
 - Use `docs/max-gotchas.md` for project-validated landmines.
-- Live API patcher object serialization must be checked before generator edits.
+- Live API patcher object serialization must be checked after hand-edits to devices.
 
 ## Common Gotchas To Check
 
@@ -33,7 +33,7 @@ Primary references:
 - `node.script` boot timing and route-tagged output.
 - M4L instrument outputs use `[plugout~ 1]` / `[plugout~ 2]`.
 - `live.indicator` does not exist.
-- Generated metadata must match patchcord endpoints.
+- Object metadata (numinlets/numoutlets/outlettype) must match patchcord endpoints (verify with amxd_inspect after edits).
 
 ## Output
 

@@ -17,23 +17,23 @@ plumbing (no `state.json`).
 
 ## Current state
 
-- State transport is bus-based: `poryaaaa~` emits `status <uri-encoded-json>`
-  on its rightmost outlet → `code-src/service.ts` decodes → publishes on
-  `messnamed("---poryaaaa.state", "state", encoded)` and writes a `Dict`
-  snapshot named `poryaaaa.state`. ccomidi instances subscribe and pull the
-  snapshot at start. There is **no** `state.json` and no
-  `voicegroup_state.c` writer.
-- Slot payload today: `{program: int, name: string}`. Both `parseSlotsField`
-  in `code-src/service.ts:63` and `parseSlots` in
-  `code-src/ccomidi_voices_service.ts:53` drop everything else.
-- Patcher prep work for the envelope UI is already in place
-  (hand-edit in `devices/ccomidi.amxd`, formerly `scripts/gen_ccomidi_amxd.py:413-510`):
-  - Four `live.dial`s (Attack/Decay/Sustain/Release) wired to rows `r5..r8`
-    with `r{N}_v0 $1` into `[ccomidi]`.
-  - `Send Env` `live.toggle` (persisted Live param) drives `r5_en..r8_en`
-    enable bits via `attr_msg`, with `r #0-sync` re-bang on row 5.
-- The `[route]` after `[v8 ccomidi_voices.js]` is still `slots program` and
-  the toggle has no path back into v8.
+Historically the `.amxd` devices (including ccomidi) were produced by Python
+generators. They are now hand-maintained: edit `devices/ccomidi.amxd` directly
+in Max and Save, then validate with `python3 scripts/amxd_inspect.py
+devices/ccomidi.amxd validate`.
+
+State transport uses the Node WebSocket voicegroup path (`poryaaaa_voicegroup_server.ts`
++ `ccomidi_voicegroup_client.ts`). The v8 side lives in `code-src/ccomidi_voices.ts`
+(which contains the slot parsing and selection logic that used to be split across
+separate service modules).
+
+Patcher prep work for the envelope UI is in place in the hand-maintained
+`devices/ccomidi.amxd`:
+- Four `live.dial`s (Attack/Decay/Sustain/Release) wired to rows.
+- `Send Env` `live.toggle` drives enable bits, with `#0-sync` fanout.
+
+The route after the ccomidi v8 and the back-path from the toggle into v8 still
+need the envelope-specific messages (`senvchanged` etc.) if not already wired.
 
 ## Wire-format change
 
@@ -87,46 +87,15 @@ and emits `{program, name}` per non-empty slot. Extend to also read
 - The "drop broken `#include "voicegroup/voicegroup_state.h"`" cleanup is
   already done. No further removal needed.
 
-## Bus relay — `code-src/service.ts`
+## Implementation notes (see current code)
 
-`parseSlotsField` (lines 63-75) currently coerces to `{program, name}` and
-discards the rest. Extend the `Slot` interface and parser to preserve
-envelope:
+The slot/envelope types, parsing, and fan-out now live in `code-src/ccomidi_voices.ts`
+(and supporting voice-slot-contract). The v8 emits the additional `senv*` messages
+on voice selection / toggle changes so the patcher can drive the ADSR dials and
+enable bits. LOM / state details are in the Node side (`poryaaaa-node/`). 
 
-```ts
-type Envelope = { attack: number; decay: number; sustain: number; release: number } | null;
-interface Slot { program: number; name: string; envelope: Envelope; }
-```
-
-Validation:
-
-- `envelope === null` → keep as `null`.
-- `envelope` is a four-key object with finite numeric `attack`, `decay`,
-  `sustain`, `release` → keep, coerce each to `int`.
-- Otherwise → coerce to `null` and `deps.post()` a diagnostic naming the
-  slot. Don't drop the slot.
-
-`StateBroadcast.slots` is `Slot[]` so the change is transparent to the
-broadcast/snapshot path; the encoded JSON automatically includes the new
-field.
-
-## ccomidi service — `code-src/ccomidi_voices_service.ts`
-
-Mirror the slot/envelope types from `service.ts` (or pull them through a
-shared file in `code-src/` if the duplication starts mattering — not
-required for this change).
-
-`parseSlots` (lines 53-65): same validation as above; treat malformed
-envelopes as `null` with a `post()`.
-
-`select(idx)` (currently emits only `program <p>` at line 170): after the
-`program` emit, fan out envelope info as new outlet messages so the
-patcher's expanded `[route]` can drive the toggle / dials directly.
-
-- `slots[idx].envelope === null` (keysplit):
-  - `senvactive 0` — set the toggle's `@active` attribute, greying it.
-  - `senvtoggle 0` — force the toggle's value off.
-- Else:
+Consult the source for the exact current shapes rather than the historical plan
+text below.
   - `senvactive 1` — un-grey.
   - `dialset attack <a>`, `dialset decay <d>`, `dialset sustain <s>`,
     `dialset release <r>`. Values are emitted **as the JSON bytes** — the
@@ -180,8 +149,8 @@ and `deliver()` — sufficient for all of the above.
 ## Patcher — `devices/ccomidi.amxd` (hand-maintained)
 
 Build on the existing envelope section (hand-edit the post-v8 route and
-envelope wiring directly in the .amxd; the old generator lived at
-`gen_ccomidi_amxd.py:413-510` historically):
+envelope wiring directly in the .amxd — we used to generate these devices
+but now edit and save them manually in Max):
 
 1. **Expand the `[route]` after the v8 outlet** from `slots program` to
    `slots program senvtoggle senvactive dialset`. Wire each new outlet:
@@ -237,65 +206,42 @@ To resolve while coding, not blocking:
   already operates in `0..127`. If yes, the dial → XCMD path needs no
   additional scaling; only the read-side fill is scaled.
 
-## File changes summary
+## Verification (current process)
 
-Engine repo (location TBD — not under `/Users/sallegrezza/dev/`; locate
-before editing):
-- **Edit** `voicegroup/voicegroup_types.h` — only to confirm voice-type
-  codes; no change unless missing.
+1. Rebuild the external (via `npm run build:externals` or the package CMake
+   Release target) so `poryaaaa~` emits the `envelope` field per slot.
+2. `npm test && npm run check && npm run build` clean.
+3. Hand-edit + Save `devices/ccomidi.amxd` in Max for any additional route /
+   dialset wiring needed for the new messages. Run
+   `python3 scripts/amxd_inspect.py devices/ccomidi.amxd validate` (and
+   `cords --from-text v8` etc.).
+4. In Live: test the selection / toggle / dial behavior exactly as described
+   in the Live verification steps below. (Devices are hand-maintained; no
+   regeneration step.)
 
-This repo (`/Users/sallegrezza/dev/cProjects/poryaaaa-m4l/`):
-- **Edit** `source/audio/poryaaaa~/poryaaaa~.c` — `porya_emit_status` adds
-  `envelope` per slot; bump JSON buffer; add
-  `voice_type_supports_envelope`.
-- **Edit** `code-src/service.ts` — `Slot.envelope`; `parseSlotsField`
-  preserves and validates it.
-- **Edit** `code-src/ccomidi_voices_service.ts` — `Slot.envelope`;
-  `parseSlots`; `select` fan-out; new `senvchanged` method; track selected
-  index.
-- **Edit** `code-src/ccomidi_voices.ts` — wire the `senvchanged` inbound
-  handler; expose it on the v8 entry.
-- **Edit** `code-src/test/ccomidi_voices.test.ts` — see Tests section.
-- Hand-edit `devices/ccomidi.amxd` (open in Max): expand the `[route]` after
-  the v8, wire `senvchanged` / `senvtoggle` / `senvactive` / `dialset` paths
-  (including into the relevant bpatcher if the envelope section lives there),
-  then Save. (Generators have been removed; devices are hand-maintained.)
-- (Possibly) **Edit** `code-src/test/service.test.ts` — if
-  `parseSlotsField` validation gets a dedicated test.
+## Live verification steps
 
-## Verification
+In Live, on a track running `ccomidi` with `poryaaaa` on a sibling track:
+- Click Reload. Pick an envelope-capable voice → ADSR dials snap to the
+  scaled stock values. Send Env toggle is enabled but stays off. Flip
+  it ON → ADSR XCMD rows emit on dial moves. Flip OFF → emission stops
+  and the dials hold their last positions.
+- Pick a keysplit voice → toggle forces off and greys. Dials retain
+  their last values; moving them does not emit.
+- Pick another envelope-capable voice → toggle un-greys, dials
+  repopulate. If the toggle was already ON, the new envelope auto-emits
+  via the dial set-fires-emit chain.
+- With Send Env ON, drag ADSR dials to override a voice. Then turn
+  Send Env OFF → `poryaaaa~` receives the slot's stock envelope values,
+  and further dial moves are inert.
 
-1. Engine rebuild emits `envelope` per slot (sample / square / noise /
-   programmable-wave / cry → object with four ints; keysplit / keysplit-all
-   → JSON `null`). Confirm by feeding the JSON status to the v8 console or
-   inspecting the snapshot Dict in real time.
-2. `npm test && npm run check && npm run build` clean in this repo.
-3. Rebuild `poryaaaa~` external (CMake `Release`).
-   Hand-edit + save `devices/ccomidi.amxd` in Max with the new routing.
-   `python3 scripts/amxd_inspect.py devices/ccomidi.amxd validate` returns
-   ok. `cords --from-text v8` shows the new `senvtoggle / senvactive /
-   dialset` outlets. (Note: generators removed; patcher changes are manual.)
-4. In Live, on a track running `ccomidi` with `poryaaaa` on a sibling
-   track:
-   - Click Reload. Pick an envelope-capable voice → ADSR dials snap to the
-     scaled stock values. Send Env toggle is enabled but stays off. Flip
-     it ON → ADSR XCMD rows emit on dial moves. Flip OFF → emission stops
-     and the dials hold their last positions.
-   - Pick a keysplit voice → toggle forces off and greys. Dials retain
-     their last values; moving them does not emit.
-   - Pick another envelope-capable voice → toggle un-greys, dials
-     repopulate. If the toggle was already ON, the new envelope auto-emits
-     via the dial set-fires-emit chain.
-   - With Send Env ON, drag ADSR dials to override a voice. Then turn
-     Send Env OFF → `poryaaaa~` receives the slot's stock envelope values,
-     and further dial moves are inert.
+## Critical files (current)
 
-## Critical files
-
-- `source/audio/poryaaaa~/poryaaaa~.c` — `porya_emit_status` (the JSON
-  emitter)
-- `code-src/service.ts` — `parseSlotsField`, `StateBroadcast`
-- `code-src/ccomidi_voices_service.ts` — `parseSlots`, `select`,
-  new `senvchanged`
-- `code-src/test/_mocks.ts` — `MockBus` (sufficient as-is)
+- `source/audio/poryaaaa~/poryaaaa~.cpp` and the recorder/ support (status emission)
+- `code-src/ccomidi_voices.ts` (slot parsing, selection, envelope messages to patcher)
+- `code-src/poryaaaa-node/voicegroup-service.ts` + client (transport)
 - `devices/ccomidi.amxd` (hand-edit the post-v8 route and envelope wiring)
+- Tests under `code-src/test/` that cover voices / slots
+
+(Old plan text for bus/service modules has been removed; the implementation
+moved to the files above during voicegroup/Node work.)

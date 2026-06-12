@@ -7,4 +7,4 @@ Read this first:
 
 `.codex/skills/poryaaaa-m4l-framework/SKILL.md`
 
-`CLAUDE.md` remains as a compatibility pointer for tools that still open it.
+`CLAUDE.md` is kept only as a compatibility pointer for tools that still open it.

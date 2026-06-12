@@ -8,7 +8,7 @@ This repository contains the first-party poryaaaa projects:
 
 - `packages/poryaaaa`: GBA m4a audio engine, CLAP instrument, and renderer
 - `packages/ccomidi`: CLAP MIDI/control sender
-- `packages/poryaaaa-m4l`: Max for Live package, externals, generated devices, and TypeScript controllers
+- `packages/poryaaaa-m4l`: Max for Live package, externals, hand-maintained .amxd devices, and TypeScript controllers
 
 First-party projects are normal directories, not git submodules.
 

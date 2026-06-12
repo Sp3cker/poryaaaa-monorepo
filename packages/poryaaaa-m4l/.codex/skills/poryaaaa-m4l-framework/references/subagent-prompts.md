@@ -7,7 +7,7 @@ unrelated changes.
 ## Explorer
 
 ```text
-In /Users/sallegrezza/dev/cProjects/poryaaaa-m4l, inspect only this domain:
+In the poryaaaa-m4l package (under the monorepo), inspect only this domain:
 <domain and files>.
 
 Question: <specific question>.
@@ -21,7 +21,7 @@ Do not edit files. Return:
 ## Worker
 
 ```text
-In /Users/sallegrezza/dev/cProjects/poryaaaa-m4l, implement this bounded task:
+In the poryaaaa-m4l package (under the monorepo), implement this bounded task:
 <task>.
 
 Ownership:
@@ -45,7 +45,7 @@ Return:
 ## Reviewer
 
 ```text
-In /Users/sallegrezza/dev/cProjects/poryaaaa-m4l, review this change set for:
+In the poryaaaa-m4l package (under the monorepo), review this change set for:
 <domain>.
 
 Focus on bugs, regressions, missing verification, and violations of repo rules.

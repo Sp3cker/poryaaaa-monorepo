@@ -28,7 +28,7 @@ Primary files:
 
 - Local WebSocket state currently centers on `127.0.0.1:17777`.
 - Patcher routing should expect tagged messages such as `bank`, `path`,
-  `voicegroup`, `state`, and `getstate` when used by the generated devices.
+  `voicegroup`, `state`, and `getstate` when used by the devices.
 
 ## Verification
 
@@ -38,5 +38,4 @@ Primary files:
 
 ## Output
 
-Report changed files, message contract changes, tests run, and whether generated
-patch routing must change.
+Report changed files, message contract changes, tests run, and whether patch routing in the devices must change.

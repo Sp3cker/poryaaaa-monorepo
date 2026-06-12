@@ -1,14 +1,14 @@
 # .amxd Patcher Inspection
 
-When you need to look inside a generated `.amxd` device — to verify a box's JSON shape, audit which cords source a given object, or chase down "patchcord source not found" warnings — use `scripts/amxd_inspect.py` instead of an inline `python3 -c "import json; ..."`.
+When you need to look inside a `.amxd` device (poryaaaa.amxd or ccomidi.amxd) after a hand-edit in Max — to verify a box's JSON shape, audit which cords source a given object, or chase down "patchcord source not found" warnings — use `scripts/amxd_inspect.py`.
 
 ## Trigger
 
 - The user reports Max console warnings like `patchcord source not found`, `outlet out of range`, or anything implying the .amxd JSON has structural problems.
-- You changed `gen_*_amxd.py` and want to verify the regenerated device matches expectations (box maxclass shape, cord source/dest, outlet indexing).
-- You're answering a "what does the patcher actually contain?" question and the answer is a structural query, not a textual grep.
+- You hand-edited a device in Max (open the .amxd, make changes, Save) and want to confirm boxes/cords/validate before committing.
+- You're answering a "what does the patcher actually contain?" question (structural query on the hand-maintained device).
 
-Skip when: a plain `rg` over `scripts/gen_*_amxd.py` answers the question without parsing the binary `.amxd`.
+Skip when: a plain `rg` answers the question without needing the binary parse.
 
 ## Usage
 

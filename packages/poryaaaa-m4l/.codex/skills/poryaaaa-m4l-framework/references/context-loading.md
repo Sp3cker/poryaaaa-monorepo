@@ -19,13 +19,13 @@ Load only what the task needs.
 - C++ externals: relevant files under `source/audio/poryaaaa~/` or
   `source/midi/ccomidi/`, local CMake files, and focused tests.
 - AMXD devices: `devices/*.amxd` and `scripts/amxd_inspect.py` (usage docs
-  from `specialists/amxd-generator.md`).
+  from `specialists/amxd-generator.md` — the hand-maintained devices specialist).
 - Max/M4L reference: exact object reference under `docs/max-ref/<domain>/`,
   `docs/max-gotchas.md`, `docs/Max9-LOM-en.md` for Live Object Model work.
 
 ## Avoid
 
 - Do not load all Max reference docs.
-- Do not load generated `javascript/*.js` unless debugging bundle output.
+- Do not load generated `javascript/*.js` (the bundles) unless debugging bundle output.
 - Do not load binary `.amxd` raw content; use `scripts/amxd_inspect.py`.
 - Do not use `CLAUDE.md` as project context. It is replaced.

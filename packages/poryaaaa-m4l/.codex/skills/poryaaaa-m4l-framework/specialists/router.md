@@ -30,6 +30,6 @@ spawn subagents.
 
 ## Handoffs
 
-- Generated patch/device edits: AMXD devices (specialists/amxd-generator.md).
+- Device/patcher edits: AMXD devices (specialists/amxd-generator.md).
 - Object syntax and Live API uncertainty: Max/M4L reference.
 - Source code implementation: the owning language/domain specialist.

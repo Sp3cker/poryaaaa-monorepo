@@ -263,56 +263,21 @@ Distinct from Max issues but worth recording: `m4a_engine_note_on` will silently
 
 ---
 
-## Generated object metadata must match patchcords
+## Device patcher metadata and validation (historical note)
 
-**Bug:** Max printed errors like:
+Historically the `.amxd` devices were produced by Python generators using py2max. They are now hand-maintained: edit directly in Max and Save over the file in `devices/`, then run
 
 ```
-send: patchcord source not found: deleting patchcord
-delay: patchcord source not found: deleting patchcord
-message: patchcord source not found: deleting patchcord
-trigger: patchcord source not found: deleting patchcord
-patcher: patchcord inlet out of range: deleting patchcord
+python3 scripts/amxd_inspect.py devices/<name>.amxd validate
 ```
 
-The visible boxes existed in the generated `.amxd`, but Max deleted the lines on load. This broke routing in ways that looked like the downstream feature was wrong, e.g. a button existed but did nothing, or a voice picker only fired after `Send All`.
+(and `boxes` / `cords` queries as needed) before committing the binary.
 
-**Cause:** py2max sometimes serializes incomplete `numinlets`, `numoutlets`, or `outlettype` metadata for native Max objects, especially variadic objects like `[route ...]`, `[sel ...]`, comments that receive messages, and hand-built helper objects. Max uses that serialized metadata while loading the patcher. If a patchline targets inlet 0 on an object serialized with `numinlets: 0`, or source outlet 5 on an object serialized with `numoutlets: 2`, Max deletes the line even if the object text would create those inlets/outlets interactively.
+When editing, make sure serialized inlet/outlet counts on objects like `[route ...]` or `[sel ...]` (and comments that receive messages) match the patchcords you add. Use `amxd_inspect.py ... cords` + `validate` after changes; dangling or out-of-range patchlines are reported automatically. This is the current process (no generators or "regens").
 
-**Fix:** For generated patchers, use `add_raw(...)` for any object whose inlet/outlet count matters, and set the metadata explicitly:
+The py2max-era bug (incomplete `numinlets`/`numoutlets`/`outlettype` metadata causing Max to silently drop patchcords on load) is the reason we validate after every structural edit. Helper objects should still live in a far-right column in patching view.
 
-```python
-route_node = add_raw(
-    p,
-    maxclass="newobj",
-    text="route bank path voicegroup state getstate",
-    numinlets=2,
-    numoutlets=6,
-    outlettype=["", "", "", "", "", ""],
-    patching_rect=[B_X, 110.0, 270.0, 22.0],
-)
-
-path_label = add_raw(
-    p,
-    maxclass="comment",
-    text="(no project)",
-    numinlets=1,
-    numoutlets=0,
-    outlettype=[],
-    patching_rect=[A_X, 150.0, 320.0, 18.0],
-)
-```
-
-**Regression check:** after every generator change that adds or rewires objects, parse the generated `.amxd` JSON and assert every patchline's source outlet and destination inlet is within the serialized counts. `patchline_errors 0` is the target. Do this before testing in Live; otherwise Live/Max may silently delete the exact connection you're trying to verify.
-
----
-
-## Checklist before declaring an `.amxd` "done"
-
-- [ ] Generator emits the right device kind (`mmmm` / `iiii`).
-- [ ] All `live.*` widgets in presentation mode have a `presentation_rect`.
-- [ ] Helper objects (messages, prints) live in a far-right column so patching mode is readable.
-- [ ] `[live.thisdevice]`'s left outlet fires an instance-local sync symbol such as `s #0-sync`, and widgets receive via `r #0-sync` so they re-emit on patch reload without cross-talking between device instances.
-- [ ] If the device emits MIDI to drive another track, transport detection (`live.observer live_set is_playing`) is wired and triggers a state snapshot on play-start.
-- [ ] After every regen: copy `.amxd` into the appropriate Live presets folder; the .mxo into Max packages externals dir.
-- [ ] Test in a fresh Live project, not just a reload of the existing one — Live caches device patches at instance-creation time, not at file-modification time.
+Current checklist items that still apply:
+- All `live.*` widgets shown in Live have `presentation` + `presentation_rect`.
+- `[live.thisdevice]` left outlet typically drives instance-local sync (e.g. `s #0-sync` / `r #0-sync` fanout for widgets).
+- Test in a fresh Live project (Live caches device state at load time).

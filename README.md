@@ -56,7 +56,8 @@ CCs, xCMD sequences, and related control data intended for poryaaaa playback
 and export workflows.
 
 `packages/poryaaaa-m4l` is the Max for Live layer. It contains Max externals,
-generated `.amxd` devices, TypeScript controller code, recorder save/export
+hand-maintained `.amxd` devices (edited in Max + validated with
+`amxd_inspect.py`), TypeScript controller code, recorder save/export
 logic, and bridge code that connects Live workflows to `poryaaaa` and
 `ccomidi`.
 

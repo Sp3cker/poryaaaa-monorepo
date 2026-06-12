@@ -348,28 +348,22 @@ Do not keep `ready`, `root`, `status`, or `get_voices` unless implementation dis
   - ignores empty slot arrays
   - keeps VoiceIdx behavior unchanged
 
-- Generator tests:
-  - poryaaaa generated patch contains no `v8 poryaaaa.js`
-  - poryaaaa generated patch contains `node.script poryaaaa_voicegroup_server.js @autostart 1`
-  - poryaaaa generated patch contains route fanout for `bank path voicegroup`
-  - poryaaaa generated patch re-prepends `voicegroup` after route before `poryaaaa~`
-  - poryaaaa generated patch has delayed/gated initial `restore` delivery to `node.script`
-  - poryaaaa generated patch keeps `dumped` / `dumpfailed` recorder reply wiring intact
-  - poryaaaa generated patch contains no `r get_voices`
-  - ccomidi generated patch contains no `r poryaaaa.state`
-  - ccomidi generated patch contains no `get_voices` state request wiring
-  - ccomidi generated patch contains `node.script ccomidi_voicegroup_client.js @autostart 1`
-  - AMXDs pass `scripts/amxd_inspect.py <device> validate` (after hand-saving
-    edits in Max)
-  - patchlines have valid serialized inlet/outlet metadata for `node.script`,
-    `route`, and `prepend`
+- Historical generator-era checks (no longer applicable):
+  The devices are now hand-maintained (open in Max, edit, Save, then
+  `python3 scripts/amxd_inspect.py <device>.amxd validate`). The wiring
+  expectations below (no old v8 bus, correct node.script usage, recorder
+  `dumped`/`dumpfailed` paths intact, etc.) were verified at the time of the
+  Node/WS migration.
 
-- Existing checks:
+- Current checks:
   - `npm run check`
   - `npm test`
   - `npm run build:js`
-  - (Generators removed; edit devices in Max and validate with amxd_inspect)
-  - copy both AMXDs to Ableton User Library and verify copies match
+  - Hand-edit devices as needed + `amxd_inspect.py ... validate`
+  - Copy both AMXDs to Ableton User Library and smoke-test in Live
+
+(Generators have been removed; see repo-rules.md and max-gotchas.md for the
+current hand-maintenance process.)
 
 ## Acceptance Criteria
 

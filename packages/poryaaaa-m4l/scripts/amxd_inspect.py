@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Inspect a generated .amxd device.
+"""Inspect a .amxd device patcher.
 
 `.amxd` files are an 8-byte binary header followed by the patcher JSON. This
-strips the header, parses the JSON, and exposes the queries we actually run
-when debugging gen output (which boxes exist, which cords source/target a
+strips the header, parses the JSON, and exposes the queries used for
+post-hand-edit validation (which boxes exist, which cords source/target a
 given box, dangling patchlines, including embedded patchers).
+
+Devices in this repo are hand-maintained (edited and saved directly in Max);
+the tool is run after changes with `python3 scripts/amxd_inspect.py
+devices/<name>.amxd validate`.
 
 Usage:
     amxd_inspect.py <file> boxes [--match PATTERN]

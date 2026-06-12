@@ -14,7 +14,7 @@ validation commands.
 ## Rules
 
 - Use the smallest command set that covers the touched domains.
-- For generated `.amxd` changes, validation is mandatory.
+- For device `.amxd` changes (hand-edits in Max), run `python3 scripts/amxd_inspect.py devices/<name>.amxd validate`.
 - For TypeScript changes, `npm run check` is the minimum static check; run
   focused tests or `npm test` as risk requires.
 - For C++ changes, run `npm run build:externals`.

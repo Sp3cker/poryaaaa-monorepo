@@ -1,5 +1,8 @@
 # AMXD Devices Specialist (formerly Generator)
 
+Historically the `.amxd` devices were produced by Python generators. They are
+now hand-maintained (edit in Max, Save, `amxd_inspect.py ... validate`).
+
 ## Scope
 
 Owns the hand-maintained Max for Live devices, structural `.amxd` inspection

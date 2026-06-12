@@ -48,7 +48,7 @@ Load `references/domain-map.md` first for routing detail.
 - TypeScript V8: `specialists/typescript-v8.md`
 - Node transport: `specialists/node-transport.md`
 - C++ externals: `specialists/cpp-externals.md`
-- AMXD generator: `specialists/amxd-generator.md`
+- AMXD devices (hand-maintained): `specialists/amxd-generator.md`
 - Max/M4L reference: `specialists/max-m4l-reference.md`
 - Verification: `specialists/verification.md`
 - Router/merge protocol: `specialists/router.md`
