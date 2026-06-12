@@ -7,19 +7,9 @@
  * Thread-safety: all functions must be called from the main thread.
  */
 
-#include <pugl/pugl.h>
-
-#ifdef __APPLE__
-#include "pugl_mac_metal.h"
-#include "imgui_impl_metal.h"
-#else
-#include <pugl/gl.h>
-#include "imgui_impl_opengl3.h"
-#endif
-
 #include "imgui.h"
 #include "imfilebrowser.h"
-#include "imgui_impl_pugl.h"
+#include "imgui_pugl_shell.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -45,10 +35,15 @@
 #define GUI_LOG_RESTORE_FORMAT_NONLITERAL
 #endif
 
-/* Timer ID for the internal render timer 
-    Bitwig does not give the plugin a timer, 
-    so we use a timer from Pugl to drive GUI updates */
-static const uintptr_t RENDER_TIMER_ID = 1;
+/* Text size scale (Tailwind-style). Use integer values so line heights land on
+ * whole pixels — fractional sizes make row spacing visibly uneven.
+ * Usage: ImGui::PushFont(nullptr, text::Lg) keeps the font, changes the size. */
+namespace text {
+[[maybe_unused]] constexpr float Sm   = 13.0f;
+constexpr float Base = 16.0f;
+[[maybe_unused]] constexpr float Lg   = 20.0f;
+[[maybe_unused]] constexpr float Xl   = 24.0f;
+} // namespace text
 
 static bool copy_path_utf8(char *dst, size_t dstSize, const std::filesystem::path &path)
 {
@@ -144,18 +139,9 @@ static const int VOICE_SLOT_COUNT = 128;
 /* ---- GUI state ---- */
 
 struct M4AGuiState {
-    PuglWorld     *world;
-    PuglView      *view;
-    ImGuiContext  *imguiCtx;
+    poryaaaa::gui::ImGuiPuglShell *shell;
     ImFont        *boldFont;
     const clap_host_t *host;
-
-    bool           realized;   /* true after puglRealize succeeds */
-    bool           renderInited; /* true after render backend init */
-
-    /* Cached size from PUGL_CONFIGURE */
-    uint32_t       cachedWidth;
-    uint32_t       cachedHeight;
 
     /* Currently displayed settings */
     M4AGuiSettings settings;
@@ -182,13 +168,8 @@ struct M4AGuiState {
     double validXcmdUntil;
     char latestXcmd[128];
 
-    /* True after set_parent() — host drives sizing and visibility */
-    bool isEmbedded;
-
     /* True after the user closes the floating window */
     bool wasClosed;
-
-    /* True when the internal pugl render timer is active */
 
     M4AGuiTimerCallback internalTimerCallback;
     void *internalTimerUserData;
@@ -708,25 +689,10 @@ static void render_recorder_tab(M4AGuiState *gui)
     }
 }
 
-/* Render a single ImGui frame — called from PUGL_EXPOSE. */
-static void render_frame(M4AGuiState *gui)
+static void render_frame(M4AGuiState *gui, uint32_t width, uint32_t height)
 {
-    ImGui::SetCurrentContext(gui->imguiCtx);
-
-#ifdef __APPLE__
-    PuglMetalContext *mtlCtx = (PuglMetalContext *)puglGetContext(gui->view);
-    ImGui_ImplMetal_NewFrame(mtlCtx->renderPassDescriptor);
-#else
-    ImGui_ImplOpenGL3_NewFrame();
-#endif
-    ImGui_ImplPugl_NewFrame();
-    ImGui::NewFrame();
-
-    uint32_t fbW = gui->cachedWidth;
-    uint32_t fbH = gui->cachedHeight;
-
     ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImVec2((float)fbW, (float)fbH));
+    ImGui::SetNextWindowSize(ImVec2((float)width, (float)height));
 
     ImGuiWindowFlags wflags =
         ImGuiWindowFlags_NoTitleBar      |
@@ -762,142 +728,61 @@ static void render_frame(M4AGuiState *gui)
     }
 
     ImGui::End();
-
-    /* ---- Render ---- */
-    ImGui::Render();
-#ifdef __APPLE__
-    ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(),
-                                   mtlCtx->commandBuffer,
-                                   mtlCtx->renderEncoder);
-#else
-    glViewport(0, 0, (int)fbW, (int)fbH);
-    glClearColor(0.12f, 0.12f, 0.12f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-#endif
-    /* Pugl handles buffer swap / command buffer commit */
 }
 
-/* ---- Pugl event handler ---- */
-
-static PuglStatus pugl_event_handler(PuglView *view, const PuglEvent *event)
+static void shell_draw_frame(void *userData, uint32_t width, uint32_t height)
 {
-    M4AGuiState *gui = (M4AGuiState *)puglGetHandle(view);
+    M4AGuiState *gui = (M4AGuiState *)userData;
+    if (gui)
+        render_frame(gui, width, height);
+}
+
+static void shell_closed(void *userData, bool wasDestroyed)
+{
+    M4AGuiState *gui = (M4AGuiState *)userData;
     if (!gui)
-        return PUGL_SUCCESS;
+        return;
 
-    ImGui::SetCurrentContext(gui->imguiCtx);
-
-    switch (event->type)
-    {
-    case PUGL_REALIZE:
-        /* Graphics context is now current — initialize render backend */
-        if (!gui->renderInited) {
-#ifdef __APPLE__
-        {
-            PuglMetalContext *ctx = (PuglMetalContext *)puglGetContext(gui->view);
-            ImGui_ImplMetal_Init(ctx->device);
-        }
-#else
-            ImGui_ImplOpenGL3_Init("#version 330 core");
-#endif
-            gui->renderInited = true;
-        }
-        break;
-
-    case PUGL_UNREALIZE:
-        /* Render context is current — shut down render backend if still active.
-         * NOTE: puglFreeView() on Windows does NOT dispatch PUGL_UNREALIZE,
-         * so the explicit shutdown in m4a_gui_destroy() handles the normal
-         * teardown path.  This case handles any other unrealize scenario. */
-        if (gui->renderInited) {
-#ifdef __APPLE__
-            ImGui_ImplMetal_Shutdown();
-#else
-            ImGui_ImplOpenGL3_Shutdown();
-#endif
-            gui->renderInited = false;
-        }
-        break;
-
-    case PUGL_CONFIGURE:
-        gui->cachedWidth  = event->configure.width;
-        gui->cachedHeight = event->configure.height;
-        break;
-
-    case PUGL_UPDATE:
-        /* Request a redraw on every update so we render continuously */
-        puglObscureView(view);
-        break;
-
-    case PUGL_EXPOSE:
-        if (gui->renderInited)
-            render_frame(gui);
-        break;
-    case PUGL_TIMER:
-        if (event->timer.id == RENDER_TIMER_ID) {
-            if (gui->internalTimerCallback)
-            // This is currently just an alias to m4a_plugin.c -> timer_on_timer((const clap_plugin_t *)user_data, 0);
-                gui->internalTimerCallback(gui->internalTimerUserData);
-            else {
-                /* This would happen if the host provided a timer *but* somehow 
-                another Pugl timer started (i dont know how or why or if thats possible)*/
-                gui_log("More than 1 Pugl timer is running. That's odd...");
-                m4a_gui_tick(gui);
-                }
-            }
-            break;
-
-    case PUGL_CLOSE:
-        gui->wasClosed = true;
-        m4a_gui_stop_internal_timer(gui);
-        // gui_log("pugl_event_handler: PUGL_CLOSE");
-        if (gui->host) {
-            const clap_host_gui_t *hostGui =
-                (const clap_host_gui_t *)gui->host->get_extension(gui->host, CLAP_EXT_GUI);
-            if (hostGui)
-                hostGui->closed(gui->host, false /* was_destroyed */);
-        }
-        break;
-
-    case PUGL_BUTTON_PRESS:
-        /* Claim keyboard focus so that subsequent key/text events are routed
-         * to our child window.  In embedded mode the host's message pump does
-         * not automatically give the child focus on click. */
-        puglGrabFocus(view);
-        ImGui_ImplPugl_ProcessEvent(event);
-        break;
-
-    case PUGL_BUTTON_RELEASE:
-        ImGui_ImplPugl_ProcessEvent(event);
-        break;
-
-    case PUGL_KEY_PRESS:
-    case PUGL_KEY_RELEASE:
-    {
-        ImGuiIO &io = ImGui::GetIO();
-
-        /* Tells Pugl to not handle spacebar presses *unless* ImGui wants text input
-        See third_party/pugl/mac.m > key_down handler for more details */
-        const PuglMods mods = event->key.state;
-        const bool plainSpace =
-            event->key.key == PUGL_KEY_SPACE &&
-            (mods & (PUGL_MOD_SHIFT | PUGL_MOD_CTRL | PUGL_MOD_ALT | PUGL_MOD_SUPER)) == 0;
-
-        if (gui->isEmbedded && plainSpace && !io.WantTextInput) // in case ur focusing text input
-            return PUGL_UNSUPPORTED;
-
-        ImGui_ImplPugl_ProcessEvent(event);
-        break;
+    gui->wasClosed = true;
+    m4a_gui_stop_internal_timer(gui);
+    if (gui->host) {
+        const clap_host_gui_t *hostGui =
+            (const clap_host_gui_t *)gui->host->get_extension(gui->host, CLAP_EXT_GUI);
+        if (hostGui)
+            hostGui->closed(gui->host, wasDestroyed);
     }
+}
 
-    default:
-        /* Forward all other input events to ImGui */
-        ImGui_ImplPugl_ProcessEvent(event);
-        break;
+static void shell_timer(void *userData)
+{
+    M4AGuiState *gui = (M4AGuiState *)userData;
+    if (!gui)
+        return;
+
+    if (gui->internalTimerCallback)
+        gui->internalTimerCallback(gui->internalTimerUserData);
+    else {
+        gui_log("More than 1 Pugl timer is running. That's odd...");
+        m4a_gui_tick(gui);
     }
+}
 
-    return PUGL_SUCCESS;
+static void shell_setup_style(void *userData, ImFont *, ImFont *boldFont)
+{
+    M4AGuiState *gui = (M4AGuiState *)userData;
+    if (!gui)
+        return;
+
+    gui->boldFont = boldFont;
+
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowPadding    = ImVec2(12, 12);
+    style.ItemSpacing      = ImVec2(8, 6);
+    style.FramePadding     = ImVec2(6, 4);
+    style.GrabMinSize      = 10.0f;
+    style.WindowRounding   = 4.0f;
+    style.FrameRounding    = 3.0f;
+    style.GrabRounding     = 3.0f;
 }
 
 /* ---- Public C interface ---- */
@@ -912,8 +797,6 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
 
     M4AGuiState *gui = new M4AGuiState();
     gui->host         = host;
-    gui->cachedWidth  = (uint32_t)GUI_W;
-    gui->cachedHeight = (uint32_t)GUI_H;
     gui->selectedVoice       = 0;
     gui->pendingRestoreVoice = -1;
     gui->projectRootBrowser.SetTitle("Choose Project Root");
@@ -927,73 +810,32 @@ M4AGuiState *m4a_gui_create(const clap_host_t *host, const M4AGuiSettings *initi
     }
     sync_buffers(gui);
 
-    /* Create Pugl world and view */
-    gui->world = puglNewWorld(PUGL_MODULE, 0);
-    if (!gui->world) {
-        gui_log("m4a_gui_create: puglNewWorld failed");
+    poryaaaa::gui::ImGuiPuglShellConfig shellConfig;
+    shellConfig.title = "poryaaaa";
+    shellConfig.className = "poryaaaa";
+    shellConfig.defaultWidth = (uint32_t)GUI_W;
+    shellConfig.defaultHeight = (uint32_t)GUI_H;
+    shellConfig.minWidth = 200;
+    shellConfig.minHeight = 150;
+    shellConfig.fontSize = text::Base;
+    shellConfig.regularFontPath = m4a_gui_regular_font_path();
+    shellConfig.boldFontPath = m4a_gui_bold_font_path();
+    shellConfig.glslVersion = "#version 330 core";
+
+    poryaaaa::gui::ImGuiPuglShellCallbacks shellCallbacks;
+    shellCallbacks.userData = gui;
+    shellCallbacks.drawFrame = shell_draw_frame;
+    shellCallbacks.closed = shell_closed;
+    shellCallbacks.timer = shell_timer;
+    shellCallbacks.setupStyle = shell_setup_style;
+
+    gui->shell = poryaaaa::gui::imgui_pugl_shell_create(shellConfig, shellCallbacks);
+    if (!gui->shell) {
+        gui_log("m4a_gui_create: shared Pugl shell creation failed");
         delete gui;
         return nullptr;
     }
-    puglSetWorldString(gui->world, PUGL_CLASS_NAME, "poryaaaa");
 
-    gui->view = puglNewView(gui->world);
-    if (!gui->view) {
-        gui_log("m4a_gui_create: puglNewView failed");
-        puglFreeWorld(gui->world);
-        delete gui;
-        return nullptr;
-    }
-
-    /* Configure the view */
-#ifdef __APPLE__
-    puglSetBackend(gui->view, puglMetalBackend());
-#else
-    puglSetBackend(gui->view, puglGlBackend());
-    puglSetViewHint(gui->view, PUGL_CONTEXT_API,           PUGL_OPENGL_API);
-    puglSetViewHint(gui->view, PUGL_CONTEXT_VERSION_MAJOR, 3);
-    puglSetViewHint(gui->view, PUGL_CONTEXT_VERSION_MINOR, 3);
-    puglSetViewHint(gui->view, PUGL_CONTEXT_PROFILE,       PUGL_OPENGL_CORE_PROFILE);
-    puglSetViewHint(gui->view, PUGL_DOUBLE_BUFFER,         1);
-#endif
-    puglSetViewHint(gui->view, PUGL_RESIZABLE,             1);
-    puglSetSizeHint(gui->view, PUGL_DEFAULT_SIZE, (PuglSpan)GUI_W, (PuglSpan)GUI_H);
-    puglSetSizeHint(gui->view, PUGL_MIN_SIZE,     (PuglSpan)200,   (PuglSpan)150);
-    puglSetViewString(gui->view, PUGL_WINDOW_TITLE, "poryaaaa");
-
-    puglSetHandle(gui->view, gui);
-    puglSetEventFunc(gui->view, pugl_event_handler);
-
-    /* Create ImGui context per instance */
-    ImGuiContext *ctx = ImGui::CreateContext();
-    ImGui::SetCurrentContext(ctx);
-
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    {
-        ImFont *regularFont = io.Fonts->AddFontFromFileTTF(m4a_gui_regular_font_path(), 13.0f);
-        gui->boldFont = io.Fonts->AddFontFromFileTTF(m4a_gui_bold_font_path(), 13.0f);
-        if (regularFont)
-            io.FontDefault = regularFont;
-    }
-    io.FontGlobalScale = 1.2f;
-
-    ImGui::StyleColorsDark();
-
-    ImGuiStyle &style = ImGui::GetStyle();
-    style.WindowPadding    = ImVec2(12, 12);
-    style.ItemSpacing      = ImVec2(8, 6);
-    style.FramePadding     = ImVec2(6, 4);
-    style.GrabMinSize      = 10.0f;
-    style.WindowRounding   = 4.0f;
-    style.FrameRounding    = 3.0f;
-    style.GrabRounding     = 3.0f;
-
-    ImGui_ImplPugl_Init(gui->view);
-
-    gui->imguiCtx = ctx;
-
-    /* Do NOT realize yet — that happens in set_parent() or show() */
     gui_log("m4a_gui_create: success");
     return gui;
 }
@@ -1003,41 +845,8 @@ void m4a_gui_destroy(M4AGuiState *gui)
     if (!gui)
         return;
 
-
-    /* Stop the internal render timer before tearing down GL/ImGui */
-    m4a_gui_stop_internal_timer(gui);
-
-    ImGui::SetCurrentContext(gui->imguiCtx);
-
-    /* puglFreeView() on Windows calls puglFreeViewInternals() which destroys
-     * the GL context WITHOUT dispatching PUGL_UNREALIZE first.  Explicitly
-     * enter the context and shut down the render backend before the view
-     * (and its context) are freed. */
-    if (gui->view && gui->renderInited) {
-        puglEnterContext(gui->view);
-#ifdef __APPLE__
-        ImGui_ImplMetal_Shutdown();
-#else
-        ImGui_ImplOpenGL3_Shutdown();
-#endif
-        gui->renderInited = false;
-        puglLeaveContext(gui->view);
-    }
-
-    ImGui_ImplPugl_Shutdown();
-
-    if (gui->view) {
-        puglFreeView(gui->view);
-        gui->view = nullptr;
-    }
-
-    ImGui::DestroyContext(gui->imguiCtx);
-    gui->imguiCtx = nullptr;
-
-    if (gui->world) {
-        puglFreeWorld(gui->world);
-        gui->world = nullptr;
-    }
+    poryaaaa::gui::imgui_pugl_shell_destroy(gui->shell);
+    gui->shell = nullptr;
 
     delete gui;
     gui_log("m4a_gui_destroy: done");
@@ -1046,21 +855,11 @@ void m4a_gui_destroy(M4AGuiState *gui)
 bool m4a_gui_set_parent(M4AGuiState *gui, uintptr_t native_parent)
 {
     gui_log("m4a_gui_set_parent: parent=0x%zx", (size_t)native_parent);
-    if (!gui || !gui->view) return false;
-    if (gui->realized) {
-        gui_log("m4a_gui_set_parent: already realized");
+    if (!gui || !gui->shell) return false;
+    if (!poryaaaa::gui::imgui_pugl_shell_set_parent(gui->shell, native_parent)) {
+        gui_log("m4a_gui_set_parent: shared Pugl shell parent/realize failed");
         return false;
     }
-
-    puglSetParent(gui->view, (PuglNativeView)native_parent);
-
-    PuglStatus st = puglRealize(gui->view);
-    if (st != PUGL_SUCCESS) {
-        gui_log("m4a_gui_set_parent: puglRealize failed (%d)", (int)st);
-        return false;
-    }
-    gui->realized   = true;
-    gui->isEmbedded = true;
     gui_log("m4a_gui_set_parent: success");
     return true;
 }
@@ -1068,31 +867,12 @@ bool m4a_gui_set_parent(M4AGuiState *gui, uintptr_t native_parent)
 bool m4a_gui_show(M4AGuiState *gui)
 {
     gui_log("m4a_gui_show called");
-    if (!gui || !gui->view) return false;
-
-    if (!gui->realized) {
-        /* Floating mode: realize now (no parent) */
-        PuglStatus st = puglRealize(gui->view);
-        if (st != PUGL_SUCCESS) {
-            gui_log("m4a_gui_show: puglRealize failed (%d)", (int)st);
-            return false;
-        }
-        gui->realized = true;
-        gui_log("m4a_gui_show: realized as floating");
-    }
-
-    /* Embedded views must not manipulate the host's window (orderFront etc.),
-     * so use PUGL_SHOW_PASSIVE.  Floating windows should raise normally. */
-    puglShow(gui->view, gui->isEmbedded ? PUGL_SHOW_PASSIVE : PUGL_SHOW_RAISE);
-    return true;
+    return gui && poryaaaa::gui::imgui_pugl_shell_show(gui->shell);
 }
 
 bool m4a_gui_hide(M4AGuiState *gui)
 {
-    if (!gui || !gui->view) return false;
-    m4a_gui_stop_internal_timer(gui);
-    puglHide(gui->view);
-    return true;
+    return gui && poryaaaa::gui::imgui_pugl_shell_hide(gui->shell);
 }
 
 void m4a_gui_get_size(M4AGuiState *gui, uint32_t *width, uint32_t *height)
@@ -1102,31 +882,18 @@ void m4a_gui_get_size(M4AGuiState *gui, uint32_t *width, uint32_t *height)
         *height = (uint32_t)GUI_H;
         return;
     }
-    /* cachedWidth/Height are in backing pixels (from Pugl CONFIGURE).
-     * The CLAP host expects logical pixels (points on macOS), so divide
-     * by the backing scale factor. */
-    double scale = gui->view ? puglGetScaleFactor(gui->view) : 1.0;
-    if (scale < 1.0) scale = 1.0;
-    *width  = (uint32_t)(gui->cachedWidth  / scale);
-    *height = (uint32_t)(gui->cachedHeight / scale);
+    poryaaaa::gui::imgui_pugl_shell_get_size(gui->shell, width, height);
 }
 
 bool m4a_gui_set_size(M4AGuiState *gui, uint32_t width, uint32_t height)
 {
-    if (!gui || !gui->view) return false;
-    /* The host sends logical pixels; Pugl's PUGL_CURRENT_SIZE expects
-     * backing pixels, so scale up. */
-    double scale = puglGetScaleFactor(gui->view);
-    if (scale < 1.0) scale = 1.0;
-    PuglSpan pw = (PuglSpan)(width  * scale);
-    PuglSpan ph = (PuglSpan)(height * scale);
-    puglSetSizeHint(gui->view, PUGL_CURRENT_SIZE, pw, ph);
-    return true;
+    return gui &&
+           poryaaaa::gui::imgui_pugl_shell_set_size(gui->shell, width, height);
 }
 
 bool m4a_gui_can_resize(M4AGuiState *gui)
 {
-    return gui && gui->isEmbedded;
+    return gui && poryaaaa::gui::imgui_pugl_shell_can_resize(gui->shell);
 }
 
 void m4a_gui_update_settings(M4AGuiState *gui, const M4AGuiSettings *settings)
@@ -1138,27 +905,27 @@ void m4a_gui_update_settings(M4AGuiState *gui, const M4AGuiSettings *settings)
 
 void m4a_gui_pulse_midi_activity(M4AGuiState *gui, int channel)
 {
-    if (!gui || !gui->imguiCtx)
+    if (!gui || !gui->shell)
         return;
     if (channel < 0 || channel >= 16)
         return;
-    ImGui::SetCurrentContext(gui->imguiCtx);
+    ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
     gui->midiActivityUntil[channel] = ImGui::GetTime() + 0.15;
 }
 
 void m4a_gui_pulse_xcmd_activity(M4AGuiState *gui)
 {
-    if (!gui || !gui->imguiCtx)
+    if (!gui || !gui->shell)
         return;
-    ImGui::SetCurrentContext(gui->imguiCtx);
+    ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
     gui->xcmdActivityUntil = ImGui::GetTime() + 0.15;
 }
 
 void m4a_gui_pulse_valid_xcmd(M4AGuiState *gui)
 {
-    if (!gui || !gui->imguiCtx)
+    if (!gui || !gui->shell)
         return;
-    ImGui::SetCurrentContext(gui->imguiCtx);
+    ImGui::SetCurrentContext(poryaaaa::gui::imgui_pugl_shell_context(gui->shell));
     gui->validXcmdUntil = ImGui::GetTime() + 0.15;
 }
 
@@ -1204,14 +971,9 @@ bool m4a_gui_was_closed(M4AGuiState *gui)
 
 void m4a_gui_tick(M4AGuiState *gui)
 {
-    if (!gui || !gui->world)
+    if (!gui || !gui->shell)
         return;
-
-    /* Schedule a redraw, then process events (non-blocking) */
-    if (gui->view && gui->realized)
-        puglObscureView(gui->view);
-
-    puglUpdate(gui->world, 0.0);
+    poryaaaa::gui::imgui_pugl_shell_tick(gui->shell);
 }
 
 void m4a_gui_set_internal_timer_callback(M4AGuiState *gui,
@@ -1256,19 +1018,16 @@ bool m4a_gui_poll_voices_dirty(M4AGuiState *gui)
 
 void m4a_gui_start_internal_timer(M4AGuiState *gui)
 {
-    if (!gui || !gui->view || !gui->realized)
+    if (!gui || !gui->shell)
         return;
-
-    (void)puglStartTimer(gui->view, RENDER_TIMER_ID, 1.0 / 60.0);
+    poryaaaa::gui::imgui_pugl_shell_start_timer(gui->shell);
 }
 
 void m4a_gui_stop_internal_timer(M4AGuiState *gui)
 {
-    if (!gui || !gui->view)
+    if (!gui || !gui->shell)
         return;
-
-    puglStopTimer(gui->view, RENDER_TIMER_ID);
-
+    poryaaaa::gui::imgui_pugl_shell_stop_timer(gui->shell);
 }
 
 void m4a_gui_set_project_assets(M4AGuiState *gui,

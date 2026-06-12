@@ -122,6 +122,7 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${PORYAAAA_SHARED_GUI_DIR}/imgui_impl_pugl.cpp
+    ${PORYAAAA_SHARED_GUI_DIR}/imgui_pugl_shell.cpp
 )
 if(APPLE)
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
@@ -218,6 +219,7 @@ target_compile_definitions(poryaaaa PRIVATE
 
 # On macOS, compile m4a_gui.cpp as Objective-C++ so it can use Metal APIs
 if(APPLE)
+    set_source_files_properties(${PORYAAAA_SHARED_GUI_DIR}/imgui_pugl_shell.cpp PROPERTIES LANGUAGE OBJCXX)
     set_source_files_properties(plugin/m4a_gui.cpp PROPERTIES LANGUAGE OBJCXX)
 endif()
 
@@ -255,10 +257,6 @@ elseif(APPLE)
         BUNDLE_EXTENSION "clap"
     )
 
-    set(PORYAAAA_CLAP_INSTALL_DIR
-        "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP"
-        CACHE PATH "Directory where the poryaaaa CLAP bundle is copied after build")
-
     # MACOSX_BUNDLE_INFO_PLIST only works for MACOSX_BUNDLE (app bundles).
     # For a generic BUNDLE (.clap), copy Info.plist manually.
     add_custom_command(TARGET poryaaaa POST_BUILD
@@ -266,6 +264,8 @@ elseif(APPLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
             "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Info.plist"
     )
+
+    set(PORYAAAA_CLAP_INSTALL_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP")
     add_custom_command(TARGET poryaaaa POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "${PORYAAAA_CLAP_INSTALL_DIR}"

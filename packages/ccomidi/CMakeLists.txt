@@ -147,6 +147,7 @@ add_library(ccomidi_gui STATIC
     ${PUGL_SOURCES}
     ${IMGUI_SOURCES}
     ${CCOMIDI_SHARED_GUI_DIR}/imgui_impl_pugl.cpp
+    ${CCOMIDI_SHARED_GUI_DIR}/imgui_pugl_shell.cpp
     src/gui/editor_shell.cpp
 )
 
@@ -167,6 +168,7 @@ target_compile_definitions(ccomidi_gui PUBLIC
 )
 
 if(APPLE)
+    set_source_files_properties(${CCOMIDI_SHARED_GUI_DIR}/imgui_pugl_shell.cpp PROPERTIES LANGUAGE OBJCXX)
     set_source_files_properties(src/gui/editor_shell.cpp PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(ccomidi_gui PUBLIC
         "-framework Cocoa"

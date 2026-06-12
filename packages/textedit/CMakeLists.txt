@@ -1,0 +1,128 @@
+cmake_minimum_required(VERSION 3.24)
+project(textedit VERSION 0.1.0 LANGUAGES C CXX)
+enable_testing()
+
+# Standalone JUCE VST3 utility plugin.
+# No CLAP and no dependency on poryaaaa, ccomidi, or poryaaaa-m4l.
+
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(TEXTEDIT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+set(TEXTEDIT_MONOREPO_ROOT "${TEXTEDIT_ROOT}/../..")
+
+option(TEXTEDIT_FETCH_JUCE "Fetch JUCE with FetchContent when JUCE_ROOT is not set" ON)
+set(TEXTEDIT_JUCE_VERSION "8.0.6" CACHE STRING "JUCE release version used when TEXTEDIT_FETCH_JUCE is enabled")
+set(TEXTEDIT_VOICEGROUP_LSP_PATH "/Users/sallegrezza/dev/swiftProjects/voicegroup-lsp/.build/release/voicegroup-lsp"
+    CACHE FILEPATH "Path to the voicegroup-lsp server executable")
+set(JUCE_ROOT "" CACHE PATH "Path to an existing JUCE checkout")
+
+if(NOT JUCE_ROOT)
+    foreach(candidate
+        "${TEXTEDIT_ROOT}/JUCE"
+        "${TEXTEDIT_ROOT}/juce"
+        "${TEXTEDIT_MONOREPO_ROOT}/third_party/JUCE"
+        "${TEXTEDIT_MONOREPO_ROOT}/third_party/juce"
+    )
+        if(EXISTS "${candidate}/CMakeLists.txt" AND EXISTS "${candidate}/modules/juce_core/juce_core.h")
+            set(JUCE_ROOT "${candidate}" CACHE PATH "Path to an existing JUCE checkout" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
+set(JUCE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(JUCE_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(JUCE_ENABLE_MODULE_SOURCE_GROUPS OFF CACHE BOOL "" FORCE)
+
+if(JUCE_ROOT)
+    message(STATUS "textedit: using JUCE_ROOT=${JUCE_ROOT}")
+    add_subdirectory("${JUCE_ROOT}" "${CMAKE_BINARY_DIR}/JUCE")
+else()
+    if(NOT TEXTEDIT_FETCH_JUCE)
+        message(FATAL_ERROR "JUCE not found. Set -DJUCE_ROOT=/path/to/JUCE or enable -DTEXTEDIT_FETCH_JUCE=ON.")
+    endif()
+
+    include(FetchContent)
+    FetchContent_Declare(
+        JUCE
+        URL "https://github.com/juce-framework/JUCE/archive/refs/tags/${TEXTEDIT_JUCE_VERSION}.tar.gz"
+    )
+    FetchContent_MakeAvailable(JUCE)
+endif()
+
+juce_add_plugin(textedit
+    COMPANY_NAME "poryaaaa"
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT TRUE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+    COPY_PLUGIN_AFTER_BUILD TRUE
+    PLUGIN_MANUFACTURER_CODE Pory
+    PLUGIN_CODE TxEd
+    FORMATS VST3
+    PRODUCT_NAME "textedit"
+)
+
+target_sources(textedit PRIVATE
+    src/TextEditFileLoader.cpp
+    src/GruvboxTheme.cpp
+    src/TextEditSysex.cpp
+    src/TextEditEditor.cpp
+    src/TextEditProcessor.cpp
+    src/VoicegroupLspClient.cpp
+    src/VoicegroupTokeniser.cpp
+)
+
+target_include_directories(textedit PRIVATE
+    src
+)
+
+target_compile_features(textedit PRIVATE cxx_std_17)
+
+target_compile_definitions(textedit
+    PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        TEXTEDIT_VOICEGROUP_LSP_PATH="${TEXTEDIT_VOICEGROUP_LSP_PATH}"
+)
+
+target_link_libraries(textedit
+    PRIVATE
+        juce::juce_audio_processors
+        juce::juce_gui_extra
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+message(STATUS "textedit: configured as standalone JUCE VST3 plugin.")
+
+add_executable(textedit_sysex_tests
+    tests/TextEditFileLoaderTests.cpp
+    tests/TextEditSysexTests.cpp
+    src/TextEditFileLoader.cpp
+    src/TextEditSysex.cpp
+)
+
+target_include_directories(textedit_sysex_tests PRIVATE
+    src
+)
+
+target_compile_features(textedit_sysex_tests PRIVATE cxx_std_17)
+
+target_link_libraries(textedit_sysex_tests
+    PRIVATE
+        juce::juce_core
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+add_test(NAME textedit_sysex_tests COMMAND textedit_sysex_tests)
