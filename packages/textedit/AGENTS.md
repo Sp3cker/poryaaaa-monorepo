@@ -29,7 +29,7 @@ This package is a **standalone** VST3-only convenience plugin.
 
 - Match normal JUCE plugin style: small `AudioProcessor`, small `AudioProcessorEditor`, no package-wide abstractions unless reused.
 - Use `juce::CodeEditorComponent`/`juce::CodeDocument` for the editor surface so keyboard focus, clipboard, selection, and text input are handled by JUCE.
-- Keep voicegroup LSP integration in focused bridge files. The default server path is configured by `TEXTEDIT_VOICEGROUP_LSP_PATH`.
+- Keep voicegroup language-service integration in focused bridge files. TextEdit uses the embedded service path unless a separate adapter is explicitly requested.
 - Keep editor colors aligned with the dark Gruvbox palette from `/Users/sallegrezza/Downloads/gruvbox.lua` unless the user requests a different theme.
 
 Goal: a working VST3 that hosts a code editor using JUCE, while obeying the isolation rules above.

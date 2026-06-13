@@ -8,6 +8,7 @@ public:
     HoverCard();
 
     void setText(const juce::String& text);
+    void clear();
     void resized() override;
     void paint(juce::Graphics& g) override;
 

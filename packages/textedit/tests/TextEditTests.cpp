@@ -1,6 +1,5 @@
 #include "TextEditFileLoaderTests.h"
 #include "TextEditProcessorTests.h"
-#include "VoicegroupLspConfigTests.h"
 
 int main()
 {
@@ -8,7 +7,6 @@ int main()
 
     passed &= runTextEditFileLoaderTests();
     passed &= runTextEditProcessorTests();
-    passed &= runVoicegroupLspConfigTests();
 
     return passed ? 0 : 1;
 }

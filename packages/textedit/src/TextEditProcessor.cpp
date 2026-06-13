@@ -10,7 +10,7 @@ constexpr auto kTextProperty = "text";
 juce::String defaultDocumentText()
 {
     return "@ textedit voicegroup editor\n"
-           "@ LSP: voicegroup-lsp\n\n"
+           "@ Language service: embedded\n\n"
            "\tvoice_directsound 60, 0, DirectSoundWaveData_piano, 255, 0, 255, 127\n";
 }
 

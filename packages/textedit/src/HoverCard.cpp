@@ -22,6 +22,12 @@ HoverCard::HoverCard()
 void HoverCard::setText(const juce::String& newText)
 {
     text.setText(newText, juce::dontSendNotification);
+    setVisible(newText.isNotEmpty());
+}
+
+void HoverCard::clear()
+{
+    setText({});
 }
 
 void HoverCard::resized()

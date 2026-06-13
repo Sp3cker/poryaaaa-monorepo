@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poryaaaa-monorepo}/packages/voicegroup-lsp",
+            "name": "Debug voicegroup-lsp (packages/voicegroup-lsp)",
+            "target": "voicegroup-lsp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug voicegroup-lsp (packages/voicegroup-lsp)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poryaaaa-monorepo}/packages/voicegroup-lsp",
+            "name": "Release voicegroup-lsp (packages/voicegroup-lsp)",
+            "target": "voicegroup-lsp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release voicegroup-lsp (packages/voicegroup-lsp)"
+        }
+    ]
+}

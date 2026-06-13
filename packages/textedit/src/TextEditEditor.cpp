@@ -5,6 +5,22 @@
 namespace {
 
 constexpr auto hoverDelayMs = 200;
+constexpr auto popupGap = 4;
+
+juce::Rectangle<int> popupBoundsFor(const juce::Rectangle<int>& anchor,
+                                    const juce::Rectangle<int>& availableBounds,
+                                    const juce::Rectangle<int>& currentBounds)
+{
+    auto bounds = currentBounds.withPosition(anchor.getX(), anchor.getBottom() + popupGap);
+
+    if (bounds.getRight() > availableBounds.getRight())
+        bounds.setX(juce::jmax(availableBounds.getX(), availableBounds.getRight() - bounds.getWidth()));
+
+    if (bounds.getBottom() > availableBounds.getBottom())
+        bounds.setY(juce::jmax(availableBounds.getY(), anchor.getY() - popupGap - bounds.getHeight()));
+
+    return bounds;
+}
 
 } // namespace
 
@@ -71,7 +87,7 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     statusLabel.setJustificationType(juce::Justification::centredLeft);
     statusLabel.setColour(juce::Label::backgroundColourId, GruvboxTheme::statusBackground());
     statusLabel.setColour(juce::Label::textColourId, GruvboxTheme::statusText());
-    statusLabel.setText("LSP: starting", juce::dontSendNotification);
+    statusLabel.setText("Language service: starting", juce::dontSendNotification);
 
     addAndMakeVisible(editor);
     addChildComponent(completionList);
@@ -84,22 +100,15 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
 
     document.addListener(this);
     textProcessor.addDocumentChangeListener(this);
-    editor.setHoverCallback([this](auto position) { requestLspHover(position); });
+    editor.setHoverCallback([this](auto position) { requestHover(position); });
     addAndMakeVisible(toolbar);
     // toolbar.saveButton.onClick = [this]();
-    setLspReady(false);
-    lspClient.setStatusCallback([this] { triggerAsyncUpdate(); });
+    languageService.setStatusCallback([this] { refreshLanguageServiceStatus(); });
+    languageService.setCompletionCallback([this](auto items) { showCompletions(std::move(items)); });
+    languageService.setHoverCallback([this](auto text) { showHover(std::move(text)); });
+    languageService.syncDocument(document.getAllContent());
 
-    if (lspClient.start([this] { triggerAsyncUpdate(); }))
-    {
-        lspClient.syncDocument(document.getAllContent());
-    }
-    else
-    {
-        allowEditingWithoutLsp();
-    }
-
-    refreshLspStatus();
+    refreshLanguageServiceStatus();
 }
 
 TextEditEditor::~TextEditEditor()
@@ -107,9 +116,9 @@ TextEditEditor::~TextEditEditor()
     pushDocumentToProcessor();
     editor.setHoverCallback({});
     editor.cancelPendingHover();
-    lspClient.setStatusCallback({});
-    lspClient.stop();
-    cancelPendingUpdate();
+    languageService.setStatusCallback({});
+    languageService.setCompletionCallback({});
+    languageService.setHoverCallback({});
     textProcessor.removeDocumentChangeListener(this);
     document.removeListener(this);
 }
@@ -140,13 +149,14 @@ void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int i
     notifyLocalEdit();
 
     if (newText.containsAnyOf("_, "))
-        requestLspContext();
+        requestLanguageContext();
 }
 
 void TextEditEditor::codeDocumentTextDeleted(int startIndex, int endIndex)
 {
     juce::ignoreUnused(startIndex, endIndex);
     notifyLocalEdit();
+    completionList.clear();
 }
 
 void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
@@ -155,24 +165,9 @@ void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
     pullDocumentFromProcessor();
 }
 
-void TextEditEditor::handleAsyncUpdate()
+void TextEditEditor::refreshLanguageServiceStatus()
 {
-    refreshLspStatus();
-
-    if (lspClient.canRequestContext())
-    {
-        if (!lspReady)
-            setLspReady(true);
-    }
-    else if (!editor.isEnabled() || lspReady)
-    {
-        allowEditingWithoutLsp();
-    }
-}
-
-void TextEditEditor::refreshLspStatus()
-{
-    const auto statusText = lspClient.getStatusText();
+    const auto statusText = languageService.getStatusText();
     if (statusText != lastStatusText)
     {
         lastStatusText = statusText;
@@ -188,7 +183,7 @@ void TextEditEditor::pushDocumentToProcessor()
 
 /* Local (typed) edits fan out to both consumers. `updatingDocument` only
  * suppresses the echo during a processor-origin pull, where
- * pullDocumentFromProcessor syncs the LSP itself. */
+ * pullDocumentFromProcessor syncs the language service itself. */
 void TextEditEditor::notifyLocalEdit()
 {
     if (updatingDocument)
@@ -196,7 +191,8 @@ void TextEditEditor::notifyLocalEdit()
 
     const auto text = document.getAllContent();
     textProcessor.setDocumentText(text);
-    lspClient.syncDocument(text);
+    languageService.syncDocument(text);
+    hoverCard.clear();
 }
 
 void TextEditEditor::pullDocumentFromProcessor()
@@ -208,45 +204,62 @@ void TextEditEditor::pullDocumentFromProcessor()
     const juce::ScopedValueSetter<bool> scopedUpdate(updatingDocument, true);
     document.replaceAllContent(processorText);
 
-    lspClient.syncDocument(processorText);
+    languageService.syncDocument(processorText);
 }
 
-void TextEditEditor::requestLspContext()
+void TextEditEditor::requestLanguageContext()
 {
-    if (!lspClient.canRequestContext())
+    if (!languageService.canRequestContext())
         return;
 
     const auto caret = editor.getCaretPos();
     const auto line = caret.getLineNumber();
     const auto character = caret.getIndexInLine();
-    lspClient.requestCompletion(line, character);
-    lspClient.requestSignatureHelp(line, character);
+    languageService.requestCompletion(line, character);
+    languageService.requestSignatureHelp(line, character);
 }
 
-void TextEditEditor::requestLspHover(juce::CodeDocument::Position position)
+void TextEditEditor::requestHover(juce::CodeDocument::Position position)
 {
-    if (!lspClient.canRequestContext())
+    if (!languageService.canRequestContext())
         return;
 
-    lspClient.requestHover(position.getLineNumber(), position.getIndexInLine());
+    lastHoverPosition = position;
+    languageService.requestHover(position.getLineNumber(), position.getIndexInLine());
 }
 
-void TextEditEditor::setLspReady(bool ready)
+void TextEditEditor::showCompletions(std::vector<VoicegroupCompletionItem> items)
 {
-    lspReady = ready;
-    editor.setEnabled(ready);
-    editor.setAlpha(ready ? 1.0f : 0.45f);
+    completionList.setItems(std::move(items));
 
-    if (ready)
-        focusEditor();
+    if (completionList.isVisible())
+        positionCompletionListAtCaret();
 }
 
-void TextEditEditor::allowEditingWithoutLsp()
+void TextEditEditor::showHover(juce::String text)
 {
-    lspReady = false;
-    editor.setEnabled(true);
-    editor.setAlpha(1.0f);
-    focusEditor();
+    hoverCard.setText(std::move(text));
+
+    if (hoverCard.isVisible())
+        positionHoverCardAt(lastHoverPosition);
+}
+
+void TextEditEditor::positionCompletionListAtCaret()
+{
+    const auto caretBounds = editor.getCharacterBounds(editor.getCaretPos());
+    const auto anchor = caretBounds.withPosition(getLocalPoint(&editor, caretBounds.getTopLeft()));
+    const auto availableBounds = getLocalBounds().withBottom(statusLabel.getY());
+    completionList.setBounds(popupBoundsFor(anchor, availableBounds, completionList.getBounds()));
+    completionList.toFront(false);
+}
+
+void TextEditEditor::positionHoverCardAt(juce::CodeDocument::Position position)
+{
+    const auto characterBounds = editor.getCharacterBounds(position);
+    const auto anchor = characterBounds.withPosition(getLocalPoint(&editor, characterBounds.getTopLeft()));
+    const auto availableBounds = getLocalBounds().withBottom(statusLabel.getY());
+    hoverCard.setBounds(popupBoundsFor(anchor, availableBounds, hoverCard.getBounds()));
+    hoverCard.toFront(false);
 }
 
 void TextEditEditor::focusEditor()

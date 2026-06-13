@@ -7,7 +7,7 @@
 #include "CompletionList.h"
 #include "HoverCard.h"
 #include "TextEditProcessor.h"
-#include "VoicegroupLspClient.h"
+#include "VoicegroupLanguageService.h"
 #include "VoicegroupTokeniser.h"
 class TopToolBar final: public juce::Component
 {
@@ -45,8 +45,7 @@ private:
 
 class TextEditEditor final : public juce::AudioProcessorEditor,
                              private juce::CodeDocument::Listener,
-                             private juce::ChangeListener,
-                             private juce::AsyncUpdater
+                             private juce::ChangeListener
 {
 public:
     explicit TextEditEditor(TextEditProcessor& processor);
@@ -61,16 +60,17 @@ private:
     void codeDocumentTextInserted(const juce::String& newText, int insertIndex) override;
     void codeDocumentTextDeleted(int startIndex, int endIndex) override;
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
-    void handleAsyncUpdate() override;
 
-    void refreshLspStatus();
+    void refreshLanguageServiceStatus();
     void pushDocumentToProcessor();
     void pullDocumentFromProcessor();
     void notifyLocalEdit();
-    void requestLspContext();
-    void requestLspHover(juce::CodeDocument::Position position);
-    void setLspReady(bool ready);
-    void allowEditingWithoutLsp();
+    void requestLanguageContext();
+    void requestHover(juce::CodeDocument::Position position);
+    void showCompletions(std::vector<VoicegroupCompletionItem> items);
+    void showHover(juce::String text);
+    void positionCompletionListAtCaret();
+    void positionHoverCardAt(juce::CodeDocument::Position position);
     void focusEditor();
 
     TextEditProcessor& textProcessor;
@@ -80,9 +80,9 @@ private:
     CompletionList completionList;
     HoverCard hoverCard;
     juce::Label statusLabel;
-    VoicegroupLspClient lspClient;
+    EmbeddedLanguageService languageService;
     juce::String lastStatusText;
-    bool lspReady = false;
+    juce::CodeDocument::Position lastHoverPosition { document, 0 };
     bool updatingDocument = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditEditor)
