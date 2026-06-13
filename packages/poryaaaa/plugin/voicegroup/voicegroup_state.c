@@ -115,17 +115,17 @@ bool voicegroup_state_write_default(const char *projectRoot,
 
     char tmpPath[700];
     char finalPath[700];
-    snprintf(tmpPath,   sizeof(tmpPath),   "%s/state.json.tmp", stateDir);
-    snprintf(finalPath, sizeof(finalPath), "%s/state.json",     stateDir);
+    snprintf(tmpPath,   sizeof(tmpPath),   "%s/projects.json.tmp", stateDir);
+    snprintf(finalPath, sizeof(finalPath), "%s/projects.json",     stateDir);
 
     FILE *f = fopen(tmpPath, "w");
     if (!f) return false;
 
     fprintf(f, "{\n");
-    fprintf(f, "  \"projectRoot\": \"");
+    fprintf(f, "  \"root\": \"");
     write_escaped(f, projectRoot);
     fprintf(f, "\",\n");
-    fprintf(f, "  \"voicegroup\": \"");
+    fprintf(f, "  \"bank\": \"");
     write_escaped(f, voicegroupName);
     fprintf(f, "\",\n");
     fprintf(f, "  \"slots\": [\n");

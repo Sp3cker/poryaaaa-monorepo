@@ -43,22 +43,22 @@ std::string state_path() {
 #if defined(_WIN32)
   const std::string appdata = env_value("APPDATA");
   if (!appdata.empty())
-    return appdata + "\\poryaaaa\\state.json";
+    return appdata + "\\poryaaaa\\projects.json";
   const std::string userProfile = env_value("USERPROFILE");
   if (!userProfile.empty())
-    return userProfile + "\\AppData\\Roaming\\poryaaaa\\state.json";
+    return userProfile + "\\AppData\\Roaming\\poryaaaa\\projects.json";
   return {};
 #else
   const std::string home = env_value("HOME");
   if (home.empty())
     return {};
 #if defined(__APPLE__)
-  return home + "/Library/Application Support/poryaaaa/state.json";
+  return home + "/Library/Application Support/poryaaaa/projects.json";
 #else
   const std::string xdg = env_value("XDG_CONFIG_HOME");
   if (!xdg.empty())
-    return xdg + "/poryaaaa/state.json";
-  return home + "/.config/poryaaaa/state.json";
+    return xdg + "/poryaaaa/projects.json";
+  return home + "/.config/poryaaaa/projects.json";
 #endif
 #endif
 }
@@ -160,26 +160,26 @@ VoiceSlotLoad voicegroup_bridge_load_state() {
 
   std::string body;
   if (!read_file_to_string(result.statePath, body)) {
-    result.error = "Could not read state.json.";
+    result.error = "Could not read projects.json.";
     return result;
   }
 
   const char *cursor = body.c_str();
   std::string projectRoot;
   std::string voicegroupName;
-  if (find_key(cursor, "projectRoot"))
+  if (find_key(cursor, "root"))
     parse_json_string(cursor, projectRoot);
-  if (find_key(cursor, "voicegroup"))
+  if (find_key(cursor, "bank"))
     parse_json_string(cursor, voicegroupName);
 
   if (!find_key(cursor, "slots")) {
-    result.error = "state.json missing 'slots' array.";
+    result.error = "projects.json missing 'slots' array.";
     return result;
   }
   while (*cursor && *cursor != '[')
     ++cursor;
   if (*cursor != '[') {
-    result.error = "state.json 'slots' is not an array.";
+    result.error = "projects.json 'slots' is not an array.";
     return result;
   }
   ++cursor;
@@ -231,7 +231,7 @@ VoiceSlotLoad voicegroup_bridge_load_state() {
 
   if (result.slots.empty())
     result.error = voicegroupName.empty()
-                       ? std::string("state.json has no slots.")
+                       ? std::string("projects.json has no slots.")
                        : "Voicegroup '" + voicegroupName +
                              "' has no sample-bearing slots.";
 

@@ -10,14 +10,14 @@ extern "C" {
 #endif
 
 /*
- * Write a voicegroup snapshot JSON to a fixed per-user location so sibling
- * tools (ccomidi, etc.) can read the currently-loaded voicegroup regardless
- * of which plugin host loaded poryaaaa. The destination is:
+ * Write a voicegroup snapshot JSON to the shared per-user projects.json so
+ * sibling tools can read the currently-loaded voicegroup regardless of which
+ * plugin host loaded poryaaaa. The destination is:
  *
- *   macOS:   $HOME/Library/Application Support/poryaaaa/state.json
- *   Windows: %APPDATA%\poryaaaa\state.json
- *   Linux:   $XDG_CONFIG_HOME/poryaaaa/state.json
- *            (or $HOME/.config/poryaaaa/state.json)
+ *   macOS:   $HOME/Library/Application Support/poryaaaa/projects.json
+ *   Windows: %APPDATA%\poryaaaa\projects.json
+ *   Linux:   $XDG_CONFIG_HOME/poryaaaa/projects.json
+ *            (or $HOME/.config/poryaaaa/projects.json)
  *
  * Writes a temp file first then renames over the final path so readers
  * never observe a partial file.

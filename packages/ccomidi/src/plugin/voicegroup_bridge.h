@@ -22,7 +22,7 @@ struct VoiceSlotLoad {
 // (single stat). Use to decide whether to call load_state().
 //
 // The state file lives at a fixed per-user location (on macOS:
-// `~/Library/Application Support/poryaaaa/state.json`) so that it works
+// `~/Library/Application Support/poryaaaa/projects.json`) so that it works
 // across CLAP and VST3 installations without knowing where the plugin
 // bundle was placed.
 long long voicegroup_bridge_state_mtime();

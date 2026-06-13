@@ -112,6 +112,7 @@ add_executable(textedit_tests
     tests/TextEditFileLoaderTests.cpp
     tests/TextEditProcessorTests.cpp
     tests/TextEditTests.cpp
+    tests/VoicegroupLanguageBridgeTests.cpp
     src/CompletionList.cpp
     src/HoverCard.cpp
     src/TextEditFileLoader.cpp
