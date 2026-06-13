@@ -38,11 +38,7 @@ void EmbeddedLanguageService::requestCompletion(int line, int character)
     if (!completionCallback)
         return;
 
-    auto completions = std::vector<VoicegroupCompletionItem> {};
-    for (const auto& item : bridge.completions(line, character))
-        completions.push_back({ item.label, item.detail });
-
-    completionCallback(std::move(completions));
+    completionCallback(bridge.completions(line, character));
     notifyStatusChanged();
 }
 

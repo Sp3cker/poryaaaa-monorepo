@@ -34,21 +34,6 @@ void CompletionList::clear()
     setItems({});
 }
 
-void CompletionList::setAcceptCallback(AcceptCallback callback)
-{
-    acceptCallback = std::move(callback);
-}
-
-bool CompletionList::acceptSelectedItem()
-{
-    const auto row = list.getSelectedRow();
-    if (row < 0 || row >= static_cast<int>(items.size()) || !acceptCallback)
-        return false;
-
-    acceptCallback(items[static_cast<size_t>(row)]);
-    return true;
-}
-
 void CompletionList::resized()
 {
     list.setBounds(getLocalBounds().reduced(1));
@@ -84,16 +69,4 @@ void CompletionList::paintListBoxItem(int rowNumber, juce::Graphics& g, int widt
         g.setColour(GruvboxTheme::gutterText());
         g.drawFittedText(item.detail, bounds, juce::Justification::centredLeft, 1);
     }
-}
-
-void CompletionList::listBoxItemDoubleClicked(int row, const juce::MouseEvent& event)
-{
-    juce::ignoreUnused(row, event);
-    acceptSelectedItem();
-}
-
-void CompletionList::returnKeyPressed(int lastRowSelected)
-{
-    juce::ignoreUnused(lastRowSelected);
-    acceptSelectedItem();
 }

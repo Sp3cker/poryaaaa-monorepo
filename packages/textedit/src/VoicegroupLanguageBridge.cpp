@@ -71,9 +71,9 @@ bool VoicegroupLanguageBridge::syncDocument(const juce::String& uri, const juce:
     return result;
 }
 
-std::vector<VoicegroupBridgeCompletionItem> VoicegroupLanguageBridge::completions(int line, int character)
+std::vector<VoicegroupCompletionItem> VoicegroupLanguageBridge::completions(int line, int character)
 {
-    auto items = std::vector<VoicegroupBridgeCompletionItem> {};
+    auto items = std::vector<VoicegroupCompletionItem> {};
     if (!isAvailable())
         return items;
 
@@ -156,7 +156,7 @@ void VoicegroupLanguageBridge::setStatus(juce::String status)
 
 void VoicegroupLanguageBridge::collectCompletion(const char* label, const char* detail, void* userData)
 {
-    auto* items = static_cast<std::vector<VoicegroupBridgeCompletionItem>*>(userData);
+    auto* items = static_cast<std::vector<VoicegroupCompletionItem>*>(userData);
     if (items == nullptr || label == nullptr)
         return;
 

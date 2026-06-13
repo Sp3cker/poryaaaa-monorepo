@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-struct VoicegroupBridgeCompletionItem
+struct VoicegroupCompletionItem
 {
     juce::String label;
     juce::String detail;
@@ -20,7 +20,7 @@ public:
     bool isAvailable() const;
     bool setProjectRoot(const juce::File& root);
     bool syncDocument(const juce::String& uri, const juce::String& text);
-    std::vector<VoicegroupBridgeCompletionItem> completions(int line, int character);
+    std::vector<VoicegroupCompletionItem> completions(int line, int character);
     std::optional<juce::String> hover(int line, int character);
     juce::String getStatusText() const;
 
