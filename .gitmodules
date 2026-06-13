@@ -10,3 +10,6 @@
 [submodule "packages/poryaaaa-m4l/source/max-sdk-base"]
 	path = packages/poryaaaa-m4l/source/max-sdk-base
 	url = https://github.com/Cycling74/max-sdk-base
+[submodule "packages/voicegroup-lsp"]
+	path = packages/voicegroup-lsp
+	url = https://github.com/Sp3cker/voicegroup-lsp
