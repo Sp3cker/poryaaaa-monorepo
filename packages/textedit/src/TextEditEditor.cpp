@@ -2,6 +2,53 @@
 
 #include "GruvboxTheme.h"
 
+namespace {
+
+constexpr auto hoverDelayMs = 200;
+
+} // namespace
+
+VoicegroupCodeEditor::VoicegroupCodeEditor(juce::CodeDocument& document, juce::CodeTokeniser* tokeniser)
+    : juce::CodeEditorComponent(document, tokeniser)
+{
+}
+
+VoicegroupCodeEditor::~VoicegroupCodeEditor()
+{
+    cancelPendingHover();
+}
+
+void VoicegroupCodeEditor::cancelPendingHover()
+{
+    stopTimer();
+}
+
+void VoicegroupCodeEditor::setHoverCallback(HoverCallback callback)
+{
+    hoverCallback = std::move(callback);
+}
+
+void VoicegroupCodeEditor::mouseMove(const juce::MouseEvent& event)
+{
+    juce::CodeEditorComponent::mouseMove(event);
+    pendingHoverPoint = event.getPosition();
+    startTimer(hoverDelayMs);
+}
+
+void VoicegroupCodeEditor::mouseExit(const juce::MouseEvent& event)
+{
+    juce::CodeEditorComponent::mouseExit(event);
+    cancelPendingHover();
+}
+
+void VoicegroupCodeEditor::timerCallback()
+{
+    stopTimer();
+
+    if (hoverCallback)
+        hoverCallback(getPositionAt(pendingHoverPoint.x, pendingHoverPoint.y));
+}
+
 TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     : AudioProcessorEditor(processorToUse),
       textProcessor(processorToUse),
@@ -27,25 +74,42 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     statusLabel.setText("LSP: starting", juce::dontSendNotification);
 
     addAndMakeVisible(editor);
+    addChildComponent(completionList);
+    completionList.setSize(320, 180);
+    addChildComponent(hoverCard);
+    hoverCard.setSize(360, 120);
     addAndMakeVisible(statusLabel);
     setResizable(true, true);
     setSize(900, 700);
 
     document.addListener(this);
     textProcessor.addDocumentChangeListener(this);
+    editor.setHoverCallback([this](auto position) { requestLspHover(position); });
     addAndMakeVisible(toolbar);
     // toolbar.saveButton.onClick = [this]();
-    if (lspClient.start())
-        lspClient.syncDocument(document.getAllContent());
+    setLspReady(false);
+    lspClient.setStatusCallback([this] { triggerAsyncUpdate(); });
 
-    startTimerHz(8);
+    if (lspClient.start([this] { triggerAsyncUpdate(); }))
+    {
+        lspClient.syncDocument(document.getAllContent());
+    }
+    else
+    {
+        allowEditingWithoutLsp();
+    }
+
+    refreshLspStatus();
 }
 
 TextEditEditor::~TextEditEditor()
 {
-    stopTimer();
     pushDocumentToProcessor();
+    editor.setHoverCallback({});
+    editor.cancelPendingHover();
+    lspClient.setStatusCallback({});
     lspClient.stop();
+    cancelPendingUpdate();
     textProcessor.removeDocumentChangeListener(this);
     document.removeListener(this);
 }
@@ -91,7 +155,22 @@ void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
     pullDocumentFromProcessor();
 }
 
-void TextEditEditor::timerCallback()
+void TextEditEditor::handleAsyncUpdate()
+{
+    refreshLspStatus();
+
+    if (lspClient.canRequestContext())
+    {
+        if (!lspReady)
+            setLspReady(true);
+    }
+    else if (!editor.isEnabled() || lspReady)
+    {
+        allowEditingWithoutLsp();
+    }
+}
+
+void TextEditEditor::refreshLspStatus()
 {
     const auto statusText = lspClient.getStatusText();
     if (statusText != lastStatusText)
@@ -134,17 +213,45 @@ void TextEditEditor::pullDocumentFromProcessor()
 
 void TextEditEditor::requestLspContext()
 {
+    if (!lspClient.canRequestContext())
+        return;
+
     const auto caret = editor.getCaretPos();
     const auto line = caret.getLineNumber();
     const auto character = caret.getIndexInLine();
     lspClient.requestCompletion(line, character);
     lspClient.requestSignatureHelp(line, character);
-    lspClient.requestHover(line, character);
+}
+
+void TextEditEditor::requestLspHover(juce::CodeDocument::Position position)
+{
+    if (!lspClient.canRequestContext())
+        return;
+
+    lspClient.requestHover(position.getLineNumber(), position.getIndexInLine());
+}
+
+void TextEditEditor::setLspReady(bool ready)
+{
+    lspReady = ready;
+    editor.setEnabled(ready);
+    editor.setAlpha(ready ? 1.0f : 0.45f);
+
+    if (ready)
+        focusEditor();
+}
+
+void TextEditEditor::allowEditingWithoutLsp()
+{
+    lspReady = false;
+    editor.setEnabled(true);
+    editor.setAlpha(1.0f);
+    focusEditor();
 }
 
 void TextEditEditor::focusEditor()
 {
-    if (editor.isShowing())
+    if (editor.isEnabled() && editor.isShowing())
         editor.grabKeyboardFocus();
 }
 

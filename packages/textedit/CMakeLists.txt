@@ -84,6 +84,8 @@ juce_add_plugin(textedit
 )
 
 target_sources(textedit PRIVATE
+    src/CompletionList.cpp
+    src/HoverCard.cpp
     src/TextEditFileLoader.cpp
     src/VoicegroupLspConfig.cpp
     src/GruvboxTheme.cpp
@@ -124,6 +126,8 @@ add_executable(textedit_tests
     tests/TextEditProcessorTests.cpp
     tests/VoicegroupLspConfigTests.cpp
     tests/TextEditTests.cpp
+    src/CompletionList.cpp
+    src/HoverCard.cpp
     src/TextEditFileLoader.cpp
     src/GruvboxTheme.cpp
     src/TextEditEditor.cpp

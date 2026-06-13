@@ -2,16 +2,23 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <functional>
+
 class VoicegroupLspClient
 {
 public:
+    using ReadyCallback = std::function<void()>;
+    using StatusCallback = std::function<void()>;
+
     VoicegroupLspClient();
     ~VoicegroupLspClient();
 
-    bool start();
+    bool start(ReadyCallback callback = {});
     void stop();
+    void setStatusCallback(StatusCallback callback);
 
     bool isRunning() const;
+    bool canRequestContext() const;
 
     /*
      * Mirror the editor's full document text into the LSP session. The client
@@ -43,6 +50,7 @@ private:
     void sendMessage(const juce::var& message);
     void sendDidOpen(const juce::String& text, int version);
     void sendDidChange(const juce::String& text, int version);
+    void reportDocumentSyncFailure(const juce::String& action);
     void handleInitializeResponse();
     juce::DynamicObject::Ptr textDocumentIdentifier() const;
     juce::DynamicObject::Ptr positionParams(int line, int character) const;
@@ -84,6 +92,8 @@ private:
     int documentVersion = 0;
     juce::String pendingDocumentText;
     bool hasPendingDocumentText = false;
+    ReadyCallback readyCallback;
+    StatusCallback statusCallback;
 
     const juce::String serverPath;
     const juce::String documentUri = "file:///textedit/voicegroup.inc";

@@ -46,17 +46,22 @@ VoicegroupLspClient::~VoicegroupLspClient()
     stop();
 }
 
-bool VoicegroupLspClient::start()
+bool VoicegroupLspClient::start(ReadyCallback callback)
 {
     {
         const juce::ScopedLock scopedLock(lock);
         if (running)
             return true;
+        readyCallback = std::move(callback);
     }
 
 #if JUCE_MAC || JUCE_LINUX
     if (!startProcess())
+    {
+        const juce::ScopedLock scopedLock(lock);
+        readyCallback = {};
         return false;
+    }
 
     setStatus("LSP: starting voicegroup-lsp");
 
@@ -66,6 +71,10 @@ bool VoicegroupLspClient::start()
     sendRequest("initialize", params, RequestKind::initialize);
     return true;
 #else
+    {
+        const juce::ScopedLock scopedLock(lock);
+        readyCallback = {};
+    }
     setStatus("LSP: stdio client is not implemented on this platform yet");
     return false;
 #endif
@@ -99,6 +108,7 @@ void VoicegroupLspClient::stop()
         documentVersion = 0;
         pendingDocumentText.clear();
         hasPendingDocumentText = false;
+        readyCallback = {};
     }
 
     {
@@ -123,6 +133,17 @@ bool VoicegroupLspClient::isRunning() const
 {
     const juce::ScopedLock scopedLock(lock);
     return running;
+}
+
+bool VoicegroupLspClient::canRequestContext() const
+{
+    return isDocumentSynced();
+}
+
+void VoicegroupLspClient::setStatusCallback(StatusCallback callback)
+{
+    const juce::ScopedLock scopedLock(lock);
+    statusCallback = std::move(callback);
 }
 
 void VoicegroupLspClient::syncDocument(const juce::String& text)
@@ -158,9 +179,15 @@ void VoicegroupLspClient::syncDocument(const juce::String& text)
     }
 
     if (action == Action::open)
+    {
         sendDidOpen(text, version);
+        reportDocumentSyncFailure("didOpen");
+    }
     else if (action == Action::change)
+    {
         sendDidChange(text, version);
+        reportDocumentSyncFailure("didChange");
+    }
 }
 
 void VoicegroupLspClient::sendDidOpen(const juce::String& text, int version)
@@ -198,6 +225,12 @@ void VoicegroupLspClient::requestCompletion(int line, int character)
 {
     if (isDocumentSynced())
         sendRequest("textDocument/completion", positionParams(line, character), RequestKind::completion);
+}
+
+void VoicegroupLspClient::reportDocumentSyncFailure(const juce::String& action)
+{
+    if (!isRunning())
+        setStatus("LSP document sync failed during " + action);
 }
 
 void VoicegroupLspClient::requestHover(int line, int character)
@@ -284,8 +317,15 @@ juce::DynamicObject::Ptr VoicegroupLspClient::positionParams(int line, int chara
 
 void VoicegroupLspClient::setStatus(juce::String newStatus)
 {
-    const juce::ScopedLock scopedLock(lock);
-    statusText = std::move(newStatus);
+    StatusCallback callback;
+    {
+        const juce::ScopedLock scopedLock(lock);
+        statusText = std::move(newStatus);
+        callback = statusCallback;
+    }
+
+    if (callback)
+        callback();
 }
 
 #if JUCE_MAC || JUCE_LINUX
@@ -432,8 +472,23 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
 
     if (kind == RequestKind::initialize)
     {
-        if (!result.isVoid())
-            setStatus("LSP: initialized");
+        if (message.hasProperty("error"))
+        {
+            if (auto* error = message["error"].getDynamicObject())
+                markDisconnected("LSP initialize failed: " + error->getProperty("message").toString());
+            else
+                markDisconnected("LSP initialize failed");
+
+            return;
+        }
+
+        if (result.isVoid())
+        {
+            markDisconnected("LSP initialize failed: empty response");
+            return;
+        }
+
+        setStatus("LSP: initialized");
         handleInitializeResponse();
         return;
     }
@@ -493,6 +548,7 @@ void VoicegroupLspClient::handleResponse(const juce::var& message)
 void VoicegroupLspClient::handleInitializeResponse()
 {
     juce::String stashedText;
+    ReadyCallback callback;
     bool shouldFlush = false;
 
     {
@@ -508,6 +564,9 @@ void VoicegroupLspClient::handleInitializeResponse()
             hasPendingDocumentText = false;
             shouldFlush = true;
         }
+
+        callback = std::move(readyCallback);
+        readyCallback = {};
     }
 
     /* Per the LSP spec, `initialized` must follow the initialize response and
@@ -516,6 +575,9 @@ void VoicegroupLspClient::handleInitializeResponse()
 
     if (shouldFlush)
         syncDocument(stashedText);
+
+    if (callback && isRunning() && (!shouldFlush || isDocumentSynced()))
+        callback();
 }
 
 void VoicegroupLspClient::handleNotification(const juce::var& message)
@@ -594,30 +656,39 @@ void VoicegroupLspClient::closePipes()
 
 void VoicegroupLspClient::markDisconnected(juce::String status)
 {
-    const juce::ScopedLock scopedLock(lock);
+    StatusCallback callback;
 
-    if (!running)
-        return;
-
-    running = false;
-    initialized = false;
-    documentOpen = false;
-    documentVersion = 0;
-    pendingDocumentText.clear();
-    hasPendingDocumentText = false;
-    statusText = std::move(status);
-
-    if (childStdin >= 0)
     {
-        ::close(childStdin);
-        childStdin = -1;
+        const juce::ScopedLock scopedLock(lock);
+
+        if (!running)
+            return;
+
+        running = false;
+        initialized = false;
+        documentOpen = false;
+        documentVersion = 0;
+        pendingDocumentText.clear();
+        hasPendingDocumentText = false;
+        readyCallback = {};
+        statusText = std::move(status);
+        callback = statusCallback;
+
+        if (childStdin >= 0)
+        {
+            ::close(childStdin);
+            childStdin = -1;
+        }
+
+        if (childStdout >= 0)
+        {
+            ::close(childStdout);
+            childStdout = -1;
+        }
     }
 
-    if (childStdout >= 0)
-    {
-        ::close(childStdout);
-        childStdout = -1;
-    }
+    if (callback)
+        callback();
 }
 
 void VoicegroupLspClient::waitForChildProcess()
