@@ -67,13 +67,8 @@ void VoicegroupCodeEditor::timerCallback()
 
 TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     : AudioProcessorEditor(processorToUse),
-      textProcessor(processorToUse),
       editor(document, &tokeniser)
 {
-    document.replaceAllContent(textProcessor.getDocumentText());
-    document.clearUndoHistory();
-    document.setSavePoint();
-
     editor.setLineNumbersShown(true);
     editor.setTabSize(4, true);
     editor.setFont(juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 15.0f, juce::Font::plain)));
@@ -98,28 +93,27 @@ TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
     setResizable(true, true);
     setSize(900, 700);
 
-    document.addListener(this);
-    textProcessor.addDocumentChangeListener(this);
     editor.setHoverCallback([this](auto position) { requestHover(position); });
     addAndMakeVisible(toolbar);
-    // toolbar.saveButton.onClick = [this]();
+    toolbar.saveButton.onClick = [this] { saveVoicegroup(); };
     languageService.setStatusCallback([this] { refreshLanguageServiceStatus(); });
     languageService.setCompletionCallback([this](auto items) { showCompletions(std::move(items)); });
     languageService.setHoverCallback([this](auto text) { showHover(std::move(text)); });
-    languageService.syncDocument(document.getAllContent());
+    fileStore.setErrorListener([this](const auto& error) { showFileStoreError(error); });
+    loadInitialVoicegroup();
+    document.addListener(this);
 
     refreshLanguageServiceStatus();
 }
 
 TextEditEditor::~TextEditEditor()
 {
-    pushDocumentToProcessor();
     editor.setHoverCallback({});
     editor.cancelPendingHover();
     languageService.setStatusCallback({});
     languageService.setCompletionCallback({});
     languageService.setHoverCallback({});
-    textProcessor.removeDocumentChangeListener(this);
+    fileStore.setErrorListener({});
     document.removeListener(this);
 }
 
@@ -146,7 +140,7 @@ void TextEditEditor::visibilityChanged()
 void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int insertIndex)
 {
     juce::ignoreUnused(newText, insertIndex);
-    notifyLocalEdit();
+    syncLocalEdit();
 
     if (newText.containsAnyOf("_, "))
         requestLanguageContext();
@@ -155,14 +149,8 @@ void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int i
 void TextEditEditor::codeDocumentTextDeleted(int startIndex, int endIndex)
 {
     juce::ignoreUnused(startIndex, endIndex);
-    notifyLocalEdit();
+    syncLocalEdit();
     completionList.clear();
-}
-
-void TextEditEditor::changeListenerCallback(juce::ChangeBroadcaster* source)
-{
-    juce::ignoreUnused(source);
-    pullDocumentFromProcessor();
 }
 
 void TextEditEditor::refreshLanguageServiceStatus()
@@ -175,36 +163,11 @@ void TextEditEditor::refreshLanguageServiceStatus()
     }
 }
 
-void TextEditEditor::pushDocumentToProcessor()
+void TextEditEditor::syncLocalEdit()
 {
-    if (!updatingDocument)
-        textProcessor.setDocumentText(document.getAllContent());
-}
-
-/* Local (typed) edits fan out to both consumers. `updatingDocument` only
- * suppresses the echo during a processor-origin pull, where
- * pullDocumentFromProcessor syncs the language service itself. */
-void TextEditEditor::notifyLocalEdit()
-{
-    if (updatingDocument)
-        return;
-
     const auto text = document.getAllContent();
-    textProcessor.setDocumentText(text);
     languageService.syncDocument(text);
     hoverCard.clear();
-}
-
-void TextEditEditor::pullDocumentFromProcessor()
-{
-    const auto processorText = textProcessor.getDocumentText();
-    if (document.getAllContent() == processorText)
-        return;
-
-    const juce::ScopedValueSetter<bool> scopedUpdate(updatingDocument, true);
-    document.replaceAllContent(processorText);
-
-    languageService.syncDocument(processorText);
 }
 
 void TextEditEditor::requestLanguageContext()
@@ -242,6 +205,50 @@ void TextEditEditor::showHover(juce::String text)
 
     if (hoverCard.isVisible())
         positionHoverCardAt(lastHoverPosition);
+}
+
+void TextEditEditor::loadInitialVoicegroup()
+{
+    TextEditVoicegroupDocument voicegroupDocument;
+    if (!fileStore.loadCurrentVoicegroup(voicegroupDocument))
+    {
+        editor.setEnabled(false);
+        toolbar.saveButton.setEnabled(false);
+        return;
+    }
+
+    document.replaceAllContent(voicegroupDocument.text);
+    document.clearUndoHistory();
+    document.setSavePoint();
+    languageService.setProjectRoot(voicegroupDocument.projectRoot);
+    languageService.syncDocument(voicegroupDocument.text);
+}
+
+void TextEditEditor::saveVoicegroup()
+{
+    if (!fileStore.saveCurrentVoicegroup(document.getAllContent()))
+        return;
+
+    document.setSavePoint();
+}
+
+void TextEditEditor::showFileStoreError(const TextEditFileStoreError& error)
+{
+    const auto title = error.operation == TextEditFileStoreOperation::loadVoicegroup
+                         ? juce::String("Could not load voicegroup")
+                         : juce::String("Could not save voicegroup");
+    showIoError(title, error.message);
+}
+
+void TextEditEditor::showIoError(const juce::String& title, const juce::String& message)
+{
+    const auto options = juce::MessageBoxOptions::makeOptionsOk(juce::MessageBoxIconType::WarningIcon,
+                                                                title,
+                                                                message,
+                                                                "OK")
+                             .withAssociatedComponent(&editor)
+                             .withParentComponent(this);
+    ioErrorBox = juce::AlertWindow::showScopedAsync(options, nullptr);
 }
 
 void TextEditEditor::positionCompletionListAtCaret()

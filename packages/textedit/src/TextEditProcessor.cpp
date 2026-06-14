@@ -2,25 +2,10 @@
 
 #include "TextEditEditor.h"
 
-namespace {
-
-constexpr auto kStateTag = "TEXTEDIT_STATE";
-constexpr auto kTextProperty = "text";
-
-juce::String defaultDocumentText()
-{
-    return "@ textedit voicegroup editor\n"
-           "@ Language service: embedded\n\n"
-           "\tvoice_directsound 60, 0, DirectSoundWaveData_piano, 255, 0, 255, 127\n";
-}
-
-} // namespace
-
 TextEditProcessor::TextEditProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      documentText(defaultDocumentText())
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true))
 {
 }
 
@@ -128,51 +113,12 @@ void TextEditProcessor::changeProgramName(int index, const juce::String& newName
 
 void TextEditProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    juce::ValueTree state(kStateTag);
-    state.setProperty(kTextProperty, getDocumentText(), nullptr);
-
-    if (auto xml = state.createXml())
-        copyXmlToBinary(*xml, destData);
+    destData.reset();
 }
 
 void TextEditProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
-    auto xml = getXmlFromBinary(data, sizeInBytes);
-    if (xml == nullptr || !xml->hasTagName(kStateTag))
-        return;
-
-    juce::ValueTree state = juce::ValueTree::fromXml(*xml);
-    if (state.isValid())
-        setDocumentText(state.getProperty(kTextProperty, defaultDocumentText()).toString());
-}
-
-juce::String TextEditProcessor::getDocumentText() const
-{
-    const juce::ScopedLock lock(documentLock);
-    return documentText;
-}
-
-void TextEditProcessor::setDocumentText(const juce::String& newText)
-{
-    {
-        const juce::ScopedLock lock(documentLock);
-        if (documentText == newText)
-            return;
-
-        documentText = newText;
-    }
-
-    sendChangeMessage();
-}
-
-void TextEditProcessor::addDocumentChangeListener(juce::ChangeListener* listener)
-{
-    addChangeListener(listener);
-}
-
-void TextEditProcessor::removeDocumentChangeListener(juce::ChangeListener* listener)
-{
-    removeChangeListener(listener);
+    juce::ignoreUnused(data, sizeInBytes);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

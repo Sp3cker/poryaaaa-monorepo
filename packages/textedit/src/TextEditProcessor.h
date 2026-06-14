@@ -2,8 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-class TextEditProcessor final : public juce::AudioProcessor,
-                                private juce::ChangeBroadcaster
+class TextEditProcessor final : public juce::AudioProcessor
 {
 public:
     TextEditProcessor();
@@ -33,18 +32,9 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-    juce::String getDocumentText() const;
-    void setDocumentText(const juce::String& newText);
-
-    void addDocumentChangeListener(juce::ChangeListener* listener);
-    void removeDocumentChangeListener(juce::ChangeListener* listener);
-
 private:
     template <typename FloatType>
     void processAudio(juce::AudioBuffer<FloatType>& buffer, juce::MidiBuffer& midiMessages);
-
-    mutable juce::CriticalSection documentLock;
-    juce::String documentText;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditProcessor)
 };

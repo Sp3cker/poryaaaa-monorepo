@@ -6,6 +6,7 @@
 
 #include "CompletionList.h"
 #include "HoverCard.h"
+#include "TextEditFileStore.h"
 #include "TextEditProcessor.h"
 #include "VoicegroupLanguageService.h"
 #include "VoicegroupTokeniser.h"
@@ -44,8 +45,7 @@ private:
 };
 
 class TextEditEditor final : public juce::AudioProcessorEditor,
-                             private juce::CodeDocument::Listener,
-                             private juce::ChangeListener
+                             private juce::CodeDocument::Listener
 {
 public:
     explicit TextEditEditor(TextEditProcessor& processor);
@@ -59,21 +59,22 @@ public:
 private:
     void codeDocumentTextInserted(const juce::String& newText, int insertIndex) override;
     void codeDocumentTextDeleted(int startIndex, int endIndex) override;
-    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
     void refreshLanguageServiceStatus();
-    void pushDocumentToProcessor();
-    void pullDocumentFromProcessor();
-    void notifyLocalEdit();
+    void syncLocalEdit();
     void requestLanguageContext();
     void requestHover(juce::CodeDocument::Position position);
     void showCompletions(std::vector<VoicegroupCompletionItem> items);
     void showHover(juce::String text);
+    void loadInitialVoicegroup();
+    void saveVoicegroup();
+    void showFileStoreError(const TextEditFileStoreError& error);
+    void showIoError(const juce::String& title, const juce::String& message);
     void positionCompletionListAtCaret();
     void positionHoverCardAt(juce::CodeDocument::Position position);
     void focusEditor();
 
-    TextEditProcessor& textProcessor;
+    TextEditFileStore fileStore;
     juce::CodeDocument document;
     VoicegroupTokeniser tokeniser;
     VoicegroupCodeEditor editor;
@@ -81,9 +82,9 @@ private:
     HoverCard hoverCard;
     juce::Label statusLabel;
     EmbeddedLanguageService languageService;
+    juce::ScopedMessageBox ioErrorBox;
     juce::String lastStatusText;
     juce::CodeDocument::Position lastHoverPosition { document, 0 };
-    bool updatingDocument = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditEditor)
 };

@@ -68,6 +68,92 @@ bool expectRejectProjectState(const juce::String& json)
     return true;
 }
 
+bool expectLoadAndSaveVoicegroup()
+{
+    auto tempRoot = juce::File("/private/tmp")
+                        .getNonexistentChildFile("textedit-project-root", "", false);
+    const auto projectsJsonFile = juce::File("/private/tmp")
+                                      .getNonexistentChildFile("textedit-projects", ".json", false);
+    const auto voicegroupFile = tempRoot
+                                    .getChildFile("sound")
+                                    .getChildFile("voicegroups")
+                                    .getChildFile("alpha.inc");
+    const auto initialText = juce::String("voice_group alpha\n\tvoice_directsound 60, 0\n");
+    const auto savedText = juce::String("voice_group alpha\n\tvoice_directsound 61, 0\n");
+    const auto projectsJson = "{ \"root\": \"" + tempRoot.getFullPathName() + "\", \"bank\": \"alpha\" }";
+    if (!writeText(projectsJsonFile, projectsJson) || !writeText(voicegroupFile, initialText))
+    {
+        std::cerr << "could not create voicegroup store test files\n";
+        projectsJsonFile.deleteFile();
+        tempRoot.deleteRecursively();
+        return false;
+    }
+
+    TextEditFileStore store(projectsJsonFile);
+    TextEditVoicegroupDocument document;
+    auto errorReported = false;
+    store.setErrorListener([&errorReported](const auto&) { errorReported = true; });
+    const auto loaded = store.loadCurrentVoicegroup(document);
+    const auto saved = store.saveCurrentVoicegroup(savedText);
+    const auto reloadedText = voicegroupFile.loadFileAsString();
+    projectsJsonFile.deleteFile();
+    tempRoot.deleteRecursively();
+    if (!loaded)
+    {
+        std::cerr << "loadCurrentVoicegroup failed\n";
+        return false;
+    }
+
+    if (document.projectRoot != tempRoot || document.bank != "alpha" || document.file != voicegroupFile || document.text != initialText)
+    {
+        std::cerr << "loadCurrentVoicegroup loaded wrong document\n";
+        return false;
+    }
+
+    if (!saved || errorReported || reloadedText != savedText)
+    {
+        std::cerr << "saveCurrentVoicegroup failed\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool expectRejectSaveBeforeLoad()
+{
+    TextEditFileStore store(juce::File("/private/tmp").getNonexistentChildFile("textedit-projects", ".json", false));
+    auto errorReported = false;
+    auto operation = TextEditFileStoreOperation::loadVoicegroup;
+    juce::String message;
+    store.setErrorListener([&](const auto& error) {
+        errorReported = true;
+        operation = error.operation;
+        message = error.message;
+    });
+    return !store.saveCurrentVoicegroup("voice_group alpha\n")
+        && errorReported
+        && operation == TextEditFileStoreOperation::saveVoicegroup
+        && message.isNotEmpty();
+}
+
+bool expectReportLoadError()
+{
+    TextEditFileStore store(juce::File("/private/tmp").getNonexistentChildFile("textedit-missing-projects", ".json", false));
+    TextEditVoicegroupDocument document;
+    auto errorReported = false;
+    auto operation = TextEditFileStoreOperation::saveVoicegroup;
+    juce::String message;
+    store.setErrorListener([&](const auto& error) {
+        errorReported = true;
+        operation = error.operation;
+        message = error.message;
+    });
+    return !store.loadCurrentVoicegroup(document)
+        && errorReported
+        && operation == TextEditFileStoreOperation::loadVoicegroup
+        && message.isNotEmpty();
+}
+
 } // namespace
 
 bool runTextEditFileStoreTests()
@@ -111,6 +197,9 @@ bool runTextEditFileStoreTests()
     const auto missingBankRejected = expectRejectProjectState("{ \"root\": \"/projects/poryaaaa\" }");
     const auto nonStringRootRejected = expectRejectProjectState("{ \"root\": 12, \"bank\": \"voicegroup000\" }");
     const auto malformedRejected = expectRejectProjectState("{ not json");
+    const auto voicegroupLoadedAndSaved = expectLoadAndSaveVoicegroup();
+    const auto saveBeforeLoadRejected = expectRejectSaveBeforeLoad();
+    const auto loadErrorReported = expectReportLoadError();
     auto missingProjectsFile = juce::File("/private/tmp")
                                    .getNonexistentChildFile("textedit-missing-projects", ".json", false);
     TextEditProjectState state;
@@ -123,5 +212,8 @@ bool runTextEditFileStoreTests()
         && missingBankRejected
         && nonStringRootRejected
         && malformedRejected
+        && voicegroupLoadedAndSaved
+        && saveBeforeLoadRejected
+        && loadErrorReported
         && missingRejected;
 }
