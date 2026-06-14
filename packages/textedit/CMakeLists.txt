@@ -74,7 +74,7 @@ juce_add_plugin(textedit
 target_sources(textedit PRIVATE
     src/CompletionList.cpp
     src/HoverCard.cpp
-    src/TextEditFileLoader.cpp
+    src/TextEditFileStore.cpp
     src/GruvboxTheme.cpp
     src/TextEditEditor.cpp
     src/TextEditProcessor.cpp
@@ -109,13 +109,13 @@ target_link_libraries(textedit
 message(STATUS "textedit: configured as standalone JUCE VST3 plugin.")
 
 add_executable(textedit_tests
-    tests/TextEditFileLoaderTests.cpp
+    tests/TextEditFileStoreTests.cpp
     tests/TextEditProcessorTests.cpp
     tests/TextEditTests.cpp
     tests/VoicegroupLanguageBridgeTests.cpp
     src/CompletionList.cpp
     src/HoverCard.cpp
-    src/TextEditFileLoader.cpp
+    src/TextEditFileStore.cpp
     src/GruvboxTheme.cpp
     src/TextEditEditor.cpp
     src/TextEditProcessor.cpp

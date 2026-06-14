@@ -1,11 +1,11 @@
-#include "TextEditFileLoaderTests.h"
+#include "TextEditFileStoreTests.h"
 #include "TextEditProcessorTests.h"
 #include "VoicegroupLanguageBridgeTests.h"
 
 int main() {
   auto passed = true;
 
-  passed &= runTextEditFileLoaderTests();
+  passed &= runTextEditFileStoreTests();
   passed &= runTextEditProcessorTests();
   passed &= runVoicegroupLanguageBridgeTests();
 
