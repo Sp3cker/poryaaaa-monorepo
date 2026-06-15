@@ -15,8 +15,13 @@ build target:
         cmake --build packages/ccomidi/build --config Release --target ccomidi
         ;;
       textedit)
+        # textedit is a standalone VST3 plugin. The packaged bundle (.vst3 directory
+        # containing the executable, PkgInfo, moduleinfo.json, etc.) is produced by
+        # the textedit_VST3 target (per packages/textedit/AGENTS.md and README).
+        # We explicitly request the documented primary artefact target so that
+        # `just build textedit` (and `just install textedit`) produce a usable VST3.
         cmake -S packages/{{target}} -B packages/{{target}}/build -DCMAKE_BUILD_TYPE=Release
-        cmake --build packages/{{target}}/build --config Release --target {{target}}
+        cmake --build packages/{{target}}/build --config Release --target textedit_VST3
         ;;
       m4l)
         cd packages/poryaaaa-m4l
@@ -42,13 +47,19 @@ install target:
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/ccomidi/build --config Release --target ccomidi
         ;;
+      textedit)
+        # Building the VST3 artefact target triggers COPY_PLUGIN_AFTER_BUILD
+        # (see packages/textedit/CMakeLists.txt), installing to the user VST3 dir.
+        cmake -S packages/textedit -B packages/textedit/build -DCMAKE_BUILD_TYPE=Release
+        cmake --build packages/textedit/build --config Release --target textedit_VST3
+        ;;
       m4l)
         cd packages/poryaaaa-m4l
         npm run install:max-package
         ;;
       *)
         echo "unknown install target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, textedit m4l" >&2
+        echo "known targets: poryaaaa, ccomidi, textedit, m4l" >&2
         exit 2
         ;;
     esac
