@@ -216,19 +216,23 @@ void TextEditEditor::visibilityChanged()
 void TextEditEditor::codeDocumentTextInserted(const juce::String& newText, int insertIndex)
 {
     juce::ignoreUnused(newText, insertIndex);
+    if (isApplyingProgrammaticEdit)
+        return;
+
     syncLocalEdit();
 
-    if (!isApplyingCompletion)
-        requestLanguageContext();
+    requestLanguageContext();
 }
 
 void TextEditEditor::codeDocumentTextDeleted(int startIndex, int endIndex)
 {
     juce::ignoreUnused(startIndex, endIndex);
+    if (isApplyingProgrammaticEdit)
+        return;
+
     syncLocalEdit();
 
-    if (!isApplyingCompletion)
-        requestLanguageContext();
+    requestLanguageContext();
 }
 
 void TextEditEditor::refreshLanguageServiceStatus()
@@ -374,12 +378,15 @@ bool TextEditEditor::handleEditorKeyPressed(const juce::KeyPress& key)
 void TextEditEditor::acceptCompletion(VoicegroupCompletionItem completion)
 {
     clearCompletions();
-    editor.selectRegion(
-        juce::CodeDocument::Position(document, completion.replacementStartLine, completion.replacementStartCharacter),
-        juce::CodeDocument::Position(document, completion.replacementEndLine, completion.replacementEndCharacter));
-    isApplyingCompletion = true;
-    editor.insertTextAtCaret(completion.insertText);
-    isApplyingCompletion = false;
+    const auto replacementStart =
+        juce::CodeDocument::Position(document, completion.replacementStartLine, completion.replacementStartCharacter);
+    const auto replacementEnd =
+        juce::CodeDocument::Position(document, completion.replacementEndLine, completion.replacementEndCharacter);
+    const auto replacementStartIndex = replacementStart.getPosition();
+
+    replaceEditorText(juce::Range<int>(replacementStartIndex, replacementEnd.getPosition()),
+                      completion.insertText,
+                      replacementStartIndex + completion.insertText.length());
 
     if (const auto action = languageService.requestTabAction(completion.replacementStartLine,
                                                              completion.replacementStartCharacter,
@@ -387,7 +394,22 @@ void TextEditEditor::acceptCompletion(VoicegroupCompletionItem completion)
                                                              completion.replacementStartCharacter))
     {
         applyTabAction(*action);
+        return;
     }
+
+    requestLanguageContext(editor.getCaretPos());
+}
+
+void TextEditEditor::replaceEditorText(juce::Range<int> range, const juce::String& replacement, int caretPositionAfter)
+{
+    isApplyingProgrammaticEdit = true;
+    document.newTransaction();
+    document.replaceSection(range.getStart(), range.getEnd(), replacement);
+    document.newTransaction();
+    editor.moveCaretTo(juce::CodeDocument::Position(document, caretPositionAfter), false);
+    isApplyingProgrammaticEdit = false;
+
+    syncLocalEdit();
 }
 
 bool TextEditEditor::requestAndApplyTabAction()

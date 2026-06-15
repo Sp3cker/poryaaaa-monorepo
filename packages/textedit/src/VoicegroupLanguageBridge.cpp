@@ -11,10 +11,27 @@ constexpr auto bridgeTabActionMoveCaret = 2;
 
 juce::String bridgePath()
 {
+    // Highest priority: explicit override via environment variable (very useful
+    // for development, testing different builds, or CI).
     if (const auto* envPath = std::getenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH"))
         if (envPath[0] != '\0')
             return envPath;
 
+    // Next: look for a copy that was embedded inside the .vst3 bundle
+    // (Contents/Resources/libVoicegroupBridge.dylib). This makes a distributed
+    // or user-installed plugin self-contained.
+    {
+        auto exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        // exe is typically .../textedit.vst3/Contents/MacOS/textedit
+        auto resourcesDir = exe.getParentDirectory().getSiblingFile("Resources");
+        auto candidate = resourcesDir.getChildFile("libVoicegroupBridge.dylib");
+        if (candidate.existsAsFile())
+            return candidate.getFullPathName();
+    }
+
+    // Fallback: the path that was baked in at configure time (points into the
+    // source tree by default). Useful when developing without a full bundle
+    // embedding step or when the dylib lives outside the bundle.
     return TEXTEDIT_VOICEGROUP_BRIDGE_PATH;
 }
 

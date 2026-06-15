@@ -151,6 +151,7 @@ private:
     void dismissHover();
     bool handleEditorKeyPressed(const juce::KeyPress& key);
     void acceptCompletion(VoicegroupCompletionItem completion);
+    void replaceEditorText(juce::Range<int> range, const juce::String& replacement, int caretPositionAfter);
     bool requestAndApplyTabAction();
     void applyTabAction(const VoicegroupTabAction& action);
     void loadInitialVoicegroup();
@@ -181,7 +182,7 @@ private:
     juce::String lastStatusText;
     juce::CodeDocument::Position lastHoverPosition{document, 0};
     TextInteractionState interactionState;
-    bool isApplyingCompletion = false;
+    bool isApplyingProgrammaticEdit = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditEditor)
 };

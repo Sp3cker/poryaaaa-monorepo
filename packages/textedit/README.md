@@ -27,13 +27,20 @@ cmake -S packages/textedit -B packages/textedit/build -DCMAKE_BUILD_TYPE=Release
 On macOS, JUCE copies the built VST3 to the user plugin location after build.
 
 The embedded voicegroup language service loads the Swift bridge dylib at runtime.
-The default bridge path is:
 
-```bash
-packages/voicegroup-lsp/.build/release/libVoicegroupBridge.dylib
-```
+By default the dylib is loaded from a path baked in at configure time
+(`packages/voicegroup-lsp/.build/release/libVoicegroupBridge.dylib` relative
+to the monorepo). When that file exists at CMake configure time it is
+automatically embedded into the `.vst3` bundle as a resource
+(`Contents/Resources/libVoicegroupBridge.dylib`) using JUCE's
+`MACOSX_PACKAGE_LOCATION` mechanism. At runtime the plugin prefers (in order):
 
-Override it with either:
+1. `TEXTEDIT_VOICEGROUP_BRIDGE_PATH` environment variable
+2. The copy embedded in the bundle's Resources directory (self-contained
+   installed plugin)
+3. The compile-time baked path (convenient for development)
+
+Override / force a location with either:
 
 ```bash
 cmake -S packages/textedit -B packages/textedit/build -DTEXTEDIT_VOICEGROUP_BRIDGE_PATH=/path/to/libVoicegroupBridge.dylib

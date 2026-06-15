@@ -109,8 +109,35 @@ target_link_libraries(textedit
 
 message(STATUS "textedit: configured as standalone JUCE VST3 plugin.")
 
+# Embed the voicegroup bridge dylib into the .vst3 bundle as a resource
+# (placed in Contents/Resources/). This makes the installed plugin
+# self-contained instead of relying on an absolute path into the source tree.
+# The copy only happens if the dylib is present at configure time.
+# Runtime code in VoicegroupLanguageBridge prefers the bundle copy when available.
+if (EXISTS "${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}")
+    message(STATUS "textedit: will embed voicegroup bridge dylib "
+                   "${TEXTEDIT_VOICEGROUP_BRIDGE_PATH} into the VST3 bundle")
+    target_sources(textedit_VST3 PRIVATE "${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}")
+    set_source_files_properties("${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}" PROPERTIES
+        HEADER_FILE_ONLY TRUE
+        MACOSX_PACKAGE_LOCATION Resources)
+    if(APPLE)
+        get_property(TEXTEDIT_VST3_COPY_DIR GLOBAL PROPERTY JUCE_VST3_COPY_DIR)
+        if(TEXTEDIT_VST3_COPY_DIR)
+            add_custom_command(TARGET textedit_VST3 POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E make_directory
+                    "${TEXTEDIT_VST3_COPY_DIR}/textedit.vst3/Contents/Resources"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}"
+                    "${TEXTEDIT_VST3_COPY_DIR}/textedit.vst3/Contents/Resources/libVoicegroupBridge.dylib"
+                VERBATIM)
+        endif()
+    endif()
+endif()
+
 add_executable(textedit_tests
     tests/TextEditFileStoreTests.cpp
+    tests/TextEditEditorCompletionTests.cpp
     tests/TextEditProcessorTests.cpp
     tests/TextEditTests.cpp
     tests/VoicegroupLanguageBridgeTests.cpp
