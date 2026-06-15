@@ -62,7 +62,7 @@ VoicegroupLanguageBridge::~VoicegroupLanguageBridge()
 bool VoicegroupLanguageBridge::isAvailable() const
 {
     return service != nullptr && create != nullptr && destroy != nullptr && setRoot != nullptr && sync != nullptr &&
-           complete != nullptr && hoverText != nullptr;
+           complete != nullptr && hoverText != nullptr && tab != nullptr;
 }
 
 bool VoicegroupLanguageBridge::setProjectRoot(const juce::File& root)
@@ -115,9 +115,6 @@ VoicegroupLanguageBridge::tabAction(int startLine, int startCharacter, int endLi
 {
     if (!isAvailable())
         return std::nullopt;
-
-    if (tab == nullptr)
-        return VoicegroupTabAction{};
 
     auto actionKind = 0;
     auto resultStartLine = 0;
@@ -201,7 +198,7 @@ bool VoicegroupLanguageBridge::loadFunctions()
     hoverText = loadFunction<HoverFn>(library, "textedit_voicegroup_service_hover");
     tab = loadFunction<TabActionFn>(library, "textedit_voicegroup_service_tab_action");
     return create != nullptr && destroy != nullptr && setRoot != nullptr && sync != nullptr && complete != nullptr &&
-           hoverText != nullptr;
+           hoverText != nullptr && tab != nullptr;
 }
 
 void VoicegroupLanguageBridge::closeBridge()

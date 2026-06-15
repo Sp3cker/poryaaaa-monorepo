@@ -3,10 +3,47 @@
 #include "VoicegroupLanguageBridge.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 
 bool runVoicegroupLanguageBridgeTests()
 {
+    const auto* oldBridgePath = std::getenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH");
+    const auto hadBridgePath = oldBridgePath != nullptr;
+    const auto expectedRestoredBridgePath = hadBridgePath ? juce::String(oldBridgePath) : juce::String();
+    const auto restoreBridgePath = [&]()
+    {
+        if (hadBridgePath)
+            setenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH", expectedRestoredBridgePath.toRawUTF8(), 1);
+        else
+            unsetenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH");
+    };
+
+    if (setenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH", TEXTEDIT_MISSING_TAB_BRIDGE_PATH, 1) != 0)
+    {
+        std::cerr << "voicegroup bridge missing-tab test failed: could not set bridge path\n";
+        return false;
+    }
+
+    {
+        auto bridge = VoicegroupLanguageBridge{};
+        if (bridge.isAvailable() || bridge.getStatusText() != "Language service: bridge ABI mismatch")
+        {
+            std::cerr << "voicegroup bridge missing-tab test failed: " << bridge.getStatusText() << "\n";
+            restoreBridgePath();
+            return false;
+        }
+    }
+
+    restoreBridgePath();
+    const auto* restoredBridgePath = std::getenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH");
+    if ((hadBridgePath && (restoredBridgePath == nullptr || expectedRestoredBridgePath != restoredBridgePath)) ||
+        (!hadBridgePath && restoredBridgePath != nullptr))
+    {
+        std::cerr << "voicegroup bridge missing-tab test failed: did not restore bridge path\n";
+        return false;
+    }
+
     if (!juce::File(TEXTEDIT_VOICEGROUP_BRIDGE_PATH).existsAsFile())
     {
         std::cerr << "voicegroup bridge integration skipped: missing " << TEXTEDIT_VOICEGROUP_BRIDGE_PATH << "\n";

@@ -21,6 +21,7 @@ set(TEXTEDIT_JUCE_VERSION "8.0.6" CACHE STRING "JUCE release version used when T
 set(TEXTEDIT_REPO_VOICEGROUP_BRIDGE_PATH "${TEXTEDIT_MONOREPO_ROOT}/packages/voicegroup-lsp/.build/release/libVoicegroupBridge.dylib")
 set(TEXTEDIT_VOICEGROUP_BRIDGE_PATH "${TEXTEDIT_REPO_VOICEGROUP_BRIDGE_PATH}"
     CACHE STRING "Swift voicegroup language bridge dylib path")
+set(TEXTEDIT_VST3_BUNDLE_SIGNATURE "TxEd")
 set(JUCE_ROOT "" CACHE PATH "Path to an existing JUCE checkout")
 
 if(NOT JUCE_ROOT)
@@ -137,6 +138,29 @@ if (EXISTS "${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}")
     endif()
 endif()
 
+if(APPLE)
+    add_custom_command(TARGET textedit_VST3 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-DBUNDLE_PATH=$<TARGET_BUNDLE_DIR:textedit_VST3>"
+            "-DBUNDLE_SIGNATURE=${TEXTEDIT_VST3_BUNDLE_SIGNATURE}"
+            -P "${TEXTEDIT_ROOT}/cmake/FixVst3PkgInfo.cmake"
+        VERBATIM)
+
+    get_property(TEXTEDIT_VST3_COPY_DIR GLOBAL PROPERTY JUCE_VST3_COPY_DIR)
+    if(TEXTEDIT_VST3_COPY_DIR)
+        add_custom_command(TARGET textedit_VST3 POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                "-DBUNDLE_PATH=${TEXTEDIT_VST3_COPY_DIR}/textedit.vst3"
+                "-DBUNDLE_SIGNATURE=${TEXTEDIT_VST3_BUNDLE_SIGNATURE}"
+                -P "${TEXTEDIT_ROOT}/cmake/FixVst3PkgInfo.cmake"
+            VERBATIM)
+    endif()
+endif()
+
+add_library(textedit_bridge_missing_tab SHARED
+    tests/VoicegroupBridgeMissingTab.c
+)
+
 add_executable(textedit_tests
     tests/TextEditFileStoreTests.cpp
     tests/TextEditEditorCompletionTests.cpp
@@ -162,12 +186,14 @@ target_include_directories(textedit_tests PRIVATE
 )
 
 target_compile_features(textedit_tests PRIVATE cxx_std_17)
+add_dependencies(textedit_tests textedit_bridge_missing_tab)
 
 target_compile_definitions(textedit_tests
     PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         TEXTEDIT_VOICEGROUP_BRIDGE_PATH="${TEXTEDIT_VOICEGROUP_BRIDGE_PATH}"
+        TEXTEDIT_MISSING_TAB_BRIDGE_PATH="$<TARGET_FILE:textedit_bridge_missing_tab>"
 )
 
 target_link_libraries(textedit_tests
