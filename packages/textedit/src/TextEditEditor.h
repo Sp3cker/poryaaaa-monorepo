@@ -2,7 +2,6 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
-#include <functional>
 #include <memory>
 
 #include "CompletionList.h"
@@ -10,77 +9,10 @@
 #include "HoverCard.h"
 #include "TextEditFileStore.h"
 #include "TextEditProcessor.h"
+#include "TopToolBar.h"
+#include "VoicegroupCodeEditor.h"
 #include "VoicegroupLanguageService.h"
 #include "VoicegroupTokeniser.h"
-
-class TopToolBar final : public juce::Component
-{
-public:
-    enum class Mode
-    {
-        normal,
-        extract
-    };
-
-    TopToolBar();
-
-    void resized() override;
-    void paint(juce::Graphics& g) override;
-
-    void setMode(Mode mode);
-    void setDocumentLoaded(bool loaded);
-    void setCanSaveExtract(bool canSave);
-
-    std::function<void()> onSave;
-    std::function<void()> onSaveAs;
-    std::function<void()> onEnterExtract;
-    std::function<void()> onSaveExtractAs;
-    std::function<void()> onCancelExtract;
-
-private:
-    void configureButton(juce::TextButton& button);
-    void updateButtonState();
-
-    juce::TextButton saveButton{"Save"};
-    juce::TextButton saveAsButton{"Save As"};
-    juce::TextButton extractButton{"Extract"};
-    juce::TextButton extractSaveAsButton{"Save As..."};
-    juce::TextButton extractCancelButton{"Cancel"};
-    juce::FlexBox flex;
-    Mode mode = Mode::normal;
-    bool documentLoaded = true;
-    bool canSaveExtract = false;
-};
-
-class VoicegroupCodeEditor final : public juce::CodeEditorComponent, private juce::Timer
-{
-public:
-    using HoverCallback = std::function<void(juce::CodeDocument::Position)>;
-    using DismissHoverCallback = std::function<void()>;
-    using KeyCallback = std::function<bool(const juce::KeyPress&)>;
-
-    VoicegroupCodeEditor(juce::CodeDocument& document, juce::CodeTokeniser* tokeniser);
-    ~VoicegroupCodeEditor() override;
-
-    void cancelPendingHover();
-    void setDismissHoverCallback(DismissHoverCallback callback);
-    void setHoverCallback(HoverCallback callback);
-    void setKeyCallback(KeyCallback callback);
-
-private:
-    bool keyPressed(const juce::KeyPress& key) override;
-    void mouseDown(const juce::MouseEvent& event) override;
-    void mouseDrag(const juce::MouseEvent& event) override;
-    void mouseMove(const juce::MouseEvent& event) override;
-    void mouseExit(const juce::MouseEvent& event) override;
-    void timerCallback() override;
-    void dismissHover();
-
-    DismissHoverCallback dismissHoverCallback;
-    HoverCallback hoverCallback;
-    KeyCallback keyCallback;
-    juce::Point<int> pendingHoverPoint;
-};
 
 class TextInteractionState final
 {

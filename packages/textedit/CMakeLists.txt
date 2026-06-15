@@ -79,6 +79,8 @@ target_sources(textedit PRIVATE
     src/GruvboxTheme.cpp
     src/TextEditEditor.cpp
     src/TextEditProcessor.cpp
+    src/TopToolBar.cpp
+    src/VoicegroupCodeEditor.cpp
     src/VoicegroupLanguageBridge.cpp
     src/VoicegroupLanguageService.cpp
     src/VoicegroupTokeniser.cpp
@@ -148,6 +150,8 @@ add_executable(textedit_tests
     src/GruvboxTheme.cpp
     src/TextEditEditor.cpp
     src/TextEditProcessor.cpp
+    src/TopToolBar.cpp
+    src/VoicegroupCodeEditor.cpp
     src/VoicegroupLanguageBridge.cpp
     src/VoicegroupLanguageService.cpp
     src/VoicegroupTokeniser.cpp
