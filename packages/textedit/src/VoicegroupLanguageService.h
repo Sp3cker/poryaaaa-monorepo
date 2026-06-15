@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "VoicegroupLanguageBridge.h"
@@ -23,6 +24,8 @@ public:
     void requestCompletion(int line, int character);
     void requestHover(int line, int character);
     void requestSignatureHelp(int line, int character);
+    std::optional<VoicegroupTabAction>
+    requestTabAction(int startLine, int startCharacter, int endLine, int endCharacter);
     juce::String getStatusText() const;
 
 private:

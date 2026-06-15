@@ -5,6 +5,10 @@
 namespace
 {
 
+constexpr auto bridgeTabActionInsertIndent = 0;
+constexpr auto bridgeTabActionSelectRange = 1;
+constexpr auto bridgeTabActionMoveCaret = 2;
+
 juce::String bridgePath()
 {
     if (const auto* envPath = std::getenv("TEXTEDIT_VOICEGROUP_BRIDGE_PATH"))
@@ -89,6 +93,56 @@ std::optional<juce::String> VoicegroupLanguageBridge::hover(int line, int charac
     return result;
 }
 
+std::optional<VoicegroupTabAction>
+VoicegroupLanguageBridge::tabAction(int startLine, int startCharacter, int endLine, int endCharacter)
+{
+    if (!isAvailable())
+        return std::nullopt;
+
+    if (tab == nullptr)
+        return VoicegroupTabAction{};
+
+    auto actionKind = 0;
+    auto resultStartLine = 0;
+    auto resultStartCharacter = 0;
+    auto resultEndLine = 0;
+    auto resultEndCharacter = 0;
+    const auto result = tab(service,
+                            startLine,
+                            startCharacter,
+                            endLine,
+                            endCharacter,
+                            &actionKind,
+                            &resultStartLine,
+                            &resultStartCharacter,
+                            &resultEndLine,
+                            &resultEndCharacter) != 0;
+    if (!result)
+    {
+        setStatus("Language service: tab action failed");
+        return std::nullopt;
+    }
+
+    auto action = VoicegroupTabAction{};
+    if (actionKind == bridgeTabActionInsertIndent)
+        action.kind = VoicegroupTabActionKind::insertIndent;
+    else if (actionKind == bridgeTabActionSelectRange)
+        action.kind = VoicegroupTabActionKind::selectRange;
+    else if (actionKind == bridgeTabActionMoveCaret)
+        action.kind = VoicegroupTabActionKind::moveCaret;
+    else
+    {
+        setStatus("Language service: unknown tab action");
+        return std::nullopt;
+    }
+
+    action.startLine = resultStartLine;
+    action.startCharacter = resultStartCharacter;
+    action.endLine = resultEndLine;
+    action.endCharacter = resultEndCharacter;
+    return action;
+}
+
 juce::String VoicegroupLanguageBridge::getStatusText() const
 {
     return statusText;
@@ -128,6 +182,7 @@ bool VoicegroupLanguageBridge::loadFunctions()
     sync = loadFunction<SyncDocumentFn>(library, "textedit_voicegroup_service_sync_document");
     complete = loadFunction<CompleteFn>(library, "textedit_voicegroup_service_complete");
     hoverText = loadFunction<HoverFn>(library, "textedit_voicegroup_service_hover");
+    tab = loadFunction<TabActionFn>(library, "textedit_voicegroup_service_tab_action");
     return create != nullptr && destroy != nullptr && setRoot != nullptr && sync != nullptr && complete != nullptr &&
            hoverText != nullptr;
 }
@@ -146,13 +201,26 @@ void VoicegroupLanguageBridge::setStatus(juce::String status)
     statusText = std::move(status);
 }
 
-void VoicegroupLanguageBridge::collectCompletion(const char* label, const char* detail, void* userData)
+void VoicegroupLanguageBridge::collectCompletion(const char* label,
+                                                 const char* detail,
+                                                 const char* insertText,
+                                                 int replacementStartLine,
+                                                 int replacementStartCharacter,
+                                                 int replacementEndLine,
+                                                 int replacementEndCharacter,
+                                                 void* userData)
 {
     auto* items = static_cast<std::vector<VoicegroupCompletionItem>*>(userData);
-    if (items == nullptr || label == nullptr)
+    if (items == nullptr || label == nullptr || insertText == nullptr)
         return;
 
-    items->push_back({label, detail != nullptr ? detail : ""});
+    items->push_back({label,
+                      detail != nullptr ? detail : "",
+                      insertText,
+                      replacementStartLine,
+                      replacementStartCharacter,
+                      replacementEndLine,
+                      replacementEndCharacter});
 }
 
 void VoicegroupLanguageBridge::collectHover(const char* text, void* userData)

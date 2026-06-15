@@ -73,6 +73,7 @@ juce_add_plugin(textedit
 
 target_sources(textedit PRIVATE
     src/CompletionList.cpp
+    src/ExtractLineSelector.cpp
     src/HoverCard.cpp
     src/TextEditFileStore.cpp
     src/GruvboxTheme.cpp
@@ -114,6 +115,7 @@ add_executable(textedit_tests
     tests/TextEditTests.cpp
     tests/VoicegroupLanguageBridgeTests.cpp
     src/CompletionList.cpp
+    src/ExtractLineSelector.cpp
     src/HoverCard.cpp
     src/TextEditFileStore.cpp
     src/GruvboxTheme.cpp

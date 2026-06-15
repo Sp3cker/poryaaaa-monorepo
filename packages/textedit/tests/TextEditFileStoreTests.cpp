@@ -115,6 +115,59 @@ bool expectLoadAndSaveVoicegroup()
     return true;
 }
 
+bool expectSaveVoicegroupAs()
+{
+    auto tempRoot = juce::File("/private/tmp").getNonexistentChildFile("textedit-save-as", "", false);
+    const auto firstFile = tempRoot.getChildFile("alpha.inc");
+    const auto secondFile = tempRoot.getChildFile("beta.inc");
+    const auto firstText = juce::String("voice_group alpha\n");
+    const auto secondText = juce::String("voice_group beta\n");
+    tempRoot.createDirectory();
+    TextEditFileStore store;
+    auto errorReported = false;
+    store.setErrorListener([&errorReported](const auto&) { errorReported = true; });
+    const auto savedAs = store.saveVoicegroupAs(firstFile, firstText);
+    const auto savedCurrent = store.saveCurrentVoicegroup(secondText);
+    const auto firstFileText = firstFile.loadFileAsString();
+    const auto secondFileExists = secondFile.existsAsFile();
+    tempRoot.deleteRecursively();
+    if (!savedAs || !savedCurrent || errorReported || secondFileExists || firstFileText != secondText)
+    {
+        std::cerr << "saveVoicegroupAs failed\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool expectWriteVoicegroupFileDoesNotRetargetCurrentVoicegroup()
+{
+    auto tempRoot = juce::File("/private/tmp").getNonexistentChildFile("textedit-copy-as", "", false);
+    const auto currentFile = tempRoot.getChildFile("alpha.inc");
+    const auto copyFile = tempRoot.getChildFile("beta.inc");
+    const auto currentText = juce::String("voice_group alpha\n");
+    const auto copyText = juce::String("\tvoice_directsound 60, 0\n");
+    const auto savedText = juce::String("voice_group alpha\n\tvoice_square_1 60, 0, 0, 2, 0, 0, 15, 0\n");
+    tempRoot.createDirectory();
+    TextEditFileStore store;
+    auto errorReported = false;
+    store.setErrorListener([&errorReported](const auto&) { errorReported = true; });
+    const auto savedAs = store.saveVoicegroupAs(currentFile, currentText);
+    const auto copied = store.writeVoicegroupFile(copyFile, copyText);
+    const auto savedCurrent = store.saveCurrentVoicegroup(savedText);
+    const auto currentFileText = currentFile.loadFileAsString();
+    const auto copyFileText = copyFile.loadFileAsString();
+    tempRoot.deleteRecursively();
+    if (!savedAs || !copied || !savedCurrent || errorReported || currentFileText != savedText ||
+        copyFileText != copyText)
+    {
+        std::cerr << "writeVoicegroupFile retargeted current voicegroup\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool expectRejectSaveBeforeLoad()
 {
     TextEditFileStore store(juce::File("/private/tmp").getNonexistentChildFile("textedit-projects", ".json", false));
@@ -192,6 +245,8 @@ bool runTextEditFileStoreTests()
     const auto nonStringRootRejected = expectRejectProjectState("{ \"root\": 12, \"bank\": \"voicegroup000\" }");
     const auto malformedRejected = expectRejectProjectState("{ not json");
     const auto voicegroupLoadedAndSaved = expectLoadAndSaveVoicegroup();
+    const auto voicegroupSavedAs = expectSaveVoicegroupAs();
+    const auto voicegroupCopySavedAs = expectWriteVoicegroupFileDoesNotRetargetCurrentVoicegroup();
     const auto saveBeforeLoadRejected = expectRejectSaveBeforeLoad();
     const auto loadErrorReported = expectReportLoadError();
     auto missingProjectsFile =
@@ -202,6 +257,6 @@ bool runTextEditFileStoreTests()
         !loadPoryaaaaProjectState(missingProjectsFile, state, missingError) && missingError.isNotEmpty();
 
     return projectStateLoaded && missingRootRejected && missingBankRejected && nonStringRootRejected &&
-           malformedRejected && voicegroupLoadedAndSaved && saveBeforeLoadRejected && loadErrorReported &&
-           missingRejected;
+           malformedRejected && voicegroupLoadedAndSaved && voicegroupSavedAs && voicegroupCopySavedAs &&
+           saveBeforeLoadRejected && loadErrorReported && missingRejected;
 }

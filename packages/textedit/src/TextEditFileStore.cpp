@@ -63,9 +63,30 @@ bool TextEditFileStore::saveCurrentVoicegroup(const juce::String& text)
     return true;
 }
 
+bool TextEditFileStore::saveVoicegroupAs(const juce::File& file, const juce::String& text)
+{
+    if (!writeVoicegroupFile(file, text))
+        return false;
+
+    currentVoicegroupFile = file;
+    return true;
+}
+
 juce::File TextEditFileStore::getCurrentVoicegroupFile() const
 {
     return currentVoicegroupFile;
+}
+
+bool TextEditFileStore::writeVoicegroupFile(const juce::File& file, const juce::String& text)
+{
+    if (!file.replaceWithText(text, false, false, "\n"))
+    {
+        reportError(TextEditFileStoreOperation::saveVoicegroup,
+                    "could not write voicegroup file: " + file.getFullPathName());
+        return false;
+    }
+
+    return true;
 }
 
 void TextEditFileStore::reportError(TextEditFileStoreOperation operation, const juce::String& message)

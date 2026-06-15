@@ -29,9 +29,46 @@ void CompletionList::setItems(std::vector<VoicegroupCompletionItem> newItems)
     repaint();
 }
 
+void CompletionList::setAcceptCallback(AcceptCallback callback)
+{
+    acceptCallback = std::move(callback);
+}
+
 void CompletionList::clear()
 {
     setItems({});
+}
+
+void CompletionList::selectNext()
+{
+    if (items.empty())
+        return;
+
+    list.selectRow(juce::jmin(list.getSelectedRow() + 1, static_cast<int>(items.size()) - 1));
+}
+
+void CompletionList::selectPrevious()
+{
+    if (items.empty())
+        return;
+
+    list.selectRow(juce::jmax(list.getSelectedRow() - 1, 0));
+}
+
+void CompletionList::acceptSelectedItem()
+{
+    const auto selected = getSelectedItem();
+    if (selected.has_value() && acceptCallback)
+        acceptCallback(*selected);
+}
+
+std::optional<VoicegroupCompletionItem> CompletionList::getSelectedItem() const
+{
+    const auto selectedRow = list.getSelectedRow();
+    if (selectedRow < 0 || selectedRow >= static_cast<int>(items.size()))
+        return std::nullopt;
+
+    return items[static_cast<size_t>(selectedRow)];
 }
 
 void CompletionList::resized()
@@ -69,4 +106,12 @@ void CompletionList::paintListBoxItem(int rowNumber, juce::Graphics& g, int widt
         g.setColour(GruvboxTheme::gutterText());
         g.drawFittedText(item.detail, bounds, juce::Justification::centredLeft, 1);
     }
+}
+
+void CompletionList::listBoxItemDoubleClicked(int row, const juce::MouseEvent& event)
+{
+    juce::ignoreUnused(event);
+
+    if (row >= 0 && row < static_cast<int>(items.size()) && acceptCallback)
+        acceptCallback(items[static_cast<size_t>(row)]);
 }

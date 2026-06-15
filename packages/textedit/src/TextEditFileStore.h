@@ -41,6 +41,8 @@ public:
     void setErrorListener(ErrorListener listener);
     bool loadCurrentVoicegroup(TextEditVoicegroupDocument& document);
     bool saveCurrentVoicegroup(const juce::String& text);
+    bool saveVoicegroupAs(const juce::File& file, const juce::String& text);
+    bool writeVoicegroupFile(const juce::File& file, const juce::String& text);
 
     juce::File getCurrentVoicegroupFile() const;
 

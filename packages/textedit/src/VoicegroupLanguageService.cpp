@@ -57,6 +57,14 @@ void EmbeddedLanguageService::requestSignatureHelp(int line, int character)
     juce::ignoreUnused(line, character);
 }
 
+std::optional<VoicegroupTabAction>
+EmbeddedLanguageService::requestTabAction(int startLine, int startCharacter, int endLine, int endCharacter)
+{
+    const auto action = bridge.tabAction(startLine, startCharacter, endLine, endCharacter);
+    notifyStatusChanged();
+    return action;
+}
+
 juce::String EmbeddedLanguageService::getStatusText() const
 {
     return bridge.getStatusText();
