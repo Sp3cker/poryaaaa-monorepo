@@ -193,10 +193,6 @@ extern "C" void ext_main(void* r)
     CLASS_ATTR_FILTER_CLIP(c, "analogfilter", 0, 1);
     CLASS_ATTR_SAVE(c, "analogfilter", 0);
 
-    CLASS_ATTR_LONG(c, "maxpcm", 0, t_porya, maxPcmChannels);
-    CLASS_ATTR_ACCESSORS(c, "maxpcm", NULL, maxpcm_set);
-    CLASS_ATTR_FILTER_CLIP(c, "maxpcm", 1, MAX_PCM_CHANNELS);
-    CLASS_ATTR_SAVE(c, "maxpcm", 0);
 
     class_dspinit(c);
     class_register(CLASS_BOX, c);
@@ -237,7 +233,7 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     x->songVolume = MAX_SONG_VOLUME;
     x->reverbAmount = 0;
     x->analogFilter = 0;
-    x->maxPcmChannels = 5;
+    x->maxPcmChannels = 12;
     x->midiStatus = 0;
     x->midiData1 = 0;
     x->midiBytesNeeded = 0;
@@ -937,15 +933,3 @@ static t_max_err analog_set(t_porya* x, t_object* attr, long ac, t_atom* av)
     return MAX_ERR_NONE;
 }
 
-static t_max_err maxpcm_set(t_porya* x, t_object* attr, long ac, t_atom* av)
-{
-    if (ac < 1 || !av)
-        return MAX_ERR_NONE;
-    long v = clamp_long(atom_getlong(av), 1, MAX_PCM_CHANNELS);
-    x->maxPcmChannels = v;
-    m4a_engine_set_max_pcm_channels(&x->engine, (uint8_t)v);
-#if defined(M4A_DRIVER_V2)
-    m4a_set_max_pcm_channels(x->m4a_v2, (uint8_t)v);
-#endif
-    return MAX_ERR_NONE;
-}
