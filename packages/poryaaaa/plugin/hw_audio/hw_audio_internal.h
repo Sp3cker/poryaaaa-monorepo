@@ -18,7 +18,7 @@
 
 /* PSG path — square 1/2, wave, noise.  Synthesises at the chip-internal
  * render rate into 4 mono per-channel buffers (hw_psg.c). */
-typedef struct HwPsgSynth   HwPsgSynth;
+typedef struct HwPsgSynth HwPsgSynth;
 
 /* PCM path — two-stage drain (§12 step 5, plan §6b, closed
  * 2026-04-29).  HwDmaToFifo reads M4APcmRing at pcm_rate_hz into the
@@ -27,14 +27,14 @@ typedef struct HwPsgSynth   HwPsgSynth;
  * Output is held_quirk sign-extended at internal_rate cadence;
  * routing/scaling lives on HwMixBus.  hw_pcm.c writes 2 mono per-FIFO
  * buffers. */
-typedef struct HwDmaToFifo  HwDmaToFifo;
-typedef struct HwFifoDrain  HwFifoDrain;
+typedef struct HwDmaToFifo HwDmaToFifo;
+typedef struct HwFifoDrain HwFifoDrain;
 
 /* Mix bus — SOUNDCNT_H/L routing/scaling + SOUNDBIAS bias add/clip.
  * Landed at §12 step 8 (2026-04-29) in hw_mix.c.  Combines 4 PSG mono
  * + 2 DMA mono buffers into stereo, applies the GBA's unsigned 10-bit
  * DAC bias-add/clip pipeline at the chip-internal rate. */
-typedef struct HwMixBus     HwMixBus;
+typedef struct HwMixBus HwMixBus;
 
 /* Polyphase resampler — chip-internal rate → host rate.  Landed at
  * §12 step 9 (2026-04-29) in hw_resample.c: windowed-sinc, TAPS=32,
@@ -45,6 +45,6 @@ typedef struct HwMixBus     HwMixBus;
  * accounting (block-size invariant) so chip-time advances in
  * lock-step with host frames regardless of how the caller chunks
  * render windows. */
-typedef struct HwResample   HwResample;
+typedef struct HwResample HwResample;
 
 #endif

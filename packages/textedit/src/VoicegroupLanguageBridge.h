@@ -33,7 +33,8 @@ private:
     using DestroyFn = void (*)(ServiceHandle service);
     using SetProjectRootFn = int (*)(ServiceHandle service, const char* projectRoot);
     using SyncDocumentFn = int (*)(ServiceHandle service, const char* uri, const char* text);
-    using CompleteFn = int (*)(ServiceHandle service, int line, int character, CompletionCallback callback, void* userData);
+    using CompleteFn =
+        int (*)(ServiceHandle service, int line, int character, CompletionCallback callback, void* userData);
     using HoverFn = int (*)(ServiceHandle service, int line, int character, HoverCallback callback, void* userData);
 
     bool loadBridge();

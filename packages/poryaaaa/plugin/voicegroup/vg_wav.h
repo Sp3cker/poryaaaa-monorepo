@@ -1,8 +1,8 @@
 #ifndef VG_WAV_H
 #define VG_WAV_H
 
-#include "voicegroup_types.h"   /* WaveData */
-#include "vg_paths.h"           /* VG_MAX_PATH_LEN */
+#include "voicegroup_types.h" /* WaveData */
+#include "vg_paths.h"         /* VG_MAX_PATH_LEN */
 
 #include <stdint.h>
 
@@ -14,19 +14,21 @@
  */
 #define VG_WAVE_CACHE_CAPACITY 128
 
-typedef struct {
+typedef struct
+{
     char absPath[VG_MAX_PATH_LEN];
-    WaveData *wd;
+    WaveData* wd;
 } WaveCacheEntry;
 
-typedef struct {
+typedef struct
+{
     WaveCacheEntry entries[VG_WAVE_CACHE_CAPACITY];
     int count;
 } WaveCache;
 
-void vg_wave_cache_init(WaveCache *cache);
-WaveData *vg_wave_cache_find(const WaveCache *cache, const char *absPath);
-void vg_wave_cache_insert(WaveCache *cache, const char *absPath, WaveData *wd);
+void vg_wave_cache_init(WaveCache* cache);
+WaveData* vg_wave_cache_find(const WaveCache* cache, const char* absPath);
+void vg_wave_cache_insert(WaveCache* cache, const char* absPath, WaveData* wd);
 
 /* ---- Sample loaders ---- */
 
@@ -36,13 +38,13 @@ void vg_wave_cache_insert(WaveCache *cache, const char *absPath, WaveData *wd);
  * and 32/64-bit float formats down to the GBA's 8-bit signed sample
  * representation. NULL on failure.
  */
-WaveData *vg_load_wav_file(const char *absoluteWavPath);
+WaveData* vg_load_wav_file(const char* absoluteWavPath);
 
 /*
  * Load a raw GBA .bin sample (16-byte header + sample bytes) from a
  * project-relative path. NULL on failure.
  */
-WaveData *vg_load_bin_sample(const char *projectRoot, const char *relativeBinPath);
+WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativeBinPath);
 
 /*
  * Primary sample loader: given a .bin reference, tries a sibling .wav
@@ -50,12 +52,12 @@ WaveData *vg_load_bin_sample(const char *projectRoot, const char *relativeBinPat
  * .wav is missing or malformed. This is what voicegroup parsing
  * should call for DirectSound samples.
  */
-WaveData *vg_load_sample(const char *projectRoot, const char *relativeBinPath);
+WaveData* vg_load_sample(const char* projectRoot, const char* relativeBinPath);
 
 /*
  * Load a programmable-wave .pcm file (16 bytes, 32 × 4-bit samples).
  * Returns a malloc'd uint32_t[4]; caller frees.
  */
-uint32_t *vg_load_prog_wave(const char *projectRoot, const char *relativePath);
+uint32_t* vg_load_prog_wave(const char* projectRoot, const char* relativePath);
 
 #endif /* VG_WAV_H */

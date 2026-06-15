@@ -4,9 +4,11 @@
 #include <cassert>
 #include <cmath>
 
-namespace ccomidi_legatobend {
+namespace ccomidi_legatobend
+{
 
-namespace {
+namespace
+{
 
 constexpr auto kNoteOff = std::uint8_t{0x80};
 constexpr auto kNoteOn = std::uint8_t{0x90};
@@ -43,11 +45,10 @@ auto is_note_on(MidiMessage const& message) -> bool
 
 auto is_bend_range(MidiMessage const& message) -> bool
 {
-    return message.length == 3 && message_type(message) == kControlChange
-           && message.bytes[1] == kCcBendRange;
+    return message.length == 3 && message_type(message) == kControlChange && message.bytes[1] == kCcBendRange;
 }
 
-}  // namespace
+} // namespace
 
 void LegatoBendCore::set_bend_time_ms(long value)
 {
@@ -71,33 +72,38 @@ auto LegatoBendCore::enabled() const -> bool
 
 auto LegatoBendCore::has_active_ramp() const -> bool
 {
-    return std::any_of(channels_.begin(), channels_.end(), [](Channel const& channel) {
-        return channel.ramp.active;
-    });
+    return std::any_of(channels_.begin(), channels_.end(), [](Channel const& channel) { return channel.ramp.active; });
 }
 
 void LegatoBendCore::process(MidiMessage const& message, std::vector<std::uint8_t>& out)
 {
-    if (message.length == 0) return;
-    if (!enabled()) {
+    if (message.length == 0)
+        return;
+    if (!enabled())
+    {
         append_message(message, out);
         return;
     }
-    if (is_bend_range(message)) {
+    if (is_bend_range(message))
+    {
         auto midi_channel = message_channel(message);
         channels_[midi_channel].bend_range = message.bytes[2];
         append_message(message, out);
         return;
     }
-    if (!is_note_on(message) && !is_note_off(message)) {
+    if (!is_note_on(message) && !is_note_off(message))
+    {
         append_message(message, out);
         return;
     }
     auto midi_channel = message_channel(message);
     auto& channel = channels_[midi_channel];
-    if (is_note_on(message)) {
+    if (is_note_on(message))
+    {
         process_note_on(channel, midi_channel, message, out);
-    } else {
+    }
+    else
+    {
         process_note_off(channel, midi_channel, message, out);
     }
 }
@@ -105,32 +111,40 @@ void LegatoBendCore::process(MidiMessage const& message, std::vector<std::uint8_
 void LegatoBendCore::advance(double elapsed_ms, std::vector<std::uint8_t>& out)
 {
     assert(elapsed_ms >= 0.0);
-    if (elapsed_ms <= 0.0) return;
-    for (auto midi_channel = std::uint8_t{0}; midi_channel < channels_.size(); ++midi_channel) {
+    if (elapsed_ms <= 0.0)
+        return;
+    for (auto midi_channel = std::uint8_t{0}; midi_channel < channels_.size(); ++midi_channel)
+    {
         auto& channel = channels_[midi_channel];
-        if (!channel.ramp.active) continue;
+        if (!channel.ramp.active)
+            continue;
         auto& ramp = channel.ramp;
         ramp.elapsed_ms = std::min(ramp.duration_ms, ramp.elapsed_ms + elapsed_ms);
         auto t = ramp.duration_ms > 0.0 ? ramp.elapsed_ms / ramp.duration_ms : 1.0;
         t = apply_curve(ramp.curve, t);
         channel.current_bend = ramp.from + ((ramp.to - ramp.from) * t);
         auto bend = rounded_bend(channel.current_bend);
-        if (bend != channel.last_emitted_bend) {
+        if (bend != channel.last_emitted_bend)
+        {
             append_pitch_bend(midi_channel, bend, out);
             channel.last_emitted_bend = bend;
         }
-        if (ramp.elapsed_ms >= ramp.duration_ms) {
+        if (ramp.elapsed_ms >= ramp.duration_ms)
+        {
             channel.current_bend = ramp.to;
             channel.ramp.active = false;
         }
     }
 }
 
-void LegatoBendCore::process_note_on(Channel& channel, std::uint8_t midi_channel,
-                                     MidiMessage const& message, std::vector<std::uint8_t>& out)
+void LegatoBendCore::process_note_on(Channel& channel,
+                                     std::uint8_t midi_channel,
+                                     MidiMessage const& message,
+                                     std::vector<std::uint8_t>& out)
 {
     auto note = message.bytes[1];
-    if (!channel.active) {
+    if (!channel.active)
+    {
         append_reset_if_needed(channel, midi_channel, out);
         reset_phrase(channel);
         channel.active = true;
@@ -143,25 +157,34 @@ void LegatoBendCore::process_note_on(Channel& channel, std::uint8_t midi_channel
     start_ramp(channel, midi_channel, note);
 }
 
-void LegatoBendCore::process_note_off(Channel& channel, std::uint8_t midi_channel,
-                                      MidiMessage const& message, std::vector<std::uint8_t>& out)
+void LegatoBendCore::process_note_off(Channel& channel,
+                                      std::uint8_t midi_channel,
+                                      MidiMessage const& message,
+                                      std::vector<std::uint8_t>& out)
 {
-    if (!channel.active) {
+    if (!channel.active)
+    {
         append_message(message, out);
         return;
     }
     auto note = message.bytes[1];
-    if (note == channel.anchor_note) {
+    if (note == channel.anchor_note)
+    {
         channel.anchor_held = false;
-        if (channel.target_note >= 0) return;
+        if (channel.target_note >= 0)
+            return;
         finish_phrase_with_input_note_off(channel, midi_channel, message, out);
         return;
     }
-    if (channel.target_note >= 0 && note == channel.target_note) {
+    if (channel.target_note >= 0 && note == channel.target_note)
+    {
         channel.target_note = -1;
-        if (channel.anchor_held) {
+        if (channel.anchor_held)
+        {
             start_ramp(channel, midi_channel, channel.anchor_note);
-        } else {
+        }
+        else
+        {
             finish_phrase_with_generated_note_off(channel, midi_channel, out);
         }
     }
@@ -196,10 +219,10 @@ void LegatoBendCore::finish_phrase_with_generated_note_off(Channel& channel,
     reset_phrase(channel);
 }
 
-void LegatoBendCore::append_reset_if_needed(Channel& channel, std::uint8_t midi_channel,
-                                            std::vector<std::uint8_t>& out)
+void LegatoBendCore::append_reset_if_needed(Channel& channel, std::uint8_t midi_channel, std::vector<std::uint8_t>& out)
 {
-    if (channel.last_emitted_bend == kNeutralBend) return;
+    if (channel.last_emitted_bend == kNeutralBend)
+        return;
     append_pitch_bend(midi_channel, kNeutralBend, out);
     channel.current_bend = kNeutralBend;
     channel.last_emitted_bend = kNeutralBend;
@@ -219,21 +242,20 @@ void LegatoBendCore::reset_phrase(Channel& channel)
 
 void LegatoBendCore::append_message(MidiMessage const& message, std::vector<std::uint8_t>& out)
 {
-    for (auto i = std::uint8_t{0}; i < message.length; ++i) {
+    for (auto i = std::uint8_t{0}; i < message.length; ++i)
+    {
         out.push_back(message.bytes[i]);
     }
 }
 
-void LegatoBendCore::append_note_off(std::uint8_t midi_channel, std::uint8_t note,
-                                     std::vector<std::uint8_t>& out)
+void LegatoBendCore::append_note_off(std::uint8_t midi_channel, std::uint8_t note, std::vector<std::uint8_t>& out)
 {
     out.push_back(std::uint8_t(kNoteOff | midi_channel));
     out.push_back(note);
     out.push_back(0);
 }
 
-void LegatoBendCore::append_pitch_bend(std::uint8_t midi_channel, int value,
-                                       std::vector<std::uint8_t>& out)
+void LegatoBendCore::append_pitch_bend(std::uint8_t midi_channel, int value, std::vector<std::uint8_t>& out)
 {
     out.push_back(std::uint8_t(kPitchBend | midi_channel));
     out.push_back(0);
@@ -242,7 +264,8 @@ void LegatoBendCore::append_pitch_bend(std::uint8_t midi_channel, int value,
 
 auto LegatoBendCore::target_bend_value(Channel const& channel, int target_note) -> int
 {
-    if (channel.bend_range == 0) return kNeutralBend;
+    if (channel.bend_range == 0)
+        return kNeutralBend;
     auto semitones = target_note - int(channel.anchor_note);
     auto bend_units = std::lround(double(semitones * 64) / double(channel.bend_range));
     return clamp_data_byte(kNeutralBend + int(bend_units));
@@ -250,7 +273,8 @@ auto LegatoBendCore::target_bend_value(Channel const& channel, int target_note) 
 
 auto LegatoBendCore::apply_curve(BendCurve curve, double progress) -> double
 {
-    if (curve == BendCurve::Linear) return progress;
+    if (curve == BendCurve::Linear)
+        return progress;
     return progress * progress * (3.0 - (2.0 * progress));
 }
 
@@ -259,4 +283,4 @@ auto LegatoBendCore::rounded_bend(double value) -> int
     return clamp_data_byte(int(std::lround(value)));
 }
 
-}  // namespace ccomidi_legatobend
+} // namespace ccomidi_legatobend

@@ -22,13 +22,14 @@
  * scratch buffers add up to 24 KB. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
 
-struct HwAudio {
-    float        host_rate;
-    int          internal_rate;
-    HwPsgSynth   psg;       /* sq1, sq2, wave, noise — render-rate synth */
-    HwPcm        pcm;       /* two-stage drain: HwDmaToFifo + HwFifoDrain */
-    HwMixBus     mix;       /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
-    HwResample   resample;  /* internal_rate → host_rate (step 9) */
+struct HwAudio
+{
+    float host_rate;
+    int internal_rate;
+    HwPsgSynth psg;      /* sq1, sq2, wave, noise — render-rate synth */
+    HwPcm pcm;           /* two-stage drain: HwDmaToFifo + HwFifoDrain */
+    HwMixBus mix;        /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
+    HwResample resample; /* internal_rate → host_rate (step 9) */
 
     /* Per-channel solo/mute mask.  Bits HW_AUDIO_SOLO_* gate whether
      * each channel's pre-mix buffer feeds hw_mix_render — masked-off
@@ -36,7 +37,7 @@ struct HwAudio {
      * mGBA-capture parity workflow (matches the patched mGBA tool's
      * channel set so a single name selects the same channel on both
      * sides). */
-    uint32_t     solo_mask;
+    uint32_t solo_mask;
 
     /* Cumulative sample-clock trackers used to keep PSG/PCM/mix
      * advance in lock-step with host frames REQUESTED, regardless of
@@ -49,21 +50,21 @@ struct HwAudio {
      * accounting, each call's `round(frames * step) + lookahead`
      * would over-advance chip state by `lookahead` per call,
      * producing audible pitch/timing drift. */
-    int64_t      total_inputs_pushed;     /* cumulative internal samples fed to resampler */
-    int64_t      total_outputs_target;    /* cumulative host frames requested */
+    int64_t total_inputs_pushed;  /* cumulative internal samples fed to resampler */
+    int64_t total_outputs_target; /* cumulative host frames requested */
 
     /* Per-channel scratch at internal rate.  PSG synth writes 4, PCM
      * drain writes 2, mix bus consumes all 6 to produce stereo into
      * mix_l/mix_r.  Living on the chip struct avoids a multi-tens-of-
      * KB stack frame in render-event call sites. */
-    float scratch_sq1  [HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_sq2  [HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_wave [HW_AUDIO_INTERNAL_CHUNK];
+    float scratch_sq1[HW_AUDIO_INTERNAL_CHUNK];
+    float scratch_sq2[HW_AUDIO_INTERNAL_CHUNK];
+    float scratch_wave[HW_AUDIO_INTERNAL_CHUNK];
     float scratch_noise[HW_AUDIO_INTERNAL_CHUNK];
     float scratch_dma_a[HW_AUDIO_INTERNAL_CHUNK];
     float scratch_dma_b[HW_AUDIO_INTERNAL_CHUNK];
-    float mix_l        [HW_AUDIO_INTERNAL_CHUNK];
-    float mix_r        [HW_AUDIO_INTERNAL_CHUNK];
+    float mix_l[HW_AUDIO_INTERNAL_CHUNK];
+    float mix_r[HW_AUDIO_INTERNAL_CHUNK];
 
     /* Outstanding chip-side parity gates — see plan §12 blocking-gates list:
      *   - mGBA capture-comparison parity (step 10b) — self-consistency
@@ -74,7 +75,8 @@ struct HwAudio {
  * 32768 / 65536 / 131072 / 262144 Hz for sampling_cycle 0 / 1 / 2 / 3.
  * Used by HwFifoDrain to bridge pcm_rate → internal mix rate; also
  * the floor argument to chip_internal_rate(). */
-static int chip_quirk_rate(uint8_t sampling_cycle) {
+static int chip_quirk_rate(uint8_t sampling_cycle)
+{
     return 32768 << (sampling_cycle & 0x3);
 }
 
@@ -84,38 +86,44 @@ static int chip_quirk_rate(uint8_t sampling_cycle) {
  * the floor 131072 Hz.  sampling_cycle = 3 → quirk 262144 → internal
  * bumps to 262144 Hz so the chip never has to downsample its own
  * synth output before the resampler hits host. */
-static int chip_internal_rate(uint8_t sampling_cycle) {
+static int chip_internal_rate(uint8_t sampling_cycle)
+{
     int q = chip_quirk_rate(sampling_cycle);
     return q > HW_AUDIO_INTERNAL_RATE_FLOOR ? q : HW_AUDIO_INTERNAL_RATE_FLOOR;
 }
 
-HwAudio *hw_audio_create(float host_sample_rate) {
-    HwAudio *hw = (HwAudio *)calloc(1, sizeof(*hw));
-    if (!hw) return NULL;
-    hw->host_rate            = host_sample_rate;
-    hw->solo_mask            = HW_AUDIO_SOLO_FULL;
-    hw_mix_init(&hw->mix);   /* establishes default sampling_cycle = 0 */
-    hw->internal_rate        = chip_internal_rate(hw->mix.sampling_cycle);
-    hw->total_inputs_pushed  = 0;
+HwAudio* hw_audio_create(float host_sample_rate)
+{
+    HwAudio* hw = (HwAudio*)calloc(1, sizeof(*hw));
+    if (!hw)
+        return NULL;
+    hw->host_rate = host_sample_rate;
+    hw->solo_mask = HW_AUDIO_SOLO_FULL;
+    hw_mix_init(&hw->mix); /* establishes default sampling_cycle = 0 */
+    hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
+    hw->total_inputs_pushed = 0;
     hw->total_outputs_target = 0;
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
     hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
     hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
-    hw_resample_init(&hw->resample,
-                     (double)hw->internal_rate, (double)host_sample_rate);
+    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)host_sample_rate);
     return hw;
 }
 
-void hw_audio_destroy(HwAudio *hw) {
+void hw_audio_destroy(HwAudio* hw)
+{
     free(hw);
 }
 
-int hw_audio_internal_rate(const HwAudio *hw) {
+int hw_audio_internal_rate(const HwAudio* hw)
+{
     return hw ? hw->internal_rate : 0;
 }
 
-void hw_audio_set_solo_mask(HwAudio *hw, uint32_t mask) {
-    if (!hw) return;
+void hw_audio_set_solo_mask(HwAudio* hw, uint32_t mask)
+{
+    if (!hw)
+        return;
     /* Empty mask would silence everything; treat as "no override
      * requested" → restore default full mix.  Clamp to the 6 valid
      * channel bits to ignore bits the caller doesn't know about. */
@@ -123,12 +131,15 @@ void hw_audio_set_solo_mask(HwAudio *hw, uint32_t mask) {
     hw->solo_mask = valid ? valid : (uint32_t)HW_AUDIO_SOLO_FULL;
 }
 
-uint32_t hw_audio_get_solo_mask(const HwAudio *hw) {
+uint32_t hw_audio_get_solo_mask(const HwAudio* hw)
+{
     return hw ? hw->solo_mask : (uint32_t)HW_AUDIO_SOLO_FULL;
 }
 
-void hw_audio_set_host_rate(HwAudio *hw, float hz) {
-    if (!hw) return;
+void hw_audio_set_host_rate(HwAudio* hw, float hz)
+{
+    if (!hw)
+        return;
     hw->host_rate = hz;
     /* PSG/PCM/mix continue at the chip-internal rate; only the
      * resampler's output side changes when the host changes.  We
@@ -137,9 +148,8 @@ void hw_audio_set_host_rate(HwAudio *hw, float hz) {
      * old phase would map old internal samples to a new host rate
      * and create an audible glitch.  Callers that swap host rate
      * mid-stream get one block of resampler-warmup latency. */
-    hw_resample_init(&hw->resample,
-                     (double)hw->internal_rate, (double)hz);
-    hw->total_inputs_pushed  = 0;
+    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hz);
+    hw->total_inputs_pushed = 0;
     hw->total_outputs_target = 0;
 }
 
@@ -147,19 +157,19 @@ void hw_audio_set_host_rate(HwAudio *hw, float hz) {
  * mix-bus into mix_l/mix_r, feed them to the resampler, and drain up
  * to `max_host` host outputs into outL/outR + offset.  Returns the
  * number of host samples actually produced. */
-static int render_internal_chunk(HwAudio *hw,
-                                 const M4APcmRing *pcm_ring,
-                                 float *outL, float *outR, int host_offset,
-                                 int internal_count, int max_host) {
-    if (internal_count <= 0 || max_host <= 0) return 0;
+static int render_internal_chunk(HwAudio* hw,
+                                 const M4APcmRing* pcm_ring,
+                                 float* outL,
+                                 float* outR,
+                                 int host_offset,
+                                 int internal_count,
+                                 int max_host)
+{
+    if (internal_count <= 0 || max_host <= 0)
+        return 0;
 
-    hw_psg_render(&hw->psg,
-                  hw->scratch_sq1, hw->scratch_sq2,
-                  hw->scratch_wave, hw->scratch_noise,
-                  internal_count);
-    hw_pcm_render(&hw->pcm, pcm_ring,
-                  hw->scratch_dma_a, hw->scratch_dma_b,
-                  internal_count);
+    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, internal_count);
+    hw_pcm_render(&hw->pcm, pcm_ring, hw->scratch_dma_a, hw->scratch_dma_b, internal_count);
     /* Solo mask: zero the buffer pointer for any channel whose
      * solo bit is clear so hw_mix_render treats it as silent.  PSG
      * and PCM are still rendered unconditionally so their internal
@@ -167,16 +177,20 @@ static int render_internal_chunk(HwAudio *hw,
      * cumulative input timeline regardless of solo selection. */
     const uint32_t m = hw->solo_mask;
     hw_mix_render(&hw->mix,
-                  (m & HW_AUDIO_SOLO_SQ1)   ? hw->scratch_sq1   : NULL,
-                  (m & HW_AUDIO_SOLO_SQ2)   ? hw->scratch_sq2   : NULL,
-                  (m & HW_AUDIO_SOLO_WAVE)  ? hw->scratch_wave  : NULL,
+                  (m & HW_AUDIO_SOLO_SQ1) ? hw->scratch_sq1 : NULL,
+                  (m & HW_AUDIO_SOLO_SQ2) ? hw->scratch_sq2 : NULL,
+                  (m & HW_AUDIO_SOLO_WAVE) ? hw->scratch_wave : NULL,
                   (m & HW_AUDIO_SOLO_NOISE) ? hw->scratch_noise : NULL,
                   (m & HW_AUDIO_SOLO_DMA_A) ? hw->scratch_dma_a : NULL,
                   (m & HW_AUDIO_SOLO_DMA_B) ? hw->scratch_dma_b : NULL,
-                  hw->mix_l, hw->mix_r, internal_count);
+                  hw->mix_l,
+                  hw->mix_r,
+                  internal_count);
 
     return hw_resample_process(&hw->resample,
-                               hw->mix_l, hw->mix_r, internal_count,
+                               hw->mix_l,
+                               hw->mix_r,
+                               internal_count,
                                outL ? outL + host_offset : NULL,
                                outR ? outR + host_offset : NULL,
                                max_host);
@@ -186,32 +200,35 @@ static int render_internal_chunk(HwAudio *hw,
  * (chunked at HW_AUDIO_INTERNAL_CHUNK).  Drains to outL/outR up to
  * `target_host - *rendered_host` host samples; *rendered_host advances
  * by however many the resampler produced. */
-static void render_segment(HwAudio *hw,
-                           const M4APcmRing *pcm_ring,
-                           float *outL, float *outR,
+static void render_segment(HwAudio* hw,
+                           const M4APcmRing* pcm_ring,
+                           float* outL,
+                           float* outR,
                            int seg_internal,
-                           int *rendered_host, int target_host) {
+                           int* rendered_host,
+                           int target_host)
+{
     int remaining = seg_internal;
-    while (remaining > 0) {
+    while (remaining > 0)
+    {
         int chunk = remaining;
-        if (chunk > HW_AUDIO_INTERNAL_CHUNK) chunk = HW_AUDIO_INTERNAL_CHUNK;
+        if (chunk > HW_AUDIO_INTERNAL_CHUNK)
+            chunk = HW_AUDIO_INTERNAL_CHUNK;
 
         int drain_max = target_host - *rendered_host;
-        if (drain_max < 0) drain_max = 0;
+        if (drain_max < 0)
+            drain_max = 0;
 
-        int produced = render_internal_chunk(hw, pcm_ring,
-                                             outL, outR, *rendered_host,
-                                             chunk, drain_max);
+        int produced = render_internal_chunk(hw, pcm_ring, outL, outR, *rendered_host, chunk, drain_max);
         *rendered_host += produced;
         remaining -= chunk;
     }
 }
 
-void hw_audio_render(HwAudio *hw,
-                     M4ARegisterFile *regs,
-                     const M4APcmRing *pcm,
-                     float *outL, float *outR, int frames) {
-    (void)hw; (void)pcm;
+void hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames)
+{
+    (void)hw;
+    (void)pcm;
 
     /* Snapshot-driven render — superseded by hw_audio_render_events()
      * at Layer 1.5.  This function deliberately does NOT synthesise;
@@ -221,16 +238,20 @@ void hw_audio_render(HwAudio *hw,
      * trigger_* clearing — e.g. trigger_sq2 must not refire on
      * subsequent vblanks without a fresh MO_VOL).  All real audio
      * goes through hw_audio_render_events(). */
-    if (regs) {
-        regs->trigger_sq1   = false;
-        regs->trigger_sq2   = false;
-        regs->trigger_wave  = false;
+    if (regs)
+    {
+        regs->trigger_sq1 = false;
+        regs->trigger_sq2 = false;
+        regs->trigger_wave = false;
         regs->trigger_noise = false;
     }
 
-    if (frames <= 0) return;
-    if (outL) memset(outL, 0, (size_t)frames * sizeof(float));
-    if (outR) memset(outR, 0, (size_t)frames * sizeof(float));
+    if (frames <= 0)
+        return;
+    if (outL)
+        memset(outL, 0, (size_t)frames * sizeof(float));
+    if (outR)
+        memset(outR, 0, (size_t)frames * sizeof(float));
 }
 
 /* Map a cumulative host-output count to the cumulative internal-input
@@ -248,31 +269,40 @@ void hw_audio_render(HwAudio *hw,
  * the difference between two such totals — no floor is taken on the
  * intermediate per-call float, so the same total render produces the
  * same total internal samples regardless of how it's chunked. */
-static int64_t inputs_for_total_outputs(int64_t total_outputs, double step) {
-    if (total_outputs <= 0) return 0;
-    const int64_t init_offset = (int64_t)(HW_RESAMPLE_TAPS / 2 - 1);  /* 15 */
-    const int64_t lookahead   = (int64_t)(HW_RESAMPLE_TAPS / 2 + 1);  /* 17 */
+static int64_t inputs_for_total_outputs(int64_t total_outputs, double step)
+{
+    if (total_outputs <= 0)
+        return 0;
+    const int64_t init_offset = (int64_t)(HW_RESAMPLE_TAPS / 2 - 1); /* 15 */
+    const int64_t lookahead = (int64_t)(HW_RESAMPLE_TAPS / 2 + 1);   /* 17 */
     double frac_pos = (double)init_offset + (double)(total_outputs - 1) * step;
     int64_t floor_pos;
-    if (frac_pos >= 0.0) floor_pos = (int64_t)frac_pos;
-    else                 floor_pos = (int64_t)frac_pos
-                                     - ((double)((int64_t)frac_pos) > frac_pos ? 1 : 0);
+    if (frac_pos >= 0.0)
+        floor_pos = (int64_t)frac_pos;
+    else
+        floor_pos = (int64_t)frac_pos - ((double)((int64_t)frac_pos) > frac_pos ? 1 : 0);
     return floor_pos + lookahead;
 }
 
-void hw_audio_render_events(HwAudio *hw,
-                            const M4ARegWriteBatch *events,
-                            const M4APcmRing *pcm,
-                            float *outL, float *outR, int frames) {
-    if (frames <= 0) return;
-    if (!hw) {
-        if (outL) memset(outL, 0, (size_t)frames * sizeof(float));
-        if (outR) memset(outR, 0, (size_t)frames * sizeof(float));
+void hw_audio_render_events(
+    HwAudio* hw, const M4ARegWriteBatch* events, const M4APcmRing* pcm, float* outL, float* outR, int frames)
+{
+    if (frames <= 0)
+        return;
+    if (!hw)
+    {
+        if (outL)
+            memset(outL, 0, (size_t)frames * sizeof(float));
+        if (outR)
+            memset(outR, 0, (size_t)frames * sizeof(float));
         return;
     }
-    if (hw->host_rate <= 0.0f || hw->internal_rate <= 0) {
-        if (outL) memset(outL, 0, (size_t)frames * sizeof(float));
-        if (outR) memset(outR, 0, (size_t)frames * sizeof(float));
+    if (hw->host_rate <= 0.0f || hw->internal_rate <= 0)
+    {
+        if (outL)
+            memset(outL, 0, (size_t)frames * sizeof(float));
+        if (outR)
+            memset(outR, 0, (size_t)frames * sizeof(float));
         return;
     }
 
@@ -300,17 +330,17 @@ void hw_audio_render_events(HwAudio *hw,
      * cumulative trackers at the SOUNDBIAS event point — punted
      * until a real workload demands it. */
     int desired_internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
-    int desired_quirk_rate    = chip_quirk_rate(hw->mix.sampling_cycle);
-    if (desired_internal_rate != hw->internal_rate) {
+    int desired_quirk_rate = chip_quirk_rate(hw->mix.sampling_cycle);
+    if (desired_internal_rate != hw->internal_rate)
+    {
         hw->internal_rate = desired_internal_rate;
         hw_psg_set_render_rate(&hw->psg, (float)hw->internal_rate);
         hw_pcm_set_render_rate(&hw->pcm, (float)hw->internal_rate);
         /* Re-init resampler: kernel rebuilds for new ratio, ring
          * clears, output_pos resets.  Cumulative trackers reset so
          * the next call starts a fresh sample-clock relationship. */
-        hw_resample_init(&hw->resample,
-                         (double)hw->internal_rate, (double)hw->host_rate);
-        hw->total_inputs_pushed  = 0;
+        hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+        hw->total_inputs_pushed = 0;
         hw->total_outputs_target = 0;
     }
     /* quirk_rate tracks sampling_cycle independently of internal_rate
@@ -347,16 +377,19 @@ void hw_audio_render_events(HwAudio *hw,
      * canned-mode and post-first-PUBLISH-with-no-events-this-call
      * cases are handled cleanly by combining them. */
     bool has_publish = false;
-    if (events) {
-        for (size_t i = 0; i < events->count; i++) {
-            if (events->events[i].reg == M4A_REG_PCM_PUBLISH) {
+    if (events)
+    {
+        for (size_t i = 0; i < events->count; i++)
+        {
+            if (events->events[i].reg == M4A_REG_PCM_PUBLISH)
+            {
                 has_publish = true;
                 break;
             }
         }
     }
-    if (!has_publish && !hw->pcm.publish_seen && pcm
-        && pcm->write_cursor > hw->pcm.pcm_published_through) {
+    if (!has_publish && !hw->pcm.publish_seen && pcm && pcm->write_cursor > hw->pcm.pcm_published_through)
+    {
         hw->pcm.pcm_published_through = pcm->write_cursor;
     }
 
@@ -388,30 +421,35 @@ void hw_audio_render_events(HwAudio *hw,
      *     the six mono buffers, applies bias-add+clip, produces stereo.
      *   - HwResample drains stereo internal-rate samples and produces
      *     stereo host-rate samples (windowed-sinc polyphase, §12 step 9). */
-    const double  step                  = (double)hw->internal_rate / (double)hw->host_rate;
-    const int64_t prev_outputs_target   = hw->total_outputs_target;
-    const int64_t new_outputs_target    = prev_outputs_target + (int64_t)frames;
-    const int64_t target_inputs_total   = inputs_for_total_outputs(new_outputs_target, step);
-    int64_t       internal_to_render_64 = target_inputs_total - hw->total_inputs_pushed;
-    if (internal_to_render_64 < 0) internal_to_render_64 = 0;
-    const int     internal_to_render    = (int)internal_to_render_64;
+    const double step = (double)hw->internal_rate / (double)hw->host_rate;
+    const int64_t prev_outputs_target = hw->total_outputs_target;
+    const int64_t new_outputs_target = prev_outputs_target + (int64_t)frames;
+    const int64_t target_inputs_total = inputs_for_total_outputs(new_outputs_target, step);
+    int64_t internal_to_render_64 = target_inputs_total - hw->total_inputs_pushed;
+    if (internal_to_render_64 < 0)
+        internal_to_render_64 = 0;
+    const int internal_to_render = (int)internal_to_render_64;
 
-    int rendered_host     = 0;
+    int rendered_host = 0;
     int rendered_internal = 0;
 
-    if (events) {
-        for (size_t i = 0; i < events->count; i++) {
-            const M4ARegWrite *ev = &events->events[i];
+    if (events)
+    {
+        for (size_t i = 0; i < events->count; i++)
+        {
+            const M4ARegWrite* ev = &events->events[i];
             int H = (int)ev->sample_offset;
-            if (H > frames) H = frames;
-            if (H < 0)      H = 0;
+            if (H > frames)
+                H = frames;
+            if (H < 0)
+                H = 0;
 
             /* Map event's host-offset H to its required cumulative
              * input count via the same formula, then convert to a
              * within-call offset by subtracting the cumulative count
              * pushed BEFORE this call. */
             int64_t event_target_outputs = prev_outputs_target + (int64_t)H;
-            int64_t event_target_inputs  = inputs_for_total_outputs(event_target_outputs, step);
+            int64_t event_target_inputs = inputs_for_total_outputs(event_target_outputs, step);
             int64_t target_within_call_64 = event_target_inputs - hw->total_inputs_pushed;
             if (target_within_call_64 > internal_to_render_64)
                 target_within_call_64 = internal_to_render_64;
@@ -420,11 +458,11 @@ void hw_audio_render_events(HwAudio *hw,
             int target_within_call = (int)target_within_call_64;
 
             int seg_internal = target_within_call - rendered_internal;
-            if (seg_internal > 0) {
+            if (seg_internal > 0)
+            {
                 /* Drain at most enough outputs to reach this event's
                  * host offset H within the current call. */
-                render_segment(hw, pcm, outL, outR,
-                               seg_internal, &rendered_host, H);
+                render_segment(hw, pcm, outL, outR, seg_internal, &rendered_host, H);
                 rendered_internal += seg_internal;
             }
 
@@ -435,22 +473,25 @@ void hw_audio_render_events(HwAudio *hw,
     }
 
     int tail_internal = internal_to_render - rendered_internal;
-    if (tail_internal > 0) {
-        render_segment(hw, pcm, outL, outR,
-                       tail_internal, &rendered_host, frames);
+    if (tail_internal > 0)
+    {
+        render_segment(hw, pcm, outL, outR, tail_internal, &rendered_host, frames);
     }
 
     /* Update cumulative trackers.  total_inputs_pushed advances by
      * exactly the count we fed to the resampler this call. */
-    hw->total_inputs_pushed  += (int64_t)internal_to_render;
-    hw->total_outputs_target  = new_outputs_target;
+    hw->total_inputs_pushed += (int64_t)internal_to_render;
+    hw->total_outputs_target = new_outputs_target;
 
     /* If the resampler's start-of-session latency under-produced,
      * pad the remaining host samples with silence.  Only happens
      * during the first call's warmup region. */
-    while (rendered_host < frames) {
-        if (outL) outL[rendered_host] = 0.0f;
-        if (outR) outR[rendered_host] = 0.0f;
+    while (rendered_host < frames)
+    {
+        if (outL)
+            outL[rendered_host] = 0.0f;
+        if (outR)
+            outR[rendered_host] = 0.0f;
         rendered_host++;
     }
 }

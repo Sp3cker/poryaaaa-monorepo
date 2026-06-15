@@ -5,13 +5,14 @@
 #include <iostream>
 #include <vector>
 
-using porya::GbaReverb;
 using porya::DelayDepth;
+using porya::GbaReverb;
 using porya::ReverbRateMode;
 
-static void require(bool condition, const char *message)
+static void require(bool condition, const char* message)
 {
-    if (!condition) {
+    if (!condition)
+    {
         std::cerr << "FAIL: " << message << '\n';
         std::exit(1);
     }
@@ -34,18 +35,15 @@ static void test_amount_zero_copies_and_does_not_seed_delay()
     double outR[] = {0.0, 0.0, 0.0};
     reverb.process(inL, inR, outL, outR, 3);
 
-    require(near(outL[0], 1.0) && near(outL[1], -0.5) && near(outL[2], 0.25),
-            "amount 0 copies left input");
-    require(near(outR[0], -1.0) && near(outR[1], 0.5) && near(outR[2], -0.25),
-            "amount 0 copies right input");
+    require(near(outL[0], 1.0) && near(outL[1], -0.5) && near(outL[2], 0.25), "amount 0 copies left input");
+    require(near(outR[0], -1.0) && near(outR[1], 0.5) && near(outR[2], -0.25), "amount 0 copies right input");
 
     reverb.setAmount(127);
     const double zero[1] = {0.0};
     double wetL[1] = {1.0};
     double wetR[1] = {1.0};
     reverb.process(zero, zero, wetL, wetR, 1);
-    require(near(wetL[0], 0.0) && near(wetR[0], 0.0),
-            "amount 0 does not write hidden dry history into delay");
+    require(near(wetL[0], 0.0) && near(wetR[0], 0.0), "amount 0 does not write hidden dry history into delay");
 }
 
 static void test_delay_feedback_survives_vector_boundaries()
@@ -66,8 +64,7 @@ static void test_delay_feedback_survives_vector_boundaries()
     std::vector<double> wetL(360, 0.0);
     std::vector<double> wetR(360, 0.0);
     reverb.process(zeros.data(), zeros.data(), wetL.data(), wetR.data(), 360);
-    require(near(wetL[359], 0.0) && near(wetR[359], 0.0),
-            "wet tap has not arrived one sample early");
+    require(near(wetL[359], 0.0) && near(wetR[359], 0.0), "wet tap has not arrived one sample early");
 
     double oneZero[1] = {0.0};
     double tapL[1] = {0.0};
@@ -83,16 +80,12 @@ static void test_rate_modes_scale_delay()
     GbaReverb reverb;
     reverb.setHostSampleRate(44100.0);
     reverb.setRateMode(ReverbRateMode::Host);
-    require(reverb.frameSize() == GbaReverb::kBaseFrameSize,
-            "Host mode at 44100 keeps base frame size");
-    require(reverb.bufferSize() == GbaReverb::kBaseBufferSize,
-            "Host mode at 44100 keeps base buffer size");
+    require(reverb.frameSize() == GbaReverb::kBaseFrameSize, "Host mode at 44100 keeps base frame size");
+    require(reverb.bufferSize() == GbaReverb::kBaseBufferSize, "Host mode at 44100 keeps base buffer size");
 
     reverb.setRateMode(ReverbRateMode::Original);
-    require(reverb.frameSize() > GbaReverb::kBaseFrameSize,
-            "Original mode scales frame size up at 44100 host rate");
-    require(reverb.bufferSize() > GbaReverb::kBaseBufferSize,
-            "Original mode scales buffer size up at 44100 host rate");
+    require(reverb.frameSize() > GbaReverb::kBaseFrameSize, "Original mode scales frame size up at 44100 host rate");
+    require(reverb.bufferSize() > GbaReverb::kBaseBufferSize, "Original mode scales buffer size up at 44100 host rate");
 }
 
 static void test_delay_depth_defaults_and_clamps()

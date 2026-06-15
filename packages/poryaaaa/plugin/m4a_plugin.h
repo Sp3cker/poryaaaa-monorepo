@@ -2,14 +2,14 @@
 #define M4A_PLUGIN_H
 
 #ifdef __cplusplus
-#include <atomic>
+#    include <atomic>
 using atomic_uint = std::atomic_uint;
 using atomic_uchar = std::atomic<unsigned char>;
 using atomic_bool = std::atomic_bool;
 using std::atomic_load;
 using std::atomic_store;
 #else
-#include <stdatomic.h>
+#    include <stdatomic.h>
 #endif
 #include "m4a_engine.h"
 #include "m4a_engine_recorder.h"
@@ -18,9 +18,10 @@ using std::atomic_store;
 #include "m4a_gui.h"
 #include <clap/clap.h>
 
-typedef struct {
+typedef struct
+{
     M4AEngine engine;
-    LoadedVoiceGroup *loadedVg;
+    LoadedVoiceGroup* loadedVg;
     VoicegroupLoaderConfig loaderConfig;
     char projectRoot[512];
     char voicegroupName[256];
@@ -41,11 +42,11 @@ typedef struct {
     bool voiceOverrides[VOICEGROUP_SIZE];
 
     /* Project-wide sample catalog and per-voice sample overrides */
-    ProjectAssetIndex *assetIndex;
+    ProjectAssetIndex* assetIndex;
 
     /* GUI */
-    const clap_host_t *host;
-    M4AGuiState *gui;
+    const clap_host_t* host;
+    M4AGuiState* gui;
     clap_id guiTimerId;
     unsigned int guiMidiActivitySeqSeen[MAX_TRACKS];
 
@@ -55,21 +56,21 @@ typedef struct {
      * `recorderSeen*` are bitmasks (bit n = channel n) latched when the
      * recorder captures a PC / volume CC / pan CC for that channel; cleared
      * by the Clear button so they track the current buffer contents. */
-    M4ARecorder *recorder;
+    M4ARecorder* recorder;
     atomic_bool recorderArmed;
-    double      recorderTempoBpm;
-    char        recorderPath[512];
+    double recorderTempoBpm;
+    char recorderPath[512];
     atomic_uint recorderSeenPC;
     atomic_uint recorderSeenVol;
     atomic_uint recorderSeenPan;
 
     /* External MIDI clock sync for hosts without transport.
      * Driven by 0xF8 (24 PPQ), 0xFA/FB/FC start/continue/stop, 0xF2 SPP. */
-    uint64_t extClockSampleCounter;   /* running sample-time, +=frames each block */
-    uint64_t extClockLastSampleTime;  /* sample-time of last 0xF8 */
-    double   extClockBpm;             /* smoothed BPM derived from clock interval */
-    bool     extClockInitialized;     /* set on first 0xF8 after reset/Start */
-    bool     extClockPlaying;         /* set by 0xFA/FB, cleared by 0xFC */
+    uint64_t extClockSampleCounter;  /* running sample-time, +=frames each block */
+    uint64_t extClockLastSampleTime; /* sample-time of last 0xF8 */
+    double extClockBpm;              /* smoothed BPM derived from clock interval */
+    bool extClockInitialized;        /* set on first 0xF8 after reset/Start */
+    bool extClockPlaying;            /* set by 0xFA/FB, cleared by 0xFC */
 
 } M4APluginData;
 

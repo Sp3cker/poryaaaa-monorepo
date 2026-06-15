@@ -6,8 +6,7 @@
 
 struct VoicegroupCompletionItem;
 
-class CompletionList final : public juce::Component,
-                             private juce::ListBoxModel
+class CompletionList final : public juce::Component, private juce::ListBoxModel
 {
 public:
     CompletionList();
@@ -22,7 +21,7 @@ private:
     int getNumRows() override;
     void paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
 
-    juce::ListBox list { "Completions", this };
+    juce::ListBox list{"Completions", this};
     std::vector<VoicegroupCompletionItem> items;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CompletionList)

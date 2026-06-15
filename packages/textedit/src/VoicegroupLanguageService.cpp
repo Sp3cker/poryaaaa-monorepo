@@ -48,7 +48,7 @@ void EmbeddedLanguageService::requestHover(int line, int character)
         return;
 
     const auto hoverText = bridge.hover(line, character);
-    hoverCallback(hoverText.value_or(juce::String {}));
+    hoverCallback(hoverText.value_or(juce::String{}));
     notifyStatusChanged();
 }
 

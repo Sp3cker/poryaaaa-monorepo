@@ -12,7 +12,7 @@
  *         reports goes through this, so the diagnostic log captures
  *         the same messages an operator would see on the terminal.
  */
-void vg_log(const char *fmt, ...);
-void vg_err(const char *fmt, ...);
+void vg_log(const char* fmt, ...);
+void vg_err(const char* fmt, ...);
 
 #endif /* VG_LOG_H */

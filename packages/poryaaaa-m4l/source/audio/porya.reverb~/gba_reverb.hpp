@@ -3,20 +3,24 @@
 #include <cstdint>
 #include <vector>
 
-namespace porya {
+namespace porya
+{
 
-enum class ReverbRateMode : long {
+enum class ReverbRateMode : long
+{
     Original = 0,
     Host = 1,
 };
 
-enum class DelayDepth : long {
+enum class DelayDepth : long
+{
     Int8 = 0,
     Int16 = 1,
     Int32 = 2,
 };
 
-class GbaReverb {
+class GbaReverb
+{
 public:
     static constexpr double kOriginalRateHz = 13379.0;
     static constexpr double kHostRateHz = 44100.0;
@@ -30,14 +34,28 @@ public:
     void setHostSampleRate(double sampleRate);
     void setRateMode(ReverbRateMode mode);
     void setDelayDepth(DelayDepth depth);
-    void process(const double *inL, const double *inR,
-                 double *outL, double *outR, long frames) noexcept;
+    void process(const double* inL, const double* inR, double* outL, double* outR, long frames) noexcept;
 
-    [[nodiscard]] long amount() const noexcept { return amount_; }
-    [[nodiscard]] ReverbRateMode rateMode() const noexcept { return rateMode_; }
-    [[nodiscard]] DelayDepth delayDepth() const noexcept { return delayDepth_; }
-    [[nodiscard]] long frameSize() const noexcept { return frameSize_; }
-    [[nodiscard]] long bufferSize() const noexcept { return bufferSize_; }
+    [[nodiscard]] long amount() const noexcept
+    {
+        return amount_;
+    }
+    [[nodiscard]] ReverbRateMode rateMode() const noexcept
+    {
+        return rateMode_;
+    }
+    [[nodiscard]] DelayDepth delayDepth() const noexcept
+    {
+        return delayDepth_;
+    }
+    [[nodiscard]] long frameSize() const noexcept
+    {
+        return frameSize_;
+    }
+    [[nodiscard]] long bufferSize() const noexcept
+    {
+        return bufferSize_;
+    }
 
 private:
     static int64_t arithmeticShiftRight9(int64_t value) noexcept;

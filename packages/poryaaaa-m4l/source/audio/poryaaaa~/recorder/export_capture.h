@@ -9,23 +9,27 @@
 #include <string>
 #include <vector>
 
-namespace ccomidi {
+namespace ccomidi
+{
 
-enum class CaptureState {
+enum class CaptureState
+{
     Idle,
     PendingExport,
     Exporting,
     Captured,
 };
 
-struct ExportCaptureConfig {
+struct ExportCaptureConfig
+{
     double prebufferBeats = 4.0;
     double exportSpeedMultiplier = 2.0;
     double minDetectBeatDelta = 0.25;
     int requiredFastSamples = 2;
 };
 
-class ExportCapture {
+class ExportCapture
+{
 public:
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -45,7 +49,7 @@ public:
     std::size_t size() const;
     std::size_t prebuffer_size() const;
     std::vector<MidiEvent> snapshot() const;
-    bool dump_to_file(const std::string &path) const;
+    bool dump_to_file(const std::string& path) const;
 
 private:
     void reset_detector(double beats, TimePoint now);

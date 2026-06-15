@@ -2,7 +2,8 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
-namespace GruvboxTheme {
+namespace GruvboxTheme
+{
 
 juce::Colour background();
 juce::Colour foreground();

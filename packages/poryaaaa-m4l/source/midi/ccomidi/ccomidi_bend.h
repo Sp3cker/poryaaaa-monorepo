@@ -3,15 +3,17 @@
 
 #include <cstdint>
 
-namespace ccomidi {
+namespace ccomidi
+{
 
-struct BendBytes {
+struct BendBytes
+{
     std::uint8_t lsb;
     std::uint8_t msb;
 };
 
 BendBytes encode_raw_bend_value(long value);
 
-}  // namespace ccomidi
+} // namespace ccomidi
 
 #endif

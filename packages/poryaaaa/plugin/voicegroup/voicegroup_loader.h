@@ -14,10 +14,11 @@
  * All paths are relative to the project root directory.
  * Zero-initialized config means "auto-discover everything".
  */
-typedef struct {
-    char soundDataPaths[8][VG_MAX_PATH_LEN];    /* extra .inc files with sample symbol definitions */
+typedef struct
+{
+    char soundDataPaths[8][VG_MAX_PATH_LEN]; /* extra .inc files with sample symbol definitions */
     int soundDataPathCount;
-    char voicegroupPaths[8][VG_MAX_PATH_LEN];   /* extra voicegroup directories or files */
+    char voicegroupPaths[8][VG_MAX_PATH_LEN]; /* extra voicegroup directories or files */
     int voicegroupPathCount;
 } VoicegroupLoaderConfig;
 
@@ -25,7 +26,8 @@ typedef struct {
  * Loaded voicegroup data - holds all allocated resources.
  * Must be freed with voicegroup_free() when done.
  */
-typedef struct {
+typedef struct
+{
     ToneData voices[VOICEGROUP_SIZE];
 
     /* Per-slot sample basename (e.g. "brass_1.bin", "wave_01.pcm").
@@ -37,22 +39,22 @@ typedef struct {
     char voiceSampleNames[VOICEGROUP_SIZE][VG_MAX_VOICE_SAMPLE_NAME];
 
     /* Loaded wave data (samples) */
-    WaveData **waveDatas;
+    WaveData** waveDatas;
     int waveDataCount;
     int waveDataCapacity;
 
     /* Loaded programmable wave data */
-    uint32_t **progWaves;
+    uint32_t** progWaves;
     int progWaveCount;
     int progWaveCapacity;
 
     /* Sub-voicegroups (keysplits, drumsets) */
-    ToneData **subGroups;
+    ToneData** subGroups;
     int subGroupCount;
     int subGroupCapacity;
 
     /* Keysplit tables */
-    uint8_t **keySplitTables;
+    uint8_t** keySplitTables;
     int keySplitTableCount;
     int keySplitTableCapacity;
 } LoadedVoiceGroup;
@@ -71,21 +73,21 @@ typedef struct {
  * Returns a LoadedVoiceGroup on success, or NULL on failure.
  * The caller must free the result with voicegroup_free().
  */
-LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegroupName,
-                                   const VoicegroupLoaderConfig *config);
+LoadedVoiceGroup*
+voicegroup_load(const char* projectRoot, const char* voicegroupName, const VoicegroupLoaderConfig* config);
 
 /*
  * Free all resources associated with a loaded voicegroup.
  */
-void voicegroup_free(LoadedVoiceGroup *vg);
+void voicegroup_free(LoadedVoiceGroup* vg);
 
 /*
  * Build the default path for a channel-extracted voicegroup:
  *   <projectRoot>/sound/voicegroups/<voicegroupName>_channel.inc
  */
-bool voicegroup_channel_export_default_path(const char *projectRoot,
-                                            const char *voicegroupName,
-                                            char *outPath,
+bool voicegroup_channel_export_default_path(const char* projectRoot,
+                                            const char* voicegroupName,
+                                            char* outPath,
                                             size_t outPathSize);
 
 /*
@@ -93,37 +95,40 @@ bool voicegroup_channel_export_default_path(const char *projectRoot,
  * voicegroup. output slot N copies the source voice at programs[N].
  * Missing source slots use a self-contained placeholder voice.
  */
-bool voicegroup_export_channel_remap(const char *projectRoot,
-                                     const char *voicegroupName,
-                                     const VoicegroupLoaderConfig *config,
+bool voicegroup_export_channel_remap(const char* projectRoot,
+                                     const char* voicegroupName,
+                                     const VoicegroupLoaderConfig* config,
                                      const uint8_t programs[12],
-                                     const char *outputPath);
+                                     const char* outputPath);
 
 /*
  * Set an optional file path for diagnostic logging inside the voicegroup loader.
  * Pass NULL to disable. The same path used by the plugin's "log=" config key works.
  * Call before voicegroup_load() for the output to be useful.
  */
-void voicegroup_loader_set_log_path(const char *path);
+void voicegroup_loader_set_log_path(const char* path);
 
 /* ---- Project asset collection (for voicegroup sample swapper) ---- */
 
-typedef enum {
+typedef enum
+{
     PROJECT_ASSET_DIRECTSOUND,
     PROJECT_ASSET_PROG_WAVE,
 } ProjectAssetKind;
 
-typedef struct {
+typedef struct
+{
     ProjectAssetKind kind;
-    char fileName[256];               /* basename visible to user, e.g. "brass_1.wav" */
-    char relPath[VG_MAX_PATH_LEN];    /* path relative to project root */
-    char symbol[256];                 /* assembly symbol name */
+    char fileName[256];            /* basename visible to user, e.g. "brass_1.wav" */
+    char relPath[VG_MAX_PATH_LEN]; /* path relative to project root */
+    char symbol[256];              /* assembly symbol name */
 } ProjectAssetEntry;
 
-typedef struct {
-    ProjectAssetEntry *directsound;
+typedef struct
+{
+    ProjectAssetEntry* directsound;
     int directsoundCount;
-    ProjectAssetEntry *progWave;
+    ProjectAssetEntry* progWave;
     int progWaveCount;
 } VoicegroupProjectAssets;
 
@@ -132,26 +137,22 @@ typedef struct {
  * Populates out->directsound and out->progWave with malloc'd arrays.
  * Returns true on success. Caller must free with voicegroup_loader_free_project_assets().
  */
-bool voicegroup_loader_collect_project_assets(const char *projectRoot,
-                                              const VoicegroupLoaderConfig *config,
-                                              VoicegroupProjectAssets *out);
+bool voicegroup_loader_collect_project_assets(const char* projectRoot,
+                                              const VoicegroupLoaderConfig* config,
+                                              VoicegroupProjectAssets* out);
 
-void voicegroup_loader_free_project_assets(VoicegroupProjectAssets *assets);
+void voicegroup_loader_free_project_assets(VoicegroupProjectAssets* assets);
 
 /*
  * Load a DirectSound sample by its relative path and register it with the voicegroup.
  * Returns the loaded WaveData, or NULL on failure.
  */
-WaveData *voicegroup_loader_load_sample(const char *projectRoot,
-                                        const char *relPath,
-                                        LoadedVoiceGroup *vg);
+WaveData* voicegroup_loader_load_sample(const char* projectRoot, const char* relPath, LoadedVoiceGroup* vg);
 
 /*
  * Load a programmable wave by its relative path and register it with the voicegroup.
  * Returns the loaded data, or NULL on failure.
  */
-uint32_t *voicegroup_loader_load_prog_wave(const char *projectRoot,
-                                           const char *relPath,
-                                           LoadedVoiceGroup *vg);
+uint32_t* voicegroup_loader_load_prog_wave(const char* projectRoot, const char* relPath, LoadedVoiceGroup* vg);
 
 #endif /* VOICEGROUP_LOADER_H */

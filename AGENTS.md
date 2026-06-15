@@ -34,6 +34,19 @@ for convenience and must not hide package-specific failures.
 Validation is not complete until the affected package checks pass or the skipped
 checks are reported with the exact reason.
 
+## Formatting
+
+For C, C++, Objective-C, and Objective-C++ changes, use the root `.clang-format`
+with Xcode's formatter:
+
+```bash
+xcrun clang-format -i path/to/file.cpp path/to/file.h
+```
+
+Format only files you intentionally touched unless the user explicitly asks for a
+repo-wide formatting pass. Do not format vendored dependencies, generated files,
+or package-local build outputs.
+
 ## Git Identity
 
 Migration and repo-maintenance commits in this repository should use:

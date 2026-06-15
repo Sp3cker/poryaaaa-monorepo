@@ -21,24 +21,26 @@
  * macros reference it with that prefix. In the firered form `name` is
  * stored as-is.
  */
-typedef struct {
+typedef struct
+{
     char name[VG_MAX_SYMBOL_LEN];
     int startingNote;
     uint8_t table[128];
     int maxNote;
 } KeySplitDef;
 
-typedef struct {
-    KeySplitDef *entries;
+typedef struct
+{
+    KeySplitDef* entries;
     int count;
     int capacity;
 } KeySplitMap;
 
-void vg_keysplit_map_init(KeySplitMap *map);
-void vg_keysplit_map_free(KeySplitMap *map);
-KeySplitDef *vg_keysplit_map_find(const KeySplitMap *map, const char *name);
+void vg_keysplit_map_init(KeySplitMap* map);
+void vg_keysplit_map_free(KeySplitMap* map);
+KeySplitDef* vg_keysplit_map_find(const KeySplitMap* map, const char* name);
 
 /* Parse every keysplit_tables.inc file in disc; append entries to *map. */
-bool vg_parse_keysplit_tables(const ProjectDiscovery *disc, KeySplitMap *map);
+bool vg_parse_keysplit_tables(const ProjectDiscovery* disc, KeySplitMap* map);
 
 #endif /* VG_KEYSPLIT_H */

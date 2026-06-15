@@ -7,17 +7,18 @@
 
 /* Forward decls — provided by m4a_cgb.c / m4a_pcm.c.  Kept private to
  * plugin/m4a/. */
-extern void m4a_chn_vol_set_cgb(M4ADriverCgbChan *ch, M4ADriverTrack *track);
-extern void m4a_drv_cgb_start(M4ADriverCgbChan *ch);
-extern void m4a_drv_cgb_disable(M4ADriver *drv, M4ADriverCgbChan *ch, int idx);
-extern void m4a_drv_pcm_start(M4ADriverPcmChan *ch, WaveData *wav, uint8_t type);
+extern void m4a_chn_vol_set_cgb(M4ADriverCgbChan* ch, M4ADriverTrack* track);
+extern void m4a_drv_cgb_start(M4ADriverCgbChan* ch);
+extern void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx);
+extern void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type);
 
 /* TrkVolPitSet — pokeemerald m4a.c equivalent.
  * Recomputes the per-track effective L/R volume (volMR/volML) and effective
  * key+pitch (keyM/pitM) from the current CC + LFO + bend state.  Callable any
  * time a vol/pan/bend/mod/tune CC arrives; CgbSound's per-vblank refresh
  * picks up the new values automatically. */
-void m4a_trk_vol_pit_set(M4ADriverTrack *track) {
+void m4a_trk_vol_pit_set(M4ADriverTrack* track)
+{
     int32_t x = ((uint32_t)track->volume * track->volX) >> 5;
 
     if (track->modT == 1)
@@ -27,17 +28,17 @@ void m4a_trk_vol_pit_set(M4ADriverTrack *track) {
     if (track->modT == 2)
         y += track->modM;
 
-    if (y < -128) y = -128;
-    else if (y > 127) y = 127;
+    if (y < -128)
+        y = -128;
+    else if (y > 127)
+        y = 127;
 
     track->volMR = (uint8_t)(((uint32_t)((y + 128) * x)) >> 8);
     track->volML = (uint8_t)(((uint32_t)((127 - y) * x)) >> 8);
 
     int32_t bend = (int32_t)track->bend * track->bendRange;
-    int32_t pitchVal = (track->tune + bend) * 4
-                     + ((int32_t)track->keyShift << 8)
-                     + ((int32_t)track->keyShiftX << 8)
-                     + track->pitX;
+    int32_t pitchVal =
+        (track->tune + bend) * 4 + ((int32_t)track->keyShift << 8) + ((int32_t)track->keyShiftX << 8) + track->pitX;
 
     if (track->modT == 0)
         pitchVal += 16 * track->modM;
@@ -48,26 +49,32 @@ void m4a_trk_vol_pit_set(M4ADriverTrack *track) {
 
 /* Resolve the active voice for `voice` at `key` — handles keysplit /
  * keysplit-all (rhythm) entries.  Mirrors v1 resolve_voice. */
-static ToneData *resolve_voice(ToneData *voice, uint8_t key) {
-    if (!voice) return NULL;
+static ToneData* resolve_voice(ToneData* voice, uint8_t key)
+{
+    if (!voice)
+        return NULL;
 
     uint8_t type = voice->type;
 
-    if (type & VOICE_KEYSPLIT_ALL) {
-        ToneData *subGroup = (ToneData *)voice->subGroup;
-        if (!subGroup) return NULL;
-        ToneData *resolved = &subGroup[key];
+    if (type & VOICE_KEYSPLIT_ALL)
+    {
+        ToneData* subGroup = (ToneData*)voice->subGroup;
+        if (!subGroup)
+            return NULL;
+        ToneData* resolved = &subGroup[key];
         if (resolved->type & (VOICE_KEYSPLIT | VOICE_KEYSPLIT_ALL))
             return NULL;
         return resolved;
     }
 
-    if (type & VOICE_KEYSPLIT) {
-        ToneData *subGroup = (ToneData *)voice->subGroup;
-        uint8_t *splitTable = voice->keySplitTable;
-        if (!subGroup || !splitTable) return NULL;
+    if (type & VOICE_KEYSPLIT)
+    {
+        ToneData* subGroup = (ToneData*)voice->subGroup;
+        uint8_t* splitTable = voice->keySplitTable;
+        if (!subGroup || !splitTable)
+            return NULL;
         uint8_t idx = splitTable[key];
-        ToneData *resolved = &subGroup[idx];
+        ToneData* resolved = &subGroup[idx];
         if (resolved->type & (VOICE_KEYSPLIT | VOICE_KEYSPLIT_ALL))
             return NULL;
         return resolved;
@@ -79,20 +86,28 @@ static ToneData *resolve_voice(ToneData *voice, uint8_t key) {
 /* Re-push pitch into every active PCM channel on this track.  Mirrors
  * v1 refresh_channel_pitches' PCM half: recompute fw step from the
  * track's keyM/pitM, applying the same divFreq scaling note_on uses. */
-static void refresh_pcm_pitches(M4ADriver *drv, int trackIndex) {
-    M4ADriverTrack *track = &drv->tracks[trackIndex];
+static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
+{
+    M4ADriverTrack* track = &drv->tracks[trackIndex];
     const int pcmFreq = M4A_PCM_RATE_HZ;
     const int divFreq = (16777216 / pcmFreq + 1) >> 1;
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++) {
-        M4ADriverPcmChan *ch = &drv->pcmChans[i];
-        if (!(ch->status & M4A_CHN_ON)) continue;
-        if (ch->trackIndex != trackIndex)  continue;
-        if (!ch->wav)                      continue;
-        if (ch->type & VOICE_TYPE_FIX)     continue;  /* fixed pitch */
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if (!(ch->status & M4A_CHN_ON))
+            continue;
+        if (ch->trackIndex != trackIndex)
+            continue;
+        if (!ch->wav)
+            continue;
+        if (ch->type & VOICE_TYPE_FIX)
+            continue; /* fixed pitch */
 
         int32_t finalKey = (int32_t)ch->key + track->keyM;
-        if (finalKey < 0)   finalKey = 0;
-        if (finalKey > 127) finalKey = 127;
+        if (finalKey < 0)
+            finalKey = 0;
+        if (finalKey > 127)
+            finalKey = 127;
         uint32_t f = m4a_midi_key_to_freq(ch->wav, (uint8_t)finalKey, track->pitM);
         ch->frequency = (uint32_t)((uint64_t)f * (uint64_t)divFreq);
     }
@@ -101,26 +116,32 @@ static void refresh_pcm_pitches(M4ADriver *drv, int trackIndex) {
 /* Re-push volume/pan into every active PCM channel on this track.  PCM
  * voices don't go through CGB pan-mask / NR51 — they get straight L/R
  * volumes that the SoundMainRAM mixer reads per output sample. */
-static void refresh_pcm_volumes(M4ADriver *drv, int trackIndex) {
-    M4ADriverTrack *track = &drv->tracks[trackIndex];
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++) {
-        M4ADriverPcmChan *ch = &drv->pcmChans[i];
-        if (!(ch->status & M4A_CHN_ON)) continue;
-        if (ch->trackIndex != trackIndex)  continue;
+static void refresh_pcm_volumes(M4ADriver* drv, int trackIndex)
+{
+    M4ADriverTrack* track = &drv->tracks[trackIndex];
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if (!(ch->status & M4A_CHN_ON))
+            continue;
+        if (ch->trackIndex != trackIndex)
+            continue;
 
         uint32_t velo = ch->velocity;
-        int32_t  rp   = ch->rhythmPan;
+        int32_t rp = ch->rhythmPan;
 
         uint32_t panR = (uint32_t)(0x80 + rp);
         uint32_t volR = panR * velo;
-        uint32_t res  = (volR * track->volMR) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        uint32_t res = (volR * track->volMR) >> 14;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->rightVolume = (uint8_t)res;
 
         uint32_t panL = (uint32_t)(0x7F - rp);
         uint32_t volL = panL * velo;
         res = (volL * track->volML) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->leftVolume = (uint8_t)res;
         /* envelopeVolumeLeft/Right is recomputed from leftVolume *
          * envelopeVolume * masterVolume on the next pcm_channel_tick. */
@@ -129,20 +150,27 @@ static void refresh_pcm_volumes(M4ADriver *drv, int trackIndex) {
 
 /* Re-push pitch into every active CGB channel on this track.  Called when a
  * track's effective key changes (pitch bend, bend range, tune, LFO vibrato). */
-static void refresh_cgb_pitches(M4ADriver *drv, int trackIndex) {
-    M4ADriverTrack *track = &drv->tracks[trackIndex];
-    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++) {
-        M4ADriverCgbChan *ch = &drv->cgb[i];
-        if (!(ch->status & M4A_CHN_ON)) continue;
-        if (ch->trackIndex != trackIndex) continue;
+static void refresh_cgb_pitches(M4ADriver* drv, int trackIndex)
+{
+    M4ADriverTrack* track = &drv->tracks[trackIndex];
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        if (!(ch->status & M4A_CHN_ON))
+            continue;
+        if (ch->trackIndex != trackIndex)
+            continue;
 
         int32_t finalKey = (int32_t)ch->key + track->keyM;
-        if (finalKey < 0) finalKey = 0;
-        if (finalKey > 127) finalKey = 127;
+        if (finalKey < 0)
+            finalKey = 0;
+        if (finalKey > 127)
+            finalKey = 127;
         uint32_t newFreq = m4a_midi_key_to_cgb_freq(ch->type, (uint8_t)finalKey, track->pitM);
         if (ch->type == 4)
-            newFreq |= ch->frequency & 0x08;  /* preserve NR43 width bit */
-        if ((uint16_t)newFreq != ch->frequency) {
+            newFreq |= ch->frequency & 0x08; /* preserve NR43 width bit */
+        if ((uint16_t)newFreq != ch->frequency)
+        {
             ch->frequency = (uint16_t)newFreq;
             ch->modify |= M4A_MO_PIT;
         }
@@ -150,12 +178,16 @@ static void refresh_cgb_pitches(M4ADriver *drv, int trackIndex) {
 }
 
 /* Re-push volume/pan into every active CGB channel on this track. */
-static void refresh_cgb_volumes(M4ADriver *drv, int trackIndex) {
-    M4ADriverTrack *track = &drv->tracks[trackIndex];
-    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++) {
-        M4ADriverCgbChan *ch = &drv->cgb[i];
-        if (!(ch->status & M4A_CHN_ON)) continue;
-        if (ch->trackIndex != trackIndex) continue;
+static void refresh_cgb_volumes(M4ADriver* drv, int trackIndex)
+{
+    M4ADriverTrack* track = &drv->tracks[trackIndex];
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        if (!(ch->status & M4A_CHN_ON))
+            continue;
+        if (ch->trackIndex != trackIndex)
+            continue;
 
         uint8_t prevR = ch->rightVolume;
         uint8_t prevL = ch->leftVolume;
@@ -165,16 +197,19 @@ static void refresh_cgb_volumes(M4ADriver *drv, int trackIndex) {
         uint32_t panR = (uint32_t)(0x80 + rhythmPan);
         uint32_t volR = panR * velocity;
         uint32_t result = (volR * track->volMR) >> 14;
-        if (result > 0xFF) result = 0xFF;
+        if (result > 0xFF)
+            result = 0xFF;
         ch->rightVolume = (uint8_t)result;
 
         uint32_t panL = (uint32_t)(0x7F - rhythmPan);
         uint32_t volL = panL * velocity;
         result = (volL * track->volML) >> 14;
-        if (result > 0xFF) result = 0xFF;
+        if (result > 0xFF)
+            result = 0xFF;
         ch->leftVolume = (uint8_t)result;
 
-        if (ch->rightVolume != prevR || ch->leftVolume != prevL) {
+        if (ch->rightVolume != prevR || ch->leftVolume != prevL)
+        {
             m4a_chn_vol_set_cgb(ch, track);
             ch->modify |= M4A_MO_VOL;
         }
@@ -183,12 +218,16 @@ static void refresh_cgb_volumes(M4ADriver *drv, int trackIndex) {
 
 /* ---- Public ingress ---- */
 
-void m4a_program_change(M4ADriver *drv, int track, uint8_t program) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
-    if (program >= 128) return;
+void m4a_program_change(M4ADriver* drv, int track, uint8_t program)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
+    if (program >= 128)
+        return;
 
-    M4ADriverTrack *t = &drv->tracks[track];
+    M4ADriverTrack* t = &drv->tracks[track];
     t->currentProgram = program;
     if (drv->voicegroup)
         t->currentVoice = drv->voicegroup[program];
@@ -196,19 +235,24 @@ void m4a_program_change(M4ADriver *drv, int track, uint8_t program) {
         memset(&t->currentVoice, 0, sizeof(t->currentVoice));
 }
 
-void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
+void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
 
-    M4ADriverTrack *t = &drv->tracks[track];
-    ToneData *voice = resolve_voice(&t->currentVoice, key);
-    if (!voice) return;
+    M4ADriverTrack* t = &drv->tracks[track];
+    ToneData* voice = resolve_voice(&t->currentVoice, key);
+    if (!voice)
+        return;
 
     uint8_t voiceType = voice->type & VOICE_TYPE_CGB_MASK;
-    int8_t  rhythmPan = 0;
+    int8_t rhythmPan = 0;
     uint8_t useKey = key;
 
-    if (t->currentVoice.type & VOICE_KEYSPLIT_ALL) {
+    if (t->currentVoice.type & VOICE_KEYSPLIT_ALL)
+    {
         useKey = voice->key;
         if (voice->panSweep & 0x80)
             rhythmPan = (int8_t)((voice->panSweep - 0xC0) * 2);
@@ -218,62 +262,73 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
     m4a_trk_vol_pit_set(t);
 
     int32_t finalKey = (int32_t)useKey + t->keyM;
-    if (finalKey < 0)   finalKey = 0;
-    if (finalKey > 127) finalKey = 127;
+    if (finalKey < 0)
+        finalKey = 0;
+    if (finalKey > 127)
+        finalKey = 127;
 
     uint8_t combinedPriority = t->priority;
 
-    if (voiceType >= 1 && voiceType <= 4) {
+    if (voiceType >= 1 && voiceType <= 4)
+    {
         int cgbIdx = voiceType - 1;
-        M4ADriverCgbChan *ch = &drv->cgb[cgbIdx];
+        M4ADriverCgbChan* ch = &drv->cgb[cgbIdx];
 
         /* Priority steal: lower numbers win.  Within equal priority, lower
          * track index wins (matches v1 / m4a behaviour). */
-        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP)) {
-            if (ch->priority > combinedPriority)                                 return;
-            if (ch->priority == combinedPriority && ch->trackIndex < track)      return;
+        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP))
+        {
+            if (ch->priority > combinedPriority)
+                return;
+            if (ch->priority == combinedPriority && ch->trackIndex < track)
+                return;
         }
 
-        ch->midiKey   = key;
-        ch->key       = useKey;
-        ch->velocity  = velocity;
-        ch->priority  = combinedPriority;
+        ch->midiKey = key;
+        ch->key = useKey;
+        ch->velocity = velocity;
+        ch->priority = combinedPriority;
         ch->trackIndex = track;
         ch->voiceType = voice->type;
         ch->rhythmPan = rhythmPan;
-        ch->attack    = voice->attack;
-        ch->decay     = voice->decay;
-        ch->sustain   = voice->sustain;
-        ch->release   = voice->release;
+        ch->attack = voice->attack;
+        ch->decay = voice->decay;
+        ch->sustain = voice->sustain;
+        ch->release = voice->release;
         ch->pseudoEchoVolume = t->pseudoEchoVolume;
         ch->pseudoEchoLength = t->pseudoEchoLength;
-        ch->length    = voice->length;
-        ch->gateTime  = 0;
+        ch->length = voice->length;
+        ch->gateTime = 0;
 
         /* L/R software volumes from velocity × track vol × pan. */
         uint32_t velo = ch->velocity;
-        int32_t  rp   = ch->rhythmPan;
+        int32_t rp = ch->rhythmPan;
         uint32_t panR = (uint32_t)(0x80 + rp);
         uint32_t volR = panR * velo;
-        uint32_t res  = (volR * t->volMR) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        uint32_t res = (volR * t->volMR) >> 14;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->rightVolume = (uint8_t)res;
 
         uint32_t panL = (uint32_t)(0x7F - rp);
         uint32_t volL = panL * velo;
         res = (volL * t->volML) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->leftVolume = (uint8_t)res;
 
         /* Compute envelope goal + NR51 pan mask. */
         m4a_chn_vol_set_cgb(ch, t);
 
         /* Voice-specific bits: duty (sq1/sq2), sweep (sq1), wave RAM (wave). */
-        if (voiceType == 1 || voiceType == 2) {
+        if (voiceType == 1 || voiceType == 2)
+        {
             ch->dutyCycle = (uint8_t)(uintptr_t)voice->wavePointer & 0x03;
             if (voiceType == 1)
                 ch->sweep = (voice->panSweep & 0x70) ? voice->panSweep : 0x08;
-        } else if (voiceType == 3) {
+        }
+        else if (voiceType == 3)
+        {
             ch->wavePointer = voice->wavePointer;
         }
 
@@ -283,98 +338,123 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
             ch->frequency |= ((uintptr_t)voice->wavePointer & 0x01) << 3;
 
         m4a_drv_cgb_start(ch);
-    } else {
+    }
+    else
+    {
         /* DirectSound voice — software mix.  Allocate a PCM slot, set
          * envelope/freq state.  SoundMainRAM (m4a_pcm.c) does the per-
          * vblank mix into M4APcmRing. */
-        if (!voice->wav) return;
+        if (!voice->wav)
+            return;
 
-        M4ADriverPcmChan *ch = NULL;
-        M4ADriverPcmChan *bestSteal = NULL;
+        M4ADriverPcmChan* ch = NULL;
+        M4ADriverPcmChan* bestSteal = NULL;
         uint8_t bestPriority = combinedPriority;
-        int     bestTrackIndex = track;
-        bool    bestIsStopping = false;
+        int bestTrackIndex = track;
+        bool bestIsStopping = false;
         uint8_t maxPcm = drv->max_pcm_channels;
-        if (maxPcm == 0 || maxPcm > M4A_MAX_PCM_CHANNELS) maxPcm = M4A_MAX_PCM_CHANNELS;
+        if (maxPcm == 0 || maxPcm > M4A_MAX_PCM_CHANNELS)
+            maxPcm = M4A_MAX_PCM_CHANNELS;
 
-        for (int i = 0; i < maxPcm; i++) {
-            M4ADriverPcmChan *cand = &drv->pcmChans[i];
-            if (!(cand->status & M4A_CHN_ON)) { ch = cand; break; }
+        for (int i = 0; i < maxPcm; i++)
+        {
+            M4ADriverPcmChan* cand = &drv->pcmChans[i];
+            if (!(cand->status & M4A_CHN_ON))
+            {
+                ch = cand;
+                break;
+            }
 
-            if (cand->status & M4A_CHN_STOP) {
-                if (!bestIsStopping) {
+            if (cand->status & M4A_CHN_STOP)
+            {
+                if (!bestIsStopping)
+                {
                     bestIsStopping = true;
                     bestPriority = cand->priority;
                     bestTrackIndex = cand->trackIndex;
                     bestSteal = cand;
-                } else if (cand->priority < bestPriority) {
+                }
+                else if (cand->priority < bestPriority)
+                {
                     bestPriority = cand->priority;
                     bestTrackIndex = cand->trackIndex;
                     bestSteal = cand;
-                } else if (cand->priority == bestPriority
-                           && cand->trackIndex >= bestTrackIndex) {
+                }
+                else if (cand->priority == bestPriority && cand->trackIndex >= bestTrackIndex)
+                {
                     bestTrackIndex = cand->trackIndex;
                     bestSteal = cand;
                 }
                 continue;
             }
 
-            if (!bestIsStopping) {
-                if (cand->priority < bestPriority) {
+            if (!bestIsStopping)
+            {
+                if (cand->priority < bestPriority)
+                {
                     bestPriority = cand->priority;
                     bestTrackIndex = cand->trackIndex;
                     bestSteal = cand;
-                } else if (cand->priority == bestPriority
-                           && cand->trackIndex >= bestTrackIndex) {
+                }
+                else if (cand->priority == bestPriority && cand->trackIndex >= bestTrackIndex)
+                {
                     bestTrackIndex = cand->trackIndex;
                     bestSteal = cand;
                 }
             }
         }
-        if (!ch) {
-            if (!bestSteal) return;
-            if (!bestIsStopping && combinedPriority < bestPriority) return;
+        if (!ch)
+        {
+            if (!bestSteal)
+                return;
+            if (!bestIsStopping && combinedPriority < bestPriority)
+                return;
             ch = bestSteal;
         }
 
-        ch->midiKey       = key;
-        ch->key           = useKey;
-        ch->velocity      = velocity;
-        ch->priority      = combinedPriority;
-        ch->trackIndex    = track;
-        ch->rhythmPan     = rhythmPan;
-        ch->attack        = voice->attack;
-        ch->decay         = voice->decay;
-        ch->sustain       = voice->sustain;
-        ch->release       = voice->release;
+        ch->midiKey = key;
+        ch->key = useKey;
+        ch->velocity = velocity;
+        ch->priority = combinedPriority;
+        ch->trackIndex = track;
+        ch->rhythmPan = rhythmPan;
+        ch->attack = voice->attack;
+        ch->decay = voice->decay;
+        ch->sustain = voice->sustain;
+        ch->release = voice->release;
         ch->pseudoEchoVolume = t->pseudoEchoVolume;
         ch->pseudoEchoLength = t->pseudoEchoLength;
-        ch->gateTime      = 0;
+        ch->gateTime = 0;
 
         /* ChnVolSetDirect: per-channel L/R from velocity × pan × track vol. */
         uint32_t velo = ch->velocity;
-        int32_t  rp   = ch->rhythmPan;
+        int32_t rp = ch->rhythmPan;
         uint32_t panR = (uint32_t)(0x80 + rp);
         uint32_t volR = panR * velo;
-        uint32_t res  = (volR * t->volMR) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        uint32_t res = (volR * t->volMR) >> 14;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->rightVolume = (uint8_t)res;
 
         uint32_t panL = (uint32_t)(0x7F - rp);
         uint32_t volL = panL * velo;
         res = (volL * t->volML) >> 14;
-        if (res > 0xFF) res = 0xFF;
+        if (res > 0xFF)
+            res = 0xFF;
         ch->leftVolume = (uint8_t)res;
 
         /* Per-PCM-tick frequency word.  MidiKeyToFreq's output is in a
          * step-per-second-relative form; the divFreq multiplier converts
          * it to step-per-tick × 2^23 at PCM_RATE_HZ.  Same formula as v1
          * (plugin/m4a_engine.c:590) and pokeemerald m4a_1.s. */
-        if (voice->type & VOICE_TYPE_FIX) {
-            ch->frequency = 0x800000u;   /* 1 sample per tick, no resample */
-        } else {
+        if (voice->type & VOICE_TYPE_FIX)
+        {
+            ch->frequency = 0x800000u; /* 1 sample per tick, no resample */
+        }
+        else
+        {
             const int pcmFreq = M4A_PCM_RATE_HZ;
-            const int divFreq = (16777216 / pcmFreq + 1) >> 1;   /* ≈ 627 */
+            const int divFreq = (16777216 / pcmFreq + 1) >> 1; /* ≈ 627 */
             uint32_t f = m4a_midi_key_to_freq(voice->wav, (uint8_t)finalKey, t->pitM);
             ch->frequency = (uint32_t)((uint64_t)f * (uint64_t)divFreq);
         }
@@ -387,25 +467,30 @@ void m4a_note_on(M4ADriver *drv, int track, uint8_t key, uint8_t velocity) {
         uint32_t mv = (uint32_t)(drv->master_volume + 1) * ch->envelopeVolume;
         mv >>= 4;
         ch->envelopeVolumeRight = (uint8_t)(((uint32_t)ch->rightVolume * mv) >> 8);
-        ch->envelopeVolumeLeft  = (uint8_t)(((uint32_t)ch->leftVolume  * mv) >> 8);
+        ch->envelopeVolumeLeft = (uint8_t)(((uint32_t)ch->leftVolume * mv) >> 8);
     }
 }
 
-void m4a_note_off(M4ADriver *drv, int track, uint8_t key) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
+void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
 
-    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++) {
-        M4ADriverCgbChan *ch = &drv->cgb[i];
-        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP)
-            && ch->trackIndex == track && ch->midiKey == key) {
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
+        {
             ch->status |= M4A_CHN_STOP;
         }
     }
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++) {
-        M4ADriverPcmChan *ch = &drv->pcmChans[i];
-        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP)
-            && ch->trackIndex == track && ch->midiKey == key) {
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
+        {
             ch->status |= M4A_CHN_STOP;
         }
     }
@@ -433,31 +518,46 @@ void m4a_note_off(M4ADriver *drv, int track, uint8_t key) {
  * interpreter in the v2 MIDI ingress path that could honour it, so it
  * stays as an unknown selector (dataLength == 0) and any payload bytes
  * are dropped silently. */
-static uint8_t xcmd_data_length(uint8_t selector) {
-    switch (selector) {
-    case 0x01: case 0x0D: return 4;
-    case 0x02: case 0x04: case 0x05: case 0x06: case 0x07:
-    case 0x08: case 0x09: case 0x0A: case 0x0B:
+static uint8_t xcmd_data_length(uint8_t selector)
+{
+    switch (selector)
+    {
+    case 0x01:
+    case 0x0D:
+        return 4;
+    case 0x02:
+    case 0x04:
+    case 0x05:
+    case 0x06:
+    case 0x07:
+    case 0x08:
+    case 0x09:
+    case 0x0A:
+    case 0x0B:
         return 1;
-    default:              return 0;
+    default:
+        return 0;
     }
 }
 
-static uint32_t xcmd_read_le(const uint8_t *bytes, uint8_t count) {
+static uint32_t xcmd_read_le(const uint8_t* bytes, uint8_t count)
+{
     uint32_t value = 0;
     for (uint8_t i = 0; i < count; i++)
         value |= (uint32_t)bytes[i] << (i * 8);
     return value;
 }
 
-static void xcmd_notify(M4ADriver *drv, int trackIndex,
-                        uint8_t selector, uint32_t value) {
+static void xcmd_notify(M4ADriver* drv, int trackIndex, uint8_t selector, uint32_t value)
+{
     if (drv->xcmd_fn)
         drv->xcmd_fn(drv->xcmd_ctx, trackIndex, selector, value);
 }
 
-static void xcmd_apply(M4ADriver *drv, int trackIndex, M4ADriverTrack *t) {
-    switch (t->extendedCommand) {
+static void xcmd_apply(M4ADriver* drv, int trackIndex, M4ADriverTrack* t)
+{
+    switch (t->extendedCommand)
+    {
     case 0x01: /* xwave — notify-only; raw u32 is a ROM address, not a host ptr */
         xcmd_notify(drv, trackIndex, 0x01, xcmd_read_le(t->extendedCommandBytes, 4));
         break;
@@ -510,45 +610,51 @@ static void xcmd_apply(M4ADriver *drv, int trackIndex, M4ADriverTrack *t) {
     t->extendedCommandCount = 0;
 }
 
-void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
-    M4ADriverTrack *t = &drv->tracks[track];
+void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
+    M4ADriverTrack* t = &drv->tracks[track];
 
-    switch (cc) {
-    case 0x01:  /* Mod wheel → LFO depth */
+    switch (cc)
+    {
+    case 0x01: /* Mod wheel → LFO depth */
         t->mod = value;
-        if (value == 0) {
+        if (value == 0)
+        {
             t->lfoSpeedC = 0;
             t->modM = 0;
         }
         break;
-    case 0x07:  /* Volume */
+    case 0x07: /* Volume */
         t->rawVolume = value;
         t->volume = value * drv->song_volume / M4A_MAX_SONG_VOLUME;
         m4a_trk_vol_pit_set(t);
         refresh_cgb_volumes(drv, track);
         refresh_pcm_volumes(drv, track);
         break;
-    case 0x0A:  /* Pan */
+    case 0x0A: /* Pan */
         t->pan = (int8_t)(value - 64);
         m4a_trk_vol_pit_set(t);
         refresh_cgb_volumes(drv, track);
         refresh_pcm_volumes(drv, track);
         break;
-    case 0x14:  /* BENDR */
+    case 0x14: /* BENDR */
         t->bendRange = value;
         m4a_trk_vol_pit_set(t);
         refresh_cgb_pitches(drv, track);
         refresh_pcm_pitches(drv, track);
         break;
-    case 0x15:  /* LFOS */
+    case 0x15: /* LFOS */
         t->lfoSpeed = value;
         t->lfoSpeedC = 0;
         t->modM = 0;
         break;
-    case 0x16:  /* MODT */
-        if (t->modT != value) {
+    case 0x16: /* MODT */
+        if (t->modT != value)
+        {
             t->modT = value;
             /* Re-derive volMR/volML/keyM/pitM before pushing into
              * channels — modT switches *which* axis modM modulates
@@ -563,21 +669,23 @@ void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
             refresh_pcm_pitches(drv, track);
         }
         break;
-    case 0x18:  /* TUNE */
-        if (t->tune != (int8_t)(value - 0x40)) {
+    case 0x18: /* TUNE */
+        if (t->tune != (int8_t)(value - 0x40))
+        {
             t->tune = (int8_t)(value - 0x40);
             m4a_trk_vol_pit_set(t);
             refresh_cgb_pitches(drv, track);
             refresh_pcm_pitches(drv, track);
         }
         break;
-    case 0x1A:  /* LFODL */
-        if (t->lfoDelay != value || t->lfoDelayC != value
-            || t->lfoSpeedC != 0 || t->modM != 0) {
+    case 0x1A: /* LFODL */
+        if (t->lfoDelay != value || t->lfoDelayC != value || t->lfoSpeedC != 0 || t->modM != 0)
+        {
             t->lfoDelay = value;
             t->lfoDelayC = value;
             t->lfoSpeedC = 0;
-            if (t->modM != 0) {
+            if (t->modM != 0)
+            {
                 t->modM = 0;
                 m4a_trk_vol_pit_set(t);
                 refresh_cgb_volumes(drv, track);
@@ -587,25 +695,28 @@ void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
             }
         }
         break;
-    case 0x1D:  /* XCMD payload byte (part 1) */
-    case 0x1F: { /* XCMD payload byte (alternate) */
+    case 0x1D: /* XCMD payload byte (part 1) */
+    case 0x1F:
+    { /* XCMD payload byte (alternate) */
         uint8_t dataLength = xcmd_data_length(t->extendedCommand);
-        if (dataLength == 0) break;   /* no selector latched, or unknown selector */
-        if (t->extendedCommandCount >= 4) break;  /* defensive — shouldn't happen */
+        if (dataLength == 0)
+            break; /* no selector latched, or unknown selector */
+        if (t->extendedCommandCount >= 4)
+            break; /* defensive — shouldn't happen */
         t->extendedCommandBytes[t->extendedCommandCount++] = value;
         if (t->extendedCommandCount >= dataLength)
             xcmd_apply(drv, track, t);
         break;
     }
-    case 0x1E:  /* XCMD selector (part 2 — sets which xCmd to assemble) */
+    case 0x1E: /* XCMD selector (part 2 — sets which xCmd to assemble) */
         t->extendedCommand = value;
         t->extendedCommandCount = 0;
         memset(t->extendedCommandBytes, 0, sizeof(t->extendedCommandBytes));
         break;
-    case 0x7B:  /* All Notes Off */
+    case 0x7B: /* All Notes Off */
         m4a_all_notes_off(drv, track);
         break;
-    case 0x78:  /* All Sound Off */
+    case 0x78: /* All Sound Off */
         m4a_all_sound_off(drv);
         break;
     default:
@@ -613,26 +724,34 @@ void m4a_cc(M4ADriver *drv, int track, uint8_t cc, uint8_t value) {
     }
 }
 
-void m4a_pitch_bend(M4ADriver *drv, int track, int16_t bend) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
-    M4ADriverTrack *t = &drv->tracks[track];
+void m4a_pitch_bend(M4ADriver* drv, int track, int16_t bend)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
+    M4ADriverTrack* t = &drv->tracks[track];
     t->bend = (int8_t)(bend >> 7);
     m4a_trk_vol_pit_set(t);
     refresh_cgb_pitches(drv, track);
     refresh_pcm_pitches(drv, track);
 }
 
-void m4a_all_notes_off(M4ADriver *drv, int track) {
-    if (!drv) return;
-    if (track < 0 || track >= M4A_MAX_TRACKS) return;
-    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++) {
-        M4ADriverCgbChan *ch = &drv->cgb[i];
+void m4a_all_notes_off(M4ADriver* drv, int track)
+{
+    if (!drv)
+        return;
+    if (track < 0 || track >= M4A_MAX_TRACKS)
+        return;
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
         if ((ch->status & M4A_CHN_ON) && ch->trackIndex == track)
             ch->status |= M4A_CHN_STOP;
     }
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++) {
-        M4ADriverPcmChan *ch = &drv->pcmChans[i];
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
         if ((ch->status & M4A_CHN_ON) && ch->trackIndex == track)
             ch->status |= M4A_CHN_STOP;
     }
@@ -657,20 +776,25 @@ void m4a_all_notes_off(M4ADriver *drv, int track) {
  *      always refreshed; pitch axis is refreshed only when modT == 0
  *      (vibrato — v1 m4a_engine.c:920 condition).  modT == 1 (tremolo)
  *      and modT == 2 (autopan) only need volume. */
-void m4a_internal_lfo_tick(M4ADriver *drv) {
-    if (!drv) return;
-    for (int i = 0; i < M4A_MAX_TRACKS; i++) {
-        M4ADriverTrack *t = &drv->tracks[i];
-        if (t->lfoSpeed == 0 || t->mod == 0) continue;
+void m4a_internal_lfo_tick(M4ADriver* drv)
+{
+    if (!drv)
+        return;
+    for (int i = 0; i < M4A_MAX_TRACKS; i++)
+    {
+        M4ADriverTrack* t = &drv->tracks[i];
+        if (t->lfoSpeed == 0 || t->mod == 0)
+            continue;
 
-        if (t->lfoDelayC > 0) {
+        if (t->lfoDelayC > 0)
+        {
             t->lfoDelayC--;
             continue;
         }
 
         t->lfoSpeedC += t->lfoSpeed;
         uint8_t lfoPos = t->lfoSpeedC;
-        int8_t  lfoVal;
+        int8_t lfoVal;
         /* Triangle wave: first half of period (lfoPos in 0..0x3F)
          * ramps up from 0 to +0x3F; second half (0x40..0xFF) folds
          * back via lfoVal = 0x80 - lfoPos, ramping from +0x40 down
@@ -681,12 +805,14 @@ void m4a_internal_lfo_tick(M4ADriver *drv) {
             lfoVal = (int8_t)(0x80 - lfoPos);
 
         int8_t newModM = (int8_t)(((int32_t)t->mod * lfoVal) >> 6);
-        if (newModM != t->modM) {
+        if (newModM != t->modM)
+        {
             t->modM = newModM;
             m4a_trk_vol_pit_set(t);
             refresh_cgb_volumes(drv, i);
             refresh_pcm_volumes(drv, i);
-            if (t->modT == 0) {
+            if (t->modT == 0)
+            {
                 /* Vibrato: pitch axis follows modM. */
                 refresh_cgb_pitches(drv, i);
                 refresh_pcm_pitches(drv, i);
@@ -699,11 +825,14 @@ void m4a_internal_lfo_tick(M4ADriver *drv) {
  * master, recomputes each track's effective `volume` (= rawVolume *
  * song_volume / 127), and refreshes active CGB channel L/R volumes so
  * the change is audible immediately, not only on the next CC7. */
-void m4a_set_song_volume(M4ADriver *drv, uint8_t volume) {
-    if (!drv) return;
+void m4a_set_song_volume(M4ADriver* drv, uint8_t volume)
+{
+    if (!drv)
+        return;
     drv->song_volume = volume;
-    for (int i = 0; i < M4A_MAX_TRACKS; i++) {
-        M4ADriverTrack *t = &drv->tracks[i];
+    for (int i = 0; i < M4A_MAX_TRACKS; i++)
+    {
+        M4ADriverTrack* t = &drv->tracks[i];
         t->volume = (uint32_t)t->rawVolume * volume / M4A_MAX_SONG_VOLUME;
         m4a_trk_vol_pit_set(t);
         refresh_cgb_volumes(drv, i);
@@ -711,19 +840,23 @@ void m4a_set_song_volume(M4ADriver *drv, uint8_t volume) {
     }
 }
 
-void m4a_all_sound_off(M4ADriver *drv) {
-    if (!drv) return;
+void m4a_all_sound_off(M4ADriver* drv)
+{
+    if (!drv)
+        return;
     /* CC 0x78 / panic stop: all channels silent immediately, no envelope
      * release.  Mirrors v1's m4a_engine_all_sound_off → channel_stop, and
      * the real m4a writes that zero NRx2/NR52. */
-    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++) {
-        M4ADriverCgbChan *ch = &drv->cgb[i];
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
         ch->status = 0;
         ch->modify = 0;
         m4a_drv_cgb_disable(drv, ch, i);
     }
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++) {
-        M4ADriverPcmChan *ch = &drv->pcmChans[i];
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
         ch->status = 0;
         ch->envelopeVolume = 0;
         ch->envelopeVolumeLeft = 0;

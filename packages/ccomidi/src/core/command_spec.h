@@ -4,19 +4,21 @@
 #include <cstddef>
 #include <cstdint>
 
-struct FieldSpec {
-  const char *name;
-  std::uint8_t minValue;
-  std::uint8_t maxValue;
-  std::uint8_t defaultValue;
+struct FieldSpec
+{
+    const char* name;
+    std::uint8_t minValue;
+    std::uint8_t maxValue;
+    std::uint8_t defaultValue;
 };
-struct CommandSpec {
-  const char *displayName;
-  uint8_t
-      fieldCount; // How many values this param takes. 1 for vol, 4 for Memacc
-  std::array<FieldSpec, 15> fields;
+struct CommandSpec
+{
+    const char* displayName;
+    uint8_t fieldCount; // How many values this param takes. 1 for vol, 4 for Memacc
+    std::array<FieldSpec, 15> fields;
 };
-namespace ccomidi {
+namespace ccomidi
+{
 
 // clang-format off
 inline constexpr std::array<CommandSpec, 23> kCommandSpecs = {{
@@ -76,35 +78,37 @@ inline constexpr std::array<CommandSpec, 23> kCommandSpecs = {{
 // xWAVE (selector 0x01) is intentionally absent: v2 stores no real address
 // over MIDI CC, so the driver is notify-only. Send it from a different path
 // if/when an encoding escape or address-table resolver is added.
-enum class CommandType : std::uint8_t {
-  None = 0,
-  Mod = 1,
-  Volume = 2,
-  Pan = 3,
-  BendRange = 4,
-  LfoSpeed = 5,
-  ModType = 6,
-  Tune = 7,
-  LfoDelay = 8,
-  Priority21 = 9,
-  Priority27 = 10,
-  XcmdIecv = 11,
-  XcmdIecl = 12,
-  MemAcc0C = 13,
-  MemAcc10 = 14,
-  XcmdType = 15,
-  XcmdAtta = 16,
-  XcmdDeca = 17,
-  XcmdSust = 18,
-  XcmdRele = 19,
-  XcmdLeng = 20,
-  XcmdSwee = 21,
-  Xcmd0D = 22,
+enum class CommandType : std::uint8_t
+{
+    None = 0,
+    Mod = 1,
+    Volume = 2,
+    Pan = 3,
+    BendRange = 4,
+    LfoSpeed = 5,
+    ModType = 6,
+    Tune = 7,
+    LfoDelay = 8,
+    Priority21 = 9,
+    Priority27 = 10,
+    XcmdIecv = 11,
+    XcmdIecl = 12,
+    MemAcc0C = 13,
+    MemAcc10 = 14,
+    XcmdType = 15,
+    XcmdAtta = 16,
+    XcmdDeca = 17,
+    XcmdSust = 18,
+    XcmdRele = 19,
+    XcmdLeng = 20,
+    XcmdSwee = 21,
+    Xcmd0D = 22,
 };
-const CommandSpec &command_spec(CommandType type);
+const CommandSpec& command_spec(CommandType type);
 
-inline const CommandSpec &command_spec(CommandType type) {
-  return kCommandSpecs[static_cast<std::size_t>(type)];
+inline const CommandSpec& command_spec(CommandType type)
+{
+    return kCommandSpecs[static_cast<std::size_t>(type)];
 }
 
 } // namespace ccomidi

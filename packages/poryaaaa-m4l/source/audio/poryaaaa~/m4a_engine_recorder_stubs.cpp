@@ -6,14 +6,17 @@
 #include "m4a_engine.h"
 #include "m4a_engine_recorder.h"
 
-extern "C" {
+extern "C"
+{
+    void m4a_engine_recorder_init(M4AEngine* engine)
+    {
+        if (engine)
+            engine->recorder = nullptr;
+    }
 
-void m4a_engine_recorder_init(M4AEngine *engine) {
-    if (engine) engine->recorder = nullptr;
-}
+    void m4a_engine_recorder_destroy(M4AEngine* engine)
+    {
+        (void)engine;
+    }
 
-void m4a_engine_recorder_destroy(M4AEngine *engine) {
-    (void)engine;
-}
-
-}  // extern "C"
+} // extern "C"

@@ -10,12 +10,13 @@
  * absolute paths. Empty lists are legal — fork projects often only
  * populate a subset.
  */
-typedef struct {
-    PathList directSoundDataFiles;   /* direct_sound_data.inc */
-    PathList progWaveDataFiles;      /* programmable_wave_data.inc */
-    PathList keySplitTableFiles;     /* keysplit_tables.inc */
-    PathList voicegroupDirs;         /* dirs containing per-voicegroup .inc/.s */
-    PathList monolithicVGFiles;      /* .inc files packing many voicegroups with <label>:: */
+typedef struct
+{
+    PathList directSoundDataFiles; /* direct_sound_data.inc */
+    PathList progWaveDataFiles;    /* programmable_wave_data.inc */
+    PathList keySplitTableFiles;   /* keysplit_tables.inc */
+    PathList voicegroupDirs;       /* dirs containing per-voicegroup .inc/.s */
+    PathList monolithicVGFiles;    /* .inc files packing many voicegroups with <label>:: */
 } ProjectDiscovery;
 
 /*
@@ -30,8 +31,6 @@ typedef struct {
  *
  * Zeros *out before populating. cfg may be NULL for pure auto-discovery.
  */
-void vg_discover_project(const char *projectRoot,
-                         const VoicegroupLoaderConfig *cfg,
-                         ProjectDiscovery *out);
+void vg_discover_project(const char* projectRoot, const VoicegroupLoaderConfig* cfg, ProjectDiscovery* out);
 
 #endif /* VG_DISCOVERY_H */

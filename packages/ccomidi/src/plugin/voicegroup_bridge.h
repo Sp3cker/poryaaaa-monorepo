@@ -4,18 +4,21 @@
 #include <string>
 #include <vector>
 
-namespace ccomidi {
+namespace ccomidi
+{
 
-struct VoiceSlot {
-  int program;        // 0-127, the MIDI Program Change value
-  std::string name;   // sample basename, never empty
+struct VoiceSlot
+{
+    int program;      // 0-127, the MIDI Program Change value
+    std::string name; // sample basename, never empty
 };
 
-struct VoiceSlotLoad {
-  std::vector<VoiceSlot> slots;
-  std::string statePath;   // path the bridge looked at (empty if unknown)
-  std::string error;       // empty on success; otherwise why no slots are shown
-  long long mtimeNs = 0;   // mtime of state file when parsed, 0 if not found
+struct VoiceSlotLoad
+{
+    std::vector<VoiceSlot> slots;
+    std::string statePath; // path the bridge looked at (empty if unknown)
+    std::string error;     // empty on success; otherwise why no slots are shown
+    long long mtimeNs = 0; // mtime of state file when parsed, 0 if not found
 };
 
 // Returns the current mtime of the state file in ns (0 if not found). Fast
@@ -31,6 +34,6 @@ long long voicegroup_bridge_state_mtime();
 // empty and `error` describes the problem.
 VoiceSlotLoad voicegroup_bridge_load_state();
 
-}  // namespace ccomidi
+} // namespace ccomidi
 
 #endif

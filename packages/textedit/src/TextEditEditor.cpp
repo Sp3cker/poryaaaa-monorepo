@@ -2,7 +2,8 @@
 
 #include "GruvboxTheme.h"
 
-namespace {
+namespace
+{
 
 constexpr auto hoverDelayMs = 200;
 constexpr auto popupGap = 4;
@@ -66,8 +67,7 @@ void VoicegroupCodeEditor::timerCallback()
 }
 
 TextEditEditor::TextEditEditor(TextEditProcessor& processorToUse)
-    : AudioProcessorEditor(processorToUse),
-      editor(document, &tokeniser)
+    : AudioProcessorEditor(processorToUse), editor(document, &tokeniser)
 {
     editor.setLineNumbersShown(true);
     editor.setTabSize(4, true);
@@ -235,19 +235,17 @@ void TextEditEditor::saveVoicegroup()
 void TextEditEditor::showFileStoreError(const TextEditFileStoreError& error)
 {
     const auto title = error.operation == TextEditFileStoreOperation::loadVoicegroup
-                         ? juce::String("Could not load voicegroup")
-                         : juce::String("Could not save voicegroup");
+                           ? juce::String("Could not load voicegroup")
+                           : juce::String("Could not save voicegroup");
     showIoError(title, error.message);
 }
 
 void TextEditEditor::showIoError(const juce::String& title, const juce::String& message)
 {
-    const auto options = juce::MessageBoxOptions::makeOptionsOk(juce::MessageBoxIconType::WarningIcon,
-                                                                title,
-                                                                message,
-                                                                "OK")
-                             .withAssociatedComponent(&editor)
-                             .withParentComponent(this);
+    const auto options =
+        juce::MessageBoxOptions::makeOptionsOk(juce::MessageBoxIconType::WarningIcon, title, message, "OK")
+            .withAssociatedComponent(&editor)
+            .withParentComponent(this);
     ioErrorBox = juce::AlertWindow::showScopedAsync(options, nullptr);
 }
 
@@ -282,11 +280,11 @@ TopToolBar::TopToolBar()
     // auto bg = GruvboxTheme::background();
     auto fg = GruvboxTheme::foreground();
 
-    for (auto* b : { &saveButton })
+    for (auto* b : {&saveButton})
     {
-        b->setColour(juce::TextButton::buttonColourId,          GruvboxTheme::gutterBackground());
-        b->setColour(juce::TextButton::textColourOffId,         fg);
-        b->setColour(juce::TextButton::textColourOnId,          fg);
+        b->setColour(juce::TextButton::buttonColourId, GruvboxTheme::gutterBackground());
+        b->setColour(juce::TextButton::textColourOffId, fg);
+        b->setColour(juce::TextButton::textColourOnId, fg);
     }
 }
 

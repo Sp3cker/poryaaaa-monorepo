@@ -14,18 +14,15 @@ void TextEditProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     juce::ignoreUnused(sampleRate, samplesPerBlock);
 }
 
-void TextEditProcessor::releaseResources()
-{
-}
+void TextEditProcessor::releaseResources() {}
 
 bool TextEditProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
     const auto& mainInput = layouts.getMainInputChannelSet();
     const auto& mainOutput = layouts.getMainOutputChannelSet();
 
-    return mainInput == mainOutput
-        && (mainOutput == juce::AudioChannelSet::mono()
-            || mainOutput == juce::AudioChannelSet::stereo());
+    return mainInput == mainOutput &&
+           (mainOutput == juce::AudioChannelSet::mono() || mainOutput == juce::AudioChannelSet::stereo());
 }
 
 void TextEditProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)

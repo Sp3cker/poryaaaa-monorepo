@@ -10,21 +10,21 @@
 #include "TextEditProcessor.h"
 #include "VoicegroupLanguageService.h"
 #include "VoicegroupTokeniser.h"
-class TopToolBar final: public juce::Component
+class TopToolBar final : public juce::Component
 {
-    public: TopToolBar();
+public:
+    TopToolBar();
 
     void resized() override;
-    void paint (juce::Graphics& g) override;
+    void paint(juce::Graphics& g) override;
 
-    juce::TextButton saveButton {"Save"};
+    juce::TextButton saveButton{"Save"};
 
-    private:
-        juce::FlexBox flex;
+private:
+    juce::FlexBox flex;
 };
 
-class VoicegroupCodeEditor final : public juce::CodeEditorComponent,
-                                   private juce::Timer
+class VoicegroupCodeEditor final : public juce::CodeEditorComponent, private juce::Timer
 {
 public:
     using HoverCallback = std::function<void(juce::CodeDocument::Position)>;
@@ -44,8 +44,7 @@ private:
     juce::Point<int> pendingHoverPoint;
 };
 
-class TextEditEditor final : public juce::AudioProcessorEditor,
-                             private juce::CodeDocument::Listener
+class TextEditEditor final : public juce::AudioProcessorEditor, private juce::CodeDocument::Listener
 {
 public:
     explicit TextEditEditor(TextEditProcessor& processor);
@@ -84,7 +83,7 @@ private:
     EmbeddedLanguageService languageService;
     juce::ScopedMessageBox ioErrorBox;
     juce::String lastStatusText;
-    juce::CodeDocument::Position lastHoverPosition { document, 0 };
+    juce::CodeDocument::Position lastHoverPosition{document, 0};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextEditEditor)
 };

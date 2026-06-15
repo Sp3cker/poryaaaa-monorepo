@@ -2,12 +2,13 @@
 #include "TextEditProcessorTests.h"
 #include "VoicegroupLanguageBridgeTests.h"
 
-int main() {
-  auto passed = true;
+int main()
+{
+    auto passed = true;
 
-  passed &= runTextEditFileStoreTests();
-  passed &= runTextEditProcessorTests();
-  passed &= runVoicegroupLanguageBridgeTests();
+    passed &= runTextEditFileStoreTests();
+    passed &= runTextEditProcessorTests();
+    passed &= runVoicegroupLanguageBridgeTests();
 
-  return passed ? 0 : 1;
+    return passed ? 0 : 1;
 }

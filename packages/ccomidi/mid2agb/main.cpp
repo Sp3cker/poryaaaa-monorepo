@@ -44,21 +44,19 @@ bool g_compressionEnabled = true;
 
 [[noreturn]] static void PrintUsage()
 {
-    std::printf(
-        "Usage: MID2AGB name [options]\n"
-        "\n"
-        "    input_file  filename(.mid) of MIDI file\n"
-        "   output_file  filename(.s) for AGB file (default:input_file)\n"
-        "\n"
-        "options  -L???  label for assembler (default:output_file)\n"
-        "         -V???  master volume (default:127)\n"
-        "         -G???  voice group label (default:_dummy)\n"
-        "         -P???  priority (default:0)\n"
-        "         -R???  reverb (default:off)\n"
-        "            -X  48 clocks/beat (default:24 clocks/beat)\n"
-        "            -E  exact gate-time\n"
-        "            -N  no compression\n"
-    );
+    std::printf("Usage: MID2AGB name [options]\n"
+                "\n"
+                "    input_file  filename(.mid) of MIDI file\n"
+                "   output_file  filename(.s) for AGB file (default:input_file)\n"
+                "\n"
+                "options  -L???  label for assembler (default:output_file)\n"
+                "         -V???  master volume (default:127)\n"
+                "         -G???  voice group label (default:_dummy)\n"
+                "         -P???  priority (default:0)\n"
+                "         -R???  reverb (default:off)\n"
+                "            -X  48 clocks/beat (default:24 clocks/beat)\n"
+                "            -E  exact gate-time\n"
+                "            -N  no compression\n");
     std::exit(1);
 }
 
@@ -102,11 +100,11 @@ static std::string BaseName(std::string s)
     return s;
 }
 
-static const char *GetArgument(int argc, char **argv, int& index)
+static const char* GetArgument(int argc, char** argv, int& index)
 {
     assert(index >= 0 && index < argc);
 
-    const char *option = argv[index];
+    const char* option = argv[index];
 
     assert(option != nullptr);
     assert(option[0] == '-');
@@ -134,11 +132,11 @@ int main(int argc, char** argv)
 
     for (int i = 1; i < argc; i++)
     {
-        const char *option = argv[i];
+        const char* option = argv[i];
 
         if (option[0] == '-' && option[1] != '\0')
         {
-            const char *arg;
+            const char* arg;
 
             switch (std::toupper(option[1]))
             {

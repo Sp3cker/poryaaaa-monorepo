@@ -5,7 +5,8 @@
 
 #include <clap/id.h>
 
-namespace ccomidi::legatobend {
+namespace ccomidi::legatobend
+{
 
 constexpr clap_id kParamBendTimeMs = 0;
 constexpr clap_id kParamBendCurve = 1;

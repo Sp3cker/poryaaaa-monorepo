@@ -5,36 +5,47 @@
 #include <cstdio>
 #include <vector>
 
-using ccomidi_legatobend::LegatoBendCore;
 using ccomidi_legatobend::BendCurve;
+using ccomidi_legatobend::LegatoBendCore;
 using ccomidi_legatobend::MidiMessage;
-using ccomidi_legatobend::ParserState;
 using ccomidi_legatobend::parse_byte;
+using ccomidi_legatobend::ParserState;
 
-namespace {
+namespace
+{
 
 int g_run = 0;
 int g_pass = 0;
 const char* g_current_test = "(none)";
 
-#define ASSERT_EQ(actual, expected, msg)                                        \
-    do {                                                                        \
-        ++g_run;                                                                \
-        auto _a = (long long)(actual);                                          \
-        auto _e = (long long)(expected);                                        \
-        if (_a != _e) {                                                         \
-            std::fprintf(stderr, "FAIL [%s]: %s: expected %lld, got %lld "      \
-                                 "(line %d)\n",                                \
-                         g_current_test, msg, _e, _a, __LINE__);                \
-        } else {                                                                \
-            ++g_pass;                                                           \
-        }                                                                       \
+#define ASSERT_EQ(actual, expected, msg)                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        ++g_run;                                                                                                       \
+        auto _a = (long long)(actual);                                                                                 \
+        auto _e = (long long)(expected);                                                                               \
+        if (_a != _e)                                                                                                  \
+        {                                                                                                              \
+            std::fprintf(stderr,                                                                                       \
+                         "FAIL [%s]: %s: expected %lld, got %lld "                                                     \
+                         "(line %d)\n",                                                                                \
+                         g_current_test,                                                                               \
+                         msg,                                                                                          \
+                         _e,                                                                                           \
+                         _a,                                                                                           \
+                         __LINE__);                                                                                    \
+        }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            ++g_pass;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
-#define RUN(t)                                                                  \
-    do {                                                                        \
-        g_current_test = #t;                                                     \
-        t();                                                                    \
+#define RUN(t)                                                                                                         \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        g_current_test = #t;                                                                                           \
+        t();                                                                                                           \
     } while (0)
 
 auto msg(std::uint8_t status, std::uint8_t d1, std::uint8_t d2) -> MidiMessage
@@ -62,37 +73,42 @@ void feed(LegatoBendCore& core, MidiMessage const& message, std::vector<std::uin
     core.process(message, out);
 }
 
-void feed_byte(ParserState& parser, LegatoBendCore& core, std::uint8_t byte,
-               std::vector<std::uint8_t>& out)
+void feed_byte(ParserState& parser, LegatoBendCore& core, std::uint8_t byte, std::vector<std::uint8_t>& out)
 {
-    if (!core.enabled()) {
+    if (!core.enabled())
+    {
         out.push_back(byte);
         return;
     }
     core.process(parse_byte(parser, byte), out);
 }
 
-void feed_bytes(ParserState& parser, LegatoBendCore& core,
-                std::vector<std::uint8_t> const& bytes, std::vector<std::uint8_t>& out)
+void feed_bytes(ParserState& parser,
+                LegatoBendCore& core,
+                std::vector<std::uint8_t> const& bytes,
+                std::vector<std::uint8_t>& out)
 {
-    for (auto byte : bytes) {
+    for (auto byte : bytes)
+    {
         feed_byte(parser, core, byte, out);
     }
 }
 
 void advance_ticks(LegatoBendCore& core, int ticks, std::vector<std::uint8_t>& out)
 {
-    for (auto i = 0; i < ticks; ++i) {
+    for (auto i = 0; i < ticks; ++i)
+    {
         core.advance(5.0, out);
     }
 }
 
-void assert_bytes(std::vector<std::uint8_t> const& actual,
-                  std::vector<std::uint8_t> const& expected, const char* msg)
+void assert_bytes(std::vector<std::uint8_t> const& actual, std::vector<std::uint8_t> const& expected, const char* msg)
 {
     ASSERT_EQ(actual.size(), expected.size(), msg);
-    if (actual.size() != expected.size()) return;
-    for (auto i = std::size_t{0}; i < expected.size(); ++i) {
+    if (actual.size() != expected.size())
+        return;
+    for (auto i = std::size_t{0}; i < expected.size(); ++i)
+    {
         ASSERT_EQ(actual[i], expected[i], msg);
     }
 }
@@ -129,15 +145,8 @@ void test_short_glide_returns_from_in_progress_bend()
     advance_ticks(core, 16, out);
     feed(core, note_off(60), out);
     assert_bytes(out,
-                 {0xB0, 0x14, 32,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 66,
-                  0xE0, 0, 67,
-                  0xE0, 0, 66,
-                  0xE0, 0, 65,
-                  0xE0, 0, 64,
-                  0x80, 60, 0},
+                 {0xB0, 0x14, 32, 0x90, 60,   100, 0xE0, 0,    65, 0xE0, 0,    66, 0xE0, 0,
+                  67,   0xE0, 0,  66,   0xE0, 0,   65,   0xE0, 0,  64,   0x80, 60, 0},
                  "short glide returns before anchor release");
 }
 
@@ -152,11 +161,7 @@ void test_anchor_release_during_glide_defers_note_off_until_target_release()
     feed(core, note_off(60), out);
     feed(core, note_off(64), out);
     assert_bytes(out,
-                 {0xB0, 0x14, 32,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 66,
-                  0x80, 60, 0},
+                 {0xB0, 0x14, 32, 0x90, 60, 100, 0xE0, 0, 65, 0xE0, 0, 66, 0x80, 60, 0},
                  "target release ends released anchor");
 }
 
@@ -174,23 +179,9 @@ void test_retargeted_glide_ignores_older_target_release()
     advance_ticks(core, 16, out);
     feed(core, note_off(67), out);
     assert_bytes(out,
-                 {0xB0, 0x14, 32,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 66,
-                  0xE0, 0, 67,
-                  0xE0, 0, 68,
-                  0xE0, 0, 69,
-                  0xE0, 0, 70,
-                  0xE0, 0, 71,
-                  0xE0, 0, 72,
-                  0xE0, 0, 73,
-                  0xE0, 0, 74,
-                  0xE0, 0, 75,
-                  0xE0, 0, 76,
-                  0xE0, 0, 77,
-                  0xE0, 0, 78,
-                  0x80, 60, 0},
+                 {0xB0, 0x14, 32,   0x90, 60,   100,  0xE0, 0,    65,   0xE0, 0,    66,   0xE0, 0,    67,   0xE0, 0,
+                  68,   0xE0, 0,    69,   0xE0, 0,    70,   0xE0, 0,    71,   0xE0, 0,    72,   0xE0, 0,    73,   0xE0,
+                  0,    74,   0xE0, 0,    75,   0xE0, 0,    76,   0xE0, 0,    77,   0xE0, 0,    78,   0x80, 60,   0},
                  "latest target owns retargeted phrase");
 }
 
@@ -206,13 +197,7 @@ void test_released_anchor_resets_bend_before_next_phrase()
     feed(core, note_off(64), out);
     feed(core, note_on(72), out);
     assert_bytes(out,
-                 {0xB0, 0x14, 32,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 66,
-                  0x80, 60, 0,
-                  0xE0, 0, 64,
-                  0x90, 72, 100},
+                 {0xB0, 0x14, 32, 0x90, 60, 100, 0xE0, 0, 65, 0xE0, 0, 66, 0x80, 60, 0, 0xE0, 0, 64, 0x90, 72, 100},
                  "released anchor leaves bend for release tail until next phrase");
 }
 
@@ -227,12 +212,7 @@ void test_bend_range_cc_scales_target_to_mp2k_semitones()
     feed(core, note_off(61), out);
     feed(core, note_off(60), out);
     assert_bytes(out,
-                 {0xB0, 0x14, 32,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 66,
-                  0x80, 60, 0,
-                  0xE0, 0, 64},
+                 {0xB0, 0x14, 32, 0x90, 60, 100, 0xE0, 0, 65, 0xE0, 0, 66, 0x80, 60, 0, 0xE0, 0, 64},
                  "BENDR 32 maps one semitone to two bend units");
 }
 
@@ -246,20 +226,8 @@ void test_easing_curve_shapes_ramp_and_keeps_endpoint()
     feed(core, note_on(64), out);
     advance_ticks(core, 16, out);
     assert_bytes(out,
-                 {0xB0, 0x14, 16,
-                  0x90, 60, 100,
-                  0xE0, 0, 65,
-                  0xE0, 0, 67,
-                  0xE0, 0, 68,
-                  0xE0, 0, 69,
-                  0xE0, 0, 71,
-                  0xE0, 0, 72,
-                  0xE0, 0, 73,
-                  0xE0, 0, 75,
-                  0xE0, 0, 76,
-                  0xE0, 0, 78,
-                  0xE0, 0, 79,
-                  0xE0, 0, 80},
+                 {0xB0, 0x14, 16, 0x90, 60, 100, 0xE0, 0, 65, 0xE0, 0, 67, 0xE0, 0, 68, 0xE0, 0, 69, 0xE0, 0, 71,
+                  0xE0, 0,    72, 0xE0, 0,  73,  0xE0, 0, 75, 0xE0, 0, 76, 0xE0, 0, 78, 0xE0, 0, 79, 0xE0, 0, 80},
                  "easing curve reaches same target with eased steps");
 }
 
@@ -299,7 +267,7 @@ void test_parser_preserves_sysex_bytes_and_clears_running_status()
     assert_bytes(out, {0x90, 60, 100, 0xF0, 1, 2, 0xF7}, "sysex passthrough clears running status");
 }
 
-}  // namespace
+} // namespace
 
 int main()
 {

@@ -2,7 +2,8 @@
 
 #include "GruvboxTheme.h"
 
-namespace {
+namespace
+{
 
 bool isIdentifierStart(juce::juce_wchar c)
 {
@@ -16,18 +17,16 @@ bool isIdentifierBody(juce::juce_wchar c)
 
 bool isMacroName(const juce::String& token)
 {
-    static const char* const names[] = {
-        "voice_directsound",
-        "voice_directsound_no_resample",
-        "voice_directsound_alt",
-        "voice_square_1",
-        "voice_square_2",
-        "voice_programmable_wave",
-        "voice_noise",
-        "keysplit",
-        "voicegroup",
-        "DirectSound"
-    };
+    static const char* const names[] = {"voice_directsound",
+                                        "voice_directsound_no_resample",
+                                        "voice_directsound_alt",
+                                        "voice_square_1",
+                                        "voice_square_2",
+                                        "voice_programmable_wave",
+                                        "voice_noise",
+                                        "keysplit",
+                                        "voicegroup",
+                                        "DirectSound"};
 
     for (auto* name : names)
         if (token == name)
@@ -38,9 +37,8 @@ bool isMacroName(const juce::String& token)
 
 bool isDirective(const juce::String& token)
 {
-    return token == ".include" || token == ".global" || token == ".section"
-        || token == ".align" || token == ".byte" || token == ".2byte"
-        || token == ".4byte" || token == ".word" || token == ".end";
+    return token == ".include" || token == ".global" || token == ".section" || token == ".align" || token == ".byte" ||
+           token == ".2byte" || token == ".4byte" || token == ".word" || token == ".end";
 }
 
 } // namespace
@@ -87,8 +85,7 @@ int VoicegroupTokeniser::readNextToken(juce::CodeDocument::Iterator& source)
         if (c == '-' || c == '+')
             source.skip();
 
-        while (juce::CharacterFunctions::isLetterOrDigit(source.peekNextChar())
-               || source.peekNextChar() == 'x')
+        while (juce::CharacterFunctions::isLetterOrDigit(source.peekNextChar()) || source.peekNextChar() == 'x')
         {
             sawDigit = true;
             source.skip();

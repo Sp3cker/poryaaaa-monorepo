@@ -3,10 +3,7 @@
 #include <cstdlib>
 #include <utility>
 
-TextEditFileStore::TextEditFileStore()
-    : TextEditFileStore(getDefaultPoryaaaaProjectsJsonFile())
-{
-}
+TextEditFileStore::TextEditFileStore() : TextEditFileStore(getDefaultPoryaaaaProjectsJsonFile()) {}
 
 TextEditFileStore::TextEditFileStore(juce::File projectsJsonFileToUse)
     : projectsJsonFile(std::move(projectsJsonFileToUse))
@@ -37,7 +34,7 @@ bool TextEditFileStore::loadCurrentVoicegroup(TextEditVoicegroupDocument& docume
     }
 
     currentVoicegroupFile = voicegroupFile;
-    document = { state.root, state.bank, voicegroupFile, text };
+    document = {state.root, state.bank, voicegroupFile, text};
     return true;
 }
 
@@ -74,7 +71,7 @@ juce::File TextEditFileStore::getCurrentVoicegroupFile() const
 void TextEditFileStore::reportError(TextEditFileStoreOperation operation, const juce::String& message)
 {
     if (errorListener)
-        errorListener({ operation, message });
+        errorListener({operation, message});
 }
 
 bool loadTextFileForEditor(const juce::String& path, juce::String& text, juce::String& errorMessage)
@@ -130,10 +127,7 @@ juce::File getDefaultPoryaaaaProjectsJsonFile()
 
 juce::File getVoicegroupFileForProjectState(const TextEditProjectState& state)
 {
-    return state.root
-        .getChildFile("sound")
-        .getChildFile("voicegroups")
-        .getChildFile(state.bank + ".inc");
+    return state.root.getChildFile("sound").getChildFile("voicegroups").getChildFile(state.bank + ".inc");
 }
 
 bool loadPoryaaaaProjectState(const juce::File& projectsJsonFile,
@@ -175,7 +169,7 @@ bool loadPoryaaaaProjectState(const juce::File& projectsJsonFile,
         return false;
     }
 
-    state = { juce::File(rootValue.toString()), bankValue.toString() };
+    state = {juce::File(rootValue.toString()), bankValue.toString()};
     errorMessage = {};
     return true;
 }

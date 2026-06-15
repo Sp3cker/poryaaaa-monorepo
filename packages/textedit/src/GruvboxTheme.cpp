@@ -1,6 +1,7 @@
 #include "GruvboxTheme.h"
 
-namespace {
+namespace
+{
 
 juce::Colour rgb(uint32_t hex)
 {
@@ -9,15 +10,37 @@ juce::Colour rgb(uint32_t hex)
 
 } // namespace
 
-namespace GruvboxTheme {
+namespace GruvboxTheme
+{
 
-juce::Colour background() { return rgb(0x282828); }
-juce::Colour foreground() { return rgb(0xebdbb2); }
-juce::Colour gutterBackground() { return rgb(0x1d2021); }
-juce::Colour gutterText() { return rgb(0x928374); }
-juce::Colour selection() { return rgb(0x504945); }
-juce::Colour statusBackground() { return rgb(0x3c3836); }
-juce::Colour statusText() { return rgb(0xd5c4a1); }
+juce::Colour background()
+{
+    return rgb(0x282828);
+}
+juce::Colour foreground()
+{
+    return rgb(0xebdbb2);
+}
+juce::Colour gutterBackground()
+{
+    return rgb(0x1d2021);
+}
+juce::Colour gutterText()
+{
+    return rgb(0x928374);
+}
+juce::Colour selection()
+{
+    return rgb(0x504945);
+}
+juce::Colour statusBackground()
+{
+    return rgb(0x3c3836);
+}
+juce::Colour statusText()
+{
+    return rgb(0xd5c4a1);
+}
 
 juce::CodeEditorComponent::ColourScheme codeColourScheme()
 {

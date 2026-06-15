@@ -60,11 +60,8 @@ struct Event
 
     bool operator==(const Event& other)
     {
-        return (time == other.time
-            && type == other.type
-            && note == other.note
-            && param1 == other.param1
-            && param2 == other.param2);
+        return (time == other.time && type == other.type && note == other.note && param1 == other.param1 &&
+                param2 == other.param2);
     }
 
     bool operator!=(const Event& other)

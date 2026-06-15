@@ -4,24 +4,28 @@
 
 #include <functional>
 
-struct TextEditProjectState {
+struct TextEditProjectState
+{
     juce::File root;
     juce::String bank;
 };
 
-struct TextEditVoicegroupDocument {
+struct TextEditVoicegroupDocument
+{
     juce::File projectRoot;
     juce::String bank;
     juce::File file;
     juce::String text;
 };
 
-enum class TextEditFileStoreOperation {
+enum class TextEditFileStoreOperation
+{
     loadVoicegroup,
     saveVoicegroup
 };
 
-struct TextEditFileStoreError {
+struct TextEditFileStoreError
+{
     TextEditFileStoreOperation operation;
     juce::String message;
 };

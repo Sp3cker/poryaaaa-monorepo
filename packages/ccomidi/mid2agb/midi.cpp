@@ -609,8 +609,8 @@ std::unique_ptr<std::vector<Event>> MergeEvents()
     unsigned trackEventPos = 0;
     unsigned seqEventPos = 0;
 
-    while (s_trackEvents[trackEventPos].type != EventType::EndOfTrack
-        && s_seqEvents[seqEventPos].type != EventType::EndOfTrack)
+    while (s_trackEvents[trackEventPos].type != EventType::EndOfTrack &&
+           s_seqEvents[seqEventPos].type != EventType::EndOfTrack)
     {
         if (EventCompare(s_trackEvents[trackEventPos], s_seqEvents[seqEventPos]))
             events->push_back(s_trackEvents[trackEventPos++]);
@@ -830,7 +830,8 @@ int CalculateCompressionScore(std::vector<Event>& events, int index)
 
             if (events[i].type == lastType)
             {
-                if ((lastType != EventType::Controller && (int)lastType != 0x25 && lastType != EventType::EndOfTie) || events[i].param1 == lastParam1)
+                if ((lastType != EventType::Controller && (int)lastType != 0x25 && lastType != EventType::EndOfTie) ||
+                    events[i].param1 == lastParam1)
                 {
                     score++;
                 }
@@ -857,10 +858,8 @@ int CalculateCompressionScore(std::vector<Event>& events, int index)
 
 bool IsCompressionMatch(std::vector<Event>& events, int index1, int index2)
 {
-    if (events[index1].type != events[index2].type ||
-        events[index1].note != events[index2].note ||
-        events[index1].param1 != events[index2].param1 ||
-        events[index1].time != events[index2].time)
+    if (events[index1].type != events[index2].type || events[index1].note != events[index2].note ||
+        events[index1].param1 != events[index2].param1 || events[index1].time != events[index2].time)
         return false;
 
     index1++;
@@ -947,7 +946,9 @@ void ReadMidiTracks()
                 // We don't need TEMPO in anything but track 1.
                 if (g_agbTrack == 1)
                 {
-                    auto it = std::remove_if(s_seqEvents.begin(), s_seqEvents.end(), [](const Event& event) { return event.type == EventType::Tempo; });
+                    auto it = std::remove_if(s_seqEvents.begin(),
+                                             s_seqEvents.end(),
+                                             [](const Event& event) { return event.type == EventType::Tempo; });
                     s_seqEvents.erase(it, s_seqEvents.end());
                 }
 

@@ -2,7 +2,8 @@
 
 #include <cstdlib>
 
-namespace {
+namespace
+{
 
 juce::String bridgePath()
 {
@@ -39,13 +40,8 @@ VoicegroupLanguageBridge::~VoicegroupLanguageBridge()
 
 bool VoicegroupLanguageBridge::isAvailable() const
 {
-    return service != nullptr
-        && create != nullptr
-        && destroy != nullptr
-        && setRoot != nullptr
-        && sync != nullptr
-        && complete != nullptr
-        && hoverText != nullptr;
+    return service != nullptr && create != nullptr && destroy != nullptr && setRoot != nullptr && sync != nullptr &&
+           complete != nullptr && hoverText != nullptr;
 }
 
 bool VoicegroupLanguageBridge::setProjectRoot(const juce::File& root)
@@ -73,7 +69,7 @@ bool VoicegroupLanguageBridge::syncDocument(const juce::String& uri, const juce:
 
 std::vector<VoicegroupCompletionItem> VoicegroupLanguageBridge::completions(int line, int character)
 {
-    auto items = std::vector<VoicegroupCompletionItem> {};
+    auto items = std::vector<VoicegroupCompletionItem>{};
     if (!isAvailable())
         return items;
 
@@ -84,7 +80,7 @@ std::vector<VoicegroupCompletionItem> VoicegroupLanguageBridge::completions(int 
 
 std::optional<juce::String> VoicegroupLanguageBridge::hover(int line, int character)
 {
-    auto result = std::optional<juce::String> {};
+    auto result = std::optional<juce::String>{};
     if (!isAvailable())
         return result;
 
@@ -132,12 +128,8 @@ bool VoicegroupLanguageBridge::loadFunctions()
     sync = loadFunction<SyncDocumentFn>(library, "textedit_voicegroup_service_sync_document");
     complete = loadFunction<CompleteFn>(library, "textedit_voicegroup_service_complete");
     hoverText = loadFunction<HoverFn>(library, "textedit_voicegroup_service_hover");
-    return create != nullptr
-        && destroy != nullptr
-        && setRoot != nullptr
-        && sync != nullptr
-        && complete != nullptr
-        && hoverText != nullptr;
+    return create != nullptr && destroy != nullptr && setRoot != nullptr && sync != nullptr && complete != nullptr &&
+           hoverText != nullptr;
 }
 
 void VoicegroupLanguageBridge::closeBridge()
@@ -160,7 +152,7 @@ void VoicegroupLanguageBridge::collectCompletion(const char* label, const char* 
     if (items == nullptr || label == nullptr)
         return;
 
-    items->push_back({ label, detail != nullptr ? detail : "" });
+    items->push_back({label, detail != nullptr ? detail : ""});
 }
 
 void VoicegroupLanguageBridge::collectHover(const char* text, void* userData)

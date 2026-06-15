@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 /* Ring buffer carrying m4a's software-mixed (post-reverb, post-clamp) PCM.
@@ -15,16 +16,17 @@ extern "C" {
  *
  * Constants match the vanilla Pokemon Emerald sound mode (index 4 in
  * gPcmSamplesPerVBlankTable: 224 samples per vblank → ≈13379 Hz). */
-#define M4A_PCM_DMA_BUF_SIZE        1584
-#define M4A_PCM_SAMPLES_PER_VBLANK  224
-#define M4A_PCM_RATE_HZ             13379
+#define M4A_PCM_DMA_BUF_SIZE 1584
+#define M4A_PCM_SAMPLES_PER_VBLANK 224
+#define M4A_PCM_RATE_HZ 13379
 
-typedef struct {
-    int8_t   ring_a[M4A_PCM_DMA_BUF_SIZE];
-    int8_t   ring_b[M4A_PCM_DMA_BUF_SIZE];
-    uint64_t write_cursor;
-    uint32_t pcm_rate_hz;
-} M4APcmRing;
+    typedef struct
+    {
+        int8_t ring_a[M4A_PCM_DMA_BUF_SIZE];
+        int8_t ring_b[M4A_PCM_DMA_BUF_SIZE];
+        uint64_t write_cursor;
+        uint32_t pcm_rate_hz;
+    } M4APcmRing;
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace porya {
+namespace porya
+{
 
 GbaReverb::GbaReverb()
 {
@@ -24,10 +25,12 @@ void GbaReverb::setAmount(long amount) noexcept
 
 void GbaReverb::setHostSampleRate(double sampleRate)
 {
-    if (!std::isfinite(sampleRate) || sampleRate <= 0.0) {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0)
+    {
         sampleRate = kHostRateHz;
     }
-    if (sampleRate == hostSampleRate_) {
+    if (sampleRate == hostSampleRate_)
+    {
         return;
     }
 
@@ -37,10 +40,12 @@ void GbaReverb::setHostSampleRate(double sampleRate)
 
 void GbaReverb::setRateMode(ReverbRateMode mode)
 {
-    if (mode != ReverbRateMode::Host) {
+    if (mode != ReverbRateMode::Host)
+    {
         mode = ReverbRateMode::Original;
     }
-    if (mode == rateMode_) {
+    if (mode == rateMode_)
+    {
         return;
     }
 
@@ -50,10 +55,12 @@ void GbaReverb::setRateMode(ReverbRateMode mode)
 
 void GbaReverb::setDelayDepth(DelayDepth depth)
 {
-    if (depth != DelayDepth::Int16 && depth != DelayDepth::Int32) {
+    if (depth != DelayDepth::Int16 && depth != DelayDepth::Int32)
+    {
         depth = DelayDepth::Int8;
     }
-    if (depth == delayDepth_) {
+    if (depth == delayDepth_)
+    {
         return;
     }
 
@@ -61,15 +68,17 @@ void GbaReverb::setDelayDepth(DelayDepth depth)
     reset();
 }
 
-void GbaReverb::process(const double *inL, const double *inR,
-                        double *outL, double *outR, long frames) noexcept
+void GbaReverb::process(const double* inL, const double* inR, double* outL, double* outR, long frames) noexcept
 {
-    if (!inL || !inR || !outL || !outR || frames <= 0) {
+    if (!inL || !inR || !outL || !outR || frames <= 0)
+    {
         return;
     }
 
-    if (amount_ == 0) {
-        for (long i = 0; i < frames; ++i) {
+    if (amount_ == 0)
+    {
+        for (long i = 0; i < frames; ++i)
+        {
             outL[i] = inL[i];
             outR[i] = inR[i];
         }
@@ -81,12 +90,11 @@ void GbaReverb::process(const double *inL, const double *inR,
     const long bufferSize = bufferSize_;
     const DelayDepth depth = delayDepth_;
 
-    for (long i = 0; i < frames; ++i) {
+    for (long i = 0; i < frames; ++i)
+    {
         const long otherPos = (pos_ + frameSize) % bufferSize;
-        const int64_t sum = static_cast<int64_t>(bufL_[pos_])
-                          + static_cast<int64_t>(bufR_[pos_])
-                          + static_cast<int64_t>(bufL_[otherPos])
-                          + static_cast<int64_t>(bufR_[otherPos]);
+        const int64_t sum = static_cast<int64_t>(bufL_[pos_]) + static_cast<int64_t>(bufR_[pos_]) +
+                            static_cast<int64_t>(bufL_[otherPos]) + static_cast<int64_t>(bufR_[otherPos]);
         const int64_t wet = arithmeticShiftRight9(sum * amount);
 
         const int64_t mixedL = sampleToDelay(inL[i]) + wet;
@@ -100,7 +108,8 @@ void GbaReverb::process(const double *inL, const double *inR,
         bufR_[pos_] = static_cast<int32_t>(clampedR);
 
         ++pos_;
-        if (pos_ >= bufferSize) {
+        if (pos_ >= bufferSize)
+        {
             pos_ = 0;
         }
     }
@@ -108,7 +117,8 @@ void GbaReverb::process(const double *inL, const double *inR,
 
 int64_t GbaReverb::arithmeticShiftRight9(int64_t value) noexcept
 {
-    if (value >= 0) {
+    if (value >= 0)
+    {
         return value >> 9;
     }
     return -(((-value) + 511) >> 9);
@@ -116,43 +126,47 @@ int64_t GbaReverb::arithmeticShiftRight9(int64_t value) noexcept
 
 int64_t GbaReverb::clampForDepth(int64_t value, DelayDepth depth) noexcept
 {
-    switch (depth) {
-        case DelayDepth::Int16:
-            return std::clamp<int64_t>(value, -32768, 32767);
-        case DelayDepth::Int32:
-            return std::clamp<int64_t>(value, -2147483648LL, 2147483647LL);
-        case DelayDepth::Int8:
-        default:
-            return std::clamp<int64_t>(value, -128, 127);
+    switch (depth)
+    {
+    case DelayDepth::Int16:
+        return std::clamp<int64_t>(value, -32768, 32767);
+    case DelayDepth::Int32:
+        return std::clamp<int64_t>(value, -2147483648LL, 2147483647LL);
+    case DelayDepth::Int8:
+    default:
+        return std::clamp<int64_t>(value, -128, 127);
     }
 }
 
 int64_t GbaReverb::scaleForDepth(DelayDepth depth) noexcept
 {
-    switch (depth) {
-        case DelayDepth::Int16:
-            return 256;
-        case DelayDepth::Int32:
-            return 16777216;
-        case DelayDepth::Int8:
-        default:
-            return 1;
+    switch (depth)
+    {
+    case DelayDepth::Int16:
+        return 256;
+    case DelayDepth::Int32:
+        return 16777216;
+    case DelayDepth::Int8:
+    default:
+        return 1;
     }
 }
 
 int64_t GbaReverb::sampleToDelay(double sample) const noexcept
 {
-    if (!std::isfinite(sample)) {
+    if (!std::isfinite(sample))
+    {
         return 0;
     }
-    if (sample <= -1.0) {
+    if (sample <= -1.0)
+    {
         return clampForDepth(-128 * scaleForDepth(delayDepth_), delayDepth_);
     }
-    if (sample >= 1.0) {
+    if (sample >= 1.0)
+    {
         return clampForDepth(127 * scaleForDepth(delayDepth_), delayDepth_);
     }
-    return clampForDepth(std::llround(sample * 127.0 * scaleForDepth(delayDepth_)),
-                         delayDepth_);
+    return clampForDepth(std::llround(sample * 127.0 * scaleForDepth(delayDepth_)), delayDepth_);
 }
 
 double GbaReverb::delayToSample(int64_t sample) const noexcept
@@ -169,8 +183,7 @@ void GbaReverb::configureDelay()
 {
     const double scale = hostSampleRate_ / modelRate();
     frameSize_ = std::max(1L, std::lround(static_cast<double>(kBaseFrameSize) * scale));
-    bufferSize_ = std::max(frameSize_ + 1,
-                           std::lround(static_cast<double>(kBaseBufferSize) * scale));
+    bufferSize_ = std::max(frameSize_ + 1, std::lround(static_cast<double>(kBaseBufferSize) * scale));
     bufL_.assign(static_cast<size_t>(bufferSize_), 0);
     bufR_.assign(static_cast<size_t>(bufferSize_), 0);
     pos_ = 0;

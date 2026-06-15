@@ -14,21 +14,24 @@
 #include <string>
 #include <vector>
 
-namespace ccomidi {
+namespace ccomidi
+{
 
-struct MidiEvent {
-    double  beats;    // from plugsync~ "Ticks (1 PPQ)" outlet; integer part = beat
+struct MidiEvent
+{
+    double beats; // from plugsync~ "Ticks (1 PPQ)" outlet; integer part = beat
     uint8_t status;
     uint8_t d1;
     uint8_t d2;
 };
 
-class MidiBuffer {
+class MidiBuffer
+{
 public:
     void reset();
     void push(double beats, uint8_t status, uint8_t d1, uint8_t d2);
-    void push(const MidiEvent &event);
-    void append_from(const MidiBuffer &other);
+    void push(const MidiEvent& event);
+    void append_from(const MidiBuffer& other);
     void prune_before(double minBeat);
     std::size_t size() const;
     std::vector<MidiEvent> snapshot() const;
@@ -44,10 +47,10 @@ public:
     //   16      ...   events    = count * 12 bytes:
     //                              double beats (8) ; u8 status ; u8 d1 ; u8 d2 ; u8 _pad
     // Returns true on success.
-    bool dump_to_file(const std::string &path) const;
+    bool dump_to_file(const std::string& path) const;
 
 private:
-    mutable std::mutex     mutex_;
+    mutable std::mutex mutex_;
     std::vector<MidiEvent> events_;
 };
 

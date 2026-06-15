@@ -88,7 +88,7 @@ void PrintWait(int wait)
     }
 }
 
-void PrintOp(int wait, std::string name, const char *format, ...)
+void PrintOp(int wait, std::string name, const char* format, ...)
 {
     std::va_list args;
     va_start(args, format);
@@ -120,7 +120,7 @@ void PrintOp(int wait, std::string name, const char *format, ...)
     PrintWait(wait);
 }
 
-void PrintByte(const char *format, ...)
+void PrintByte(const char* format, ...)
 {
     std::va_list args;
     va_start(args, format);
@@ -133,7 +133,7 @@ void PrintByte(const char *format, ...)
     va_end(args);
 }
 
-void PrintWord(const char *format, ...)
+void PrintWord(const char* format, ...)
 {
     std::va_list args;
     va_start(args, format);
@@ -417,7 +417,8 @@ void PrintControllerOp(const Event& event)
 
 void PrintAgbTrack(std::vector<Event>& events)
 {
-    std::fprintf(g_outputFile, "\n@**************** Track %u (Midi-Chn.%u) ****************@\n\n", g_agbTrack, g_midiChan + 1);
+    std::fprintf(
+        g_outputFile, "\n@**************** Track %u (Midi-Chn.%u) ****************@\n\n", g_agbTrack, g_midiChan + 1);
     std::fprintf(g_outputFile, "%s_%u:\n", g_asmLabel.c_str(), g_agbTrack);
 
     int wholeNoteCount = 0;
@@ -488,7 +489,11 @@ void PrintAgbTrack(std::vector<Event>& events)
         case EventType::WholeNoteMark:
             if (event.param2 & 0x80000000)
             {
-                std::fprintf(g_outputFile, "%s_%u_%03lu:\n", g_asmLabel.c_str(), g_agbTrack, (unsigned long)(event.param2 & 0x7FFFFFFF));
+                std::fprintf(g_outputFile,
+                             "%s_%u_%03lu:\n",
+                             g_asmLabel.c_str(),
+                             g_agbTrack,
+                             (unsigned long)(event.param2 & 0x7FFFFFFF));
                 ResetTrackVars();
                 s_inPattern = true;
             }
@@ -504,7 +509,9 @@ void PrintAgbTrack(std::vector<Event>& events)
             ResetTrackVars();
             break;
         case EventType::Tempo:
-            PrintByte("TEMPO , %u*%s_tbs/2", static_cast<int>(round(60000000.0f / static_cast<float>(event.param2))), g_asmLabel.c_str());
+            PrintByte("TEMPO , %u*%s_tbs/2",
+                      static_cast<int>(round(60000000.0f / static_cast<float>(event.param2))),
+                      g_asmLabel.c_str());
             PrintWait(event.time);
             break;
         case EventType::InstrumentChange:
@@ -527,7 +534,8 @@ void PrintAgbTrack(std::vector<Event>& events)
 
 void PrintAgbTrackLoop(std::vector<Event>& events, int trackLoops)
 {
-    std::fprintf(g_outputFile, "\n@**************** Track %u (Midi-Chn.%u) ****************@\n\n", g_agbTrack, g_midiChan + 1);
+    std::fprintf(
+        g_outputFile, "\n@**************** Track %u (Midi-Chn.%u) ****************@\n\n", g_agbTrack, g_midiChan + 1);
     std::fprintf(g_outputFile, "%s_%u:\n", g_asmLabel.c_str(), g_agbTrack);
     int wholeNoteCount = 0;
 
@@ -593,7 +601,11 @@ void PrintAgbTrackLoop(std::vector<Event>& events, int trackLoops)
             case EventType::WholeNoteMark:
                 if (event.param2 & 0x80000000)
                 {
-                    std::fprintf(g_outputFile, "%s_%u_%03lu:\n", g_asmLabel.c_str(), g_agbTrack, (unsigned long)(event.param2 & 0x7FFFFFFF));
+                    std::fprintf(g_outputFile,
+                                 "%s_%u_%03lu:\n",
+                                 g_asmLabel.c_str(),
+                                 g_agbTrack,
+                                 (unsigned long)(event.param2 & 0x7FFFFFFF));
                     ResetTrackVars();
                     s_inPattern = true;
                 }
@@ -611,7 +623,9 @@ void PrintAgbTrackLoop(std::vector<Event>& events, int trackLoops)
             case EventType::Tempo:
                 if (k == 0)
                 {
-                    PrintByte("TEMPO , %u*%s_tbs/2", static_cast<int>(round(60000000.0f / static_cast<float>(event.param2))), g_asmLabel.c_str());
+                    PrintByte("TEMPO , %u*%s_tbs/2",
+                              static_cast<int>(round(60000000.0f / static_cast<float>(event.param2))),
+                              g_asmLabel.c_str());
                     PrintWait(event.time);
                 }
                 break;

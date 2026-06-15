@@ -15,36 +15,57 @@ using ccomidi::ExportCaptureConfig;
 using ccomidi::MidiBuffer;
 using ccomidi::MidiEvent;
 
-namespace {
+namespace
+{
 
 int failures = 0;
 
-std::ostream &operator<<(std::ostream &os, CaptureState state) {
-    switch (state) {
-        case CaptureState::Idle: return os << "Idle";
-        case CaptureState::PendingExport: return os << "PendingExport";
-        case CaptureState::Exporting: return os << "Exporting";
-        case CaptureState::Captured: return os << "Captured";
+std::ostream& operator<<(std::ostream& os, CaptureState state)
+{
+    switch (state)
+    {
+    case CaptureState::Idle:
+        return os << "Idle";
+    case CaptureState::PendingExport:
+        return os << "PendingExport";
+    case CaptureState::Exporting:
+        return os << "Exporting";
+    case CaptureState::Captured:
+        return os << "Captured";
     }
     return os << "Unknown";
 }
 
-void fail(const char *expr, const char *file, int line, const std::string &msg = "") {
+void fail(const char* expr, const char* file, int line, const std::string& msg = "")
+{
     std::cerr << file << ":" << line << ": failed: " << expr;
-    if (!msg.empty()) {
+    if (!msg.empty())
+    {
         std::cerr << " (" << msg << ")";
     }
     std::cerr << "\n";
     ++failures;
 }
 
-#define CHECK(expr) do { if (!(expr)) fail(#expr, __FILE__, __LINE__); } while (0)
-#define CHECK_MSG(expr, msg) do { if (!(expr)) fail(#expr, __FILE__, __LINE__, (msg)); } while (0)
+#define CHECK(expr)                                                                                                    \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(expr))                                                                                                   \
+            fail(#expr, __FILE__, __LINE__);                                                                           \
+    } while (0)
+#define CHECK_MSG(expr, msg)                                                                                           \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(expr))                                                                                                   \
+            fail(#expr, __FILE__, __LINE__, (msg));                                                                    \
+    } while (0)
 
 template <typename A, typename B>
-void check_eq(const A &actual, const B &expected, const char *actualExpr,
-              const char *expectedExpr, const char *file, int line) {
-    if (!(actual == expected)) {
+void check_eq(
+    const A& actual, const B& expected, const char* actualExpr, const char* expectedExpr, const char* file, int line)
+{
+    if (!(actual == expected))
+    {
         std::ostringstream msg;
         msg << actualExpr << "=" << actual << ", " << expectedExpr << "=" << expected;
         fail("equality", file, line, msg.str());
@@ -53,19 +74,21 @@ void check_eq(const A &actual, const B &expected, const char *actualExpr,
 
 #define CHECK_EQ(actual, expected) check_eq((actual), (expected), #actual, #expected, __FILE__, __LINE__)
 
-void check_event(const MidiEvent &event, double beats, uint8_t status,
-                 uint8_t d1, uint8_t d2) {
+void check_event(const MidiEvent& event, double beats, uint8_t status, uint8_t d1, uint8_t d2)
+{
     CHECK(std::fabs(event.beats - beats) < 0.000001);
     CHECK_EQ(event.status, status);
     CHECK_EQ(event.d1, d1);
     CHECK_EQ(event.d2, d2);
 }
 
-ExportCapture::TimePoint at_ms(int ms) {
+ExportCapture::TimePoint at_ms(int ms)
+{
     return ExportCapture::TimePoint(std::chrono::milliseconds(ms));
 }
 
-void test_midi_buffer_prune_keeps_boundary() {
+void test_midi_buffer_prune_keeps_boundary()
+{
     MidiBuffer buffer;
     buffer.push(0.99, 0x90, 60, 100);
     buffer.push(1.00, 0x90, 61, 100);
@@ -79,7 +102,8 @@ void test_midi_buffer_prune_keeps_boundary() {
     check_event(events[1], 1.25, 0x80, 60, 0);
 }
 
-void test_midi_buffer_append_from_snapshot_is_independent() {
+void test_midi_buffer_append_from_snapshot_is_independent()
+{
     MidiBuffer source;
     MidiBuffer dest;
     source.push(2.0, 0x90, 64, 127);
@@ -95,7 +119,8 @@ void test_midi_buffer_append_from_snapshot_is_independent() {
     check_event(events[1], 2.0, 0x90, 64, 127);
 }
 
-void test_midi_buffer_self_append_duplicates_without_deadlock() {
+void test_midi_buffer_self_append_duplicates_without_deadlock()
+{
     MidiBuffer buffer;
     buffer.push(1.0, 0x90, 60, 100);
     buffer.push(2.0, 0x80, 60, 0);
@@ -110,13 +135,15 @@ void test_midi_buffer_self_append_duplicates_without_deadlock() {
     check_event(events[3], 2.0, 0x80, 60, 0);
 }
 
-void test_normal_playback_never_commits_main_buffer() {
+void test_normal_playback_never_commits_main_buffer()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
     capture.record_on(at_ms(0));
 
-    for (int i = 1; i <= 8; ++i) {
+    for (int i = 1; i <= 8; ++i)
+    {
         bool detected = capture.beats(static_cast<double>(i), at_ms(i * 500));
         capture.capture_event(0x90, static_cast<uint8_t>(60 + i), 100);
         CHECK(!detected);
@@ -124,15 +151,15 @@ void test_normal_playback_never_commits_main_buffer() {
         CHECK_EQ(capture.size(), static_cast<std::size_t>(0));
     }
 
-    CHECK_MSG(capture.prebuffer_size() <= 5,
-              "rolling prebuffer should prune old normal-playback events");
+    CHECK_MSG(capture.prebuffer_size() <= 5, "rolling prebuffer should prune old normal-playback events");
     capture.record_off();
     CHECK_EQ(capture.state(), CaptureState::Idle);
     CHECK_EQ(capture.size(), static_cast<std::size_t>(0));
     CHECK_EQ(capture.prebuffer_size(), static_cast<std::size_t>(0));
 }
 
-void test_export_detection_requires_two_fast_samples_and_promotes_prebuffer() {
+void test_export_detection_requires_two_fast_samples_and_promotes_prebuffer()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -162,7 +189,8 @@ void test_export_detection_requires_two_fast_samples_and_promotes_prebuffer() {
     check_event(events[2], 1.0, 0x90, 62, 100);
 }
 
-void test_prebuffer_pruning_boundary_before_promotion() {
+void test_prebuffer_pruning_boundary_before_promotion()
+{
     ExportCaptureConfig config;
     config.prebufferBeats = 4.0;
     ExportCapture capture(config);
@@ -188,7 +216,8 @@ void test_prebuffer_pruning_boundary_before_promotion() {
     check_event(events[2], 5.00, 0x90, 63, 100);
 }
 
-void test_exact_threshold_is_not_export() {
+void test_exact_threshold_is_not_export()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -203,7 +232,8 @@ void test_exact_threshold_is_not_export() {
     CHECK_EQ(capture.prebuffer_size(), static_cast<std::size_t>(1));
 }
 
-void test_slow_sample_resets_fast_sample_count() {
+void test_slow_sample_resets_fast_sample_count()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -218,7 +248,8 @@ void test_slow_sample_resets_fast_sample_count() {
     CHECK_EQ(capture.state(), CaptureState::Exporting);
 }
 
-void test_backward_beat_resets_detector_and_keeps_pending_prebuffer() {
+void test_backward_beat_resets_detector_and_keeps_pending_prebuffer()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(10.0, at_ms(0));
@@ -240,7 +271,8 @@ void test_backward_beat_resets_detector_and_keeps_pending_prebuffer() {
     check_event(events[1], 9.0, 0x90, 71, 100);
 }
 
-void test_record_off_resets_export_state_and_buffer() {
+void test_record_off_resets_export_state_and_buffer()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -259,7 +291,8 @@ void test_record_off_resets_export_state_and_buffer() {
     CHECK_EQ(capture.size(), static_cast<std::size_t>(0));
 }
 
-void test_finish_export_freezes_buffer_for_dump() {
+void test_finish_export_freezes_buffer_for_dump()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -276,7 +309,8 @@ void test_finish_export_freezes_buffer_for_dump() {
     CHECK_EQ(capture.size(), static_cast<std::size_t>(1));
 }
 
-void test_rearming_clears_previous_capture() {
+void test_rearming_clears_previous_capture()
+{
     ExportCapture capture;
     capture.set_tempo(120.0);
     capture.beats(0.0, at_ms(0));
@@ -294,7 +328,8 @@ void test_rearming_clears_previous_capture() {
 
 } // namespace
 
-int main() {
+int main()
+{
     test_midi_buffer_prune_keeps_boundary();
     test_midi_buffer_append_from_snapshot_is_independent();
     test_midi_buffer_self_append_duplicates_without_deadlock();
@@ -308,7 +343,8 @@ int main() {
     test_finish_export_freezes_buffer_for_dump();
     test_rearming_clears_previous_capture();
 
-    if (failures != 0) {
+    if (failures != 0)
+    {
         std::cerr << failures << " recorder test failure(s)\n";
         return EXIT_FAILURE;
     }
