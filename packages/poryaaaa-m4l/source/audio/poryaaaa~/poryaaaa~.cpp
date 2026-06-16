@@ -110,7 +110,6 @@ static void porya_program(t_porya* x, long track, long program);
 static void porya_voicegroup(t_porya* x, t_symbol* root, t_symbol* name);
 static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av);
 static void porya_tempo(t_porya* x, double bpm);
-static void porya_panic(t_porya* x);
 static void porya_loadbang(t_porya* x);
 
 /* ---- recorder forward decls ---- */
@@ -155,7 +154,6 @@ extern "C" void ext_main(void* r)
     class_addmethod(c, (method)porya_program, "program", A_LONG, A_LONG, 0);
     class_addmethod(c, (method)porya_voicegroup, "voicegroup", A_SYM, A_SYM, 0);
     class_addmethod(c, (method)porya_tempo, "tempo", A_FLOAT, 0);
-    class_addmethod(c, (method)porya_panic, "panic", 0);
 
     /* recorder */
     class_addmethod(c, (method)porya_record, "record", A_LONG, 0);
@@ -298,7 +296,7 @@ static void porya_assist(t_porya* x, void* b, long m, long a, char* s)
     {
         snprintf(s,
                  256,
-                 "raw MIDI bytes (int from [midiin]); messages: midievent program voicegroup tempo panic record beats "
+                 "raw MIDI bytes (int from [midiin]); messages: midievent program voicegroup tempo record beats "
                  "dump exportvoicegroup");
     }
     else
@@ -597,27 +595,16 @@ static void porya_tempo(t_porya* x, double bpm)
 {
     if (bpm < 1.0)
         bpm = 1.0;
-    x->capture->set_tempo(bpm);
     m4a_engine_set_tempo_bpm(&x->engine, bpm);
 #if defined(M4A_DRIVER_V2)
     m4a_set_tempo_bpm(x->m4a_v2, bpm);
 #endif
 }
 
-static void porya_panic(t_porya* x)
-{
-    m4a_engine_all_sound_off(&x->engine);
-#if defined(M4A_DRIVER_V2)
-    m4a_all_sound_off(x->m4a_v2);
-#endif
-}
-
 /* ---- recorder messages -------------------------------------------------- */
 
-/* `record 1` starts export-detection capture. Normal playback only fills the
- * rolling prebuffer; the final buffer starts after offline-export timing is
- * detected from plugsync~ beat speed. `record 0` is a user reset: it clears
- * pending/exported MIDI so the next arm starts from a clean state. */
+/* `record 1` starts capture immediately. The patch should only arm this while
+ * transport is stopped; `record 0` clears MIDI so the next export starts clean. */
 static void porya_record(t_porya* x, long armed)
 {
     if (armed != 0)
@@ -635,10 +622,7 @@ static void porya_record(t_porya* x, long armed)
  * capture helper keeps the last received value. */
 static void porya_beats(t_porya* x, double beats)
 {
-    if (x->capture->beats(beats))
-    {
-        object_post((t_object*)x, "poryaaaa~: export capture detected; prebuffer=%zu events", x->capture->size());
-    }
+    x->capture->beats(beats);
 }
 
 /* Dump the buffer to `path` as a fixed-layout binary file, then emit
@@ -647,12 +631,6 @@ static void porya_beats(t_porya* x, double beats)
  * don't expand ~ or mkdir anything here. */
 static void porya_dump(t_porya* x, t_symbol* path)
 {
-    if (x->capture->state() == CaptureState::PendingExport)
-    {
-        object_error((t_object*)x, "poryaaaa~: dump requested before export detected");
-        porya_dumpfailed(x, path, "export_not_detected");
-        return;
-    }
     if (x->capture->state() == CaptureState::Exporting)
     {
         x->capture->finish_export();

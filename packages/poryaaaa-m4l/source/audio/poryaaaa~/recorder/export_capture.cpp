@@ -1,27 +1,12 @@
 #include "recorder/export_capture.h"
 
-#include <algorithm>
-
 namespace ccomidi
 {
 
-ExportCapture::ExportCapture(ExportCaptureConfig config)
-    : state_(CaptureState::Idle), config_(config), currentBeat_(0.0), tempoBpm_(120.0), lastDetectBeat_(0.0),
-      lastDetectWall_(Clock::now()), fastBeatSamples_(0)
-{
-}
-
-void ExportCapture::set_tempo(double bpm)
-{
-    tempoBpm_ = std::max(1.0, bpm);
-}
-
-void ExportCapture::record_on(TimePoint now)
+void ExportCapture::record_on(TimePoint)
 {
     midiBuffer_.reset();
-    preBuffer_.reset();
-    state_ = CaptureState::PendingExport;
-    reset_detector(currentBeat_, now);
+    state_ = CaptureState::Exporting;
 }
 
 void ExportCapture::record_off()
@@ -37,48 +22,9 @@ void ExportCapture::finish_export()
     }
 }
 
-bool ExportCapture::beats(double beats, TimePoint now)
+void ExportCapture::beats(double beats)
 {
     currentBeat_ = beats;
-
-    if (state_ != CaptureState::PendingExport)
-    {
-        return false;
-    }
-
-    double beatDelta = beats - lastDetectBeat_;
-    double wallSeconds = std::chrono::duration<double>(now - lastDetectWall_).count();
-
-    if (beatDelta <= 0.0)
-    {
-        reset_detector(beats, now);
-        return false;
-    }
-
-    if (beatDelta < config_.minDetectBeatDelta || wallSeconds <= 0.0)
-    {
-        return false;
-    }
-
-    double observedBps = beatDelta / wallSeconds;
-    double expectedBps = tempoBpm_ / 60.0;
-    if (observedBps > expectedBps * config_.exportSpeedMultiplier)
-    {
-        fastBeatSamples_ += 1;
-        if (fastBeatSamples_ >= config_.requiredFastSamples)
-        {
-            begin_export_capture();
-            return true;
-        }
-    }
-    else
-    {
-        fastBeatSamples_ = 0;
-    }
-
-    lastDetectBeat_ = beats;
-    lastDetectWall_ = now;
-    return false;
 }
 
 void ExportCapture::capture_event(uint8_t status, uint8_t d1, uint8_t d2)
@@ -92,10 +38,6 @@ void ExportCapture::capture_event(uint8_t status, uint8_t d1, uint8_t d2)
 
     switch (state_)
     {
-    case CaptureState::PendingExport:
-        preBuffer_.push(event);
-        preBuffer_.prune_before(event.beats - config_.prebufferBeats);
-        break;
     case CaptureState::Exporting:
         midiBuffer_.push(event);
         break;
@@ -105,12 +47,10 @@ void ExportCapture::capture_event(uint8_t status, uint8_t d1, uint8_t d2)
     }
 }
 
-void ExportCapture::clear(TimePoint now)
+void ExportCapture::clear(TimePoint)
 {
     midiBuffer_.reset();
-    preBuffer_.reset();
     state_ = CaptureState::Idle;
-    reset_detector(currentBeat_, now);
 }
 
 CaptureState ExportCapture::state() const
@@ -128,11 +68,6 @@ std::size_t ExportCapture::size() const
     return midiBuffer_.size();
 }
 
-std::size_t ExportCapture::prebuffer_size() const
-{
-    return preBuffer_.size();
-}
-
 std::vector<MidiEvent> ExportCapture::snapshot() const
 {
     return midiBuffer_.snapshot();
@@ -141,20 +76,6 @@ std::vector<MidiEvent> ExportCapture::snapshot() const
 bool ExportCapture::dump_to_file(const std::string& path) const
 {
     return midiBuffer_.dump_to_file(path);
-}
-
-void ExportCapture::reset_detector(double beats, TimePoint now)
-{
-    lastDetectBeat_ = beats;
-    lastDetectWall_ = now;
-    fastBeatSamples_ = 0;
-}
-
-void ExportCapture::begin_export_capture()
-{
-    midiBuffer_.reset();
-    midiBuffer_.append_from(preBuffer_);
-    state_ = CaptureState::Exporting;
 }
 
 } // namespace ccomidi

@@ -8,6 +8,7 @@
         "voice-slot-contract.ts",
         "ccomidi_voices.ts",
         "ccomidi_voicegroup_client.ts",
+        "cleanup.ts",
         "ccomidi_routing_dicts.ts",
         "recorder/*.ts",
         "poryaaaa_voicegroup_server.ts",

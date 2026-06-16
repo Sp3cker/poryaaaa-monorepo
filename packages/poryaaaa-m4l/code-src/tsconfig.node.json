@@ -5,6 +5,7 @@
     },
     "include": [
         "ccomidi_voicegroup_client.ts",
+        "cleanup.ts",
         "poryaaaa_voicegroup_server.ts",
         "poryaaaa-node/**/*.ts",
         "scanner.ts",

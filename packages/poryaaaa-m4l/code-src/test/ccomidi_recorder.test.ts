@@ -4,17 +4,38 @@ import assert from "node:assert/strict";
 import {
     collectCcomidiStateViaLom,
     createRecorderService,
+    emitCapturedEventCounts,
     RECORDER_DIR,
+    writeSmfFileWith,
     type LiveApiFactory,
     type LiveApiLike,
     type ServiceDeps,
 } from "../recorder/ccomidi_recorder";
-import type { InitialCc, SmfWriter } from "../recorder/recorder_smf_writer";
+import type { InitialCc, MidiEvent, SmfWriter } from "../recorder/recorder_smf_writer";
 
 interface OutletCall {
     outletIndex: number;
     args: unknown[];
 }
+
+test("emitCapturedEventCounts outputs notes and cc counts to the GUI outlet", () => {
+    const events: MidiEvent[] = [
+        { beats: 0, status: 0x90, d1: 60, d2: 100 },
+        { beats: 1, status: 0x80, d1: 60, d2: 0   },
+        { beats: 2, status: 0xB0, d1: 7,  d2: 100 },
+        { beats: 3, status: 0xC0, d1: 5,  d2: 0   },
+    ];
+    const calls: OutletCall[] = [];
+
+    emitCapturedEventCounts(events, (outletIndex, ...args) => {
+        calls.push({ outletIndex, args });
+    });
+
+    assert.deepEqual(calls, [
+        { outletIndex: 2, args: ["notes", 2] },
+        { outletIndex: 2, args: ["cc", 1] },
+    ]);
+});
 
 // ---- deps factory ----------------------------------------------------------
 
@@ -691,4 +712,49 @@ test("outputPath keeps absolute paths intact", () => {
     const svc = createRecorderService(harness.deps);
     svc.setFilename("/Users/me/out.mid");
     assert.equal(harness.smfFactoryArgs!.outputPath(), "/Users/me/out.mid");
+});
+
+test("writeSmfFileWith reports failure when written path cannot be reopened", () => {
+    let writeClosed = false;
+    const ok = writeSmfFileWith("/missing/out.mid", new Uint8Array([0x4D, 0x54, 0x68, 0x64]), () => {
+        if (!writeClosed) {
+            return {
+                isopen: true,
+                byteorder: "big",
+                writebytes: () => {},
+                close: () => { writeClosed = true; },
+            };
+        }
+        return {
+            isopen: false,
+            byteorder: "big",
+            writebytes: () => {},
+            close: () => {},
+        };
+    });
+
+    assert.equal(ok, false);
+});
+
+test("writeSmfFileWith accepts a reopened file when eof is unavailable", () => {
+    let writeClosed = false;
+    const ok = writeSmfFileWith("/tmp/out.mid", new Uint8Array([0x4D, 0x54, 0x68, 0x64]), () => {
+        if (!writeClosed) {
+            return {
+                isopen: true,
+                byteorder: "big",
+                writebytes: () => {},
+                close: () => { writeClosed = true; },
+            };
+        }
+        return {
+            isopen: true,
+            byteorder: "big",
+            close: () => {},
+            readbytes: () => [],
+            readfloat64: () => [],
+        };
+    });
+
+    assert.equal(ok, true);
 });
