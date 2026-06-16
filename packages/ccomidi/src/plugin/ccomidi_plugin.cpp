@@ -1530,8 +1530,6 @@ factory_create_plugin(const clap_plugin_factory_t* factory, const clap_host_t* h
     self->clapPlugin = s_pluginPrototype;
     self->clapPlugin.plugin_data = self;
     self->voiceLoad = voicegroup_bridge_load_state();
-    if (!self->voiceLoad.error.empty() && host->request_callback)
-        host->request_callback(host);
     return &self->clapPlugin;
 }
 
