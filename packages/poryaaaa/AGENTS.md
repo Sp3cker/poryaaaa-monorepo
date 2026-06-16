@@ -9,7 +9,7 @@ Instructions for coding agents working in this repository.
 - `poryaaaa.clap`: CLAP instrument plugin
 - `poryaaaa_render`: CLI MIDI-to-WAV renderer
 
-Core audio logic is C11. GUI and platform entry points are C++.
+Core audio logic is C11. GUI and platform entry points are C++23.
 
 ## Read This First
 
@@ -41,9 +41,6 @@ Vendor trees and build outputs are large. Search narrowly — scope to `plugin/`
 
 Do not edit these unless the task explicitly requires it:
 
-- `../../third_party/clap/`
-- `../../third_party/imgui/`
-- `../../third_party/pugl/`
 - `third_party/`
 - `build*/`
 
@@ -102,25 +99,6 @@ Testing rules:
 - Loader, renderer, or asset-dependent behavior may use a dedicated test under `test/`.
 - Tests that require an external decomp project must skip gracefully when assets are unavailable.
 
-## Coding Rules
-
-- Match the style of the file you edit. Use tabs and K&R braces.
-- Use `snake_case` for functions and variables, `ALL_CAPS` for macros and constants.
-- Do not reformat unrelated code. An easy-to-explain git diff is important.
-
-Example style:
-
-```c
-static void process_channel(M4aChannel *ch, int16_t *buf, uint32_t count) {
-	if (!ch->active) {
-		return;
-	}
-	for (uint32_t i = 0; i < count; i++) {
-		buf[i] += render_sample(ch);
-	}
-}
-```
-
 ## Architecture Invariants
 
 Do not break these:
@@ -170,6 +148,5 @@ Currently implemented CLAP extensions: `AUDIO_PORTS`, `NOTE_PORTS`, `PARAMS`, `S
 Already known — do not treat as surprise regressions unless the task is specifically about them:
 
 - High-DPI or scale-aware window sizing
-- File browser dialog for Project Root selection
 - Full MIDI-to-WAV regression coverage
 - Performance profiling and optimization
