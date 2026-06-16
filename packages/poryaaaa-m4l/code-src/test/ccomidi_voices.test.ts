@@ -24,8 +24,8 @@ const DEFAULT_TYPE_CODE = 0;
 
 // Tagged label: voice name with the family-tag prefix, what the umenu items
 // (and the setsymbol-driven selection) carry.
-function ds(name: string): string {
-    return `[DS] ${name}`;
+function ds(program: number, name: string): string {
+    return `${program} [DS] ${name}`;
 }
 
 function statePayload(slots: SlotEntry[]) {
@@ -63,7 +63,7 @@ function menuPopulate(slots: SlotEntry[]): unknown[][] {
     const events: unknown[][] = [["slots", "clear"]];
     for (const s of slots) {
         const tag = `[${familyTagFor(s.typeCode ?? DEFAULT_TYPE_CODE)}]`;
-        events.push(["slots", "append", `${tag} ${s.name}`]);
+        events.push(["slots", "append", `${s.program} ${tag} ${s.name}`]);
     }
     return events;
 }
@@ -131,7 +131,7 @@ test("inbound WebSocket state after `start` ungates and updates the visible menu
 
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
-        ["slots", "setsymbol", ds("Alpha")],
+        ["slots", "setsymbol", ds(0, "Alpha")],
     ]);
 });
 
@@ -159,7 +159,7 @@ test("`pick` after start+state updates the selected voice label", () => {
 
     svc.pick(1);
     assert.deepEqual(outletArgs(deps), [
-        ["slots", "setsymbol", ds("Beta")],
+        ["slots", "setsymbol", ds(1, "Beta")],
     ]);
 });
 
@@ -172,7 +172,7 @@ test("`pick` indexes into the slots array; VoiceIdx owns Program Change", () => 
 
     svc.pick(1);
     assert.deepEqual(outletArgs(deps), [
-        ["slots", "setsymbol", ds("b")],
+        ["slots", "setsymbol", ds(1, "b")],
     ]);
 });
 
@@ -364,7 +364,7 @@ test("pick before any state stashes the index and applies on state", () => {
 
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
-        ["slots", "setsymbol", ds("B")],
+        ["slots", "setsymbol", ds(1, "B")],
     ]);
 });
 
@@ -403,14 +403,14 @@ test("every valid state payload applies; there is no seq de-dupe", () => {
     svc.state(encodedState(slots));
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
-        ["slots", "setsymbol", ds("Replacement")],
+        ["slots", "setsymbol", ds(0, "Replacement")],
     ]);
 
     deps.reset();
     svc.state(encodedState(slots));
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
-        ["slots", "setsymbol", ds("Replacement")],
+        ["slots", "setsymbol", ds(0, "Replacement")],
     ]);
 });
 
@@ -432,7 +432,7 @@ test("a new state payload replaces the slot list and replays the saved pick", ()
 
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(newSlots),
-        ["slots", "setsymbol", ds("Replaced")],
+        ["slots", "setsymbol", ds(0, "Replaced")],
     ]);
 });
 
@@ -449,7 +449,7 @@ test("ignored empty-slots payload keeps the gate where it is", () => {
     svc.state(encodedState(slots));
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
-        ["slots", "setsymbol", ds("x")],
+        ["slots", "setsymbol", ds(0, "x")],
     ]);
 });
 
@@ -491,13 +491,13 @@ test("menu items carry voice-family tags from typeCode", () => {
         .filter((a) => a[0] === "slots" && a[1] === "append")
         .map((a) => a[2]);
     assert.deepEqual(appended, [
-        "[DS] Direct",
-        "[Sq1] Sq1",
-        "[Sq2] Sq2",
-        "[Wav] Wave",
-        "[Nse] Noise",
-        "[Cry] CryV",
-        "[Spl] Split",
-        "[Spl*] SplAll",
+        "0 [DS] Direct",
+        "1 [Sq1] Sq1",
+        "2 [Sq2] Sq2",
+        "3 [Wav] Wave",
+        "4 [Nse] Noise",
+        "5 [Cry] CryV",
+        "6 [Spl] Split",
+        "7 [Spl*] SplAll",
     ]);
 });

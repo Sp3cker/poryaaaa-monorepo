@@ -94,7 +94,7 @@ function voiceFamilyTag(typeCode: number): string {
 }
 
 function formatVoiceLabel(slot: Slot): string {
-  return `[${voiceFamilyTag(slot.typeCode)}] ${slot.name}`;
+  return `${slot.program} [${voiceFamilyTag(slot.typeCode)}] ${slot.name}`;
 }
 
 function parseSlots(raw: unknown): Slot[] {

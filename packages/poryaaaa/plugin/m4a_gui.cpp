@@ -148,6 +148,11 @@ struct M4AGuiState
     ImFont* boldFont;
     const clap_host_t* host;
 
+    /* Current plugin window size (px), updated each rendered frame so dialogs
+     * can size themselves to fit whatever the host gave us. */
+    uint32_t winWidth = 0;
+    uint32_t winHeight = 0;
+
     /* Currently displayed settings */
     M4AGuiSettings settings;
 
@@ -356,6 +361,19 @@ static void render_general_tab(M4AGuiState* gui)
     const char* rootLabel = gui->projectRootBuf[0] ? gui->projectRootBuf : "Choose Project Root";
     if (project_root_button(rootLabel, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
         open_project_root_browser(gui->projectRootBrowser, gui->projectRootBuf);
+    /* Keep the folder picker inside the plugin window: SetWindowSize on the
+     * browser only applies once (ImGuiCond_FirstUseEver), so it can't track a
+     * host resize. Constrain the popup to the live window size every frame
+     * instead. Gated on IsOpened() so the constraint never leaks to the next
+     * window that calls Begin; the first frame is covered by SetWindowSize. */
+    if (gui->projectRootBrowser.IsOpened())
+    {
+        const float maxW = (gui->winWidth > 0) ? (float)gui->winWidth * 0.95f : 700.0f;
+        const float maxH = (gui->winHeight > 0) ? (float)gui->winHeight * 0.95f : 450.0f;
+        const float minW = (maxW < 240.0f) ? maxW : 240.0f;
+        const float minH = (maxH < 160.0f) ? maxH : 160.0f;
+        ImGui::SetNextWindowSizeConstraints(ImVec2(minW, minH), ImVec2(maxW, maxH));
+    }
     display_project_root_browser(gui->projectRootBrowser);
     if (gui->projectRootBrowser.HasSelected())
     {
@@ -783,6 +801,9 @@ static void render_recorder_tab(M4AGuiState* gui)
 
 static void render_frame(M4AGuiState* gui, uint32_t width, uint32_t height)
 {
+    gui->winWidth = width;
+    gui->winHeight = height;
+
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2((float)width, (float)height));
 
