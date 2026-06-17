@@ -26,7 +26,6 @@ typedef struct
     const SymbolMap* dsMap;
     const SymbolMap* pwMap;
     const ProjectDiscovery* disc;
-    VoicegroupProjectState* state;
     bool allocationFailed;
 } ProjectStateRead;
 
@@ -57,35 +56,6 @@ static const char* cgb_name(uint8_t typeCode)
     if (typeCode == VOICE_NOISE || typeCode == VOICE_NOISE_ALT)
         return typeCode == VOICE_NOISE_ALT ? "Noise (alt)" : "Noise";
     return typeCode == VOICE_PROGRAMMABLE_WAVE_ALT ? "ProgWave (alt)" : "ProgWave";
-}
-
-static int arg_count(const char* args)
-{
-    int count = 0;
-    const char* p = args;
-    while (*p)
-    {
-        while (*p && (isspace((unsigned char)*p) || *p == ','))
-            p++;
-        if (!*p)
-            break;
-        count++;
-        p += strcspn(p, ",");
-    }
-    return count;
-}
-
-static bool validate_macro_args(const VoicegroupMacro* macro, const char* args, ProjectStateRead* read)
-{
-    const int count = arg_count(args);
-    bool ok = count >= macro->minArgs && count <= macro->maxArgs;
-    if (!ok && read->state->diagnosticCount < VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS)
-        snprintf(read->state->diagnostics[read->state->diagnosticCount++],
-                 VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN,
-                 "%s expects valid arguments, got %d field(s)",
-                 macro->keyword,
-                 count);
-    return ok;
 }
 
 static void line_comment(const char* line, char out[VG_MAX_VOICE_SAMPLE_NAME])
@@ -127,7 +97,10 @@ static bool collect_drumset_pads(const char* vgSymbol, VoicegroupProjectStateSlo
     VoicegroupProjectState nested;
     memset(&nested, 0, sizeof(nested));
     if (!read_state_by_name(name, read, &nested))
-        return true;
+    {
+        voicegroup_project_state_free(&nested);
+        return false;
+    }
 
     int count = 0;
     for (int note = 0; note < VOICEGROUP_SIZE; note++)
@@ -181,18 +154,8 @@ static bool parse_voice_line(const char* rawLine, VoicegroupProjectStateSlot* sl
     const VoicegroupMacro* macro = NULL;
     const char* args = NULL;
     if (!vg_voice_macro_match(trimmed, &macro, &args))
-    {
-        if ((strncmp(trimmed, "voice_", 6) == 0 || strncmp(trimmed, "cry", 3) == 0) &&
-            read->state->diagnosticCount < VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS)
-            snprintf(read->state->diagnostics[read->state->diagnosticCount++],
-                     VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN,
-                     "unsupported voicegroup syntax: %s",
-                     trimmed);
         return true;
-    }
     uint8_t typeCode = macro->typeCode;
-    if (!validate_macro_args(macro, args, read))
-        return true;
     if (typeCode == VOICE_DIRECTSOUND || typeCode == VOICE_DIRECTSOUND_ALT || typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE)
         set_sample_slot(slot, typeCode, args, read->dsMap, 2);
     else if (typeCode == VOICE_PROGRAMMABLE_WAVE || typeCode == VOICE_PROGRAMMABLE_WAVE_ALT)
@@ -232,7 +195,7 @@ static bool read_state_by_name(const char* voicegroupName, ProjectStateRead* rea
         if (lines[i][0] && !parse_voice_line(lines[i], &out->slots[i], read))
             return false;
 
-    return !read->allocationFailed && read->state->diagnosticCount == 0;
+    return !read->allocationFailed;
 }
 
 void voicegroup_project_state_free(VoicegroupProjectState* state)
@@ -242,13 +205,6 @@ void voicegroup_project_state_free(VoicegroupProjectState* state)
     for (int i = 0; i < VOICEGROUP_SIZE; i++)
         free(state->slots[i].drumset);
     memset(state, 0, sizeof(*state));
-}
-
-static void free_slots_only(VoicegroupProjectState* state)
-{
-    for (int i = 0; i < VOICEGROUP_SIZE; i++)
-        free(state->slots[i].drumset);
-    memset(state->slots, 0, sizeof(state->slots));
 }
 
 bool voicegroup_project_state_collect(const char* projectRoot,
@@ -269,7 +225,7 @@ bool voicegroup_project_state_collect(const char* projectRoot,
     vg_symbol_map_init(&dsMap);
     vg_symbol_map_init(&pwMap);
     bool ok = vg_parse_direct_sound_data(disc, &dsMap) && vg_parse_prog_wave_data(disc, &pwMap);
-    ProjectStateRead read = {.dsMap = &dsMap, .pwMap = &pwMap, .disc = disc, .state = out};
+    ProjectStateRead read = {.dsMap = &dsMap, .pwMap = &pwMap, .disc = disc};
     if (ok)
         ok = read_state_by_name(voicegroupName, &read, out);
 
@@ -277,7 +233,7 @@ bool voicegroup_project_state_collect(const char* projectRoot,
     vg_symbol_map_free(&pwMap);
     free(disc);
     if (!ok)
-        free_slots_only(out);
+        voicegroup_project_state_free(out);
     return ok;
 }
 
@@ -373,9 +329,9 @@ static void write_slots(FILE* f, const VoicegroupProjectState* state)
     }
 }
 
-bool voicegroup_project_state_write_default(const char* projectRoot,
-                                            const char* voicegroupName,
-                                            const VoicegroupProjectState* state)
+bool voicegroup_project_state_write(const char* projectRoot,
+                                    const char* voicegroupName,
+                                    const VoicegroupProjectState* state)
 {
     if (!projectRoot || !voicegroupName || !state)
         return false;

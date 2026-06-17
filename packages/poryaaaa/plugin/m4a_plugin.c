@@ -70,6 +70,7 @@ static const char* s_pluginLogPath = NULL;
 
 static void plugin_apply_engine_settings(M4APluginData* data);
 static void plugin_reapply_engine_state(M4APluginData* data);
+static void plugin_log(const char* fmt, ...);
 
 /*
  * Load settings from poryaaaa.cfg placed next to the .clap file.
@@ -202,12 +203,26 @@ static void plugin_reapply_engine_state(M4APluginData* data)
         m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
 }
 
+static void plugin_clear_voicegroup(M4APluginData* data)
+{
+    if (data->loadedVg)
+        voicegroup_free(data->loadedVg);
+    data->loadedVg = NULL;
+    memset(data->originalVoices, 0, sizeof(data->originalVoices));
+    memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+    m4a_engine_set_voicegroup(&data->engine, NULL);
+}
+
 static void plugin_write_voicegroup_project_state(M4APluginData* data)
 {
     VoicegroupProjectState state;
+    memset(&state, 0, sizeof(state));
     if (!voicegroup_project_state_collect(data->projectRoot, data->voicegroupName, &data->loaderConfig, &state))
-        return;
-    voicegroup_project_state_write_default(data->projectRoot, data->voicegroupName, &state);
+    {
+        plugin_log("voicegroup project state collect failed: root=%s name=%s", data->projectRoot, data->voicegroupName);
+    }
+    else if (!voicegroup_project_state_write(data->projectRoot, data->voicegroupName, &state))
+        plugin_log("voicegroup project state write failed: root=%s name=%s", data->projectRoot, data->voicegroupName);
     voicegroup_project_state_free(&state);
 }
 
@@ -316,16 +331,15 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
             m4a_params_sync_to_engine(data);
             plugin_write_voicegroup_project_state(data);
         }
-        else if (data->loadedVg)
+        else
         {
-            m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-            m4a_params_sync_to_engine(data);
+            plugin_log("voicegroup load failed: root=%s name=%s", data->projectRoot, data->voicegroupName);
+            plugin_clear_voicegroup(data);
         }
     }
     else if (data->loadedVg)
     {
-        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-        m4a_params_sync_to_engine(data);
+        plugin_clear_voicegroup(data);
     }
 
     data->activated = true;

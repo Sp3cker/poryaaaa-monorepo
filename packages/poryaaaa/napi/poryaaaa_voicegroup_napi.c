@@ -34,12 +34,11 @@ static void set_named(napi_env env, napi_value obj, const char* name, napi_value
     napi_set_named_property(env, obj, name, value);
 }
 
-static napi_value make_diagnostics(napi_env env, const VoicegroupProjectState* state)
+static napi_value make_diagnostics(napi_env env, const char* text)
 {
     napi_value array;
-    napi_create_array_with_length(env, (size_t)state->diagnosticCount, &array);
-    for (int i = 0; i < state->diagnosticCount; i++)
-        napi_set_element(env, array, (uint32_t)i, make_string(env, state->diagnostics[i]));
+    napi_create_array_with_length(env, 1, &array);
+    napi_set_element(env, array, 0, make_string(env, text));
     return array;
 }
 
@@ -88,7 +87,9 @@ static napi_value parse_voicegroup(napi_env env, napi_callback_info info)
 
     VoicegroupProjectState state;
     memset(&state, 0, sizeof(state));
-    bool parsed = voicegroup_project_state_collect(root, bank, NULL, &state);
+    LoadedVoiceGroup* vg = voicegroup_load(root, bank, NULL);
+    bool parsed = vg && voicegroup_project_state_collect(root, bank, NULL, &state);
+    voicegroup_free(vg);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -96,7 +97,7 @@ static napi_value parse_voicegroup(napi_env env, napi_callback_info info)
     if (parsed)
         set_named(env, result, "slots", make_slots(env, &state));
     else
-        set_named(env, result, "diagnostics", make_diagnostics(env, &state));
+        set_named(env, result, "diagnostics", make_diagnostics(env, "failed to parse voicegroup"));
 
     voicegroup_project_state_free(&state);
     return result;

@@ -27,14 +27,9 @@ extern "C"
         int drumsetCount;
     } VoicegroupProjectStateSlot;
 
-#define VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS 16
-#define VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN 256
-
     typedef struct
     {
         VoicegroupProjectStateSlot slots[VOICEGROUP_SIZE];
-        char diagnostics[VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS][VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN];
-        int diagnosticCount;
     } VoicegroupProjectState;
 
     bool voicegroup_project_state_collect(const char* projectRoot,
@@ -42,9 +37,9 @@ extern "C"
                                           const VoicegroupLoaderConfig* config,
                                           VoicegroupProjectState* out);
 
-    bool voicegroup_project_state_write_default(const char* projectRoot,
-                                                const char* voicegroupName,
-                                                const VoicegroupProjectState* state);
+    bool voicegroup_project_state_write(const char* projectRoot,
+                                        const char* voicegroupName,
+                                        const VoicegroupProjectState* state);
 
     bool voicegroup_project_state_default_path(char* out, size_t outSize);
 

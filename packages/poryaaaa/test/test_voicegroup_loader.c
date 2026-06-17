@@ -190,7 +190,7 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
 #    endif
 #endif
 
-    ASSERT(voicegroup_project_state_write_default(root, "main", &state), "project state writer succeeds");
+    ASSERT(voicegroup_project_state_write(root, "main", &state), "project state writer succeeds");
     ASSERT(read_text_file(statePath, output, sizeof(output)), "state output reads");
     ASSERT(strstr(output, "\"typeCode\": 128") != NULL, "drumset slot writes keysplit-all typeCode");
     ASSERT(strstr(output, "\"drumset\"") != NULL, "drumset key is written");
@@ -209,9 +209,9 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
     remove_dir(root);
 }
 
-static void test_voicegroup_project_state_rejects_bad_voice_macro(void)
+static void test_voicegroup_loader_rejects_bad_voice_macro(void)
 {
-    printf("Testing voicegroup project state: malformed voice macro reports diagnostics...\n");
+    printf("Testing voicegroup loader: malformed voice macro fails parse...\n");
 
     const char* root = "poryaaaa_state_bad_macro";
     const char* soundDir = "poryaaaa_state_bad_macro/sound";
@@ -227,11 +227,32 @@ static void test_voicegroup_project_state_rejects_bad_voice_macro(void)
                            "\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"),
            "bad voicegroup writes");
 
+    LoadedVoiceGroup* vg = voicegroup_load(root, "main", NULL);
+    ASSERT(vg == NULL, "bad voicegroup load fails");
+
+    remove(mainPath);
+    remove_dir(voicegroupDir);
+    remove_dir(soundDir);
+    remove_dir(root);
+}
+
+static void test_voicegroup_project_state_rejects_missing_drumset(void)
+{
+    printf("Testing voicegroup project state: missing drumset fails collection...\n");
+
+    const char* root = "poryaaaa_state_missing_drumset";
+    const char* soundDir = "poryaaaa_state_missing_drumset/sound";
+    const char* voicegroupDir = "poryaaaa_state_missing_drumset/sound/voicegroups";
+    const char* mainPath = "poryaaaa_state_missing_drumset/sound/voicegroups/main.inc";
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(voicegroupDir);
+
+    ASSERT(write_text_file(mainPath, "\tvoice_keysplit_all voicegroup_missing @ Missing\n"), "main voicegroup writes");
+
     VoicegroupProjectState state;
-    ASSERT(!voicegroup_project_state_collect(root, "main", NULL, &state), "bad voicegroup collection fails");
-    ASSERT(state.diagnosticCount == 2, "both bad voice lines report diagnostics");
-    ASSERT(strstr(state.diagnostics[0], "voice_directsound") != NULL, "malformed macro diagnostic names macro");
-    ASSERT(strstr(state.diagnostics[1], "voice_directsounnd") != NULL, "unknown macro diagnostic names line");
+    ASSERT(!voicegroup_project_state_collect(root, "main", NULL, &state), "missing drumset collection fails");
 
     remove(mainPath);
     remove_dir(voicegroupDir);
@@ -478,7 +499,8 @@ void test_voicegroup_loader_run_all(void)
     test_voice_macro_match_uses_ordered_table();
     test_voicegroup_project_state_default_path();
     test_voicegroup_project_state_writes_drumset_without_loading_samples();
-    test_voicegroup_project_state_rejects_bad_voice_macro();
+    test_voicegroup_loader_rejects_bad_voice_macro();
+    test_voicegroup_project_state_rejects_missing_drumset();
     test_voicegroup_project_state_marks_defined_source_slots();
     test_voicegroup_symbol_map_growth();
     test_voicegroup_bad_asset_examples();

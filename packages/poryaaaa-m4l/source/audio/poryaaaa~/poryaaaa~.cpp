@@ -191,7 +191,6 @@ extern "C" void ext_main(void* r)
     CLASS_ATTR_FILTER_CLIP(c, "analogfilter", 0, 1);
     CLASS_ATTR_SAVE(c, "analogfilter", 0);
 
-
     class_dspinit(c);
     class_register(CLASS_BOX, c);
     porya_class = c;
@@ -800,6 +799,17 @@ static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
         char msg[512];
         snprintf(msg, sizeof(msg), "voicegroup load failed: root=%s name=%s", root->s_name, name->s_name);
         object_error((t_object*)x, "%s", msg);
+        m4a_engine_set_voicegroup(&x->engine, NULL);
+#if defined(M4A_DRIVER_V2)
+        m4a_driver_set_voicegroup(x->m4a_v2, NULL);
+#endif
+        if (x->loadedVg)
+        {
+            voicegroup_free(x->loadedVg);
+            x->loadedVg = NULL;
+        }
+        x->vgRoot = gensym("");
+        x->vgName = gensym("");
         return;
     }
 
@@ -910,4 +920,3 @@ static t_max_err analog_set(t_porya* x, t_object* attr, long ac, t_atom* av)
 #endif
     return MAX_ERR_NONE;
 }
-

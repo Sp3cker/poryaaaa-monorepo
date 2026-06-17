@@ -158,8 +158,7 @@ static bool is_voice_macro_line(const char* trimmed)
             (trimmed[len] == '\0' || trimmed[len] == ' ' || trimmed[len] == '\t'))
             return true;
     }
-    return (strncmp(trimmed, "voice_", 6) == 0 && strncmp(trimmed, "voice_group", 11) != 0) ||
-           strncmp(trimmed, "cry", 3) == 0;
+    return false;
 }
 
 static void strip_line_ending(char* text)

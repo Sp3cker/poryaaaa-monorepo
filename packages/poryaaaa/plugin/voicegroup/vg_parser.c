@@ -276,6 +276,7 @@ static ToneData* load_sub_voicegroup(const char* vgSymbol, ParseCtx* ctx)
     int rc = parse_voicegroup_file(loc.filePath, startLabel, ctx);
     if (rc != 0)
     {
+        ctx->allocationFailed = true;
         free(subVg);
         memcpy(ctx->vg->voices, savedVoices, sizeof(savedVoices));
         memcpy(ctx->vg->voiceSampleNames, savedNames, sizeof(savedNames));
@@ -297,13 +298,13 @@ static ToneData* load_sub_voicegroup(const char* vgSymbol, ParseCtx* ctx)
 
 /* ---- Per-macro-kind handlers ---- */
 
-static void handle_directsound(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_directsound(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     int key, pan, attack, decay, sustain, release;
     char sampleSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%d, %d, %[^,], %d, %d, %d, %d", &key, &pan, sampleSymbol, &attack, &decay, &sustain, &release) !=
         7)
-        return;
+        return false;
 
     vg_rtrim(sampleSymbol);
     td->type = voiceType;
@@ -320,15 +321,16 @@ static void handle_directsound(ToneData* td, uint8_t voiceType, const char* args
         td->wav = wd;
         record_sample_name(ctx, td, ctx->dsMap, sampleSymbol);
     }
+    return true;
 }
 
-static void handle_square_1(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_square_1(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     int key, pan, sweep, duty, attack, decay, sustain, release;
     if (sscanf(
             args, "%d, %d, %d, %d, %d, %d, %d, %d", &key, &pan, &sweep, &duty, &attack, &decay, &sustain, &release) !=
         8)
-        return;
+        return false;
 
     td->type = voiceType;
     td->key = (uint8_t)key;
@@ -343,13 +345,14 @@ static void handle_square_1(ToneData* td, uint8_t voiceType, const char* args, P
      * display name so state.json (and downstream UIs like ccomidi)
      * surface them instead of dropping empty-name slots. */
     set_slot_name(ctx, td, voiceType == VOICE_SQUARE_1_ALT ? "Square 1 (alt)" : "Square 1");
+    return true;
 }
 
-static void handle_square_2(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_square_2(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     int key, pan, duty, attack, decay, sustain, release;
     if (sscanf(args, "%d, %d, %d, %d, %d, %d, %d", &key, &pan, &duty, &attack, &decay, &sustain, &release) != 7)
-        return;
+        return false;
 
     td->type = voiceType;
     td->key = (uint8_t)key;
@@ -361,14 +364,15 @@ static void handle_square_2(ToneData* td, uint8_t voiceType, const char* args, P
     td->release = (uint8_t)(release & 0x07);
 
     set_slot_name(ctx, td, voiceType == VOICE_SQUARE_2_ALT ? "Square 2 (alt)" : "Square 2");
+    return true;
 }
 
-static void handle_prog_wave(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_prog_wave(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     int key, pan, attack, decay, sustain, release;
     char waveSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%d, %d, %[^,], %d, %d, %d, %d", &key, &pan, waveSymbol, &attack, &decay, &sustain, &release) != 7)
-        return;
+        return false;
 
     vg_rtrim(waveSymbol);
     td->type = voiceType;
@@ -391,13 +395,14 @@ static void handle_prog_wave(ToneData* td, uint8_t voiceType, const char* args, 
          * up in state.json as a Programmable Wave slot. */
         set_slot_name(ctx, td, voiceType == VOICE_PROGRAMMABLE_WAVE_ALT ? "ProgWave (alt)" : "ProgWave");
     }
+    return true;
 }
 
-static void handle_noise(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_noise(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     int key, pan, period, attack, decay, sustain, release;
     if (sscanf(args, "%d, %d, %d, %d, %d, %d, %d", &key, &pan, &period, &attack, &decay, &sustain, &release) != 7)
-        return;
+        return false;
 
     td->type = voiceType;
     td->key = (uint8_t)key;
@@ -408,14 +413,15 @@ static void handle_noise(ToneData* td, uint8_t voiceType, const char* args, Pars
     td->release = (uint8_t)(release & 0x07);
 
     set_slot_name(ctx, td, voiceType == VOICE_NOISE_ALT ? "Noise (alt)" : "Noise");
+    return true;
 }
 
-static void handle_keysplit(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_keysplit(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     char vgSymbol[VG_MAX_SYMBOL_LEN];
     char ksSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%[^,], %s", vgSymbol, ksSymbol) != 2)
-        return;
+        return false;
 
     /* Capture before recursing — load_sub_voicegroup overwrites lineComment. */
     char displayName[VG_MAX_VOICE_SAMPLE_NAME];
@@ -437,24 +443,25 @@ static void handle_keysplit(ToneData* td, uint8_t voiceType, const char* args, P
         if (!table)
         {
             ctx->allocationFailed = true;
-            return;
+            return true;
         }
         memcpy(table, ksDef->table, 128);
         if (!register_keysplittable(ctx->vg, table))
         {
             ctx->allocationFailed = true;
             free(table);
-            return;
+            return true;
         }
         td->keySplitTable = table;
     }
+    return true;
 }
 
-static void handle_keysplit_all(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_keysplit_all(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     char vgSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%s", vgSymbol) != 1)
-        return;
+        return false;
 
     char displayName[VG_MAX_VOICE_SAMPLE_NAME];
     if (ctx->lineComment && ctx->lineComment[0])
@@ -466,13 +473,14 @@ static void handle_keysplit_all(ToneData* td, uint8_t voiceType, const char* arg
     td->type = voiceType;
     td->subGroup = load_sub_voicegroup(vgSymbol, ctx);
     set_slot_name(ctx, td, displayName);
+    return true;
 }
 
-static void handle_cry(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
+static bool handle_cry(ToneData* td, uint8_t voiceType, const char* args, ParseCtx* ctx)
 {
     char sampleSymbol[VG_MAX_SYMBOL_LEN];
     if (sscanf(args, "%s", sampleSymbol) != 1)
-        return;
+        return false;
     vg_rtrim(sampleSymbol);
 
     td->type = voiceType;
@@ -488,47 +496,7 @@ static void handle_cry(ToneData* td, uint8_t voiceType, const char* args, ParseC
         td->wav = wd;
         record_sample_name(ctx, td, ctx->dsMap, sampleSymbol);
     }
-}
-
-/*
- * Dispatch one voice macro line to its handler. Returns 1 if a macro
- * was consumed (caller should advance voiceIndex), 0 otherwise.
- */
-static int dispatch_voice_macro(const char* trimmed, ToneData* td, ParseCtx* ctx)
-{
-    const VoicegroupMacro* macro = NULL;
-    const char* args = NULL;
-    if (!vg_voice_macro_match(trimmed, &macro, &args))
-        return 0;
-
-    switch (macro->kind)
-    {
-    case VG_MACRO_DIRECTSOUND:
-        handle_directsound(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_SQUARE_1:
-        handle_square_1(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_SQUARE_2:
-        handle_square_2(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_PROG_WAVE:
-        handle_prog_wave(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_NOISE:
-        handle_noise(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_KEYSPLIT:
-        handle_keysplit(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_KEYSPLIT_ALL:
-        handle_keysplit_all(td, macro->typeCode, args, ctx);
-        break;
-    case VG_MACRO_CRY:
-        handle_cry(td, macro->typeCode, args, ctx);
-        break;
-    }
-    return 1;
+    return true;
 }
 
 /* ---- Top-level file parser ---- */
@@ -560,8 +528,52 @@ static int consume_voice_line(char* trimmed, int* voiceIndex, int* voicesInSecti
     }
 
     ToneData* td = &ctx->vg->voices[*voiceIndex];
-    if (!dispatch_voice_macro(trimmed, td, ctx))
+    const VoicegroupMacro* macro = NULL;
+    const char* args = NULL;
+    if (!vg_voice_macro_match(trimmed, &macro, &args))
+    {
+        if ((strncmp(trimmed, "voice_", 6) == 0 && strncmp(trimmed, "voice_group", 11) != 0) ||
+            strncmp(trimmed, "cry", 3) == 0)
+        {
+            vg_err("malformed voice macro: %s", trimmed);
+            return -1;
+        }
         return 0;
+    }
+
+    bool ok = false;
+    switch (macro->kind)
+    {
+    case VG_MACRO_DIRECTSOUND:
+        ok = handle_directsound(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_SQUARE_1:
+        ok = handle_square_1(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_SQUARE_2:
+        ok = handle_square_2(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_PROG_WAVE:
+        ok = handle_prog_wave(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_NOISE:
+        ok = handle_noise(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_KEYSPLIT:
+        ok = handle_keysplit(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_KEYSPLIT_ALL:
+        ok = handle_keysplit_all(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_CRY:
+        ok = handle_cry(td, macro->typeCode, args, ctx);
+        break;
+    }
+    if (!ok)
+    {
+        vg_err("malformed voice macro: %s", trimmed);
+        return -1;
+    }
     if (ctx->allocationFailed)
         return -1;
     (*voiceIndex)++;
