@@ -1,9 +1,12 @@
 #include "test_assert.h"
 
 #include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/voicegroup_project_state.h"
+#include "voicegroup/vg_voice_macro.h"
 #include "voicegroup/vg_wav.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -12,6 +15,63 @@
 #else
 #    include <unistd.h>
 #endif
+
+static void remove_dir(const char* path);
+
+static void set_test_env(const char* name, const char* value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static const char* test_state_path(void)
+{
+#ifdef _WIN32
+    return "poryaaaa_state_test_home\\poryaaaa\\projects.json";
+#elif defined(__APPLE__)
+    return "poryaaaa_state_test_home/Library/Application Support/poryaaaa/projects.json";
+#else
+    return "poryaaaa_state_test_home/poryaaaa/projects.json";
+#endif
+}
+
+static void cleanup_test_state_home(void)
+{
+#ifdef _WIN32
+    remove_dir("poryaaaa_state_test_home\\poryaaaa");
+#elif defined(__APPLE__)
+    remove_dir("poryaaaa_state_test_home/Library/Application Support/poryaaaa");
+    remove_dir("poryaaaa_state_test_home/Library/Application Support");
+    remove_dir("poryaaaa_state_test_home/Library");
+#else
+    remove_dir("poryaaaa_state_test_home/poryaaaa");
+#endif
+    remove_dir("poryaaaa_state_test_home");
+}
+
+static void test_voice_macro_match_uses_ordered_table(void)
+{
+    printf("Testing voice macro matching: ordered table...\n");
+    const VoicegroupMacro* macro = NULL;
+    const char* args = NULL;
+    ASSERT(vg_voice_macro_match("voice_directsound_no_resample 60, 0, Sample, 0, 0, 0, 0", &macro, &args),
+           "specific directsound macro matches");
+    ASSERT(macro && macro->typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE, "specific directsound macro wins");
+    ASSERT(strcmp(args, "60, 0, Sample, 0, 0, 0, 0") == 0, "macro args skip keyword whitespace");
+    ASSERT(!vg_voice_macro_match("voice_noise_altitude 60", &macro, &args), "macro match requires whitespace boundary");
+}
+
+static void test_voicegroup_project_state_default_path(void)
+{
+    printf("Testing voicegroup project state: default path helper...\n");
+    char path[512];
+    set_test_env("HOME", "poryaaaa_state_test_home");
+    ASSERT(voicegroup_project_state_default_path(path, sizeof(path)), "default path resolves");
+    ASSERT(strcmp(path, test_state_path()) == 0, "default path matches projects.json contract");
+}
 
 static bool write_bytes(const char* path, const unsigned char* bytes, size_t count)
 {
@@ -86,6 +146,67 @@ static bool export_has_exact_layout(const char* text, const char* voicegroupName
     }
 
     return strtok(NULL, "\n") == NULL;
+}
+
+static void test_voicegroup_project_state_writes_drumset_without_loading_samples(void)
+{
+    printf("Testing voicegroup project state: drumset metadata without sample loading...\n");
+
+    const char* root = "poryaaaa_state_project";
+    const char* soundDir = "poryaaaa_state_project/sound";
+    const char* voicegroupDir = "poryaaaa_state_project/sound/voicegroups";
+    const char* dataPath = "poryaaaa_state_project/sound/direct_sound_data.inc";
+    const char* mainPath = "poryaaaa_state_project/sound/voicegroups/main.inc";
+    const char* drumPath = "poryaaaa_state_project/sound/voicegroups/drumset.inc";
+    const char* statePath = test_state_path();
+    char output[8192];
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(voicegroupDir);
+
+    ASSERT(write_text_file(dataPath,
+                           "DirectSoundWaveData_Kick::\n"
+                           "\t.incbin \"sound/direct_sound/kick.bin\"\n"
+                           "DirectSoundWaveData_Snare::\n"
+                           "\t.incbin \"sound/direct_sound/snare.bin\"\n"),
+           "direct sound data source writes");
+    ASSERT(write_text_file(mainPath, "\tvoice_keysplit_all voicegroup_drumset @ Drums\n"), "main voicegroup writes");
+    ASSERT(write_text_file(drumPath,
+                           "\tvoice_group drumset, 36\n"
+                           "\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 1, 2, 3, 4\n"
+                           "\tvoice_directsound 62, 0, DirectSoundWaveData_Snare, 1, 2, 3, 4\n"),
+           "drumset voicegroup writes");
+
+    VoicegroupProjectState state;
+    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "project state collection succeeds");
+
+#ifdef _WIN32
+    set_test_env("APPDATA", "poryaaaa_state_test_home");
+#else
+    set_test_env("HOME", "poryaaaa_state_test_home");
+#    if !defined(__APPLE__)
+    set_test_env("XDG_CONFIG_HOME", "poryaaaa_state_test_home");
+#    endif
+#endif
+
+    ASSERT(voicegroup_project_state_write_default(root, "main", &state), "project state writer succeeds");
+    ASSERT(read_text_file(statePath, output, sizeof(output)), "state output reads");
+    ASSERT(strstr(output, "\"typeCode\": 128") != NULL, "drumset slot writes keysplit-all typeCode");
+    ASSERT(strstr(output, "\"drumset\"") != NULL, "drumset key is written");
+    ASSERT(strstr(output, "{\"note\": 36, \"name\": \"kick.bin\"}") != NULL, "first drum pad writes note/name");
+    ASSERT(strstr(output, "{\"note\": 37, \"name\": \"snare.bin\"}") != NULL, "second drum pad writes note/name");
+    ASSERT(strstr(output, "\"attack\"") == NULL, "drum pad entries do not write extra fields");
+
+    voicegroup_project_state_free(&state);
+    remove(statePath);
+    cleanup_test_state_home();
+    remove(drumPath);
+    remove(mainPath);
+    remove(dataPath);
+    remove_dir(voicegroupDir);
+    remove_dir(soundDir);
+    remove_dir(root);
 }
 
 static void test_voicegroup_symbol_map_growth(void)
@@ -228,9 +349,9 @@ static void test_voicegroup_channel_export_per_file(void)
     remove_dir(root);
 }
 
-static void test_voicegroup_channel_export_monolithic(void)
+static void test_voicegroup_channel_export_combined(void)
 {
-    printf("Testing voicegroup channel export: monolithic source...\n");
+    printf("Testing voicegroup channel export: combined source...\n");
 
     const char* root = "poryaaaa_channel_export_mono_test";
     const char* soundDir = "poryaaaa_channel_export_mono_test/sound";
@@ -251,7 +372,7 @@ static void test_voicegroup_channel_export_monolithic(void)
                            "\tvoice_programmable_wave 64, 0, wave_a, 1, 2, 3, 4 @ wave a\n"
                            "\tvoice_keysplit voicegroup_main_keysplit, keysplit_main @ split\n"
                            "\t.align 2\n"),
-           "monolithic voicegroup source writes");
+           "combined voicegroup source writes");
 
     for (int i = 0; i < 12; i++)
         programs[i] = 127;
@@ -259,10 +380,10 @@ static void test_voicegroup_channel_export_monolithic(void)
     programs[1] = 5;
 
     ASSERT(voicegroup_channel_export_default_path(root, "main", outputPath, sizeof(outputPath)),
-           "monolithic default channel export path is built");
+           "combined default channel export path is built");
     ASSERT(voicegroup_export_channel_remap(root, "main", NULL, programs, outputPath),
-           "monolithic channel export succeeds");
-    ASSERT(read_text_file(outputPath, output, sizeof(output)), "monolithic channel export output reads");
+           "combined channel export succeeds");
+    ASSERT(read_text_file(outputPath, output, sizeof(output)), "combined channel export output reads");
     {
         const char* placeholder = "voice_square_1 60, 0, 0, 0, 0, 0, 0, 0 @ unused";
         const char* expected[12] = {
@@ -280,7 +401,7 @@ static void test_voicegroup_channel_export_monolithic(void)
             placeholder,
         };
         ASSERT(export_has_exact_layout(output, "main", expected),
-               "monolithic export writes header and exactly 12 tab-indented voices in channel order");
+               "combined export writes header and exactly 12 tab-indented voices in channel order");
     }
 
     remove(outputPath);
@@ -292,8 +413,11 @@ static void test_voicegroup_channel_export_monolithic(void)
 
 void test_voicegroup_loader_run_all(void)
 {
+    test_voice_macro_match_uses_ordered_table();
+    test_voicegroup_project_state_default_path();
+    test_voicegroup_project_state_writes_drumset_without_loading_samples();
     test_voicegroup_symbol_map_growth();
     test_voicegroup_bad_asset_examples();
     test_voicegroup_channel_export_per_file();
-    test_voicegroup_channel_export_monolithic();
+    test_voicegroup_channel_export_combined();
 }

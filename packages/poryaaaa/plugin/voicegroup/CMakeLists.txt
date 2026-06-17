@@ -9,10 +9,11 @@ add_library(voicegroup_loader STATIC
     vg_discovery.c
     vg_symbols.c
     vg_keysplit.c
+    vg_source.c
     vg_wav.c
     vg_parser.c
     voicegroup_channel_export.c
-    voicegroup_state.c
+    voicegroup_project_state.c
 )
 if(COMMAND poryaaaa_enable_project_warnings)
     poryaaaa_enable_project_warnings(voicegroup_loader)
@@ -21,3 +22,4 @@ endif()
 # PUBLIC so consumers pick up the "voicegroup/xxx.h" prefix we use
 # throughout the project.
 target_include_directories(voicegroup_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_include_directories(voicegroup_loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../shared)

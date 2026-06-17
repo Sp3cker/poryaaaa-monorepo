@@ -1,6 +1,6 @@
 #include "TextEditFileStore.h"
+#include "projects_json_path.h"
 
-#include <cstdlib>
 #include <utility>
 
 TextEditFileStore::TextEditFileStore() : TextEditFileStore(getDefaultPoryaaaaProjectsJsonFile()) {}
@@ -118,32 +118,8 @@ bool loadTextFileForEditor(const juce::String& path, juce::String& text, juce::S
 
 juce::File getDefaultPoryaaaaProjectsJsonFile()
 {
-#if JUCE_WINDOWS
-    if (const auto* appData = std::getenv("APPDATA"))
-        if (appData[0] != '\0')
-            return juce::File(appData).getChildFile("poryaaaa").getChildFile("projects.json");
-
-    return juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-        .getChildFile("AppData")
-        .getChildFile("Roaming")
-        .getChildFile("poryaaaa")
-        .getChildFile("projects.json");
-#elif JUCE_MAC
-    return juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-        .getChildFile("Library")
-        .getChildFile("Application Support")
-        .getChildFile("poryaaaa")
-        .getChildFile("projects.json");
-#else
-    if (const auto* xdgConfigHome = std::getenv("XDG_CONFIG_HOME"))
-        if (xdgConfigHome[0] != '\0')
-            return juce::File(xdgConfigHome).getChildFile("poryaaaa").getChildFile("projects.json");
-
-    return juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-        .getChildFile(".config")
-        .getChildFile("poryaaaa")
-        .getChildFile("projects.json");
-#endif
+    char path[700];
+    return poryaaaa_projects_json_default_path(path, sizeof(path)) ? juce::File(path) : juce::File();
 }
 
 juce::File getVoicegroupFileForProjectState(const TextEditProjectState& state)

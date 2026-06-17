@@ -193,6 +193,9 @@ target_link_libraries(ccomidi PRIVATE
     ccomidi_gui
     ccomidi_ipc
 )
+target_include_directories(ccomidi PRIVATE
+    ${CCOMIDI_MONOREPO_ROOT}/shared
+)
 
 add_library(ccomidi_legatobend MODULE
     src/plugin/legatobend_plugin.cpp

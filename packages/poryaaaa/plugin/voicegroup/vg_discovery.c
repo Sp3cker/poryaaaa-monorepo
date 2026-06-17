@@ -52,11 +52,11 @@ static int dir_has_voice_macros(const char* dirPath)
 }
 
 /*
- * Heuristic for a "monolithic" voicegroup file — one that packs many
+ * Heuristic for a "combined" voicegroup file — one that packs many
  * voicegroups in a single file with <label>:: delimiters. Used to
  * distinguish that shape from a hub file full of .include directives.
  */
-static int is_monolithic_voicegroup_file(const char* filePath)
+static int is_combined_voicegroup_file(const char* filePath)
 {
     FILE* f = fopen(filePath, "r");
     if (!f)
@@ -126,7 +126,7 @@ static void visit_voicegroup_dirs(const char* dirPath, void* ctx)
 
 /*
  * A config voicegroup path may be either a directory of per-voicegroup
- * .inc files or a single monolithic .inc file. We accept both.
+ * .inc files or a single combined .inc file. We accept both.
  */
 static void apply_voicegroup_path_override(const char* projectRoot, const char* relPath, ProjectDiscovery* out)
 {
@@ -136,7 +136,7 @@ static void apply_voicegroup_path_override(const char* projectRoot, const char* 
     if (vg_is_directory(path))
     {
         pathlist_add(&out->voicegroupDirs, path);
-        /* The dir may also contain monolithic files, so scan its contents. */
+        /* The dir may also contain combined files, so scan its contents. */
         DIR* d = opendir(path);
         if (!d)
             return;
@@ -149,14 +149,14 @@ static void apply_voicegroup_path_override(const char* projectRoot, const char* 
                 continue;
             char fpath[VG_MAX_PATH_LEN];
             snprintf(fpath, sizeof(fpath), "%s%c%s", path, VG_PATH_SEP, ent->d_name);
-            if (is_monolithic_voicegroup_file(fpath))
-                pathlist_add(&out->monolithicVGFiles, fpath);
+            if (is_combined_voicegroup_file(fpath))
+                pathlist_add(&out->combinedVGFiles, fpath);
         }
         closedir(d);
     }
-    else if (vg_file_exists(path) && is_monolithic_voicegroup_file(path))
+    else if (vg_file_exists(path) && is_combined_voicegroup_file(path))
     {
-        pathlist_add(&out->monolithicVGFiles, path);
+        pathlist_add(&out->combinedVGFiles, path);
     }
 }
 
@@ -208,13 +208,13 @@ static void add_standard_voicegroup_dirs(const char* projectRoot, ProjectDiscove
     add_if_dir(projectRoot, "sound/voicegroups/drumsets", &out->voicegroupDirs);
 }
 
-static void check_monolithic_voice_groups_inc(const char* projectRoot, ProjectDiscovery* out)
+static void check_combined_voice_groups_inc(const char* projectRoot, ProjectDiscovery* out)
 {
     char path[VG_MAX_PATH_LEN];
     vg_build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
-    vg_log("discover_project: checking monolithic '%s' exists=%d", path, vg_file_exists(path));
-    if (vg_file_exists(path) && is_monolithic_voicegroup_file(path))
-        pathlist_add(&out->monolithicVGFiles, path);
+    vg_log("discover_project: checking combined '%s' exists=%d", path, vg_file_exists(path));
+    if (vg_file_exists(path) && is_combined_voicegroup_file(path))
+        pathlist_add(&out->combinedVGFiles, path);
 }
 
 /* ---- Entry point ---- */
@@ -236,5 +236,5 @@ void vg_discover_project(const char* projectRoot, const VoicegroupLoaderConfig* 
         scan_dirs_recursive(soundDir, 0, 3, visit_voicegroup_dirs, out);
     vg_log("discover_project: dir scan done, vgDirs=%d", out->voicegroupDirs.count);
 
-    check_monolithic_voice_groups_inc(projectRoot, out);
+    check_combined_voice_groups_inc(projectRoot, out);
 }

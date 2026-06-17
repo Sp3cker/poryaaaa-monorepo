@@ -12,7 +12,7 @@
 #include "m4a_engine.h"
 #include "m4a_engine_recorder.h"
 #include "voicegroup/voicegroup_loader.h"
-#include "voicegroup/voicegroup_state.h"
+#include "voicegroup/voicegroup_project_state.h"
 #include "m4a_gui.h"
 
 #if defined(__clang__)
@@ -202,6 +202,15 @@ static void plugin_reapply_engine_state(M4APluginData* data)
         m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
 }
 
+static void plugin_write_voicegroup_project_state(M4APluginData* data)
+{
+    VoicegroupProjectState state;
+    if (!voicegroup_project_state_collect(data->projectRoot, data->voicegroupName, &data->loaderConfig, &state))
+        return;
+    voicegroup_project_state_write_default(data->projectRoot, data->voicegroupName, &state);
+    voicegroup_project_state_free(&state);
+}
+
 /* ---- Plugin lifecycle ---- */
 
 static bool plugin_init(const clap_plugin_t* plugin)
@@ -305,7 +314,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
             if (data->assetIndex)
                 project_asset_index_apply_overrides(data->assetIndex, data->projectRoot, data->loadedVg);
             m4a_params_sync_to_engine(data);
-            voicegroup_state_write_default(data->projectRoot, data->voicegroupName, data->loadedVg);
+            plugin_write_voicegroup_project_state(data);
         }
         else if (data->loadedVg)
         {
@@ -1004,7 +1013,7 @@ static bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream
         m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
         memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
         memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
-        voicegroup_state_write_default(data->projectRoot, data->voicegroupName, data->loadedVg);
+        plugin_write_voicegroup_project_state(data);
     }
 
     if (data->activated)

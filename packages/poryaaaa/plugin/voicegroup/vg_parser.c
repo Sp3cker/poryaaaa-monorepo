@@ -2,6 +2,8 @@
 #include "vg_alloc.h"
 #include "vg_log.h"
 #include "vg_paths.h"
+#include "vg_source.h"
+#include "vg_voice_macro.h"
 #include "vg_wav.h"
 
 #include "voicegroup_types.h"
@@ -13,18 +15,6 @@
 #include <string.h>
 
 #define INITIAL_CAPACITY 64
-
-/*
- * Where a voicegroup lives on disk. `filePath` is the .inc/.s path.
- * When `label` is non-empty the voicegroup lives inside a monolithic
- * file at `<label>::` rather than being its own file.
- */
-typedef struct
-{
-    char filePath[VG_MAX_PATH_LEN];
-    char label[VG_MAX_SYMBOL_LEN];
-    int found;
-} VoicegroupLocation;
 
 /* ---- Dynamic-array registration helpers ---- */
 /* Each register_* call appends to an owned list on the
@@ -247,199 +237,6 @@ static WaveData* resolve_cry_sample(ParseCtx* ctx, const char* symbol)
     return wd;
 }
 
-/* ---- Voicegroup file location ---- */
-
-/* True iff the last path component of dirPath equals name. */
-static int dir_last_component_is(const char* dirPath, const char* name)
-{
-    size_t dlen = strlen(dirPath);
-    size_t nlen = strlen(name);
-    if (nlen > dlen)
-        return 0;
-    const char* tail = dirPath + dlen - nlen;
-    if (strcmp(tail, name) != 0)
-        return 0;
-    if (tail == dirPath)
-        return 1;
-    char prev = *(tail - 1);
-    return prev == '/' || prev == '\\';
-}
-
-static int set_if_exists(const char* path, VoicegroupLocation* out)
-{
-    if (!vg_file_exists(path))
-        return 0;
-    strncpy(out->filePath, path, VG_MAX_PATH_LEN - 1);
-    out->found = 1;
-    return 1;
-}
-
-/* Try <dir>/<name>.inc then <dir>/<name>.s. Returns 1 if found. */
-static int try_file_in_dir(const char* dir, const char* name, VoicegroupLocation* out)
-{
-    char path[VG_MAX_PATH_LEN];
-    snprintf(path, sizeof(path), "%s%c%s.inc", dir, VG_PATH_SEP, name);
-    if (set_if_exists(path, out))
-        return 1;
-    snprintf(path, sizeof(path), "%s%c%s.s", dir, VG_PATH_SEP, name);
-    return set_if_exists(path, out);
-}
-
-/* Try <dir>/<subdir>/<name>.inc then .s. */
-static int try_file_in_subdir(const char* dir, const char* subdir, const char* name, VoicegroupLocation* out)
-{
-    char path[VG_MAX_PATH_LEN];
-    snprintf(path, sizeof(path), "%s%c%s%c%s.inc", dir, VG_PATH_SEP, subdir, VG_PATH_SEP, name);
-    if (set_if_exists(path, out))
-        return 1;
-    snprintf(path, sizeof(path), "%s%c%s%c%s.s", dir, VG_PATH_SEP, subdir, VG_PATH_SEP, name);
-    return set_if_exists(path, out);
-}
-
-/*
- * Handle the <base>_keysplit / <base>_drumset naming convention.
- * When a voice_keysplit macro references e.g. "petalburg_keysplit",
- * the sub-voicegroup typically lives at
- * sound/voicegroups/keysplits/petalburg.inc. Only dirs whose last
- * path component matches (or dirs that have a "keysplits"/"drumsets"
- * subdir) are searched — searching every voicegroup dir would match
- * petalburg.inc itself and recurse forever.
- */
-static int try_suffix_convention(
-    const char* vgName, const char* suffix, const char* subdir, const ProjectDiscovery* disc, VoicegroupLocation* out)
-{
-    const char* found = strstr(vgName, suffix);
-    if (!found)
-        return 0;
-
-    char baseName[VG_MAX_SYMBOL_LEN];
-    int baseLen = (int)(found - vgName);
-    if (baseLen <= 0 || baseLen >= VG_MAX_SYMBOL_LEN)
-        return 0;
-    memcpy(baseName, vgName, baseLen);
-    baseName[baseLen] = '\0';
-
-    /* <voicegroupDir>/<subdir>/<base>.inc */
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_subdir(disc->voicegroupDirs.paths[i], subdir, baseName, out))
-            return 1;
-
-    /* Directories that ARE the subdir (e.g. ".../keysplits"). */
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-    {
-        if (!dir_last_component_is(disc->voicegroupDirs.paths[i], subdir))
-            continue;
-        if (try_file_in_dir(disc->voicegroupDirs.paths[i], baseName, out))
-            return 1;
-    }
-    return 0;
-}
-
-/*
- * Scan a monolithic file for "<vgName>::" and record its location.
- */
-static int find_in_monolithic_files(const char* vgName, const ProjectDiscovery* disc, VoicegroupLocation* out)
-{
-    char searchLabel[VG_MAX_SYMBOL_LEN + 4];
-    snprintf(searchLabel, sizeof(searchLabel), "%s::", vgName);
-
-    for (int i = 0; i < disc->monolithicVGFiles.count; i++)
-    {
-        FILE* f = fopen(disc->monolithicVGFiles.paths[i], "r");
-        if (!f)
-            continue;
-        char line[VG_MAX_LINE];
-        while (fgets(line, sizeof(line), f))
-        {
-            vg_strip_comment(line);
-            char* trimmed = vg_ltrim(line);
-            if (strstr(trimmed, searchLabel) == trimmed)
-            {
-                strncpy(out->filePath, disc->monolithicVGFiles.paths[i], VG_MAX_PATH_LEN - 1);
-                strncpy(out->label, vgName, VG_MAX_SYMBOL_LEN - 1);
-                out->found = 1;
-                fclose(f);
-                return 1;
-            }
-        }
-        fclose(f);
-    }
-    return 0;
-}
-
-static VoicegroupLocation find_voicegroup(const char* vgName, const ProjectDiscovery* disc)
-{
-    VoicegroupLocation loc;
-    memset(&loc, 0, sizeof(loc));
-
-    /* 1. <dir>/<name>.{inc,s} in every discovered voicegroup dir. */
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_dir(disc->voicegroupDirs.paths[i], vgName, &loc))
-            return loc;
-
-    /* 2. <base>_keysplit / <base>_drumset suffix conventions. */
-    if (try_suffix_convention(vgName, "_keysplit", "keysplits", disc, &loc))
-        return loc;
-    if (try_suffix_convention(vgName, "_drumset", "drumsets", disc, &loc))
-        return loc;
-
-    /* 3. vg_<name>.{inc,s} (eventide convention). */
-    char vgPrefixed[VG_MAX_SYMBOL_LEN];
-    snprintf(vgPrefixed, sizeof(vgPrefixed), "vg_%s", vgName);
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_dir(disc->voicegroupDirs.paths[i], vgPrefixed, &loc))
-            return loc;
-
-    /* 4. Labels inside monolithic voice_groups.inc. */
-    find_in_monolithic_files(vgName, disc, &loc);
-    return loc;
-}
-
-/* ---- Voice macro dispatch ---- */
-
-typedef enum
-{
-    MK_DIRECTSOUND,  /* key, pan, sample_sym, A, D, S, R */
-    MK_SQUARE_1,     /* key, pan, sweep, duty, A, D, S, R */
-    MK_SQUARE_2,     /* key, pan, duty, A, D, S, R */
-    MK_PROG_WAVE,    /* key, pan, wave_sym, A, D, S, R */
-    MK_NOISE,        /* key, pan, period, A, D, S, R */
-    MK_KEYSPLIT,     /* vg_sym, ks_sym */
-    MK_KEYSPLIT_ALL, /* vg_sym */
-    MK_CRY,          /* sample_sym */
-} MacroKind;
-
-typedef struct
-{
-    const char* keyword;
-    uint8_t voiceType;
-    MacroKind kind;
-} VoiceMacro;
-
-/*
- * Match order matters: more specific variants (_no_resample, _alt)
- * MUST come before their shorter base forms so the prefix match
- * doesn't fire early.
- */
-static const VoiceMacro kVoiceMacros[] = {
-    {"voice_directsound_no_resample", VOICE_DIRECTSOUND_NO_RESAMPLE, MK_DIRECTSOUND},
-    {"voice_directsound_alt", VOICE_DIRECTSOUND_ALT, MK_DIRECTSOUND},
-    {"voice_directsound", VOICE_DIRECTSOUND, MK_DIRECTSOUND},
-    {"voice_square_1_alt", VOICE_SQUARE_1_ALT, MK_SQUARE_1},
-    {"voice_square_1", VOICE_SQUARE_1, MK_SQUARE_1},
-    {"voice_square_2_alt", VOICE_SQUARE_2_ALT, MK_SQUARE_2},
-    {"voice_square_2", VOICE_SQUARE_2, MK_SQUARE_2},
-    {"voice_programmable_wave_alt", VOICE_PROGRAMMABLE_WAVE_ALT, MK_PROG_WAVE},
-    {"voice_programmable_wave", VOICE_PROGRAMMABLE_WAVE, MK_PROG_WAVE},
-    {"voice_noise_alt", VOICE_NOISE_ALT, MK_NOISE},
-    {"voice_noise", VOICE_NOISE, MK_NOISE},
-    {"voice_keysplit_all", VOICE_KEYSPLIT_ALL, MK_KEYSPLIT_ALL},
-    {"voice_keysplit", VOICE_KEYSPLIT, MK_KEYSPLIT},
-    {"cry_reverse", VOICE_CRY_REVERSE, MK_CRY},
-    {"cry", VOICE_CRY, MK_CRY},
-    {NULL, 0, 0},
-};
-
 /* Forward declaration: parser and sub-voicegroup loader are mutually
  * recursive (a voice_keysplit references another voicegroup). */
 static int parse_voicegroup_file(const char* filePath, const char* startLabel, ParseCtx* ctx);
@@ -450,7 +247,7 @@ static ToneData* load_sub_voicegroup(const char* vgSymbol, ParseCtx* ctx)
     if (strncmp(name, "voicegroup_", 11) == 0)
         name += 11;
 
-    VoicegroupLocation loc = find_voicegroup(name, ctx->disc);
+    VoicegroupSourceLocation loc = vg_find_voicegroup_source(name, ctx->disc);
     if (!loc.found)
     {
         vg_err("cannot find sub-voicegroup '%s'", vgSymbol);
@@ -699,65 +496,76 @@ static void handle_cry(ToneData* td, uint8_t voiceType, const char* args, ParseC
  */
 static int dispatch_voice_macro(const char* trimmed, ToneData* td, ParseCtx* ctx)
 {
-    for (const VoiceMacro* m = kVoiceMacros; m->keyword; m++)
-    {
-        size_t klen = strlen(m->keyword);
-        if (strncmp(trimmed, m->keyword, klen) != 0)
-            continue;
-        /* Must be followed by whitespace — prevents e.g. "voice_noise"
-         * from matching "voice_noise_alt". */
-        if (!isspace((unsigned char)trimmed[klen]))
-            continue;
-        const char* args = trimmed + klen + 1;
-        while (*args && isspace((unsigned char)*args))
-            args++;
+    const VoicegroupMacro* macro = NULL;
+    const char* args = NULL;
+    if (!vg_voice_macro_match(trimmed, &macro, &args))
+        return 0;
 
-        switch (m->kind)
-        {
-        case MK_DIRECTSOUND:
-            handle_directsound(td, m->voiceType, args, ctx);
-            break;
-        case MK_SQUARE_1:
-            handle_square_1(td, m->voiceType, args, ctx);
-            break;
-        case MK_SQUARE_2:
-            handle_square_2(td, m->voiceType, args, ctx);
-            break;
-        case MK_PROG_WAVE:
-            handle_prog_wave(td, m->voiceType, args, ctx);
-            break;
-        case MK_NOISE:
-            handle_noise(td, m->voiceType, args, ctx);
-            break;
-        case MK_KEYSPLIT:
-            handle_keysplit(td, m->voiceType, args, ctx);
-            break;
-        case MK_KEYSPLIT_ALL:
-            handle_keysplit_all(td, m->voiceType, args, ctx);
-            break;
-        case MK_CRY:
-            handle_cry(td, m->voiceType, args, ctx);
-            break;
-        }
-        return 1;
+    switch (macro->kind)
+    {
+    case VG_MACRO_DIRECTSOUND:
+        handle_directsound(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_SQUARE_1:
+        handle_square_1(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_SQUARE_2:
+        handle_square_2(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_PROG_WAVE:
+        handle_prog_wave(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_NOISE:
+        handle_noise(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_KEYSPLIT:
+        handle_keysplit(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_KEYSPLIT_ALL:
+        handle_keysplit_all(td, macro->typeCode, args, ctx);
+        break;
+    case VG_MACRO_CRY:
+        handle_cry(td, macro->typeCode, args, ctx);
+        break;
     }
-    return 0;
+    return 1;
 }
 
 /* ---- Top-level file parser ---- */
 
-/*
- * Is this line the boundary between two voicegroups inside a
- * monolithic file? The ending is heuristic — ".align 2" is the
- * pokemerald convention, and any fresh "<label>::" starts a new one.
- */
-static int is_monolithic_boundary(const char* trimmed)
+static void capture_line_comment(const char* line, char out[VG_MAX_VOICE_SAMPLE_NAME])
 {
-    if (strncmp(trimmed, ".align", 6) == 0)
-        return 1;
-    const char* cc = strstr(trimmed, "::");
-    if (cc && cc > trimmed && !isspace((unsigned char)trimmed[0]))
-        return 1;
+    out[0] = '\0';
+    const char* c = strchr(line, '@');
+    if (!c)
+        return;
+    c++;
+    while (*c && isspace((unsigned char)*c))
+        c++;
+    size_t n = 0;
+    while (*c && n + 1 < VG_MAX_VOICE_SAMPLE_NAME)
+        out[n++] = *c++;
+    while (n > 0 && isspace((unsigned char)out[n - 1]))
+        n--;
+    out[n] = '\0';
+}
+
+static int consume_voice_line(char* trimmed, int* voiceIndex, int* voicesInSection, ParseCtx* ctx)
+{
+    int startingNote = vg_voicegroup_start_note(trimmed);
+    if (startingNote >= 0)
+    {
+        *voiceIndex = startingNote;
+        return 0;
+    }
+
+    ToneData* td = &ctx->vg->voices[*voiceIndex];
+    if (!dispatch_voice_macro(trimmed, td, ctx))
+        return 0;
+    if (ctx->allocationFailed)
+        return -1;
+    (*voiceIndex)++;
+    (*voicesInSection)++;
     return 0;
 }
 
@@ -793,20 +601,7 @@ static int parse_voicegroup_file(const char* filePath, const char* startLabel, P
     while (fgets(line, sizeof(line), f) && voiceIndex < VOICEGROUP_SIZE)
     {
         char commentBuf[VG_MAX_VOICE_SAMPLE_NAME];
-        commentBuf[0] = '\0';
-        const char* at = strchr(line, '@');
-        if (at)
-        {
-            const char* c = at + 1;
-            while (*c && isspace((unsigned char)*c))
-                c++;
-            size_t n = 0;
-            while (*c && n + 1 < sizeof(commentBuf))
-                commentBuf[n++] = *c++;
-            while (n > 0 && isspace((unsigned char)commentBuf[n - 1]))
-                n--;
-            commentBuf[n] = '\0';
-        }
+        capture_line_comment(line, commentBuf);
         ctx->lineComment = commentBuf[0] ? commentBuf : NULL;
 
         vg_strip_comment(line);
@@ -825,32 +620,13 @@ static int parse_voicegroup_file(const char* filePath, const char* startLabel, P
 
         /* Once we've consumed voices, the next label/.align is the
          * next voicegroup. Stop. */
-        if (startLabel && voicesInSection > 0 && is_monolithic_boundary(trimmed))
+        if (startLabel && voicesInSection > 0 && vg_voicegroup_line_is_boundary(trimmed))
             break;
 
-        /* voice_group <name>, <startingNote> shifts the slot index. */
-        if (strncmp(trimmed, "voice_group ", 12) == 0)
+        if (consume_voice_line(trimmed, &voiceIndex, &voicesInSection, ctx) != 0)
         {
-            char vgDeclName[VG_MAX_SYMBOL_LEN];
-            int startingNote = 0;
-            if (sscanf(trimmed + 12, "%[^,\n], %d", vgDeclName, &startingNote) >= 2 && startingNote > 0 &&
-                startingNote < VOICEGROUP_SIZE)
-            {
-                voiceIndex = startingNote;
-            }
-            continue;
-        }
-
-        ToneData* td = &ctx->vg->voices[voiceIndex];
-        if (dispatch_voice_macro(trimmed, td, ctx))
-        {
-            if (ctx->allocationFailed)
-            {
-                fclose(f);
-                return -1;
-            }
-            voiceIndex++;
-            voicesInSection++;
+            fclose(f);
+            return -1;
         }
     }
 
@@ -870,7 +646,7 @@ int vg_parse_voicegroup(const char* projectRoot,
                         const ProjectDiscovery* disc)
 {
     vg_log("vg_parse_voicegroup: searching for '%s'", voicegroupName);
-    VoicegroupLocation loc = find_voicegroup(voicegroupName, disc);
+    VoicegroupSourceLocation loc = vg_find_voicegroup_source(voicegroupName, disc);
     if (!loc.found)
     {
         vg_err("cannot find voicegroup '%s'", voicegroupName);

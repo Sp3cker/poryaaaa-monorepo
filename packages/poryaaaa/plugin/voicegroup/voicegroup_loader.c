@@ -50,7 +50,7 @@ voicegroup_load(const char* projectRoot, const char* voicegroupName, const Voice
            disc->progWaveDataFiles.count,
            disc->keySplitTableFiles.count,
            disc->voicegroupDirs.count,
-           disc->monolithicVGFiles.count);
+           disc->combinedVGFiles.count);
 
     SymbolMap dsMap, pwMap;
     KeySplitMap ksMap;

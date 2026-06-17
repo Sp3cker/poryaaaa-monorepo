@@ -1,5 +1,6 @@
 #include "TextEditFileStore.h"
 #include "TextEditFileStoreTests.h"
+#include "projects_json_path.h"
 
 #include <cstring>
 #include <iostream>
@@ -204,6 +205,14 @@ bool expectReportLoadError()
            operation == TextEditFileStoreOperation::loadVoicegroup && message.isNotEmpty();
 }
 
+bool expectDefaultProjectsJsonPathUsesSharedContract()
+{
+    char expected[700];
+    if (!poryaaaa_projects_json_default_path(expected, sizeof(expected)))
+        return false;
+    return getDefaultPoryaaaaProjectsJsonFile() == juce::File(expected);
+}
+
 } // namespace
 
 bool runTextEditFileStoreTests()
@@ -249,6 +258,7 @@ bool runTextEditFileStoreTests()
     const auto voicegroupCopySavedAs = expectWriteVoicegroupFileDoesNotRetargetCurrentVoicegroup();
     const auto saveBeforeLoadRejected = expectRejectSaveBeforeLoad();
     const auto loadErrorReported = expectReportLoadError();
+    const auto defaultPathUsesSharedContract = expectDefaultProjectsJsonPathUsesSharedContract();
     auto missingProjectsFile =
         juce::File("/private/tmp").getNonexistentChildFile("textedit-missing-projects", ".json", false);
     TextEditProjectState state;
@@ -258,5 +268,5 @@ bool runTextEditFileStoreTests()
 
     return projectStateLoaded && missingRootRejected && missingBankRejected && nonStringRootRejected &&
            malformedRejected && voicegroupLoadedAndSaved && voicegroupSavedAs && voicegroupCopySavedAs &&
-           saveBeforeLoadRejected && loadErrorReported && missingRejected;
+           saveBeforeLoadRejected && loadErrorReported && defaultPathUsesSharedContract && missingRejected;
 }

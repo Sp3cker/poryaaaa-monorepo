@@ -89,6 +89,7 @@ target_sources(textedit PRIVATE
 
 target_include_directories(textedit PRIVATE
     src
+    "${TEXTEDIT_MONOREPO_ROOT}/shared"
 )
 
 target_compile_features(textedit PRIVATE cxx_std_17)
@@ -183,6 +184,7 @@ add_executable(textedit_tests
 
 target_include_directories(textedit_tests PRIVATE
     src
+    "${TEXTEDIT_MONOREPO_ROOT}/shared"
 )
 
 target_compile_features(textedit_tests PRIVATE cxx_std_17)

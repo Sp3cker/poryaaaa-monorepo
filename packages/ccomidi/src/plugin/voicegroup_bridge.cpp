@@ -1,9 +1,9 @@
 #include "plugin/voicegroup_bridge.h"
+#include "projects_json_path.h"
 
 #include <sys/stat.h>
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -12,22 +12,6 @@ namespace ccomidi
 
 namespace
 {
-
-std::string env_value(const char* name)
-{
-#if defined(_WIN32)
-    char* value = nullptr;
-    size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || !value)
-        return {};
-    std::string result(value);
-    std::free(value);
-    return result;
-#else
-    const char* value = std::getenv(name);
-    return value ? std::string(value) : std::string{};
-#endif
-}
 
 std::FILE* open_file_read_binary(const std::string& path)
 {
@@ -45,27 +29,8 @@ std::FILE* open_file_read_binary(const std::string& path)
 // installed as CLAP, VST3, etc. Both plugins must agree on this path.
 std::string state_path()
 {
-#if defined(_WIN32)
-    const std::string appdata = env_value("APPDATA");
-    if (!appdata.empty())
-        return appdata + "\\poryaaaa\\projects.json";
-    const std::string userProfile = env_value("USERPROFILE");
-    if (!userProfile.empty())
-        return userProfile + "\\AppData\\Roaming\\poryaaaa\\projects.json";
-    return {};
-#else
-    const std::string home = env_value("HOME");
-    if (home.empty())
-        return {};
-#    if defined(__APPLE__)
-    return home + "/Library/Application Support/poryaaaa/projects.json";
-#    else
-    const std::string xdg = env_value("XDG_CONFIG_HOME");
-    if (!xdg.empty())
-        return xdg + "/poryaaaa/projects.json";
-    return home + "/.config/poryaaaa/projects.json";
-#    endif
-#endif
+    char path[700];
+    return poryaaaa_projects_json_default_path(path, sizeof(path)) ? std::string(path) : std::string{};
 }
 
 long long mtime_ns(const std::string& path)

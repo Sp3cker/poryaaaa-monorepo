@@ -16,7 +16,7 @@ typedef struct
     PathList progWaveDataFiles;    /* programmable_wave_data.inc */
     PathList keySplitTableFiles;   /* keysplit_tables.inc */
     PathList voicegroupDirs;       /* dirs containing per-voicegroup .inc/.s */
-    PathList monolithicVGFiles;    /* .inc files packing many voicegroups with <label>:: */
+    PathList combinedVGFiles;      /* .inc files packing many voicegroups with <label>:: */
 } ProjectDiscovery;
 
 /*
@@ -27,7 +27,7 @@ typedef struct
  *   2. Standard sound/direct_sound_data.inc etc.
  *   3. Standard sound/voicegroups/ (plus keysplits/ and drumsets/ subdirs)
  *   4. Recursive scan under sound/ (depth 3) for voicegroup dirs
- *   5. Standard sound/voice_groups.inc (monolithic)
+ *   5. Standard sound/voice_groups.inc (combined)
  *
  * Zeros *out before populating. cfg may be NULL for pure auto-discovery.
  */

@@ -31,8 +31,8 @@ Before starting each domain below, stop and ask the user for approval. Do not st
 
 ## Files
 
-- Modify: `packages/poryaaaa/plugin/voicegroup/voicegroup_state.c`
-- Modify if needed: `packages/poryaaaa/plugin/voicegroup/voicegroup_loader.h`
+- Modify: `packages/poryaaaa/plugin/voicegroup/voicegroup_project_state.c`
+- Modify if needed: `packages/poryaaaa/plugin/voicegroup/voicegroup_project_state.h`
 - Test: `packages/poryaaaa/test/test_voicegroup_loader.c` or nearest existing poryaaaa voicegroup/state test
 - Modify: `packages/ccomidi/src/plugin/voicegroup_bridge.h`
 - Modify: `packages/ccomidi/src/plugin/voicegroup_bridge.cpp`
@@ -56,9 +56,11 @@ Before starting each domain below, stop and ask the user for approval. Do not st
 
 - [x] Run the focused poryaaaa test and confirm it fails for missing `typeCode`/`drumset`.
 
-- [x] Update `voicegroup_state_write_default(...)` to write `typeCode` for each emitted slot.
+- [x] Add a separate project-state collector/writer for `projects.json`; do not collect metadata through
+      `LoadedVoiceGroup` loading.
 
-- [x] For slots where `vg->voices[i].type & VOICE_KEYSPLIT_ALL`, walk `((ToneData*)vg->voices[i].subGroup)[0..127]` and emit non-empty sample names as `drumset` entries.
+- [x] For `VOICE_KEYSPLIT_ALL` slots, parse the referenced drumset source and emit non-empty pad names as
+      `drumset` entries.
 
 - [x] Keep the writer atomic: temp file, close, rename. Do not append raw JSON.
 
