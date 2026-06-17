@@ -11,10 +11,8 @@ import type { VoicegroupState } from "../poryaaaa-node/project-store";
 
 const SNAPSHOT: CcomidiSnapshot = {
   slots: [{
-    program: 0,
     name: "Lead",
     typeCode: 0,
-    envelope: { attack: 1, decay: 2, sustain: 3, release: 4 },
   }],
 };
 

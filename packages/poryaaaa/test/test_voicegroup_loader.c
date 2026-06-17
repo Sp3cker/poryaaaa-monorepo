@@ -209,6 +209,68 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
     remove_dir(root);
 }
 
+static void test_voicegroup_project_state_rejects_bad_voice_macro(void)
+{
+    printf("Testing voicegroup project state: malformed voice macro reports diagnostics...\n");
+
+    const char* root = "poryaaaa_state_bad_macro";
+    const char* soundDir = "poryaaaa_state_bad_macro/sound";
+    const char* voicegroupDir = "poryaaaa_state_bad_macro/sound/voicegroups";
+    const char* mainPath = "poryaaaa_state_bad_macro/sound/voicegroups/main.inc";
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(voicegroupDir);
+
+    ASSERT(write_text_file(mainPath,
+                           "\tvoice_directsound 60, 0, MissingEnvelopeArgs\n"
+                           "\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"),
+           "bad voicegroup writes");
+
+    VoicegroupProjectState state;
+    ASSERT(!voicegroup_project_state_collect(root, "main", NULL, &state), "bad voicegroup collection fails");
+    ASSERT(state.diagnosticCount == 2, "both bad voice lines report diagnostics");
+    ASSERT(strstr(state.diagnostics[0], "voice_directsound") != NULL, "malformed macro diagnostic names macro");
+    ASSERT(strstr(state.diagnostics[1], "voice_directsounnd") != NULL, "unknown macro diagnostic names line");
+
+    remove(mainPath);
+    remove_dir(voicegroupDir);
+    remove_dir(soundDir);
+    remove_dir(root);
+}
+
+static void test_voicegroup_project_state_marks_defined_source_slots(void)
+{
+    printf("Testing voicegroup project state: defined source slots and raw-symbol fallback...\n");
+
+    const char* root = "poryaaaa_state_defined_slots";
+    const char* soundDir = "poryaaaa_state_defined_slots/sound";
+    const char* voicegroupDir = "poryaaaa_state_defined_slots/sound/voicegroups";
+    const char* mainPath = "poryaaaa_state_defined_slots/sound/voicegroups/main.inc";
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(voicegroupDir);
+
+    ASSERT(write_text_file(mainPath,
+                           "\tvoice_group main, 4\n"
+                           "\tvoice_directsound 60, 0, MissingFromMap, 1, 2, 3, 4\n"),
+           "offset voicegroup writes");
+
+    VoicegroupProjectState state;
+    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "defined slot collection succeeds");
+    ASSERT(!state.slots[0].defined, "empty source slot is not defined");
+    ASSERT(state.slots[4].defined, "source slot with voice macro is defined");
+    ASSERT(state.slots[4].typeCode == VOICE_DIRECTSOUND, "defined slot forwards type code");
+    ASSERT(strcmp(state.slots[4].name, "MissingFromMap") == 0, "missing map falls back to raw symbol label");
+
+    voicegroup_project_state_free(&state);
+    remove(mainPath);
+    remove_dir(voicegroupDir);
+    remove_dir(soundDir);
+    remove_dir(root);
+}
+
 static void test_voicegroup_symbol_map_growth(void)
 {
     printf("Testing voicegroup loader: symbol map growth...\n");
@@ -416,6 +478,8 @@ void test_voicegroup_loader_run_all(void)
     test_voice_macro_match_uses_ordered_table();
     test_voicegroup_project_state_default_path();
     test_voicegroup_project_state_writes_drumset_without_loading_samples();
+    test_voicegroup_project_state_rejects_bad_voice_macro();
+    test_voicegroup_project_state_marks_defined_source_slots();
     test_voicegroup_symbol_map_growth();
     test_voicegroup_bad_asset_examples();
     test_voicegroup_channel_export_per_file();

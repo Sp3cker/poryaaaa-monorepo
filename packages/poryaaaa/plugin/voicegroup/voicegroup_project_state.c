@@ -26,16 +26,18 @@ typedef struct
     const SymbolMap* dsMap;
     const SymbolMap* pwMap;
     const ProjectDiscovery* disc;
+    VoicegroupProjectState* state;
     bool allocationFailed;
 } ProjectStateRead;
 
 static bool read_state_by_name(const char* voicegroupName, ProjectStateRead* read, VoicegroupProjectState* out);
 static bool parse_keysplit_slot(
     VoicegroupProjectStateSlot* slot, uint8_t typeCode, const char* args, const char* comment, ProjectStateRead* read);
+static bool parse_voice_line(const char* rawLine, VoicegroupProjectStateSlot* slot, ProjectStateRead* read);
 
 static void set_slot(VoicegroupProjectStateSlot* slot, uint8_t typeCode, const char* name)
 {
-    slot->used = true;
+    slot->defined = true;
     slot->typeCode = typeCode;
     snprintf(slot->name, sizeof(slot->name), "%s", name);
 }
@@ -55,6 +57,35 @@ static const char* cgb_name(uint8_t typeCode)
     if (typeCode == VOICE_NOISE || typeCode == VOICE_NOISE_ALT)
         return typeCode == VOICE_NOISE_ALT ? "Noise (alt)" : "Noise";
     return typeCode == VOICE_PROGRAMMABLE_WAVE_ALT ? "ProgWave (alt)" : "ProgWave";
+}
+
+static int arg_count(const char* args)
+{
+    int count = 0;
+    const char* p = args;
+    while (*p)
+    {
+        while (*p && (isspace((unsigned char)*p) || *p == ','))
+            p++;
+        if (!*p)
+            break;
+        count++;
+        p += strcspn(p, ",");
+    }
+    return count;
+}
+
+static bool validate_macro_args(const VoicegroupMacro* macro, const char* args, ProjectStateRead* read)
+{
+    const int count = arg_count(args);
+    bool ok = count >= macro->minArgs && count <= macro->maxArgs;
+    if (!ok && read->state->diagnosticCount < VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS)
+        snprintf(read->state->diagnostics[read->state->diagnosticCount++],
+                 VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN,
+                 "%s expects valid arguments, got %d field(s)",
+                 macro->keyword,
+                 count);
+    return ok;
 }
 
 static void line_comment(const char* line, char out[VG_MAX_VOICE_SAMPLE_NAME])
@@ -100,7 +131,7 @@ static bool collect_drumset_pads(const char* vgSymbol, VoicegroupProjectStateSlo
 
     int count = 0;
     for (int note = 0; note < VOICEGROUP_SIZE; note++)
-        if (nested.slots[note].used && nested.slots[note].name[0])
+        if (nested.slots[note].defined && nested.slots[note].name[0])
             count++;
     if (count > 0)
         slot->drumset = vg_malloc_array((size_t)count, sizeof(*slot->drumset));
@@ -108,7 +139,7 @@ static bool collect_drumset_pads(const char* vgSymbol, VoicegroupProjectStateSlo
         read->allocationFailed = true;
     for (int note = 0, out = 0; slot->drumset && note < VOICEGROUP_SIZE; note++)
     {
-        if (!nested.slots[note].used || !nested.slots[note].name[0])
+        if (!nested.slots[note].defined || !nested.slots[note].name[0])
             continue;
         slot->drumset[out].note = (uint8_t)note;
         snprintf(slot->drumset[out].name, sizeof(slot->drumset[out].name), "%s", nested.slots[note].name);
@@ -150,8 +181,18 @@ static bool parse_voice_line(const char* rawLine, VoicegroupProjectStateSlot* sl
     const VoicegroupMacro* macro = NULL;
     const char* args = NULL;
     if (!vg_voice_macro_match(trimmed, &macro, &args))
+    {
+        if ((strncmp(trimmed, "voice_", 6) == 0 || strncmp(trimmed, "cry", 3) == 0) &&
+            read->state->diagnosticCount < VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS)
+            snprintf(read->state->diagnostics[read->state->diagnosticCount++],
+                     VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN,
+                     "unsupported voicegroup syntax: %s",
+                     trimmed);
         return true;
+    }
     uint8_t typeCode = macro->typeCode;
+    if (!validate_macro_args(macro, args, read))
+        return true;
     if (typeCode == VOICE_DIRECTSOUND || typeCode == VOICE_DIRECTSOUND_ALT || typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE)
         set_sample_slot(slot, typeCode, args, read->dsMap, 2);
     else if (typeCode == VOICE_PROGRAMMABLE_WAVE || typeCode == VOICE_PROGRAMMABLE_WAVE_ALT)
@@ -169,7 +210,7 @@ static bool parse_keysplit_slot(
     VoicegroupProjectStateSlot* slot, uint8_t typeCode, const char* args, const char* comment, ProjectStateRead* read)
 {
     char vgSymbol[VG_MAX_SYMBOL_LEN];
-    parse_symbol_arg(args, 0, vgSymbol);
+    parse_symbol_arg(args, typeCode == VOICE_KEYSPLIT ? 1 : 0, vgSymbol);
     if (!vgSymbol[0])
         return true;
     set_slot(slot, typeCode, comment[0] ? comment : vgSymbol);
@@ -186,10 +227,12 @@ static bool read_state_by_name(const char* voicegroupName, ProjectStateRead* rea
     memset(lines, 0, sizeof(lines));
     if (!vg_read_voicegroup_lines(&loc, lines))
         return false;
+
     for (int i = 0; i < VOICEGROUP_SIZE; i++)
         if (lines[i][0] && !parse_voice_line(lines[i], &out->slots[i], read))
             return false;
-    return !read->allocationFailed;
+
+    return !read->allocationFailed && read->state->diagnosticCount == 0;
 }
 
 void voicegroup_project_state_free(VoicegroupProjectState* state)
@@ -199,6 +242,13 @@ void voicegroup_project_state_free(VoicegroupProjectState* state)
     for (int i = 0; i < VOICEGROUP_SIZE; i++)
         free(state->slots[i].drumset);
     memset(state, 0, sizeof(*state));
+}
+
+static void free_slots_only(VoicegroupProjectState* state)
+{
+    for (int i = 0; i < VOICEGROUP_SIZE; i++)
+        free(state->slots[i].drumset);
+    memset(state->slots, 0, sizeof(state->slots));
 }
 
 bool voicegroup_project_state_collect(const char* projectRoot,
@@ -219,7 +269,7 @@ bool voicegroup_project_state_collect(const char* projectRoot,
     vg_symbol_map_init(&dsMap);
     vg_symbol_map_init(&pwMap);
     bool ok = vg_parse_direct_sound_data(disc, &dsMap) && vg_parse_prog_wave_data(disc, &pwMap);
-    ProjectStateRead read = {.dsMap = &dsMap, .pwMap = &pwMap, .disc = disc};
+    ProjectStateRead read = {.dsMap = &dsMap, .pwMap = &pwMap, .disc = disc, .state = out};
     if (ok)
         ok = read_state_by_name(voicegroupName, &read, out);
 
@@ -227,7 +277,7 @@ bool voicegroup_project_state_collect(const char* projectRoot,
     vg_symbol_map_free(&pwMap);
     free(disc);
     if (!ok)
-        voicegroup_project_state_free(out);
+        free_slots_only(out);
     return ok;
 }
 
@@ -311,7 +361,7 @@ static void write_slots(FILE* f, const VoicegroupProjectState* state)
     for (int i = 0; i < VOICEGROUP_SIZE; i++)
     {
         const VoicegroupProjectStateSlot* slot = &state->slots[i];
-        if (!slot->used || !slot->name[0])
+        if (!slot->defined || !slot->name[0])
             continue;
         fprintf(f, "%s    {\"program\": %d, \"name\": \"", first ? "" : ",\n", i);
         write_escaped(f, slot->name);

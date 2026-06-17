@@ -14,7 +14,7 @@ function outletArgs(deps: ReturnType<typeof makeMockVoicesDeps>): unknown[][] {
 }
 
 interface SlotEntry {
-    program: number;
+    program?: number;
     name: string;
     typeCode?: number;
     envelope?: unknown;
@@ -31,7 +31,7 @@ function ds(program: number, name: string): string {
 function statePayload(slots: SlotEntry[]) {
     return {
         slots: slots.map((s) => ({
-            ...s,
+            name: s.name,
             typeCode: s.typeCode === undefined ? DEFAULT_TYPE_CODE : s.typeCode,
         })),
     };
@@ -61,9 +61,10 @@ function startWithSlots(
 // umenu (slots clear + slots append × N).
 function menuPopulate(slots: SlotEntry[]): unknown[][] {
     const events: unknown[][] = [["slots", "clear"]];
-    for (const s of slots) {
+    for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
         const tag = `[${familyTagFor(s.typeCode ?? DEFAULT_TYPE_CODE)}]`;
-        events.push(["slots", "append", `${s.program} ${tag} ${s.name}`]);
+        events.push(["slots", "append", `${i} ${tag} ${s.name}`]);
     }
     return events;
 }
@@ -187,6 +188,23 @@ test("`pick` with an out-of-range index shows no voice", () => {
     assert.deepEqual(outletArgs(deps), [
         ["slots", "setsymbol", "(no voice)"],
         ["slots", "setsymbol", "(no voice)"],
+    ]);
+});
+
+test("`pick` on a null slot shows no voice while preserving later indexes", () => {
+    const deps = makeMockVoicesDeps();
+    const svc = new CcomidiVoicesService(deps);
+    svc.start();
+    svc.state(encodeURIComponent(JSON.stringify({
+        slots: [null, { name: "Beta", typeCode: 0 }],
+    })));
+    deps.reset();
+
+    svc.pick(0);
+    svc.pick(1);
+    assert.deepEqual(outletArgs(deps), [
+        ["slots", "setsymbol", "(no voice)"],
+        ["slots", "setsymbol", ds(1, "Beta")],
     ]);
 });
 

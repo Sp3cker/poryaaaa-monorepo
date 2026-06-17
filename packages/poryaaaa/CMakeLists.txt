@@ -319,6 +319,30 @@ if(WIN32)
     endif()
 endif()
 
+# ---- Node N-API voicegroup parser ----
+find_path(NODE_API_INCLUDE_DIR node_api.h
+    HINTS /usr/local/include/node /opt/homebrew/include/node)
+if(NODE_API_INCLUDE_DIR)
+    add_library(poryaaaa_napi MODULE
+        napi/poryaaaa_voicegroup_napi.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_napi)
+    target_include_directories(poryaaaa_napi PRIVATE
+        plugin
+        ${NODE_API_INCLUDE_DIR}
+    )
+    target_link_libraries(poryaaaa_napi PRIVATE voicegroup_loader)
+    set_target_properties(poryaaaa_napi PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "poryaaaa_voicegroup"
+        SUFFIX ".node"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../poryaaaa-m4l/javascript"
+    )
+    if(APPLE)
+        target_link_options(poryaaaa_napi PRIVATE "-undefined" "dynamic_lookup")
+    endif()
+endif()
+
 # ---- Unit Tests ----
 add_executable(poryaaaa_unit_tests
     test/test_engine.c

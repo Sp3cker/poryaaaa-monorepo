@@ -7,7 +7,7 @@ import type { VoicegroupState } from "./project-store";
 import type { VoicegroupParseResult } from "./voicegroup-parser";
 
 export interface CcomidiSnapshot {
-  slots: VoiceSlot[];
+  slots: Array<VoiceSlot | null>;
 }
 
 export type PoryaaaaVoicegroupOutput =

@@ -17,6 +17,7 @@ include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${PORYA_ROOT}/plugin"
     "${PORYA_ROOT}/plugin/voicegroup"
+    "${PORYA_ROOT}/../../shared"
 )
 
 add_subdirectory("${PORYA_ROOT}/plugin/m4a" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_m4a_driver")

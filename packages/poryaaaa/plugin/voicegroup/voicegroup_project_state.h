@@ -20,16 +20,21 @@ extern "C"
 
     typedef struct
     {
-        bool used;
+        bool defined;
         uint8_t typeCode;
         char name[VG_MAX_VOICE_SAMPLE_NAME];
         VoicegroupProjectStateDrumPad* drumset;
         int drumsetCount;
     } VoicegroupProjectStateSlot;
 
+#define VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS 16
+#define VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN 256
+
     typedef struct
     {
         VoicegroupProjectStateSlot slots[VOICEGROUP_SIZE];
+        char diagnostics[VOICEGROUP_PROJECT_STATE_MAX_DIAGNOSTICS][VOICEGROUP_PROJECT_STATE_DIAGNOSTIC_LEN];
+        int diagnosticCount;
     } VoicegroupProjectState;
 
     bool voicegroup_project_state_collect(const char* projectRoot,

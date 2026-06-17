@@ -12,13 +12,11 @@ import type {
 import type { VoicegroupState } from "../poryaaaa-node/project-store";
 
 const SLOT: VoiceSlot = {
-  program: 0,
   name: "Lead",
   typeCode: 0,
-  envelope: { attack: 1, decay: 2, sustain: 3, release: 4 },
 };
 
-function ok(slots: VoiceSlot[] = [SLOT]): VoicegroupParseResult {
+function ok(slots: Array<VoiceSlot | null> = [SLOT]): VoicegroupParseResult {
   return { ok: true, slots };
 }
 

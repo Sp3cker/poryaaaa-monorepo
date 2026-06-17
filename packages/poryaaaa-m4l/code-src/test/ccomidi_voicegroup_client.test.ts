@@ -10,10 +10,8 @@ import {
 } from "../poryaaaa-node/voicegroup-service";
 
 const SLOT = {
-  program: 0,
   name: "Lead",
   typeCode: 0,
-  envelope: { attack: 1, decay: 2, sustain: 3, release: 4 },
 };
 
 class FakeSocket implements ClientWebSocket {

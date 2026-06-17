@@ -57,7 +57,6 @@ const NO_VOICE_LABEL = "(no voice)";
 // same musical family (DirectSound, Square 1, etc. with their _ALT variants).
 // Codes from voicegroup_types.h (upstream).
 interface Slot {
-  program: number;
   name: string;
   typeCode: number;
 }
@@ -93,21 +92,23 @@ function voiceFamilyTag(typeCode: number): string {
   }
 }
 
-function formatVoiceLabel(slot: Slot): string {
-  return `${slot.program} [${voiceFamilyTag(slot.typeCode)}] ${slot.name}`;
+function formatVoiceLabel(index: number, slot: Slot): string {
+  return `${index} [${voiceFamilyTag(slot.typeCode)}] ${slot.name}`;
 }
 
-function parseSlots(raw: unknown): Slot[] {
+function parseSlots(raw: unknown): Array<Slot | null> {
   if (!Array.isArray(raw)) return [];
-  const slots: Slot[] = [];
+  const slots: Array<Slot | null> = [];
   for (const candidate of raw) {
+    if (candidate === null) {
+      slots.push(null);
+      continue;
+    }
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
     const slot = candidate as Record<string, unknown>;
-    if (!Number.isInteger(slot.program)) return [];
     if (typeof slot.name !== "string") return [];
     if (!Number.isInteger(slot.typeCode)) return [];
     slots.push({
-      program: slot.program as number,
       name: slot.name,
       typeCode: slot.typeCode as number,
     });
@@ -116,7 +117,7 @@ function parseSlots(raw: unknown): Slot[] {
 }
 
 export class CcomidiVoicesService implements VoicesService {
-  private slots: Slot[] = [];
+  private slots: Array<Slot | null> = [];
   private gated = true;
   private pendingIdx: number | null = null;
 
@@ -129,8 +130,9 @@ export class CcomidiVoicesService implements VoicesService {
 
   private emitMenu(): void {
     this.deps.outlet("slots", "clear");
-    for (const s of this.slots) {
-      this.deps.outlet("slots", "append", formatVoiceLabel(s));
+    for (let i = 0; i < this.slots.length; i++) {
+      const slot = this.slots[i];
+      this.deps.outlet("slots", "append", slot ? formatVoiceLabel(i, slot) : `${i} ${NO_VOICE_LABEL}`);
     }
   }
 
@@ -140,7 +142,7 @@ export class CcomidiVoicesService implements VoicesService {
       return;
     }
     const slot = this.slots[idx];
-    this.deps.outlet("slots", "setsymbol", formatVoiceLabel(slot));
+    this.deps.outlet("slots", "setsymbol", slot ? formatVoiceLabel(idx, slot) : NO_VOICE_LABEL);
   }
 
   private reapplyPending(): void {

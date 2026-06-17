@@ -1,5 +1,3 @@
-import { validateVoiceSlots } from "./voice-slot-contract";
-
 export interface MaxApi {
   outlet: (...args: unknown[]) => void;
   post: (msg: string) => void;
@@ -91,12 +89,8 @@ export class CcomidiVoicegroupClient {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
     const frame = parsed as { type?: unknown; slots?: unknown };
     if (frame.type !== "snapshot") return;
-    let slots;
-    try {
-      slots = validateVoiceSlots(frame.slots);
-    } catch (_) {
-      return;
-    }
+    if (!Array.isArray(frame.slots)) return;
+    const slots = frame.slots;
     const encoded = encodeURIComponent(JSON.stringify({ slots }));
     this.opts.outlet("state", encoded);
   }
