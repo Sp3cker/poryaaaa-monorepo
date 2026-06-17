@@ -421,6 +421,8 @@ static void render_general_tab(M4AGuiState* gui)
     ImGui::SameLine();
     if (gui->settings.voicegroupLoaded)
         ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Voicegroup loaded");
+    else if (gui->settings.voicegroupError[0])
+        ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "%s", gui->settings.voicegroupError);
     else
         ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "Voicegroup not loaded");
     if (gui->extractStatus[0])

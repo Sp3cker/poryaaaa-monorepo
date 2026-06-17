@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -95,6 +96,108 @@ bool find_key(const char*& src, const char* key)
     return true;
 }
 
+void skip_ws(const char*& src)
+{
+    while (*src == ' ' || *src == '\t' || *src == '\n' || *src == '\r')
+        ++src;
+}
+
+bool parse_json_int(const char*& src, int& out)
+{
+    skip_ws(src);
+    if (*src != '-' && (*src < '0' || *src > '9'))
+        return false;
+    char* end = nullptr;
+    const long value = std::strtol(src, &end, 10);
+    if (end == src)
+        return false;
+    out = static_cast<int>(value);
+    src = end;
+    return true;
+}
+
+bool read_next_object(const char*& cursor, std::string& out)
+{
+    if (*cursor != '{')
+        return false;
+
+    const char* objStart = cursor;
+    int depth = 0;
+    const char* objEnd = cursor;
+    while (*objEnd)
+    {
+        if (*objEnd == '{')
+            ++depth;
+        else if (*objEnd == '}')
+        {
+            --depth;
+            if (depth == 0)
+            {
+                ++objEnd;
+                out.assign(objStart, static_cast<size_t>(objEnd - objStart));
+                cursor = objEnd;
+                return true;
+            }
+        }
+        else if (*objEnd == '"')
+        {
+            ++objEnd;
+            while (*objEnd && *objEnd != '"')
+            {
+                if (*objEnd == '\\' && objEnd[1])
+                    objEnd += 2;
+                else
+                    ++objEnd;
+            }
+            if (*objEnd == '"')
+                ++objEnd;
+            continue;
+        }
+        ++objEnd;
+    }
+
+    return false;
+}
+
+void parse_drumset(const std::string& obj, std::vector<DrumPad>& out)
+{
+    const char* cursor = obj.c_str();
+    if (!find_key(cursor, "drumset"))
+        return;
+    while (*cursor && *cursor != '[')
+        ++cursor;
+    if (*cursor != '[')
+        return;
+    ++cursor;
+
+    while (*cursor)
+    {
+        skip_ws(cursor);
+        if (*cursor == ',')
+        {
+            ++cursor;
+            continue;
+        }
+        if (*cursor == ']' || *cursor == '\0')
+            break;
+        if (*cursor != '{')
+            break;
+
+        std::string padObj;
+        if (!read_next_object(cursor, padObj))
+            break;
+
+        int note = -1;
+        std::string name;
+        const char* pc = padObj.c_str();
+        const bool hasNote = find_key(pc, "note") && parse_json_int(pc, note);
+        pc = padObj.c_str();
+        const bool hasName = find_key(pc, "name") && parse_json_string(pc, name);
+        if (hasNote && hasName && note >= 0 && note < 128 && !name.empty())
+            out.push_back(DrumPad{note, name});
+    }
+}
+
 bool read_file_to_string(const std::string& path, std::string& out)
 {
     std::FILE* f = open_file_read_binary(path);
@@ -119,6 +222,80 @@ bool read_file_to_string(const std::string& path, std::string& out)
 long long voicegroup_bridge_state_mtime()
 {
     return mtime_ns(state_path());
+}
+
+VoiceSlotLoad voicegroup_bridge_parse_state_body(const std::string& body)
+{
+    VoiceSlotLoad result;
+
+    const char* cursor = body.c_str();
+    std::string voicegroupName;
+    std::string ignoredRoot;
+    if (find_key(cursor, "root"))
+        parse_json_string(cursor, ignoredRoot);
+    if (find_key(cursor, "bank"))
+        parse_json_string(cursor, voicegroupName);
+
+    if (!find_key(cursor, "slots"))
+    {
+        result.error = "projects.json missing 'slots' array.";
+        return result;
+    }
+    while (*cursor && *cursor != '[')
+        ++cursor;
+    if (*cursor != '[')
+    {
+        result.error = "projects.json 'slots' is not an array.";
+        return result;
+    }
+    ++cursor;
+
+    while (*cursor)
+    {
+        skip_ws(cursor);
+        if (*cursor == ',')
+        {
+            ++cursor;
+            continue;
+        }
+        if (*cursor == ']' || *cursor == '\0')
+            break;
+        if (*cursor != '{')
+            break;
+
+        std::string obj;
+        if (!read_next_object(cursor, obj))
+            break;
+
+        const char* oc = obj.c_str();
+        int program = -1;
+        int typeCode = 0;
+        std::string name;
+        if (find_key(oc, "program"))
+            parse_json_int(oc, program);
+        oc = obj.c_str();
+        if (find_key(oc, "name"))
+            parse_json_string(oc, name);
+        oc = obj.c_str();
+        if (find_key(oc, "typeCode"))
+            parse_json_int(oc, typeCode);
+
+        if (program >= 0 && program < 128 && !name.empty())
+        {
+            VoiceSlot slot;
+            slot.program = program;
+            slot.typeCode = typeCode;
+            slot.name = name;
+            parse_drumset(obj, slot.drumset);
+            result.slots.push_back(std::move(slot));
+        }
+    }
+
+    if (result.slots.empty())
+        result.error = voicegroupName.empty() ? std::string("projects.json has no slots.")
+                                              : "Voicegroup '" + voicegroupName + "' has no sample-bearing slots.";
+
+    return result;
 }
 
 VoiceSlotLoad voicegroup_bridge_load_state()
@@ -146,91 +323,10 @@ VoiceSlotLoad voicegroup_bridge_load_state()
         return result;
     }
 
-    const char* cursor = body.c_str();
-    std::string projectRoot;
-    std::string voicegroupName;
-    if (find_key(cursor, "root"))
-        parse_json_string(cursor, projectRoot);
-    if (find_key(cursor, "bank"))
-        parse_json_string(cursor, voicegroupName);
-
-    if (!find_key(cursor, "slots"))
-    {
-        result.error = "projects.json missing 'slots' array.";
-        return result;
-    }
-    while (*cursor && *cursor != '[')
-        ++cursor;
-    if (*cursor != '[')
-    {
-        result.error = "projects.json 'slots' is not an array.";
-        return result;
-    }
-    ++cursor;
-
-    while (*cursor)
-    {
-        while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r' || *cursor == ',')
-            ++cursor;
-        if (*cursor == ']' || *cursor == '\0')
-            break;
-        if (*cursor != '{')
-            break;
-
-        const char* objStart = cursor;
-        int depth = 0;
-        const char* objEnd = cursor;
-        while (*objEnd)
-        {
-            if (*objEnd == '{')
-                ++depth;
-            else if (*objEnd == '}')
-            {
-                --depth;
-                if (depth == 0)
-                {
-                    ++objEnd;
-                    break;
-                }
-            }
-            else if (*objEnd == '"')
-            {
-                ++objEnd;
-                while (*objEnd && *objEnd != '"')
-                {
-                    if (*objEnd == '\\' && objEnd[1])
-                        objEnd += 2;
-                    else
-                        ++objEnd;
-                }
-                if (*objEnd == '"')
-                    ++objEnd;
-                continue;
-            }
-            ++objEnd;
-        }
-
-        std::string obj(objStart, static_cast<size_t>(objEnd - objStart));
-        const char* oc = obj.c_str();
-        int program = -1;
-        std::string name;
-        if (find_key(oc, "program"))
-            program = std::atoi(oc);
-        oc = obj.c_str();
-        if (find_key(oc, "name"))
-            parse_json_string(oc, name);
-
-        if (program >= 0 && program < 128 && !name.empty())
-            result.slots.push_back(VoiceSlot{program, name});
-
-        cursor = objEnd;
-    }
-
-    if (result.slots.empty())
-        result.error = voicegroupName.empty() ? std::string("projects.json has no slots.")
-                                              : "Voicegroup '" + voicegroupName + "' has no sample-bearing slots.";
-
-    return result;
+    VoiceSlotLoad parsed = voicegroup_bridge_parse_state_body(body);
+    parsed.statePath = result.statePath;
+    parsed.mtimeNs = result.mtimeNs;
+    return parsed;
 }
 
 } // namespace ccomidi

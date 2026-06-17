@@ -222,13 +222,12 @@ static void test_voicegroup_loader_rejects_bad_voice_macro(void)
     make_dir(soundDir);
     make_dir(voicegroupDir);
 
-    ASSERT(write_text_file(mainPath,
-                           "\tvoice_directsound 60, 0, MissingEnvelopeArgs\n"
-                           "\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"),
-           "bad voicegroup writes");
+    ASSERT(write_text_file(mainPath, "\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"), "bad voicegroup writes");
 
     LoadedVoiceGroup* vg = voicegroup_load(root, "main", NULL);
     ASSERT(vg == NULL, "bad voicegroup load fails");
+    ASSERT(strstr(voicegroup_loader_last_error(), "malformed voice macro") != NULL, "bad voicegroup load stores error");
+    ASSERT(strstr(voicegroup_loader_last_error(), "voice_directsounnd") != NULL, "bad voicegroup load stores bad line");
 
     remove(mainPath);
     remove_dir(voicegroupDir);

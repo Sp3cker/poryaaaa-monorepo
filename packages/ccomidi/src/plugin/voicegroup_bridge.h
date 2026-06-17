@@ -7,10 +7,18 @@
 namespace ccomidi
 {
 
+struct DrumPad
+{
+    int note = 0;
+    std::string name;
+};
+
 struct VoiceSlot
 {
-    int program;      // 0-127, the MIDI Program Change value
+    int program = 0;  // 0-127, the MIDI Program Change value
+    int typeCode = 0; // poryaaaa voice macro type code; 0 for older state files
     std::string name; // sample basename, never empty
+    std::vector<DrumPad> drumset;
 };
 
 struct VoiceSlotLoad
@@ -33,6 +41,9 @@ long long voicegroup_bridge_state_mtime();
 // Reads the state file and returns the parsed load. On failure, `slots` is
 // empty and `error` describes the problem.
 VoiceSlotLoad voicegroup_bridge_load_state();
+
+// Parses an already-loaded projects.json body.
+VoiceSlotLoad voicegroup_bridge_parse_state_body(const std::string& body);
 
 } // namespace ccomidi
 

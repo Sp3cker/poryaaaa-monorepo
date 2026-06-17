@@ -6,6 +6,7 @@
 #include <time.h>
 
 static const char* s_vgLogPath = NULL;
+static char s_lastError[512];
 
 #if defined(__clang__)
 #    define VG_LOG_DISABLE_FORMAT_NONLITERAL                                                                           \
@@ -23,6 +24,16 @@ static const char* s_vgLogPath = NULL;
 void voicegroup_loader_set_log_path(const char* path)
 {
     s_vgLogPath = path;
+}
+
+const char* voicegroup_loader_last_error(void)
+{
+    return s_lastError;
+}
+
+void vg_clear_error(void)
+{
+    s_lastError[0] = '\0';
 }
 
 static void write_to_log_file(const char* fmt, va_list ap)
@@ -54,6 +65,12 @@ void vg_log(const char* fmt, ...)
 void vg_err(const char* fmt, ...)
 {
     va_list ap;
+    va_start(ap, fmt);
+    VG_LOG_DISABLE_FORMAT_NONLITERAL;
+    vsnprintf(s_lastError, sizeof(s_lastError), fmt, ap);
+    VG_LOG_RESTORE_FORMAT_NONLITERAL;
+    va_end(ap);
+
     va_start(ap, fmt);
     fprintf(stderr, "voicegroup_loader: ");
     VG_LOG_DISABLE_FORMAT_NONLITERAL;

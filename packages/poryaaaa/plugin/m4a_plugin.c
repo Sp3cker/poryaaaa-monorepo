@@ -213,6 +213,22 @@ static void plugin_clear_voicegroup(M4APluginData* data)
     m4a_engine_set_voicegroup(&data->engine, NULL);
 }
 
+static LoadedVoiceGroup* plugin_load_voicegroup(M4APluginData* data, const char* root, const char* name)
+{
+    LoadedVoiceGroup* vg = voicegroup_load(root, name, &data->loaderConfig);
+    if (vg)
+    {
+        data->voicegroupError[0] = '\0';
+        return vg;
+    }
+
+    const char* err = voicegroup_loader_last_error();
+    snprintf(
+        data->voicegroupError, sizeof(data->voicegroupError), "%s", err && err[0] ? err : "voicegroup load failed");
+    plugin_log("voicegroup load failed: root=%s name=%s error=%s", root, name, data->voicegroupError);
+    return NULL;
+}
+
 static void plugin_write_voicegroup_project_state(M4APluginData* data)
 {
     VoicegroupProjectState state;
@@ -316,7 +332,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
     /* If voicegroup is configured, load it */
     if (data->projectRoot[0] && data->voicegroupName[0])
     {
-        LoadedVoiceGroup* newVg = voicegroup_load(data->projectRoot, data->voicegroupName, &data->loaderConfig);
+        LoadedVoiceGroup* newVg = plugin_load_voicegroup(data, data->projectRoot, data->voicegroupName);
         if (newVg)
         {
             if (data->loadedVg)
@@ -333,7 +349,6 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
         }
         else
         {
-            plugin_log("voicegroup load failed: root=%s name=%s", data->projectRoot, data->voicegroupName);
             plugin_clear_voicegroup(data);
         }
     }
@@ -371,6 +386,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
         memset(&gs, 0, sizeof(gs));
         snprintf(gs.projectRoot, sizeof(gs.projectRoot), "%s", data->projectRoot);
         snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+        snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
         gs.volume = data->volume;
         gs.reverbAmount = data->reverbAmount;
         gs.voicegroupLoaded = (data->loadedVg != NULL);
@@ -1004,7 +1020,7 @@ static bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream
         {
             if (!newRoot[0] || !newName[0])
                 return false;
-            newVg = voicegroup_load(newRoot, newName, &data->loaderConfig);
+            newVg = plugin_load_voicegroup(data, newRoot, newName);
             if (!newVg)
                 return false;
         }
@@ -1043,6 +1059,7 @@ static bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream
         memset(&gs, 0, sizeof(gs));
         snprintf(gs.projectRoot, sizeof(gs.projectRoot), "%s", data->projectRoot);
         snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+        snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
         gs.volume = data->volume;
         gs.reverbAmount = data->reverbAmount;
         gs.voicegroupLoaded = (data->loadedVg != NULL);
@@ -1200,6 +1217,7 @@ static void timer_on_timer(const clap_plugin_t* plugin, clap_id timer_id)
     /* Reflect updated status back into the GUI (voicegroupLoaded may change
      * after request_restart completes, but update the rest immediately). */
     gs.voicegroupLoaded = (data->loadedVg != NULL);
+    snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
     m4a_gui_update_settings(data->gui, &gs);
 }
 
@@ -1284,6 +1302,7 @@ static bool gui_create(const clap_plugin_t* plugin, const char* api, bool is_flo
     memset(&gs, 0, sizeof(gs));
     snprintf(gs.projectRoot, sizeof(gs.projectRoot), "%s", data->projectRoot);
     snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
+    snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
     gs.volume = data->volume;
     gs.reverbAmount = data->reverbAmount;
     gs.voicegroupLoaded = (data->loadedVg != NULL);

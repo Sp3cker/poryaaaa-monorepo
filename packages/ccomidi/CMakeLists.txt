@@ -143,6 +143,16 @@ target_link_libraries(ccomidi_legatobend_core_tests PRIVATE
     ccomidi_legatobend_core
 )
 
+add_executable(ccomidi_voicegroup_bridge_tests
+    src/tests/test_voicegroup_bridge.cpp
+    src/plugin/voicegroup_bridge.cpp
+)
+ccomidi_enable_project_warnings(ccomidi_voicegroup_bridge_tests)
+target_include_directories(ccomidi_voicegroup_bridge_tests PRIVATE
+    src
+    ${CCOMIDI_MONOREPO_ROOT}/shared
+)
+
 add_library(ccomidi_gui STATIC
     ${PUGL_SOURCES}
     ${IMGUI_SOURCES}

@@ -22,6 +22,7 @@ extern "C"
     {
         char projectRoot[512];
         char voicegroupName[256];
+        char voicegroupError[512];
         uint8_t volume;
         uint8_t reverbAmount;
         bool voicegroupLoaded;

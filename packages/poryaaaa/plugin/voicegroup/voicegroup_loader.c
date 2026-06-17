@@ -28,6 +28,7 @@
 LoadedVoiceGroup*
 voicegroup_load(const char* projectRoot, const char* voicegroupName, const VoicegroupLoaderConfig* config)
 {
+    vg_clear_error();
     vg_log("voicegroup_load: start root='%s' vg='%s'", projectRoot, voicegroupName);
 
     LoadedVoiceGroup* vg = calloc(1, sizeof(LoadedVoiceGroup));

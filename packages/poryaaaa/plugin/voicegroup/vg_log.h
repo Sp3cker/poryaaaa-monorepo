@@ -14,5 +14,6 @@
  */
 void vg_log(const char* fmt, ...);
 void vg_err(const char* fmt, ...);
+void vg_clear_error(void);
 
 #endif /* VG_LOG_H */

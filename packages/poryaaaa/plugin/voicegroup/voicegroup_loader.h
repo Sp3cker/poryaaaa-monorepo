@@ -107,6 +107,7 @@ bool voicegroup_export_channel_remap(const char* projectRoot,
  * Call before voicegroup_load() for the output to be useful.
  */
 void voicegroup_loader_set_log_path(const char* path);
+const char* voicegroup_loader_last_error(void);
 
 /* ---- Project asset collection (for voicegroup sample swapper) ---- */
 
