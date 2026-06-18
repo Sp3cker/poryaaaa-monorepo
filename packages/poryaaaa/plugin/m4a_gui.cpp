@@ -1120,7 +1120,7 @@ extern "C"
     {
         if (!gui || !gui->shell)
             return;
-        poryaaaa::gui::imgui_pugl_shell_start_timer(gui->shell);
+        poryaaaa::gui::imgui_pugl_shell_start_timer(gui->shell, 30.0);
     }
 
     void m4a_gui_stop_internal_timer(M4AGuiState* gui)

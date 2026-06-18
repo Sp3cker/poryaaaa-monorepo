@@ -138,6 +138,11 @@ public:
     void set_row_type(std::size_t row, double value);
     void set_row_value(std::size_t row, std::size_t field, double value);
 
+    // GUI-only live note queue for drum pads. Queued notes are drained by
+    // emit_preapplied_changes(), not by transport-synchronized process_block().
+    void queue_note_on(std::uint8_t note);
+    void queue_note_off(std::uint8_t note);
+
     double output_channel_value() const;
     double program_value() const;
     double program_enabled_value() const;
@@ -190,6 +195,8 @@ private:
     void emit_changed_rows(std::uint32_t time, const std::array<bool, kMaxCommandRows>& rowChanged, PlannedEvents* out);
     void emit_program_change(std::uint32_t time, PlannedEvents* out);
     void append_encoded(std::uint32_t time, const EncodedCommand& encoded, PlannedEvents* out);
+    void append_pending_note(std::uint8_t status, std::uint8_t note, std::uint8_t velocity);
+    void drain_pending_notes(std::uint32_t time, PlannedEvents* out);
 
     double outputChannelValue_ = 0.0;
     double programValue_ = 0.0;
@@ -199,6 +206,8 @@ private:
     bool lastEmittedProgramValid_ = false;
     bool lastTransportPlaying_ = false;
     std::array<RowState, kMaxCommandRows> rows_ = {};
+    std::array<bool, 128> heldNotes_ = {};
+    PlannedEvents pendingNoteEvents_ = {};
 };
 
 } // namespace ccomidi

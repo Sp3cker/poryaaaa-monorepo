@@ -60,6 +60,8 @@ editor_shell_create(const clap_host_t* host, const EditorShellConfig& config, co
     const std::string boldFont = fontDir + "/Calamity-Bold.ttf";
     shellConfig.regularFontPath = regularFont.c_str();
     shellConfig.boldFontPath = boldFont.c_str();
+    shellConfig.pixelFontPath = CCOMIDI_PIXEL_FONT_PATH;
+    shellConfig.pixelFontSize = 16.0f;
 
     poryaaaa::gui::ImGuiPuglShellCallbacks shellCallbacks;
     shellCallbacks.userData = editorShell;
@@ -123,6 +125,11 @@ ImFont* editor_shell_bold_font(EditorShell* shell)
     return shell ? poryaaaa::gui::imgui_pugl_shell_bold_font(shell->shell) : nullptr;
 }
 
+ImFont* editor_shell_pixel_font(EditorShell* shell)
+{
+    return shell ? poryaaaa::gui::imgui_pugl_shell_pixel_font(shell->shell) : nullptr;
+}
+
 void editor_shell_get_size(const EditorShell* shell, std::uint32_t* width, std::uint32_t* height)
 {
     if (!shell)
@@ -146,11 +153,11 @@ bool editor_shell_was_closed(const EditorShell* shell)
     return shell && poryaaaa::gui::imgui_pugl_shell_was_closed(shell->shell);
 }
 
-void editor_shell_start_timer(EditorShell* shell)
+void editor_shell_start_timer(EditorShell* shell, double hz)
 {
     if (!shell)
         return;
-    poryaaaa::gui::imgui_pugl_shell_start_timer(shell->shell);
+    poryaaaa::gui::imgui_pugl_shell_start_timer(shell->shell, hz);
 }
 
 void editor_shell_stop_timer(EditorShell* shell)

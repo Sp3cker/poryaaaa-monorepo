@@ -24,6 +24,8 @@ namespace
 {
 
 constexpr std::uintptr_t kRenderTimerId = 1;
+constexpr double kIdleTimerHz = 30.0;
+constexpr double kActiveTimerHz = 60.0;
 
 bool hasPlainModifiers(PuglMods mods)
 {
@@ -62,11 +64,13 @@ struct ImGuiPuglShell
     PuglView* view = nullptr;
     ImGuiContext* imgui = nullptr;
     ImFont* boldFont = nullptr;
+    ImFont* pixelFont = nullptr;
     bool realized = false;
     bool renderInited = false;
     bool embedded = false;
     bool wasClosed = false;
     bool destroying = false;
+    double timerHz = 0.0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };
@@ -168,7 +172,16 @@ PuglStatus onPuglEvent(PuglView* view, const PuglEvent* event)
             shell->callbacks.closed(shell->callbacks.userData, false);
         break;
     case PUGL_BUTTON_PRESS:
+        imgui_pugl_shell_start_timer(shell, kActiveTimerHz);
         puglGrabFocus(view);
+        ImGui_ImplPugl_ProcessEvent(event);
+        break;
+    case PUGL_BUTTON_RELEASE:
+        imgui_pugl_shell_start_timer(shell, kIdleTimerHz);
+        ImGui_ImplPugl_ProcessEvent(event);
+        break;
+    case PUGL_POINTER_OUT:
+        imgui_pugl_shell_start_timer(shell, kIdleTimerHz);
         ImGui_ImplPugl_ProcessEvent(event);
         break;
     case PUGL_KEY_PRESS:
@@ -243,6 +256,14 @@ ImGuiPuglShell* imgui_pugl_shell_create(const ImGuiPuglShellConfig& config, cons
         regularFont = io.Fonts->AddFontFromFileTTF(config.regularFontPath, config.fontSize);
     if (fileExists(config.boldFontPath))
         shell->boldFont = io.Fonts->AddFontFromFileTTF(config.boldFontPath, config.fontSize);
+    if (fileExists(config.pixelFontPath))
+    {
+        ImFontConfig pixelConfig;
+        pixelConfig.PixelSnapH = true;
+        pixelConfig.OversampleH = 1;
+        pixelConfig.OversampleV = 1;
+        shell->pixelFont = io.Fonts->AddFontFromFileTTF(config.pixelFontPath, config.pixelFontSize, &pixelConfig);
+    }
     if (regularFont)
         io.FontDefault = regularFont;
 
@@ -395,23 +416,32 @@ void imgui_pugl_shell_tick(ImGuiPuglShell* shell)
     puglUpdate(shell->world, 0.0);
 }
 
-void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell)
+void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell, double hz)
 {
-    if (!shell || !shell->view || !shell->realized)
+    if (!shell || !shell->view || !shell->realized || hz <= 0.0)
         return;
-    (void)puglStartTimer(shell->view, kRenderTimerId, 1.0 / 60.0);
+    if (shell->timerHz == hz)
+        return;
+    if (puglStartTimer(shell->view, kRenderTimerId, 1.0 / hz) == PUGL_SUCCESS)
+        shell->timerHz = hz;
 }
 
 void imgui_pugl_shell_stop_timer(ImGuiPuglShell* shell)
 {
     if (!shell || !shell->view || !shell->realized)
         return;
+    shell->timerHz = 0.0;
     puglStopTimer(shell->view, kRenderTimerId);
 }
 
 ImFont* imgui_pugl_shell_bold_font(ImGuiPuglShell* shell)
 {
     return shell ? shell->boldFont : nullptr;
+}
+
+ImFont* imgui_pugl_shell_pixel_font(ImGuiPuglShell* shell)
+{
+    return shell ? shell->pixelFont : nullptr;
 }
 
 ImGuiContext* imgui_pugl_shell_context(ImGuiPuglShell* shell)

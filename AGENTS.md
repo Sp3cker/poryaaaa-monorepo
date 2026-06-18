@@ -2,6 +2,29 @@
 
 Instructions for coding agents working in this monorepo.
 
+## Read This First
+
+- Follow the nearest package `AGENTS.md` before editing package code.
+- Do not deduplicate third-party dependencies unless the task explicitly asks for dependency consolidation.
+- Preserve package-local build directories and generated-output rules.
+- When a task crosses packages, state the package boundary and verify every touched package.
+
+## Quality
+- Do not make code reusable if it's not going to be reused.
+- Testability should not win over good architecture.
+- Do not write 1-liner functions to get a boolean result. Inlining the check is simpler.
+    - Example of bad:
+    ```C++
+    bool is_drumset_placeholder_voice(const std::string& name)
+    {
+        return name.find("Square") != std::string::npos;
+    }
+    ```
+    This developer was executed in front of his loved ones over this extra 3 lines of code 
+    He was resurected when corrected to:
+    ```c++
+    bool isDrumset = name.find("Square") != std::string::npos;
+    ```
 ## Purpose
 
 This repository contains the first-party poryaaaa projects:
@@ -12,13 +35,6 @@ This repository contains the first-party poryaaaa projects:
 
 First-party projects are normal directories, not git submodules.
 
-## Read This First
-
-- Follow the nearest package `AGENTS.md` before editing package code.
-- Keep changes surgical and scoped to the package or cross-package contract requested.
-- Do not deduplicate third-party dependencies unless the task explicitly asks for dependency consolidation.
-- Preserve package-local build directories and generated-output rules.
-- When a task crosses packages, state the package boundary and verify every touched package.
 
 ## Package Guidance
 

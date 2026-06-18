@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "imgui.h"
@@ -14,11 +15,18 @@
 namespace ccomidi
 {
 
+enum class EditorPanel
+{
+    Controls,
+    Drumset,
+};
+
 struct EditorState
 {
     Plugin* plugin = nullptr;
     EditorShell* shell = nullptr;
     std::string windowTitle = {};
+    EditorPanel activePanel = EditorPanel::Controls;
 };
 
 namespace
@@ -26,6 +34,8 @@ namespace
 
 constexpr std::uint32_t kDefaultWidth = 980;
 constexpr std::uint32_t kDefaultHeight = 620;
+constexpr float kPadLabelFontSize = 16.0f;
+constexpr double kIdleTimerHz = 30.0;
 
 ImU32 output_channel_color(std::uint8_t outputChannel)
 {
@@ -48,6 +58,140 @@ ImU32 output_channel_color(std::uint8_t outputChannel)
         IM_COL32(0xFF, 0xFF, 0xFF, 0xFF),
     };
     return kChannelColors[std::clamp<int>(outputChannel, 0, kMaxSelectableOutputChannelIndex)];
+}
+
+std::string note_label(int note)
+{
+    static const char* kNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "Bb", "B"};
+    note = std::clamp(note, 0, 127);
+    return std::string(kNames[note % 12]) + std::to_string(note / 12 - 2);
+}
+
+std::string pad_name_label(const std::string& name)
+{
+    static const std::string kPrefix = "DirectSoundWaveData_";
+    if (name.rfind(kPrefix, 0) == 0)
+        return name.substr(kPrefix.size());
+    return name;
+}
+
+ImU32 pad_name_color(const std::string& name)
+{
+    if (name.find("Kick") != std::string::npos)
+        return IM_COL32(0xFF, 0x5A, 0x8C, 0xFF);
+    if (name.find("Snare") != std::string::npos)
+        return IM_COL32(0x30, 0xD7, 0xFF, 0xFF);
+    if (name.find("Rim") != std::string::npos)
+        return IM_COL32(0xB7, 0xE2, 0x5D, 0xFF);
+    if (name.find("Ride") != std::string::npos)
+        return IM_COL32(0x33, 0xE6, 0xE0, 0xFF);
+    if (name.find("Perc") != std::string::npos)
+        return IM_COL32(0xFF, 0x8A, 0x5A, 0xFF);
+    return IM_COL32(0xD8, 0xBF, 0x7A, 0xFF);
+}
+
+float pixel_snap(float value)
+{
+    return std::floor(value);
+}
+
+ImVec2 pixel_snap(ImVec2 value)
+{
+    return ImVec2(pixel_snap(value.x), pixel_snap(value.y));
+}
+
+ImVec2 text_size(ImFont* font, float fontSize, const std::string& text)
+{
+    if (font)
+        return font->CalcTextSizeA(fontSize, std::numeric_limits<float>::max(), 0.0f, text.c_str());
+    return ImGui::CalcTextSize(text.c_str());
+}
+
+void add_pad_text(ImDrawList* drawList, ImFont* font, float fontSize, ImVec2 pos, ImU32 color, const std::string& text)
+{
+    if (font)
+        drawList->AddText(font, fontSize, pixel_snap(pos), color, text.c_str());
+    else
+        drawList->AddText(pixel_snap(pos), color, text.c_str());
+}
+
+void queue_pad_note(Plugin* plugin, int note, bool on)
+{
+    if (!plugin || note < 0 || note > 127)
+        return;
+    {
+        std::lock_guard<std::mutex> lock(plugin->stateMutex);
+        if (on)
+            plugin->core.queue_note_on(static_cast<std::uint8_t>(note));
+        else
+            plugin->core.queue_note_off(static_cast<std::uint8_t>(note));
+    }
+    request_host_param_sync(plugin);
+}
+
+void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
+{
+    const bool selected = editor->activePanel == panel;
+    if (selected)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_TabActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_TabActive));
+    }
+    if (ImGui::Button(label))
+        editor->activePanel = panel;
+    if (selected)
+        ImGui::PopStyleColor(3);
+}
+
+void draw_drumset_panel(Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont)
+{
+    const int columns = 8;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float gap = style.ItemSpacing.x;
+    const float availableWidth = ImGui::GetContentRegionAvail().x;
+    const float padWidth = std::max(1.0f, (availableWidth - gap * static_cast<float>(columns - 1)) / columns);
+    const ImVec2 padSize(padWidth, 58.0f);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    for (std::size_t i = 0; i < voice.drumset.size(); ++i)
+    {
+        if (i > 0 && i % columns != 0)
+            ImGui::SameLine();
+        const DrumPad& pad = voice.drumset[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::InvisibleButton("##pad", padSize);
+        if (ImGui::IsItemActivated())
+            queue_pad_note(plugin, pad.note, true);
+        if (ImGui::IsItemDeactivated())
+            queue_pad_note(plugin, pad.note, false);
+        const bool active = ImGui::IsItemActive();
+        const bool hovered = ImGui::IsItemHovered();
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        const ImU32 bg = active    ? IM_COL32(0xEA, 0x38, 0xA8, 0xFF)
+                         : hovered ? IM_COL32(0x3B, 0x3B, 0x3B, 0xFF)
+                                   : IM_COL32(0x2A, 0x2A, 0x2A, 0xFF);
+        drawList->AddRectFilled(min, max, bg, 6.0f);
+        drawList->PushClipRect(min, max, true);
+        const std::string keyLabel = note_label(pad.note);
+        const std::string sampleLabel = pad_name_label(pad.name);
+        const ImVec2 keySize = text_size(padLabelFont, kPadLabelFontSize, keyLabel);
+        const float keyX = min.x + std::max(0.0f, (padSize.x - keySize.x) * 0.5f);
+        add_pad_text(drawList,
+                     padLabelFont,
+                     kPadLabelFontSize,
+                     ImVec2(keyX, min.y + 8.0f),
+                     IM_COL32(0xF1, 0xF1, 0xF1, 0xFF),
+                     keyLabel);
+        add_pad_text(drawList,
+                     padLabelFont,
+                     kPadLabelFontSize,
+                     ImVec2(min.x + 10.0f, min.y + 34.0f),
+                     pad_name_color(pad.name),
+                     sampleLabel);
+        drawList->PopClipRect();
+        ImGui::PopID();
+    }
 }
 
 int field_count_for_type(CommandType type)
@@ -164,7 +308,7 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         return;
 
     UiSnapshot snapshot = {};
-    fill_ui_snapshot(plugin, &snapshot);
+    fill_ui_snapshot(plugin, &snapshot); // huh do we need this?
     reload_voicegroup_if_changed(plugin);
 
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
@@ -177,6 +321,22 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     const std::uint8_t outputChannelIndex = floor_to_u8(snapshot.outputChannel, 0, kMaxSelectableOutputChannelIndex);
     int outputChannel = static_cast<int>(outputChannelIndex) + 1;
     outputChannel = std::clamp(outputChannel, 1, static_cast<int>(kSelectableOutputChannelCount));
+    bool programEnabled = std::floor(snapshot.programEnabled) >= 1.0;
+    int program = static_cast<int>(std::floor(snapshot.program));
+    program = std::clamp(program, 0, 127);
+    const bool hasVoices = !plugin->voiceLoad.slots.empty();
+    const VoiceSlot* currentVoice = nullptr;
+    for (const VoiceSlot& slot : plugin->voiceLoad.slots)
+    {
+        if (slot.program == program)
+        {
+            currentVoice = &slot;
+            break;
+        }
+    }
+    const bool selectedVoiceIsDrumset = currentVoice && !currentVoice->drumset.empty();
+    if (!selectedVoiceIsDrumset)
+        editor->activePanel = EditorPanel::Controls;
     const std::string windowTitle = "ccomidi - Chn " + std::to_string(outputChannel);
     if (editor->windowTitle != windowTitle)
     {
@@ -184,18 +344,22 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         editor_shell_set_title(editor->shell, editor->windowTitle.c_str());
     }
     ImFont* boldFont = editor_shell_bold_font(editor->shell);
+    ImFont* padLabelFont = editor_shell_pixel_font(editor->shell);
 
     if (boldFont)
         ImGui::PushFont(boldFont, 0.0f);
     ImGui::TextUnformatted("ccomidi");
     if (boldFont)
         ImGui::PopFont();
+    if (selectedVoiceIsDrumset)
+    {
+        ImGui::SameLine(0.0f, 18.0f);
+        draw_panel_tab(editor, EditorPanel::Controls, "Controls");
+        ImGui::SameLine(0.0f, 0.0f);
+        draw_panel_tab(editor, EditorPanel::Drumset, "Drumset");
+    }
     ImGui::Separator();
 
-    bool programEnabled = std::floor(snapshot.programEnabled) >= 1.0;
-    int program = static_cast<int>(std::floor(snapshot.program));
-    program = std::clamp(program, 0, 127);
-    const bool hasVoices = !plugin->voiceLoad.slots.empty();
     const char* reloadVoicesLabel = "Reload Voices";
     const float reloadVoicesWidth = ImGui::CalcTextSize(reloadVoicesLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     if (ImGui::BeginTable(
@@ -214,18 +378,9 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         ImGui::BeginDisabled(!programEnabled);
         if (hasVoices)
         {
-            const VoiceSlot* current = nullptr;
-            for (const VoiceSlot& slot : plugin->voiceLoad.slots)
-            {
-                if (slot.program == program)
-                {
-                    current = &slot;
-                    break;
-                }
-            }
             char preview[288];
-            if (current)
-                std::snprintf(preview, sizeof(preview), "%03d  %s", current->program, current->name.c_str());
+            if (currentVoice)
+                std::snprintf(preview, sizeof(preview), "%03d  %s", currentVoice->program, currentVoice->name.c_str());
             else
                 std::snprintf(preview, sizeof(preview), "%03d  (empty slot)", program);
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
@@ -268,6 +423,13 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     }
 
     ImGui::Spacing();
+
+    if (editor->activePanel == EditorPanel::Drumset && currentVoice)
+    {
+        draw_drumset_panel(plugin, *currentVoice, padLabelFont);
+        ImGui::End();
+        return;
+    }
 
     if (boldFont)
         ImGui::PushFont(boldFont, 0.0f);
@@ -458,7 +620,7 @@ bool editor_was_closed(EditorState* editor)
 void editor_start_internal_timer(EditorState* editor)
 {
     if (editor)
-        editor_shell_start_timer(editor->shell);
+        editor_shell_start_timer(editor->shell, kIdleTimerHz);
 }
 
 void editor_stop_internal_timer(EditorState* editor)

@@ -30,8 +30,10 @@ struct ImGuiPuglShellConfig
     std::uint32_t minHeight = 240;
     float uiScale = 1.0f;
     float fontSize = 13.0f;
+    float pixelFontSize = 16.0f;
     const char* regularFontPath = nullptr;
     const char* boldFontPath = nullptr;
+    const char* pixelFontPath = nullptr;
     const char* glslVersion = "#version 150";
 };
 
@@ -49,10 +51,11 @@ bool imgui_pugl_shell_was_closed(const ImGuiPuglShell* shell);
 void imgui_pugl_shell_set_title(ImGuiPuglShell* shell, const char* title);
 
 void imgui_pugl_shell_tick(ImGuiPuglShell* shell);
-void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell);
+void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell, double hz);
 void imgui_pugl_shell_stop_timer(ImGuiPuglShell* shell);
 
 ImFont* imgui_pugl_shell_bold_font(ImGuiPuglShell* shell);
+ImFont* imgui_pugl_shell_pixel_font(ImGuiPuglShell* shell);
 ImGuiContext* imgui_pugl_shell_context(ImGuiPuglShell* shell);
 
 } // namespace poryaaaa::gui

@@ -66,6 +66,8 @@ void SenderCore::reset_runtime_state()
     lastEmittedProgram_ = program();
     lastEmittedProgramValid_ = false;
     lastTransportPlaying_ = false;
+    heldNotes_.fill(false);
+    pendingNoteEvents_.clear();
     for (RowState& row : rows_)
     {
         row.lastEmittedValid = false;
@@ -107,6 +109,22 @@ void SenderCore::set_row_value(std::size_t row, std::size_t field, double value)
     if (row >= kMaxCommandRows || field >= kMaxCommandFields)
         return;
     rows_[row].fieldValues[field] = value;
+}
+
+void SenderCore::queue_note_on(std::uint8_t note)
+{
+    if (heldNotes_[note])
+        return;
+    heldNotes_[note] = true;
+    append_pending_note(static_cast<std::uint8_t>(0x90 | output_channel()), note, 100);
+}
+
+void SenderCore::queue_note_off(std::uint8_t note)
+{
+    if (!heldNotes_[note])
+        return;
+    heldNotes_[note] = false;
+    append_pending_note(static_cast<std::uint8_t>(0x80 | output_channel()), note, 0);
 }
 
 double SenderCore::output_channel_value() const
@@ -416,6 +434,31 @@ void SenderCore::append_encoded(std::uint32_t time, const EncodedCommand& encode
     }
 }
 
+void SenderCore::append_pending_note(std::uint8_t status, std::uint8_t note, std::uint8_t velocity)
+{
+    if (pendingNoteEvents_.count >= pendingNoteEvents_.events.size())
+        return;
+    MidiEvent& event = pendingNoteEvents_.events[pendingNoteEvents_.count++];
+    event.status = status;
+    event.data1 = note;
+    event.data2 = velocity;
+}
+
+void SenderCore::drain_pending_notes(std::uint32_t time, PlannedEvents* out)
+{
+    if (!out)
+        return;
+    for (std::size_t i = 0; i < pendingNoteEvents_.count; ++i)
+    {
+        if (out->count >= out->events.size())
+            break;
+        MidiEvent event = pendingNoteEvents_.events[i];
+        event.time = time;
+        out->events[out->count++] = event;
+    }
+    pendingNoteEvents_.clear();
+}
+
 void SenderCore::emit_program_change(std::uint32_t time, PlannedEvents* out)
 {
     if (!out || !program_enabled() || out->count >= out->events.size())
@@ -555,6 +598,7 @@ void SenderCore::emit_preapplied_changes(bool transportIsPlaying,
         return;
 
     out->clear();
+    drain_pending_notes(time, out);
     if (channelChanged)
     {
         emit_snapshot(time, out);

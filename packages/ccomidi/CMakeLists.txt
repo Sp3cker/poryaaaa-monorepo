@@ -12,6 +12,7 @@ set(CCOMIDI_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(CCOMIDI_THIRD_PARTY_DIR "${CCOMIDI_MONOREPO_ROOT}/third_party")
 set(CCOMIDI_SHARED_GUI_DIR "${CCOMIDI_MONOREPO_ROOT}/shared/gui/pugl")
 set(CCOMIDI_FONT_DIR "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
+set(CCOMIDI_PIXEL_FONT_PATH "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/x12y16pxMaruMonica.ttf")
 set(PUGL_DIR "${CCOMIDI_THIRD_PARTY_DIR}/pugl")
 set(IMGUI_DIR "${CCOMIDI_THIRD_PARTY_DIR}/imgui")
 
@@ -175,6 +176,7 @@ target_link_libraries(ccomidi_gui PUBLIC clap)
 target_compile_definitions(ccomidi_gui PUBLIC
     PUGL_STATIC
     CCOMIDI_FONT_DIR="${CCOMIDI_FONT_DIR}"
+    CCOMIDI_PIXEL_FONT_PATH="${CCOMIDI_PIXEL_FONT_PATH}"
 )
 
 if(APPLE)

@@ -444,6 +444,69 @@ void test_configurable_rows_reject_fixed_command_types()
               "configurable rows cannot be reassigned to fixed commands");
 }
 
+void drain_preapplied(SenderCore* core, PlannedEvents* planned)
+{
+    const std::array<bool, ccomidi::kMaxCommandRows> rowChanged = {};
+    core->emit_preapplied_changes(false, false, rowChanged, 0, planned);
+}
+
+void test_gui_note_queue_emits_note_on_and_off()
+{
+    SenderCore core;
+    PlannedEvents planned;
+    core.set_output_channel(2.0);
+
+    core.queue_note_on(36);
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 1, "queued GUI note-on drains without transport");
+    ASSERT_EQ(planned.events[0].status, 0x92, "GUI note-on uses current output channel");
+    ASSERT_EQ(planned.events[0].data1, 36, "GUI note-on keeps note number");
+    ASSERT_EQ(planned.events[0].data2, 100, "GUI note-on uses fixed velocity");
+
+    core.queue_note_off(36);
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 1, "queued GUI note-off drains");
+    ASSERT_EQ(planned.events[0].status, 0x82, "GUI note-off uses current output channel");
+    ASSERT_EQ(planned.events[0].data1, 36, "GUI note-off keeps note number");
+    ASSERT_EQ(planned.events[0].data2, 0, "GUI note-off uses zero velocity");
+}
+
+void test_gui_note_queue_suppresses_duplicate_held_notes()
+{
+    SenderCore core;
+    PlannedEvents planned;
+
+    core.queue_note_on(40);
+    core.queue_note_on(40);
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 1, "duplicate GUI note-on is suppressed while held");
+    ASSERT_EQ(planned.events[0].status, 0x90, "first GUI note-on still emits");
+    ASSERT_EQ(planned.events[0].data1, 40, "first GUI note-on note survives");
+
+    core.queue_note_off(40);
+    core.queue_note_off(40);
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 1, "duplicate GUI note-off is suppressed after release");
+    ASSERT_EQ(planned.events[0].status, 0x80, "first GUI note-off still emits");
+    ASSERT_EQ(planned.events[0].data1, 40, "first GUI note-off note survives");
+}
+
+void test_gui_note_queue_reset_clears_runtime_state()
+{
+    SenderCore core;
+    PlannedEvents planned;
+
+    core.queue_note_on(52);
+    core.reset_runtime_state();
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 0, "runtime reset clears pending GUI note-on");
+
+    core.queue_note_on(52);
+    drain_preapplied(&core, &planned);
+    ASSERT_EQ(planned.count, 1, "runtime reset also clears held note state");
+    ASSERT_EQ(planned.events[0].status, 0x90, "note can be queued again after reset");
+}
+
 } // namespace
 
 int main()
@@ -465,6 +528,9 @@ int main()
     test_xcmd_atta_emits_selector_and_data();
     test_xcmd_0d_emits_four_data_bytes();
     test_full_snapshot_with_4byte_xcmds_does_not_truncate();
+    test_gui_note_queue_emits_note_on_and_off();
+    test_gui_note_queue_suppresses_duplicate_held_notes();
+    test_gui_note_queue_reset_clears_runtime_state();
 
     std::printf("Passed %d/%d tests\n", g_testsPassed, g_testsRun);
     return g_testsPassed == g_testsRun ? EXIT_SUCCESS : EXIT_FAILURE;
