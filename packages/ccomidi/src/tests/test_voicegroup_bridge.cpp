@@ -42,10 +42,12 @@ void test_parse_slots_with_drumset_metadata()
   "bank": "main",
   "slots": [
     {"program": 0, "name": "Piano"},
+    {"program": 2, "name": "Square 1"},
     {"program": 1, "name": "Drums", "typeCode": 128, "drumset": [
       {"note": 36, "name": "DirectSoundWaveData_Kick"},
       {"note": "bad", "name": "Bad"},
       {"note": 38},
+      {"note": 39, "name": "Square 1"},
       {"note": 40, "name": "DirectSoundWaveData_Snare"}
     ]}
   ]
@@ -54,14 +56,14 @@ void test_parse_slots_with_drumset_metadata()
     const ccomidi::VoiceSlotLoad load = ccomidi::voicegroup_bridge_parse_state_body(body);
 
     ASSERT_TRUE(load.error.empty(), "valid state body parses without error");
-    ASSERT_EQ(load.slots.size(), 2, "both voice slots parse");
+    ASSERT_EQ(load.slots.size(), 2, "Square 1 voice slots are filtered");
     ASSERT_EQ(load.slots[0].program, 0, "normal slot program parses");
     ASSERT_EQ(load.slots[0].typeCode, 0, "missing typeCode defaults to zero");
     ASSERT_EQ(load.slots[0].drumset.size(), 0, "normal slot has no drum pads");
 
     ASSERT_EQ(load.slots[1].program, 1, "drumset slot program parses");
     ASSERT_EQ(load.slots[1].typeCode, 128, "drumset slot typeCode parses");
-    ASSERT_EQ(load.slots[1].drumset.size(), 2, "malformed drum pads are ignored");
+    ASSERT_EQ(load.slots[1].drumset.size(), 2, "malformed and Square 1 drum pads are ignored");
     ASSERT_EQ(load.slots[1].drumset[0].note, 36, "first drum pad note parses");
     ASSERT_TRUE(load.slots[1].drumset[0].name == "DirectSoundWaveData_Kick", "first drum pad name parses");
     ASSERT_EQ(load.slots[1].drumset[1].note, 40, "second drum pad note parses");

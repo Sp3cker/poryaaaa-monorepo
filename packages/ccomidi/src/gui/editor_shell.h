@@ -43,7 +43,7 @@ ImFont* editor_shell_pixel_font(EditorShell* shell);
 void editor_shell_get_size(const EditorShell* shell, std::uint32_t* width, std::uint32_t* height);
 bool editor_shell_can_resize(const EditorShell* shell);
 bool editor_shell_was_closed(const EditorShell* shell);
-void editor_shell_start_timer(EditorShell* shell, double hz);
+void editor_shell_start_idle_timer(EditorShell* shell);
 void editor_shell_stop_timer(EditorShell* shell);
 
 } // namespace ccomidi

@@ -27,6 +27,7 @@ struct EditorState
     EditorShell* shell = nullptr;
     std::string windowTitle = {};
     EditorPanel activePanel = EditorPanel::Controls;
+    int activePadNote = -1;
 };
 
 namespace
@@ -35,7 +36,7 @@ namespace
 constexpr std::uint32_t kDefaultWidth = 980;
 constexpr std::uint32_t kDefaultHeight = 620;
 constexpr float kPadLabelFontSize = 16.0f;
-constexpr double kIdleTimerHz = 30.0;
+constexpr float kPadSize = kPadLabelFontSize * 1.68f * 3;
 
 ImU32 output_channel_color(std::uint8_t outputChannel)
 {
@@ -129,6 +130,14 @@ void queue_pad_note(Plugin* plugin, int note, bool on)
     request_host_param_sync(plugin);
 }
 
+void release_active_pad_note(EditorState* editor, Plugin* plugin)
+{
+    if (editor->activePadNote < 0)
+        return;
+    queue_pad_note(plugin, editor->activePadNote, false);
+    editor->activePadNote = -1;
+}
+
 void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
 {
     const bool selected = editor->activePanel == panel;
@@ -144,15 +153,16 @@ void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
         ImGui::PopStyleColor(3);
 }
 
-void draw_drumset_panel(Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont)
+void draw_drumset_panel(EditorState* editor, Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont)
 {
     const int columns = 8;
     const ImGuiStyle& style = ImGui::GetStyle();
     const float gap = style.ItemSpacing.x;
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const float padWidth = std::max(1.0f, (availableWidth - gap * static_cast<float>(columns - 1)) / columns);
-    const ImVec2 padSize(padWidth, 58.0f);
+    const ImVec2 padSize(padWidth, kPadSize);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
+    int hoveredNote = -1;
     for (std::size_t i = 0; i < voice.drumset.size(); ++i)
     {
         if (i > 0 && i % columns != 0)
@@ -160,14 +170,12 @@ void draw_drumset_panel(Plugin* plugin, const VoiceSlot& voice, ImFont* padLabel
         const DrumPad& pad = voice.drumset[i];
         ImGui::PushID(static_cast<int>(i));
         ImGui::InvisibleButton("##pad", padSize);
-        if (ImGui::IsItemActivated())
-            queue_pad_note(plugin, pad.note, true);
-        if (ImGui::IsItemDeactivated())
-            queue_pad_note(plugin, pad.note, false);
-        const bool active = ImGui::IsItemActive();
-        const bool hovered = ImGui::IsItemHovered();
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
+        const bool active = editor->activePadNote == pad.note;
+        const bool hovered = ImGui::IsMouseHoveringRect(min, max);
+        if (hovered)
+            hoveredNote = pad.note;
         const ImU32 bg = active    ? IM_COL32(0xEA, 0x38, 0xA8, 0xFF)
                          : hovered ? IM_COL32(0x3B, 0x3B, 0x3B, 0xFF)
                                    : IM_COL32(0x2A, 0x2A, 0x2A, 0xFF);
@@ -191,6 +199,15 @@ void draw_drumset_panel(Plugin* plugin, const VoiceSlot& voice, ImFont* padLabel
                      sampleLabel);
         drawList->PopClipRect();
         ImGui::PopID();
+    }
+    const int nextPadNote = ImGui::IsMouseDown(ImGuiMouseButton_Left) ? hoveredNote : -1;
+    if (editor->activePadNote == nextPadNote)
+        return;
+    release_active_pad_note(editor, plugin);
+    if (nextPadNote >= 0)
+    {
+        queue_pad_note(plugin, nextPadNote, true);
+        editor->activePadNote = nextPadNote;
     }
 }
 
@@ -426,10 +443,11 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 
     if (editor->activePanel == EditorPanel::Drumset && currentVoice)
     {
-        draw_drumset_panel(plugin, *currentVoice, padLabelFont);
+        draw_drumset_panel(editor, plugin, *currentVoice, padLabelFont);
         ImGui::End();
         return;
     }
+    release_active_pad_note(editor, plugin);
 
     if (boldFont)
         ImGui::PushFont(boldFont, 0.0f);
@@ -620,7 +638,7 @@ bool editor_was_closed(EditorState* editor)
 void editor_start_internal_timer(EditorState* editor)
 {
     if (editor)
-        editor_shell_start_timer(editor->shell, kIdleTimerHz);
+        editor_shell_start_idle_timer(editor->shell);
 }
 
 void editor_stop_internal_timer(EditorState* editor)

@@ -23,7 +23,6 @@ namespace
 
 constexpr std::uint32_t kDefaultWidth = 520;
 constexpr std::uint32_t kDefaultHeight = 220;
-constexpr double kIdleTimerHz = 30.0;
 
 void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 {
@@ -156,7 +155,7 @@ bool editor_was_closed(EditorState* editor)
 void editor_start_internal_timer(EditorState* editor)
 {
     if (editor)
-        editor_shell_start_timer(editor->shell, kIdleTimerHz);
+        editor_shell_start_idle_timer(editor->shell);
 }
 
 void editor_stop_internal_timer(EditorState* editor)

@@ -52,6 +52,8 @@ void imgui_pugl_shell_set_title(ImGuiPuglShell* shell, const char* title);
 
 void imgui_pugl_shell_tick(ImGuiPuglShell* shell);
 void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell, double hz);
+void imgui_pugl_shell_start_idle_timer(ImGuiPuglShell* shell);
+void imgui_pugl_shell_start_active_timer(ImGuiPuglShell* shell);
 void imgui_pugl_shell_stop_timer(ImGuiPuglShell* shell);
 
 ImFont* imgui_pugl_shell_bold_font(ImGuiPuglShell* shell);

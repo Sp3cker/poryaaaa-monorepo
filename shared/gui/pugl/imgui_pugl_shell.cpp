@@ -172,16 +172,16 @@ PuglStatus onPuglEvent(PuglView* view, const PuglEvent* event)
             shell->callbacks.closed(shell->callbacks.userData, false);
         break;
     case PUGL_BUTTON_PRESS:
-        imgui_pugl_shell_start_timer(shell, kActiveTimerHz);
+        imgui_pugl_shell_start_active_timer(shell);
         puglGrabFocus(view);
         ImGui_ImplPugl_ProcessEvent(event);
         break;
     case PUGL_BUTTON_RELEASE:
-        imgui_pugl_shell_start_timer(shell, kIdleTimerHz);
+        imgui_pugl_shell_start_idle_timer(shell);
         ImGui_ImplPugl_ProcessEvent(event);
         break;
     case PUGL_POINTER_OUT:
-        imgui_pugl_shell_start_timer(shell, kIdleTimerHz);
+        imgui_pugl_shell_start_idle_timer(shell);
         ImGui_ImplPugl_ProcessEvent(event);
         break;
     case PUGL_KEY_PRESS:
@@ -424,6 +424,16 @@ void imgui_pugl_shell_start_timer(ImGuiPuglShell* shell, double hz)
         return;
     if (puglStartTimer(shell->view, kRenderTimerId, 1.0 / hz) == PUGL_SUCCESS)
         shell->timerHz = hz;
+}
+
+void imgui_pugl_shell_start_idle_timer(ImGuiPuglShell* shell)
+{
+    imgui_pugl_shell_start_timer(shell, kIdleTimerHz);
+}
+
+void imgui_pugl_shell_start_active_timer(ImGuiPuglShell* shell)
+{
+    imgui_pugl_shell_start_timer(shell, kActiveTimerHz);
 }
 
 void imgui_pugl_shell_stop_timer(ImGuiPuglShell* shell)

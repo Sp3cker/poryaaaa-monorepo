@@ -153,11 +153,11 @@ bool editor_shell_was_closed(const EditorShell* shell)
     return shell && poryaaaa::gui::imgui_pugl_shell_was_closed(shell->shell);
 }
 
-void editor_shell_start_timer(EditorShell* shell, double hz)
+void editor_shell_start_idle_timer(EditorShell* shell)
 {
     if (!shell)
         return;
-    poryaaaa::gui::imgui_pugl_shell_start_timer(shell->shell, hz);
+    poryaaaa::gui::imgui_pugl_shell_start_idle_timer(shell->shell);
 }
 
 void editor_shell_stop_timer(EditorShell* shell)

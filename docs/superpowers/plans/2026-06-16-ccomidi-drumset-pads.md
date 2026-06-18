@@ -29,6 +29,11 @@
 
 Before starting each domain below, stop and ask the user for approval. Do not start the next domain because the previous one was approved.
 
+## Follow-Up Todos
+
+- [ ] Fix layout shifting when the plugin loads or reloads voicegroup state.
+- [x] Move dynamic refresh-rate policy into shared poryaaaa/ccomidi GUI shell logic so both plugins use the same idle/active timer behavior.
+
 ## Files
 
 - Modify: `packages/poryaaaa/plugin/voicegroup/voicegroup_project_state.c`

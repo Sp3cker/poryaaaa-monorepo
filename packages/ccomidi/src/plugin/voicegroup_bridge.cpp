@@ -159,6 +159,11 @@ bool read_next_object(const char*& cursor, std::string& out)
     return false;
 }
 
+bool is_filtered_sample_name(const std::string& name)
+{
+    return name == "Square 1";
+}
+
 void parse_drumset(const std::string& obj, std::vector<DrumPad>& out)
 {
     const char* cursor = obj.c_str();
@@ -193,7 +198,7 @@ void parse_drumset(const std::string& obj, std::vector<DrumPad>& out)
         const bool hasNote = find_key(pc, "note") && parse_json_int(pc, note);
         pc = padObj.c_str();
         const bool hasName = find_key(pc, "name") && parse_json_string(pc, name);
-        if (hasNote && hasName && note >= 0 && note < 128 && !name.empty())
+        if (hasNote && hasName && note >= 0 && note < 128 && !name.empty() && !is_filtered_sample_name(name))
             out.push_back(DrumPad{note, name});
     }
 }
@@ -280,7 +285,7 @@ VoiceSlotLoad voicegroup_bridge_parse_state_body(const std::string& body)
         if (find_key(oc, "typeCode"))
             parse_json_int(oc, typeCode);
 
-        if (program >= 0 && program < 128 && !name.empty())
+        if (program >= 0 && program < 128 && !name.empty() && !is_filtered_sample_name(name))
         {
             VoiceSlot slot;
             slot.program = program;
