@@ -238,6 +238,7 @@ ImGuiPuglShell* imgui_pugl_shell_create(const ImGuiPuglShellConfig& config, cons
 
     puglSetViewHint(shell->view, PUGL_RESIZABLE, 1);
     puglSetViewHint(shell->view, PUGL_IGNORE_KEY_REPEAT, 1);
+
     puglSetSizeHint(shell->view, PUGL_DEFAULT_SIZE, config.defaultWidth, config.defaultHeight);
     puglSetSizeHint(shell->view, PUGL_MIN_SIZE, config.minWidth, config.minHeight);
     puglSetViewString(shell->view, PUGL_WINDOW_TITLE, config.title);

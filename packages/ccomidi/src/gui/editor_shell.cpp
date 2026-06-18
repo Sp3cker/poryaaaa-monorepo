@@ -1,7 +1,5 @@
 #include "gui/editor_shell.h"
 
-#include <string>
-
 #include <clap/ext/gui.h>
 
 #include "imgui_pugl_shell.h"
@@ -46,8 +44,6 @@ editor_shell_create(const clap_host_t* host, const EditorShellConfig& config, co
     editorShell->host = host;
     editorShell->callbacks = callbacks;
 
-    const std::string fontDir = CCOMIDI_FONT_DIR;
-
     poryaaaa::gui::ImGuiPuglShellConfig shellConfig;
     shellConfig.title = config.title;
     shellConfig.className = config.className;
@@ -56,10 +52,9 @@ editor_shell_create(const clap_host_t* host, const EditorShellConfig& config, co
     shellConfig.minWidth = config.minWidth;
     shellConfig.minHeight = config.minHeight;
     shellConfig.uiScale = config.uiScale;
-    const std::string regularFont = fontDir + "/Calamity-Regular.ttf";
-    const std::string boldFont = fontDir + "/Calamity-Bold.ttf";
-    shellConfig.regularFontPath = regularFont.c_str();
-    shellConfig.boldFontPath = boldFont.c_str();
+    // Font paths are configured by packages/ccomidi/CMakeLists.txt.
+    shellConfig.regularFontPath = CCOMIDI_REGULAR_FONT_PATH;
+    shellConfig.boldFontPath = CCOMIDI_BOLD_FONT_PATH;
     shellConfig.pixelFontPath = CCOMIDI_PIXEL_FONT_PATH;
     shellConfig.pixelFontSize = 16.0f;
 
@@ -111,6 +106,14 @@ bool editor_shell_hide(EditorShell* shell)
 bool editor_shell_set_size(EditorShell* shell, std::uint32_t width, std::uint32_t height)
 {
     return shell && poryaaaa::gui::imgui_pugl_shell_set_size(shell->shell, width, height);
+}
+
+bool editor_shell_request_resize(EditorShell* shell, std::uint32_t width, std::uint32_t height)
+{
+    if (!shell || !shell->host)
+        return false;
+    const auto* hostGui = static_cast<const clap_host_gui_t*>(shell->host->get_extension(shell->host, CLAP_EXT_GUI));
+    return hostGui && hostGui->request_resize && hostGui->request_resize(shell->host, width, height);
 }
 
 void editor_shell_set_title(EditorShell* shell, const char* title)

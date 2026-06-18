@@ -35,6 +35,7 @@ namespace
 
 constexpr std::uint32_t kDefaultWidth = 980;
 constexpr std::uint32_t kDefaultHeight = 620;
+constexpr std::uint32_t kDrumsetHeight = 420;
 constexpr float kPadLabelFontSize = 16.0f;
 constexpr float kPadSize = kPadLabelFontSize * 1.68f * 3;
 
@@ -138,6 +139,15 @@ void release_active_pad_note(EditorState* editor, Plugin* plugin)
     editor->activePadNote = -1;
 }
 
+void apply_panel_size(EditorState* editor, EditorPanel panel)
+{
+    const std::uint32_t height = (panel == EditorPanel::Drumset) ? kDrumsetHeight : kDefaultHeight;
+    // DIAGNOSTIC: resize only our own embedded view (-> PUGL_CONFIGURE -> ImGui follows).
+    // request_resize is temporarily disabled to confirm it is what oversizes the host frame.
+    // editor_shell_request_resize(editor->shell, kDefaultWidth, height);
+    editor_shell_set_size(editor->shell, kDefaultWidth, height);
+}
+
 void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
 {
     const bool selected = editor->activePanel == panel;
@@ -148,7 +158,10 @@ void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_TabActive));
     }
     if (ImGui::Button(label))
+    {
         editor->activePanel = panel;
+        apply_panel_size(editor, panel);
+    }
     if (selected)
         ImGui::PopStyleColor(3);
 }
@@ -269,6 +282,21 @@ bool is_table_command_type(CommandType type)
     return type == CommandType::None || !is_fixed_command_type(type);
 }
 
+void draw_mod_type_controls(Plugin* plugin, std::size_t row, const UiRowSnapshot& rowSnapshot)
+{
+    int value = static_cast<int>(std::floor(rowSnapshot.values[0]));
+    ImGui::PushID(static_cast<int>(row));
+    if (ImGui::RadioButton("Vibrato", value == 0))
+        apply_ui_param_change(plugin, row_param_id(static_cast<std::uint32_t>(row), RowParamSlot::Value0), 0.0);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Tremolo", value == 1))
+        apply_ui_param_change(plugin, row_param_id(static_cast<std::uint32_t>(row), RowParamSlot::Value0), 1.0);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Autopan", value == 2))
+        apply_ui_param_change(plugin, row_param_id(static_cast<std::uint32_t>(row), RowParamSlot::Value0), 2.0);
+    ImGui::PopID();
+}
+
 void draw_parameter_controls(Plugin* plugin, std::size_t row, CommandType type, const UiRowSnapshot& rowSnapshot)
 {
     const int activeFields = field_count_for_type(type);
@@ -276,6 +304,12 @@ void draw_parameter_controls(Plugin* plugin, std::size_t row, CommandType type, 
     {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("-");
+        return;
+    }
+
+    if (type == CommandType::ModType)
+    {
+        draw_mod_type_controls(plugin, row, rowSnapshot);
         return;
     }
 
@@ -352,8 +386,12 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         }
     }
     const bool selectedVoiceIsDrumset = currentVoice && !currentVoice->drumset.empty();
-    if (!selectedVoiceIsDrumset)
+    if (!selectedVoiceIsDrumset &&
+        editor->activePanel != EditorPanel::Controls) // toggle away from Drumset tab if currently shown
+    {
         editor->activePanel = EditorPanel::Controls;
+        apply_panel_size(editor, EditorPanel::Controls);
+    }
     const std::string windowTitle = "ccomidi - Chn " + std::to_string(outputChannel);
     if (editor->windowTitle != windowTitle)
     {
@@ -370,7 +408,7 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         ImGui::PopFont();
     if (selectedVoiceIsDrumset)
     {
-        ImGui::SameLine(0.0f, 18.0f);
+        ImGui::SameLine(0.0f, kPadLabelFontSize);
         draw_panel_tab(editor, EditorPanel::Controls, "Controls");
         ImGui::SameLine(0.0f, 0.0f);
         draw_panel_tab(editor, EditorPanel::Drumset, "Drumset");

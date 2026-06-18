@@ -11,7 +11,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CCOMIDI_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(CCOMIDI_THIRD_PARTY_DIR "${CCOMIDI_MONOREPO_ROOT}/third_party")
 set(CCOMIDI_SHARED_GUI_DIR "${CCOMIDI_MONOREPO_ROOT}/shared/gui/pugl")
-set(CCOMIDI_FONT_DIR "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
+set(CCOMIDI_REGULAR_FONT_PATH "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/Calamity/Calamity-Regular.ttf")
+set(CCOMIDI_BOLD_FONT_PATH "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/Calamity/Calamity-Bold.ttf")
 set(CCOMIDI_PIXEL_FONT_PATH "${CCOMIDI_MONOREPO_ROOT}/shared/assets/fonts/x12y16pxMaruMonica.ttf")
 set(PUGL_DIR "${CCOMIDI_THIRD_PARTY_DIR}/pugl")
 set(IMGUI_DIR "${CCOMIDI_THIRD_PARTY_DIR}/imgui")
@@ -19,6 +20,8 @@ set(IMGUI_DIR "${CCOMIDI_THIRD_PARTY_DIR}/imgui")
 function(ccomidi_enable_project_warnings target_name)
     if(MSVC)
         target_compile_options(${target_name} PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _CRT_NONSTDC_NO_WARNINGS
             /W4
             /WX
             /permissive-
@@ -175,7 +178,8 @@ target_link_libraries(ccomidi_gui PUBLIC clap)
 
 target_compile_definitions(ccomidi_gui PUBLIC
     PUGL_STATIC
-    CCOMIDI_FONT_DIR="${CCOMIDI_FONT_DIR}"
+    CCOMIDI_REGULAR_FONT_PATH="${CCOMIDI_REGULAR_FONT_PATH}"
+    CCOMIDI_BOLD_FONT_PATH="${CCOMIDI_BOLD_FONT_PATH}"
     CCOMIDI_PIXEL_FONT_PATH="${CCOMIDI_PIXEL_FONT_PATH}"
 )
 

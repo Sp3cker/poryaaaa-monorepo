@@ -3,17 +3,23 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdckdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 static inline bool vg_size_add(size_t a, size_t b, size_t* out)
 {
-    return !ckd_add(out, a, b);
+    if (a > SIZE_MAX - b)
+        return false;
+    *out = a + b;
+    return true;
 }
 
 static inline bool vg_size_mul(size_t a, size_t b, size_t* out)
 {
-    return !ckd_mul(out, a, b);
+    if (a != 0 && b > SIZE_MAX / a)
+        return false;
+    *out = a * b;
+    return true;
 }
 
 static inline void* vg_malloc_array(size_t count, size_t elemSize)

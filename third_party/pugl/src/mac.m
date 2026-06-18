@@ -1304,6 +1304,10 @@ puglRealize(PuglView* view)
 
   if (view->parent) {
     NSView* pview = (NSView*)view->parent;
+    if (view->hints[PUGL_RESIZABLE]) {
+      [impl->wrapperView setFrame:[pview bounds]];
+      [impl->wrapperView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    }
     [pview addSubview:impl->wrapperView];
     [impl->drawView setHidden:NO];
     [[impl->drawView window] makeFirstResponder:impl->wrapperView];
