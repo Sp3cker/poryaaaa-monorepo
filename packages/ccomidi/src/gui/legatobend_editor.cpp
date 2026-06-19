@@ -8,6 +8,7 @@
 
 #include "gui/editor_shell.h"
 #include "plugin/legatobend_param_ids.h"
+#include "typographic_scale.h"
 
 namespace ccomidi::legatobend
 {
@@ -21,8 +22,11 @@ struct EditorState
 namespace
 {
 
+namespace text = poryaaaa::gui::text;
+
 constexpr std::uint32_t kDefaultWidth = 520;
 constexpr std::uint32_t kDefaultHeight = 220;
+const float kTitleFontSize = text::Xl;
 
 void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 {
@@ -42,7 +46,7 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     ImGui::Begin("##ccomidi_legatobend", nullptr, flags);
     ImFont* boldFont = editor_shell_bold_font(editor->shell);
     if (boldFont)
-        ImGui::PushFont(boldFont, 0.0f);
+        ImGui::PushFont(boldFont, kTitleFontSize);
     ImGui::TextUnformatted("ccomidi legatobend");
     if (boldFont)
         ImGui::PopFont();

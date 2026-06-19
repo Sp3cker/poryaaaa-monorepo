@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "typographic_scale.h"
+
 struct ImFont;
 struct ImGuiContext;
 
@@ -29,8 +31,8 @@ struct ImGuiPuglShellConfig
     std::uint32_t minWidth = 320;
     std::uint32_t minHeight = 240;
     float uiScale = 1.0f;
-    float fontSize = 13.0f;
-    float pixelFontSize = 16.0f;
+    float fontSize = text::Base;
+    float pixelFontSize = text::Base;
     const char* regularFontPath = nullptr;
     const char* boldFontPath = nullptr;
     const char* pixelFontPath = nullptr;

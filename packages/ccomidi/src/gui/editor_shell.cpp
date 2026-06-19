@@ -3,6 +3,7 @@
 #include <clap/ext/gui.h>
 
 #include "imgui_pugl_shell.h"
+#include "typographic_scale.h"
 
 namespace ccomidi
 {
@@ -16,6 +17,8 @@ struct EditorShell
 
 namespace
 {
+
+namespace text = poryaaaa::gui::text;
 
 void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 {
@@ -52,11 +55,12 @@ editor_shell_create(const clap_host_t* host, const EditorShellConfig& config, co
     shellConfig.minWidth = config.minWidth;
     shellConfig.minHeight = config.minHeight;
     shellConfig.uiScale = config.uiScale;
+    shellConfig.fontSize = text::Base;
     // Font paths are configured by packages/ccomidi/CMakeLists.txt.
     shellConfig.regularFontPath = CCOMIDI_REGULAR_FONT_PATH;
     shellConfig.boldFontPath = CCOMIDI_BOLD_FONT_PATH;
     shellConfig.pixelFontPath = CCOMIDI_PIXEL_FONT_PATH;
-    shellConfig.pixelFontSize = 16.0f;
+    shellConfig.pixelFontSize = text::Base;
 
     poryaaaa::gui::ImGuiPuglShellCallbacks shellCallbacks;
     shellCallbacks.userData = editorShell;
@@ -106,14 +110,6 @@ bool editor_shell_hide(EditorShell* shell)
 bool editor_shell_set_size(EditorShell* shell, std::uint32_t width, std::uint32_t height)
 {
     return shell && poryaaaa::gui::imgui_pugl_shell_set_size(shell->shell, width, height);
-}
-
-bool editor_shell_request_resize(EditorShell* shell, std::uint32_t width, std::uint32_t height)
-{
-    if (!shell || !shell->host)
-        return false;
-    const auto* hostGui = static_cast<const clap_host_gui_t*>(shell->host->get_extension(shell->host, CLAP_EXT_GUI));
-    return hostGui && hostGui->request_resize && hostGui->request_resize(shell->host, width, height);
 }
 
 void editor_shell_set_title(EditorShell* shell, const char* title)

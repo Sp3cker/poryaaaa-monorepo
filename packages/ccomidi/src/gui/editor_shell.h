@@ -37,7 +37,6 @@ bool editor_shell_set_parent(EditorShell* shell, std::uintptr_t nativeParent);
 bool editor_shell_show(EditorShell* shell);
 bool editor_shell_hide(EditorShell* shell);
 bool editor_shell_set_size(EditorShell* shell, std::uint32_t width, std::uint32_t height);
-bool editor_shell_request_resize(EditorShell* shell, std::uint32_t width, std::uint32_t height);
 void editor_shell_set_title(EditorShell* shell, const char* title);
 ImFont* editor_shell_bold_font(EditorShell* shell);
 ImFont* editor_shell_pixel_font(EditorShell* shell);

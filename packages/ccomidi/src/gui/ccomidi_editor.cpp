@@ -4,13 +4,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <limits>
 #include <string>
 
 #include "imgui.h"
 
 #include "gui/editor_shell.h"
 #include "plugin/param_ids.h"
+#include "typographic_scale.h"
 
 namespace ccomidi
 {
@@ -33,11 +33,20 @@ struct EditorState
 namespace
 {
 
+namespace text = poryaaaa::gui::text;
+
 constexpr std::uint32_t kDefaultWidth = 980;
 constexpr std::uint32_t kDefaultHeight = 620;
-constexpr std::uint32_t kDrumsetHeight = 420;
-constexpr float kPadLabelFontSize = 16.0f;
-constexpr float kPadSize = kPadLabelFontSize * 1.68f * 3;
+
+const float kBodyFontSize = text::Base;
+const float kSectionFontSize = text::Lg;
+const float kTitleFontSize = text::Xl;
+const float kPadLabelFontSize = text::Lg;
+const float kPadTextInsetX = text::Sm;
+const float kPadTextInsetY = text::Sm;
+const float kPadSampleInsetY = text::Lg + text::Sm;
+const float kPadKeyBandHeight = text::Lg + text::Sm;
+const float kPanelTabSpacing = text::Base;
 
 ImU32 output_channel_color(std::uint8_t outputChannel)
 {
@@ -102,19 +111,15 @@ ImVec2 pixel_snap(ImVec2 value)
     return ImVec2(pixel_snap(value.x), pixel_snap(value.y));
 }
 
-ImVec2 text_size(ImFont* font, float fontSize, const std::string& text)
+void add_pad_text(ImDrawList* drawList,
+                  ImFont* font,
+                  float fontSize,
+                  ImVec2 pos,
+                  ImU32 color,
+                  const std::string& text,
+                  float wrapWidth = 0.0f)
 {
-    if (font)
-        return font->CalcTextSizeA(fontSize, std::numeric_limits<float>::max(), 0.0f, text.c_str());
-    return ImGui::CalcTextSize(text.c_str());
-}
-
-void add_pad_text(ImDrawList* drawList, ImFont* font, float fontSize, ImVec2 pos, ImU32 color, const std::string& text)
-{
-    if (font)
-        drawList->AddText(font, fontSize, pixel_snap(pos), color, text.c_str());
-    else
-        drawList->AddText(pixel_snap(pos), color, text.c_str());
+    drawList->AddText(font, fontSize, pixel_snap(pos), color, text.c_str(), nullptr, wrapWidth);
 }
 
 void queue_pad_note(Plugin* plugin, int note, bool on)
@@ -139,15 +144,6 @@ void release_active_pad_note(EditorState* editor, Plugin* plugin)
     editor->activePadNote = -1;
 }
 
-void apply_panel_size(EditorState* editor, EditorPanel panel)
-{
-    const std::uint32_t height = (panel == EditorPanel::Drumset) ? kDrumsetHeight : kDefaultHeight;
-    // DIAGNOSTIC: resize only our own embedded view (-> PUGL_CONFIGURE -> ImGui follows).
-    // request_resize is temporarily disabled to confirm it is what oversizes the host frame.
-    // editor_shell_request_resize(editor->shell, kDefaultWidth, height);
-    editor_shell_set_size(editor->shell, kDefaultWidth, height);
-}
-
 void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
 {
     const bool selected = editor->activePanel == panel;
@@ -158,22 +154,20 @@ void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_TabActive));
     }
     if (ImGui::Button(label))
-    {
         editor->activePanel = panel;
-        apply_panel_size(editor, panel);
-    }
     if (selected)
         ImGui::PopStyleColor(3);
 }
 
-void draw_drumset_panel(EditorState* editor, Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont)
+void draw_drumset_panel(
+    EditorState* editor, Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont, ImFont* keyLabelFont)
 {
     const int columns = 8;
     const ImGuiStyle& style = ImGui::GetStyle();
     const float gap = style.ItemSpacing.x;
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const float padWidth = std::max(1.0f, (availableWidth - gap * static_cast<float>(columns - 1)) / columns);
-    const ImVec2 padSize(padWidth, kPadSize);
+    const ImVec2 padSize(padWidth, text::Lg + text::Xl * 2.0f + kPadSampleInsetY);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     int hoveredNote = -1;
     for (std::size_t i = 0; i < voice.drumset.size(); ++i)
@@ -182,34 +176,39 @@ void draw_drumset_panel(EditorState* editor, Plugin* plugin, const VoiceSlot& vo
             ImGui::SameLine();
         const DrumPad& pad = voice.drumset[i];
         ImGui::PushID(static_cast<int>(i));
-        ImGui::InvisibleButton("##pad", padSize);
+        ImGui::Button("##pad", padSize);
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
         const bool active = editor->activePadNote == pad.note;
         const bool hovered = ImGui::IsMouseHoveringRect(min, max);
         if (hovered)
             hoveredNote = pad.note;
-        const ImU32 bg = active    ? IM_COL32(0xEA, 0x38, 0xA8, 0xFF)
-                         : hovered ? IM_COL32(0x3B, 0x3B, 0x3B, 0xFF)
-                                   : IM_COL32(0x2A, 0x2A, 0x2A, 0xFF);
+        const int pitchClass = pad.note % 12;
+        const bool accidental =
+            pitchClass == 1 || pitchClass == 3 || pitchClass == 6 || pitchClass == 8 || pitchClass == 10;
+        const ImU32 bg = active    ? (accidental ? IM_COL32(0x52, 0x52, 0x52, 0xFF) : IM_COL32(0x70, 0x70, 0x70, 0xFF))
+                         : hovered ? (accidental ? IM_COL32(0x32, 0x32, 0x32, 0xFF) : IM_COL32(0x4A, 0x4A, 0x4A, 0xFF))
+                         : accidental ? IM_COL32(0x22, 0x22, 0x22, 0xFF)
+                                      : IM_COL32(0x3A, 0x3A, 0x3A, 0xFF);
         drawList->AddRectFilled(min, max, bg, 6.0f);
-        drawList->PushClipRect(min, max, true);
         const std::string keyLabel = note_label(pad.note);
         const std::string sampleLabel = pad_name_label(pad.name);
-        const ImVec2 keySize = text_size(padLabelFont, kPadLabelFontSize, keyLabel);
-        const float keyX = min.x + std::max(0.0f, (padSize.x - keySize.x) * 0.5f);
+        const ImVec2 sampleMax(max.x, max.y - kPadKeyBandHeight);
+        const ImVec2 keyMin(min.x, sampleMax.y);
+        drawList->AddRectFilled(keyMin, max, IM_COL32(0x00, 0x00, 0x00, 0x28));
+        drawList->AddLine(keyMin, sampleMax, IM_COL32(0xFF, 0xFF, 0xFF, 0x18));
+        drawList->PushClipRect(min, sampleMax, true);
         add_pad_text(drawList,
                      padLabelFont,
-                     kPadLabelFontSize,
-                     ImVec2(keyX, min.y + 8.0f),
-                     IM_COL32(0xF1, 0xF1, 0xF1, 0xFF),
-                     keyLabel);
-        add_pad_text(drawList,
-                     padLabelFont,
-                     kPadLabelFontSize,
-                     ImVec2(min.x + 10.0f, min.y + 34.0f),
+                     text::Xl,
+                     ImVec2(min.x + kPadTextInsetX, min.y + kPadTextInsetY),
                      pad_name_color(pad.name),
-                     sampleLabel);
+                     sampleLabel,
+                     std::max(1.0f, padSize.x - kPadTextInsetX * 2.0f));
+        drawList->PopClipRect();
+        const ImVec2 keyPos(min.x + kPadTextInsetX, max.y - kPadLabelFontSize - kPadTextInsetY);
+        drawList->PushClipRect(min, max, true);
+        add_pad_text(drawList, keyLabelFont, kPadLabelFontSize, keyPos, IM_COL32(0xF1, 0xF1, 0xF1, 0xFF), keyLabel);
         drawList->PopClipRect();
         ImGui::PopID();
     }
@@ -390,7 +389,6 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
         editor->activePanel != EditorPanel::Controls) // toggle away from Drumset tab if currently shown
     {
         editor->activePanel = EditorPanel::Controls;
-        apply_panel_size(editor, EditorPanel::Controls);
     }
     const std::string windowTitle = "ccomidi - Chn " + std::to_string(outputChannel);
     if (editor->windowTitle != windowTitle)
@@ -402,13 +400,13 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     ImFont* padLabelFont = editor_shell_pixel_font(editor->shell);
 
     if (boldFont)
-        ImGui::PushFont(boldFont, 0.0f);
+        ImGui::PushFont(boldFont, kTitleFontSize);
     ImGui::TextUnformatted("ccomidi");
     if (boldFont)
         ImGui::PopFont();
     if (selectedVoiceIsDrumset)
     {
-        ImGui::SameLine(0.0f, kPadLabelFontSize);
+        ImGui::SameLine(0.0f, kPanelTabSpacing);
         draw_panel_tab(editor, EditorPanel::Controls, "Controls");
         ImGui::SameLine(0.0f, 0.0f);
         draw_panel_tab(editor, EditorPanel::Drumset, "Drumset");
@@ -440,7 +438,7 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
                 std::snprintf(preview, sizeof(preview), "%03d  (empty slot)", program);
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
             if (boldFont)
-                ImGui::PushFont(boldFont, 0.0f);
+                ImGui::PushFont(boldFont, kBodyFontSize);
             const bool comboOpen = ImGui::BeginCombo("##program", preview);
             if (boldFont)
                 ImGui::PopFont();
@@ -481,14 +479,14 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 
     if (editor->activePanel == EditorPanel::Drumset && currentVoice)
     {
-        draw_drumset_panel(editor, plugin, *currentVoice, padLabelFont);
+        draw_drumset_panel(editor, plugin, *currentVoice, padLabelFont, boldFont);
         ImGui::End();
         return;
     }
     release_active_pad_note(editor, plugin);
 
     if (boldFont)
-        ImGui::PushFont(boldFont, 0.0f);
+        ImGui::PushFont(boldFont, kSectionFontSize);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Channel");
     if (boldFont)
@@ -536,7 +534,11 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     }
 
     ImGui::Spacing();
+    if (boldFont)
+        ImGui::PushFont(boldFont, kSectionFontSize);
     ImGui::TextUnformatted("Additional Commands");
+    if (boldFont)
+        ImGui::PopFont();
     if (ImGui::BeginTable("rows", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
     {
         ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 40.0f);

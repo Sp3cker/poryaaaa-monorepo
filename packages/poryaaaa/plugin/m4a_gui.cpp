@@ -10,6 +10,7 @@
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "imgui_pugl_shell.h"
+#include "typographic_scale.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -30,17 +31,6 @@
 #    define GUI_LOG_DISABLE_FORMAT_NONLITERAL
 #    define GUI_LOG_RESTORE_FORMAT_NONLITERAL
 #endif
-
-/* Text size scale (Tailwind-style). Use integer values so line heights land on
- * whole pixels — fractional sizes make row spacing visibly uneven.
- * Usage: ImGui::PushFont(nullptr, text::Lg) keeps the font, changes the size. */
-namespace text
-{
-[[maybe_unused]] constexpr float Sm = 13.0f;
-constexpr float Base = 16.0f;
-[[maybe_unused]] constexpr float Lg = 20.0f;
-[[maybe_unused]] constexpr float Xl = 24.0f;
-} // namespace text
 
 static bool copy_path_utf8(char* dst, size_t dstSize, const std::filesystem::path& path)
 {
@@ -935,7 +925,7 @@ extern "C"
         shellConfig.defaultHeight = (uint32_t)GUI_H;
         shellConfig.minWidth = 200;
         shellConfig.minHeight = 150;
-        shellConfig.fontSize = text::Base;
+        shellConfig.fontSize = poryaaaa::gui::text::Base;
         shellConfig.regularFontPath = m4a_gui_regular_font_path();
         shellConfig.boldFontPath = m4a_gui_bold_font_path();
         shellConfig.glslVersion = "#version 330 core";
