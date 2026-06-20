@@ -124,6 +124,7 @@ export function writeSmfFileWith(
     try {
         f.byteorder = "little";
         f.writebytes(Array.from(bytes), bytes.length);
+        f.eof = bytes.length;
     } finally {
         f.close();
     }

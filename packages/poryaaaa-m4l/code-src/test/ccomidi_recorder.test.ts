@@ -758,3 +758,33 @@ test("writeSmfFileWith accepts a reopened file when eof is unavailable", () => {
 
     assert.equal(ok, true);
 });
+
+test("writeSmfFileWith truncates an existing longer file when rewriting", () => {
+    let storage = [0x4D, 0x54, 0x68, 0x64, 0x00, 0x01, 0x02, 0x03];
+    let writeClosed = false;
+    const ok = writeSmfFileWith("/tmp/out.mid", new Uint8Array([0x4D, 0x54, 0x68, 0x64]), () => {
+        if (!writeClosed) {
+            return {
+                isopen: true,
+                byteorder: "big",
+                get eof() { return storage.length; },
+                set eof(n: number) { storage = storage.slice(0, n); },
+                writebytes: (data: number[]) => {
+                    storage.splice(0, data.length, ...data);
+                },
+                close: () => { writeClosed = true; },
+            };
+        }
+        return {
+            isopen: true,
+            byteorder: "big",
+            eof: storage.length,
+            close: () => {},
+            readbytes: () => [],
+            readfloat64: () => [],
+        };
+    });
+
+    assert.equal(ok, true);
+    assert.deepEqual(storage, [0x4D, 0x54, 0x68, 0x64]);
+});
