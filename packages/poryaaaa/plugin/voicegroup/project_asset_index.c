@@ -94,6 +94,7 @@ project_asset_index_find(const ProjectAssetIndex* idx, ProjectAssetKind kind, co
 
 static bool voice_is_directsound(uint8_t type)
 {
+    /* DirectSound variants are voice playback modes over shared sample assets. */
     uint8_t base = type & ~VOICE_TYPE_FIX;
     return base == VOICE_DIRECTSOUND || base == VOICE_DIRECTSOUND_ALT;
 }

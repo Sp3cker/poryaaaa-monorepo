@@ -60,7 +60,16 @@ static void test_voice_macro_match_uses_ordered_table(void)
     ASSERT(vg_voice_macro_match("voice_directsound_no_resample 60, 0, Sample, 0, 0, 0, 0", &macro, &args),
            "specific directsound macro matches");
     ASSERT(macro && macro->typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE, "specific directsound macro wins");
+    ASSERT(macro->kind == VG_MACRO_DIRECTSOUND_NO_RESAMPLE, "no-resample directsound keeps distinct macro kind");
     ASSERT(strcmp(args, "60, 0, Sample, 0, 0, 0, 0") == 0, "macro args skip keyword whitespace");
+    ASSERT(vg_voice_macro_match("voice_directsound_alt 60, 0, Sample, 0, 0, 0, 0", &macro, &args),
+           "alt directsound macro matches");
+    ASSERT(macro && macro->typeCode == VOICE_DIRECTSOUND_ALT, "alt directsound forwards reverse type code");
+    ASSERT(macro->kind == VG_MACRO_DIRECTSOUND_ALT, "alt directsound keeps distinct macro kind");
+    ASSERT(vg_voice_macro_match("voice_directsound 60, 0, Sample, 0, 0, 0, 0", &macro, &args),
+           "base directsound macro matches");
+    ASSERT(macro && macro->typeCode == VOICE_DIRECTSOUND, "base directsound forwards normal type code");
+    ASSERT(macro->kind == VG_MACRO_DIRECTSOUND, "base directsound keeps normal macro kind");
     ASSERT(!vg_voice_macro_match("voice_noise_altitude 60", &macro, &args), "macro match requires whitespace boundary");
 }
 
@@ -231,6 +240,66 @@ static void test_voicegroup_loader_rejects_bad_voice_macro(void)
 
     remove(mainPath);
     remove_dir(voicegroupDir);
+    remove_dir(soundDir);
+    remove_dir(root);
+}
+
+static void test_voicegroup_preserves_directsound_variant_type_codes(void)
+{
+    printf("Testing voicegroup loader/state: DirectSound variant type codes...\n");
+
+    const char* root = "poryaaaa_ds_variant_state";
+    const char* soundDir = "poryaaaa_ds_variant_state/sound";
+    const char* sampleDir = "poryaaaa_ds_variant_state/sound/direct_sound";
+    const char* samplePath = "poryaaaa_ds_variant_state/sound/direct_sound/shared.bin";
+    const char* voicegroupDir = "poryaaaa_ds_variant_state/sound/voicegroups";
+    const char* dataPath = "poryaaaa_ds_variant_state/sound/direct_sound_data.inc";
+    const char* mainPath = "poryaaaa_ds_variant_state/sound/voicegroups/main.inc";
+    const unsigned char sample[] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 16, 32, 48,
+    };
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(sampleDir);
+    make_dir(voicegroupDir);
+
+    ASSERT(write_bytes(samplePath, sample, sizeof(sample)), "directsound sample writes");
+    ASSERT(write_text_file(dataPath,
+                           "SharedSample::\n"
+                           "\t.incbin \"sound/direct_sound/shared.bin\"\n"),
+           "directsound data source writes");
+    ASSERT(write_text_file(mainPath,
+                           "\tvoice_directsound 60, 0, SharedSample, 1, 2, 3, 4\n"
+                           "\tvoice_directsound_alt 60, 0, SharedSample, 1, 2, 3, 4\n"
+                           "\tvoice_directsound_no_resample 60, 0, SharedSample, 1, 2, 3, 4\n"),
+           "directsound variant voicegroup writes");
+
+    LoadedVoiceGroup* vg = voicegroup_load(root, "main", NULL);
+    ASSERT(vg != NULL, "directsound variant voicegroup loads");
+    if (vg)
+    {
+        ASSERT(vg->voices[0].type == VOICE_DIRECTSOUND, "base directsound slot keeps normal type");
+        ASSERT(vg->voices[1].type == VOICE_DIRECTSOUND_ALT, "alt directsound slot keeps reverse type");
+        ASSERT(vg->voices[2].type == VOICE_DIRECTSOUND_NO_RESAMPLE, "no-resample directsound slot keeps fixed type");
+        voicegroup_free(vg);
+    }
+
+    VoicegroupProjectState state;
+    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "directsound variant state collects");
+    ASSERT(state.slots[0].typeCode == VOICE_DIRECTSOUND, "state keeps normal directsound type");
+    ASSERT(state.slots[1].typeCode == VOICE_DIRECTSOUND_ALT, "state keeps alt directsound type");
+    ASSERT(state.slots[2].typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE, "state keeps no-resample directsound type");
+    ASSERT(strcmp(state.slots[0].name, "shared.bin") == 0, "normal directsound uses shared sample name");
+    ASSERT(strcmp(state.slots[1].name, "shared.bin") == 0, "alt directsound uses shared sample name");
+    ASSERT(strcmp(state.slots[2].name, "shared.bin") == 0, "no-resample directsound uses shared sample name");
+
+    voicegroup_project_state_free(&state);
+    remove(mainPath);
+    remove(dataPath);
+    remove(samplePath);
+    remove_dir(voicegroupDir);
+    remove_dir(sampleDir);
     remove_dir(soundDir);
     remove_dir(root);
 }
@@ -499,6 +568,7 @@ void test_voicegroup_loader_run_all(void)
     test_voicegroup_project_state_default_path();
     test_voicegroup_project_state_writes_drumset_without_loading_samples();
     test_voicegroup_loader_rejects_bad_voice_macro();
+    test_voicegroup_preserves_directsound_variant_type_codes();
     test_voicegroup_project_state_rejects_missing_drumset();
     test_voicegroup_project_state_marks_defined_source_slots();
     test_voicegroup_symbol_map_growth();
