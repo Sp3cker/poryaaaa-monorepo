@@ -186,10 +186,11 @@ extern "C"
 
         /* Sample-read state */
         WaveData* wav;
-        int8_t* currentPointer;
-        int32_t count;      /* remaining samples in current segment */
-        uint32_t fw;        /* 23-bit fractional position accumulator */
-        uint32_t frequency; /* per-PCM-tick step, Q9.23 */
+        int8_t* currentPointer; /* forward: current sample; reverse: one past next sample */
+        int8_t sampleStored;    /* M4A CHN_SAMPLE_STOR: previous resampled source byte */
+        int32_t count;          /* remaining samples in current segment */
+        uint32_t fw;            /* 23-bit fractional position accumulator */
+        uint32_t frequency;     /* per-PCM-tick step, Q9.23 */
 
         bool isLoop;
         int32_t loopLen;

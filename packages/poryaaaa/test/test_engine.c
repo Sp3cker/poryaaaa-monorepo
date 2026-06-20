@@ -48,6 +48,14 @@ static void v2_advance_chunked(M4ADriver* drv, int frames)
         frames -= chunk;
     }
 }
+
+static M4ADriverPcmChan* first_active_pcm_channel(M4ADriver* drv)
+{
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+        if (drv->pcmChans[i].status & M4A_CHN_ON)
+            return &drv->pcmChans[i];
+    return NULL;
+}
 #endif
 
 #if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
@@ -1023,6 +1031,263 @@ static void test_v2_pcm_frequency_scale(void)
     }
     ASSERT(firstNonZero >= 0, "ring_a populated within first 32 samples");
     ASSERT(a0 != aN, "ring varies (wave actually being stepped through)");
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_resampled_starts_from_m4a_sample_store(void)
+{
+    printf("Testing v2 PCM resampled DirectSound starts from M4A sample store...\n");
+
+    enum
+    {
+        SAMPLE_COUNT = 16
+    };
+    static int8_t data[SAMPLE_COUNT + 1];
+    memset(data, 0, sizeof(data));
+    data[0] = 100;
+    data[1] = 100;
+
+    WaveData wav = {0};
+    wav.freq = 22050u << 10;
+    wav.size = SAMPLE_COUNT;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "resampled voice starts a PCM channel");
+    if (ch)
+    {
+        ASSERT_EQ(ch->sampleStored, 0, "resampled voice clears M4A sample store on start");
+        ch->frequency = 0;
+        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ(m4a_get_pcm_ring(drv)->ring_a[0], 0, "resampled first sample uses stored zero, not source byte");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_no_resample_steps_one_sample_per_tick(void)
+{
+    printf("Testing v2 PCM no-resample advances one source sample per tick...\n");
+
+    enum
+    {
+        SAMPLE_COUNT = 256
+    };
+    static int8_t data[SAMPLE_COUNT + 1];
+    for (int i = 0; i < SAMPLE_COUNT; i++)
+        data[i] = (int8_t)(i - 128);
+    data[SAMPLE_COUNT] = data[SAMPLE_COUNT - 1];
+
+    WaveData wav = {0};
+    wav.freq = 22050u << 10;
+    wav.size = SAMPLE_COUNT;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_NO_RESAMPLE;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "no-resample voice starts a PCM channel");
+    if (ch)
+    {
+        ASSERT_EQ((int)ch->frequency, 0x800000, "no-resample frequency is fixed at one sample per tick");
+        ASSERT_EQ(ch->sampleStored, 0, "no-resample starts with M4A sample store clear");
+        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ((int)(ch->currentPointer - data),
+                  M4A_PCM_SAMPLES_PER_VBLANK,
+                  "no-resample cursor advances exactly one source sample per PCM tick");
+        ASSERT_EQ(ch->count,
+                  SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
+                  "no-resample remaining count drops by one source sample per PCM tick");
+        ASSERT(m4a_get_pcm_ring(drv)->ring_a[0] < 0, "no-resample first mixed sample comes from sample start");
+        ASSERT_EQ(ch->sampleStored, 0, "no-resample does not consume the M4A resample store");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_alt_reverse_starts_at_sample_end(void)
+{
+    printf("Testing v2 PCM alt reverse starts at sample end...\n");
+
+    enum
+    {
+        SAMPLE_COUNT = 256
+    };
+    static int8_t data[SAMPLE_COUNT + 1];
+    for (int i = 0; i < SAMPLE_COUNT; i++)
+        data[i] = (int8_t)(i - 128);
+    data[SAMPLE_COUNT] = data[SAMPLE_COUNT - 1];
+
+    WaveData wav = {0};
+    wav.freq = 22050u << 10;
+    wav.size = SAMPLE_COUNT;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_ALT;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "alt voice starts a PCM channel");
+    if (ch)
+    {
+        ASSERT_EQ((int)(ch->currentPointer - data), SAMPLE_COUNT, "alt reverse cursor starts one past the sample end");
+        ASSERT_EQ(ch->sampleStored, 0, "alt reverse clears M4A sample store on start");
+        ch->frequency = 0x800000u;
+        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ((int)(ch->currentPointer - data),
+                  SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
+                  "alt reverse cursor moves backward one source sample per PCM tick");
+        ASSERT_EQ(ch->count,
+                  SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
+                  "alt reverse remaining count follows M4A one-past-end cursor convention");
+        ASSERT_EQ(m4a_get_pcm_ring(drv)->ring_a[0], 0, "alt first mixed sample starts from M4A sample store");
+        ASSERT_EQ(ch->sampleStored,
+                  data[SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK],
+                  "alt reverse sample store tracks the last crossed source byte");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_alt_reverse_loops_across_boundary(void)
+{
+    printf("Testing v2 PCM alt reverse loops across the loop boundary...\n");
+
+    enum
+    {
+        SAMPLE_COUNT = 256,
+        LOOP_START = 211
+    };
+    static int8_t data[SAMPLE_COUNT + 1];
+    for (int i = 0; i < SAMPLE_COUNT; i++)
+        data[i] = 0;
+    data[LOOP_START - 1] = -100;
+    data[LOOP_START] = 0;
+    data[SAMPLE_COUNT - 1] = 100;
+    data[SAMPLE_COUNT] = data[SAMPLE_COUNT - 1];
+
+    WaveData wav = {0};
+    wav.status = 0x4000;
+    wav.loopStart = LOOP_START;
+    wav.freq = 22050u << 10;
+    wav.size = SAMPLE_COUNT;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_ALT;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "looped alt voice starts a PCM channel");
+    if (ch)
+    {
+        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN | M4A_CHN_LOOP;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+
+        ch->currentPointer = data + SAMPLE_COUNT;
+        ch->count = SAMPLE_COUNT;
+        ch->sampleStored = data[LOOP_START];
+        ch->fw = 0x400000u;
+        ch->frequency = 0;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT(m4a_get_pcm_ring(drv)->ring_a[0] > 0,
+               "looped alt reverse interpolates from stored loop start toward sample end");
+
+        ch->currentPointer = data + SAMPLE_COUNT;
+        ch->count = SAMPLE_COUNT;
+        ch->sampleStored = 0;
+        ch->fw = 0;
+        ch->frequency = 0x800000u;
+
+        m4a_sound_main_ram(drv);
+
+        int loopLen = SAMPLE_COUNT - LOOP_START;
+        int remainder = M4A_PCM_SAMPLES_PER_VBLANK % loopLen;
+        int expectedCount = remainder == 0 ? SAMPLE_COUNT : SAMPLE_COUNT - remainder;
+        ASSERT_EQ(
+            (int)(ch->currentPointer - data), expectedCount, "looped alt reverse wraps to a non-exact cursor position");
+        ASSERT_EQ(ch->count, expectedCount, "looped alt reverse count follows non-exact loop cycles");
+        ASSERT_EQ(ch->sampleStored, data[expectedCount], "looped alt reverse sample store follows final cursor");
+        ASSERT(ch->status & M4A_CHN_ON, "looped alt reverse remains active after wrapping");
+    }
 
     m4a_driver_destroy(drv);
 }
@@ -5071,6 +5336,10 @@ int main(void)
     test_v2_song_volume_rescales();
     test_v2_pcm_ring_fills();
     test_v2_pcm_frequency_scale();
+    test_v2_pcm_resampled_starts_from_m4a_sample_store();
+    test_v2_pcm_no_resample_steps_one_sample_per_tick();
+    test_v2_pcm_alt_reverse_starts_at_sample_end();
+    test_v2_pcm_alt_reverse_loops_across_boundary();
     test_v2_cgb_pan_mask_routes();
     test_v2_pcm_cc7_refresh();
     test_v2_pcm_reverb_pipeline();
