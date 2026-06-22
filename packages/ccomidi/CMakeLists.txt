@@ -94,23 +94,6 @@ else()
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()
 
-# ---- IPC: PC sidechannel ----
-# POSIX-shm-backed bus that ccomidi publishes Program Change events into and
-# the recorder embedded in poryaaaa.clap reads. Bypasses host MIDI routing
-# fidelity for PC, which Live/clap-wrapper/etc. variously drop.
-add_library(ccomidi_ipc STATIC
-    src/ipc/pc_bus.cpp
-)
-ccomidi_enable_project_warnings(ccomidi_ipc)
-
-target_include_directories(ccomidi_ipc PUBLIC
-    src
-)
-
-set_target_properties(ccomidi_ipc PROPERTIES
-    POSITION_INDEPENDENT_CODE TRUE
-)
-
 add_library(ccomidi_core
     src/core/sender_core.cpp
 )
@@ -207,7 +190,6 @@ ccomidi_enable_project_warnings(ccomidi)
 target_link_libraries(ccomidi PRIVATE
     ccomidi_core
     ccomidi_gui
-    ccomidi_ipc
 )
 target_include_directories(ccomidi PRIVATE
     ${CCOMIDI_MONOREPO_ROOT}/shared
