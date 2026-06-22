@@ -88,6 +88,13 @@ export class CcomidiVoicegroupClient {
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
     const frame = parsed as { type?: unknown; slots?: unknown };
+    // Preserve an explicit loaded-but-empty state so ccomidi does not keep
+    // showing the startup placeholder after poryaaaa reports no usable bank.
+    if (frame.type === "unavailable") {
+      const encoded = encodeURIComponent(JSON.stringify({ unavailable: true, slots: [] }));
+      this.opts.outlet("state", encoded);
+      return;
+    }
     if (frame.type !== "snapshot") return;
     if (!Array.isArray(frame.slots)) return;
     const slots = frame.slots;

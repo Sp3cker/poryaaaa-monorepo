@@ -25,6 +25,15 @@ async function openClient(url: string): Promise<WebSocket> {
   return ws;
 }
 
+async function openClientWithInitial(url: string): Promise<{ ws: WebSocket; initial: Promise<unknown> }> {
+  const ws = new WebSocket(url);
+  // Capture the connect-time frame so tests can distinguish startup state from
+  // the broadcast caused by the operation under test.
+  const initial = nextJson(ws);
+  await waitForOpen(ws);
+  return { ws, initial };
+}
+
 async function waitForOpen(ws: WebSocket): Promise<void> {
   if (ws.readyState === WebSocket.OPEN) return;
   await new Promise<void>((resolve, reject) => {
@@ -97,6 +106,55 @@ test("server listens on an ephemeral test port and sends latest snapshot to a ne
   assert.equal(service.isWebSocketListening(), false);
 });
 
+test("server sends unavailable to a newly connected client when no voicegroup is loaded", async () => {
+  const { service } = serviceHarness();
+  await service.startWebSocket();
+  const ws = new WebSocket(service.websocketUrl());
+  const msg = nextJson(ws);
+  await waitForOpen(ws);
+  try {
+    assert.deepEqual(await msg, {
+      type: "unavailable",
+    });
+  } finally {
+    await closeClient(ws);
+    await service.closeWebSocket();
+  }
+});
+
+test("parse failure with no previous snapshot broadcasts unavailable", async () => {
+  const outputs: PoryaaaaVoicegroupOutput[] = [];
+  const service = new PoryaaaaVoicegroupService({
+    scanBanks: () => ["bad"],
+    parseVoicegroup: () => ({ ok: false, diagnostics: ["bad voice macro"] }),
+    readVoicegroupState: () => null,
+    writeVoicegroupState: () => {},
+    output: (out) => outputs.push(out),
+    post: () => {},
+    websocketHost: "127.0.0.1",
+    websocketPort: 0,
+  });
+  await service.startWebSocket();
+  const { ws, initial } = await openClientWithInitial(service.websocketUrl());
+  await initial;
+  try {
+    service.rawroot("/p");
+    const msg = nextJson(ws);
+    service.bankselect("bad");
+
+    assert.deepEqual(await msg, {
+      type: "unavailable",
+    });
+    assert.deepEqual(
+      outputs.filter((out) => out.tag === "voicegroup"),
+      [],
+    );
+  } finally {
+    await closeClient(ws);
+    await service.closeWebSocket();
+  }
+});
+
 test("server accepts local websocket clients without path filtering", async () => {
   const { service } = serviceHarness();
   await service.startWebSocket();
@@ -113,9 +171,12 @@ test("server accepts local websocket clients without path filtering", async () =
 test("new snapshots broadcast to all connected clients and inbound client messages no-op", async () => {
   const { service } = serviceHarness();
   await service.startWebSocket();
-  const a = await openClient(service.websocketUrl());
-  const b = await openClient(service.websocketUrl());
+  const aClient = await openClientWithInitial(service.websocketUrl());
+  const bClient = await openClientWithInitial(service.websocketUrl());
+  const a = aClient.ws;
+  const b = bClient.ws;
   try {
+    await Promise.all([aClient.initial, bClient.initial]);
     a.send(JSON.stringify({ type: "client-message" }));
     const aMsg = nextJson(a);
     const bMsg = nextJson(b);

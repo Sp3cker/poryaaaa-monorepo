@@ -96,11 +96,19 @@ test("client forwards only snapshot frames as encoded { slots } state messages",
   h.sockets[0].emitMessage(JSON.stringify({ type: "ignored", slots: [SLOT] }));
   h.sockets[0].emitMessage("not json");
   h.sockets[0].emitMessage(JSON.stringify({ type: "snapshot", slots: [] }));
+  h.sockets[0].emitMessage(JSON.stringify({ type: "unavailable" }));
   h.sockets[0].emitMessage(JSON.stringify({ type: "snapshot", slots: [SLOT] }));
 
   const stateMessages = h.outlets.filter((outlet) => outlet[0] === "state");
-  assert.equal(stateMessages.length, 1);
+  assert.equal(stateMessages.length, 3);
   assert.deepEqual(JSON.parse(decodeURIComponent(stateMessages[0][1] as string)), {
+    slots: [],
+  });
+  assert.deepEqual(JSON.parse(decodeURIComponent(stateMessages[1][1] as string)), {
+    unavailable: true,
+    slots: [],
+  });
+  assert.deepEqual(JSON.parse(decodeURIComponent(stateMessages[2][1] as string)), {
     slots: [SLOT],
   });
 });

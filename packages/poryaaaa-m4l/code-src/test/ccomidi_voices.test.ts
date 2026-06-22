@@ -41,6 +41,10 @@ function encodedState(slots: SlotEntry[]): string {
     return encodeURIComponent(JSON.stringify(statePayload(slots)));
 }
 
+function encodedUnavailable(): string {
+    return encodeURIComponent(JSON.stringify({ unavailable: true, slots: [] }));
+}
+
 // Helper: drive the service through `start` + state + a synthetic load
 // pick (mirrors what [r #0-sync] does in the device on Live load).
 function startWithSlots(
@@ -468,6 +472,32 @@ test("ignored empty-slots payload keeps the gate where it is", () => {
     assert.deepEqual(outletArgs(deps), [
         ...menuPopulate(slots),
         ["slots", "setsymbol", ds(0, "x")],
+    ]);
+});
+
+test("unavailable state replaces waiting with a loaded-but-empty voicegroup state", () => {
+    const deps = makeMockVoicesDeps();
+    const svc = new CcomidiVoicesService(deps);
+    svc.start();
+    deps.reset();
+
+    svc.state(encodedUnavailable());
+    assert.deepEqual(outletArgs(deps), [
+        ["slots", "clear"],
+        ["slots", "append", "(no voicegroup loaded)"],
+    ]);
+});
+
+test("unavailable state clears an older voice list", () => {
+    const deps = startWithSlots([
+        { program: 0, name: "Old" },
+    ]);
+    const svc = deps.svc;
+
+    svc.state(encodedUnavailable());
+    assert.deepEqual(outletArgs(deps), [
+        ["slots", "clear"],
+        ["slots", "append", "(no voicegroup loaded)"],
     ]);
 });
 
