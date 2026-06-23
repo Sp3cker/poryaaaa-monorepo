@@ -241,15 +241,7 @@ target_compile_features(poryaaaa_lifecycle_tests PRIVATE cxx_std_23)
 target_include_directories(poryaaaa_lifecycle_tests PRIVATE plugin)
 target_link_libraries(poryaaaa_lifecycle_tests PRIVATE m voicegroup_loader recorder)
 
-if(M4A_DRIVER_V2)
-    target_link_libraries(poryaaaa_lifecycle_tests PRIVATE m4a_driver)
-    target_compile_definitions(poryaaaa_lifecycle_tests PRIVATE M4A_DRIVER_V2=1)
-endif()
-
-if(HW_AUDIO_V2)
-    target_link_libraries(poryaaaa_lifecycle_tests PRIVATE hw_audio)
-    target_compile_definitions(poryaaaa_lifecycle_tests PRIVATE HW_AUDIO_V2=1)
-endif()
+target_link_libraries(poryaaaa_lifecycle_tests PRIVATE m4a_driver hw_audio)
 ```
 
 - [ ] **Step 3: Build and run the lifecycle test**

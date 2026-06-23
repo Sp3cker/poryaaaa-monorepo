@@ -171,7 +171,7 @@ subsystem without inventing audible side effects.
 
 ## Tests
 
-Add chip-level tests, likely in `test/test_engine.c` under `HW_AUDIO_V2`.
+Add chip-level tests in `test/test_engine.c`.
 
 ### 1. mGBA Reset Convention
 

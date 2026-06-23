@@ -6,29 +6,24 @@
 #include "m4a_tables.h"
 #include "test_assert.h"
 
-#if defined(M4A_DRIVER_V2)
-#    include "m4a/m4a_driver.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
+#include "hw_audio/hw_psg.h"
 /* Tests access internal track / channel state to verify XCMD field
  * mutations and propagation into newly-started notes (xcmd.md).  The
  * driver's public header keeps M4ADriver opaque; test code is the
  * one consumer that has the same compile-time view as plugin/m4a/'s
  * own .c files. */
-#    include "m4a/m4a_internal.h"
+#include "m4a/m4a_internal.h"
 
 extern void m4a_sound_main_ram(M4ADriver* drv);
 
 extern void m4a_trk_vol_pit_set(M4ADriverTrack* track);
-#endif
-#if defined(HW_AUDIO_V2)
-#    include "hw_audio/hw_audio.h"
-#    include "hw_audio/hw_psg.h"
 void test_hw_mix_run_all(void);
-#endif
 void test_voicegroup_loader_run_all(void);
 void test_recorder_core_run_all(void);
 void test_gui_assets_run_all(void);
 
-#if defined(M4A_DRIVER_V2)
 /* Test helper: advance the driver in chunks no larger than the bounded
  * event queue can hold, consuming between chunks.  Required for tests
  * that need many vblanks of activity — single m4a_advance calls > the
@@ -56,9 +51,7 @@ static M4ADriverPcmChan* first_active_pcm_channel(M4ADriver* drv)
             return &drv->pcmChans[i];
     return NULL;
 }
-#endif
 
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
 /* Test helper: chunk the full advance + render + consume cycle so the
  * production event-queue contract holds. */
 static void v2_render_chunked(M4ADriver* drv, HwAudio* hw, float* outL, float* outR, int frames)
@@ -74,7 +67,6 @@ static void v2_render_chunked(M4ADriver* drv, HwAudio* hw, float* outL, float* o
         off += chunk;
     }
 }
-#endif
 
 /*
  * Unit tests for the m4a engine.
@@ -194,7 +186,6 @@ static void test_midi_key_to_cgb_freq(void)
 }
 
 /* Test track volume/pitch calculation */
-#if defined(M4A_DRIVER_V2)
 static void test_trk_vol_pit_set(void)
 {
     printf("Testing TrkVolPitSet...\n");
@@ -244,7 +235,6 @@ static void test_trk_vol_pit_set(void)
     m4a_trk_vol_pit_set(&track);
     ASSERT_EQ(track.keyM, 2, "bend +64 range 2 = keyM 2");
 }
-#endif
 
 /* Test engine initialization */
 static void test_engine_init(void)
@@ -264,7 +254,6 @@ static void test_engine_init(void)
     m4a_engine_destroy(&engine);
 }
 
-#if defined(M4A_DRIVER_V2)
 static void test_xcmd_subcommands(void)
 {
     printf("Testing XCMD subcommands...\n");
@@ -388,7 +377,6 @@ static void test_xcmd_subcommands(void)
     m4a_engine_destroy(&engine);
     free(wd);
 }
-#endif
 
 /* Test basic audio generation */
 static void test_basic_audio(void)
@@ -423,31 +411,22 @@ static void test_basic_audio(void)
     voices[0].sustain = 0xFF;
     voices[0].release = 0;
 
-#if defined(M4A_DRIVER_V2)
     M4ADriver* drv = m4a_driver_create(44100.0f);
-#endif
-#if defined(HW_AUDIO_V2)
     HwAudio* hw = hw_audio_create(44100.0f);
-#endif
 
     m4a_engine_set_voicegroup(&engine, voices);
     m4a_engine_program_change(&engine, 0, 0);
     m4a_engine_cc(&engine, 0, 7, 127);
-#if defined(M4A_DRIVER_V2)
     m4a_driver_set_voicegroup(drv, voices);
     m4a_program_change(drv, 0, 0);
     m4a_cc(drv, 0, 7, 127);
-#endif
 
     /* Play a note */
     m4a_engine_note_on(&engine, 0, 60, 100);
-#if defined(M4A_DRIVER_V2)
     m4a_note_on(drv, 0, 60, 100);
-#endif
 
     /* Generate some audio */
     float outL[1024], outR[1024];
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
     m4a_advance(drv, 1024);
     hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), outL, outR, 1024);
     m4a_consume_writes(drv);
@@ -455,38 +434,19 @@ static void test_basic_audio(void)
      * noise + PCM); however this top-level test exercises driver
      * lifecycle rather than synth output, so the v1 non-zero assertion
      * isn't mirrored here.  Chip-only audibility is asserted by the
-     * test_chip_canned_* suite under HW_AUDIO_V2. */
-#else
-    m4a_engine_process(&engine, outL, outR, 1024);
-
-    /* Verify we got non-zero audio */
-    float maxVal = 0;
-    for (int i = 0; i < 1024; i++)
-    {
-        if (fabs(outL[i]) > maxVal)
-            maxVal = fabs(outL[i]);
-        if (fabs(outR[i]) > maxVal)
-            maxVal = fabs(outR[i]);
-    }
-    ASSERT(maxVal > 0.001f, "audio output should be non-zero");
-#endif
+     * test_chip_canned_* suite. */
 
     /* Note off */
     m4a_engine_note_off(&engine, 0, 60);
-#if defined(M4A_DRIVER_V2)
     m4a_note_off(drv, 0, 60);
     m4a_driver_destroy(drv);
-#endif
-#if defined(HW_AUDIO_V2)
     hw_audio_destroy(hw);
-#endif
 
     m4a_engine_destroy(&engine);
     free(wd);
 }
 
 /* Test PCM channel stealing / polyphony behavior */
-#if defined(M4A_DRIVER_V2)
 static M4ADriver* create_polyphony_test_driver(ToneData* voices)
 {
     M4ADriver* drv = m4a_driver_create(44100.0f);
@@ -656,9 +616,7 @@ static void test_polyphony_stealing(void)
 
     free(wd);
 }
-#endif
 
-#if defined(M4A_DRIVER_V2)
 /* Layer 1 step 1 acceptance: CgbSound writes M4ARegisterFile correctly,
  * and trigger_* flags fire only on MO_VOL → NRx4 rewrite (note start /
  * envelope phase transitions), not on every snapshot. */
@@ -688,7 +646,6 @@ static void test_v2_trigger_semantics(void)
     m4a_cc(drv, 0, 10, 64); /* center pan */
     m4a_note_on(drv, 0, 60, 100);
 
-#    if defined(HW_AUDIO_V2)
     /* This test exercises the LEGACY snapshot API — hw_audio_render()
      * — specifically to validate the trigger-consumption side of the
      * driver→chip contract (chip clears trigger_* latches after a
@@ -705,33 +662,18 @@ static void test_v2_trigger_semantics(void)
         TRIG_SCRATCH = M4A_RECOMMENDED_MAX_ADVANCE_FRAMES
     };
     float scratchL[TRIG_SCRATCH], scratchR[TRIG_SCRATCH];
-#        define DRIVE(n)                                                                                               \
-            do                                                                                                         \
-            {                                                                                                          \
-                int _n = (n);                                                                                          \
-                while (_n > 0)                                                                                         \
-                {                                                                                                      \
-                    int _c = _n > TRIG_SCRATCH ? TRIG_SCRATCH : _n;                                                    \
-                    m4a_advance(drv, _c);                                                                              \
-                    hw_audio_render(                                                                                   \
-                        hw, m4a_get_register_file_mut(drv), m4a_get_pcm_ring(drv), scratchL, scratchR, _c);            \
-                    _n -= _c;                                                                                          \
-                }                                                                                                      \
-            } while (0)
-#    else
-/* Driver-only build: no chip available — clear triggers manually to
- * simulate the chip's side of the contract. */
-#        define DRIVE(n)                                                                                               \
-            do                                                                                                         \
-            {                                                                                                          \
-                m4a_advance(drv, (n));                                                                                 \
-                M4ARegisterFile* _rw = m4a_get_register_file_mut(drv);                                                 \
-                _rw->trigger_sq1 = false;                                                                              \
-                _rw->trigger_sq2 = false;                                                                              \
-                _rw->trigger_wave = false;                                                                             \
-                _rw->trigger_noise = false;                                                                            \
-            } while (0)
-#    endif
+#define DRIVE(n)                                                                                                       \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        int _n = (n);                                                                                                  \
+        while (_n > 0)                                                                                                 \
+        {                                                                                                              \
+            int _c = _n > TRIG_SCRATCH ? TRIG_SCRATCH : _n;                                                            \
+            m4a_advance(drv, _c);                                                                                      \
+            hw_audio_render(hw, m4a_get_register_file_mut(drv), m4a_get_pcm_ring(drv), scratchL, scratchR, _c);        \
+            _n -= _c;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
 
     /* Advance enough host frames to fire at least one vblank (~738 frames
      * @ 44100 Hz / 59.7275 Hz).  Inspect the register file BEFORE the
@@ -749,7 +691,6 @@ static void test_v2_trigger_semantics(void)
     ASSERT(!r->trigger_wave, "trigger_wave NOT set");
     ASSERT(!r->trigger_noise, "trigger_noise NOT set");
 
-#    if defined(HW_AUDIO_V2)
     /* Consume the trigger latches via the legacy snapshot API.  After
      * this call, the chip must have cleared trigger_sq2 per the §6a
      * contract — the latches are edge-triggers consumed once per
@@ -757,7 +698,6 @@ static void test_v2_trigger_semantics(void)
      * renders. */
     hw_audio_render(hw, m4a_get_register_file_mut(drv), m4a_get_pcm_ring(drv), scratchL, scratchR, 1024);
     ASSERT(!r->trigger_sq2, "chip clears trigger_sq2 after consuming");
-#    endif
 
     /* Subsequent vblanks with no events should NOT refire trigger_sq2
      * (envelope is in steady SUSTAIN at the goal). */
@@ -773,12 +713,8 @@ static void test_v2_trigger_semantics(void)
     m4a_advance(drv, 1024);
     ASSERT(!r->trigger_sq2, "trigger_sq2 stays cleared on release transition");
 
-#    if defined(HW_AUDIO_V2)
     hw_audio_destroy(hw);
-#        undef DRIVE
-#    else
-#        undef DRIVE
-#    endif
+#undef DRIVE
     m4a_driver_destroy(drv);
 }
 
@@ -2786,7 +2722,6 @@ static void test_v2_lfo_lfodl_resets_running_modulation(void)
     m4a_driver_destroy(drv);
 }
 
-#    if defined(HW_AUDIO_V2)
 /* Step 4 acceptance: PSG square + wave synth produces audible output
  * end-to-end through hw_audio_render_events.  Tests the integrated
  * pipeline: ingress → CgbSound emits events → chip applies events at
@@ -2956,8 +2891,6 @@ static void test_v2_psg_wave_audible(void)
     hw_audio_destroy(hw);
 }
 
-#    endif /* HW_AUDIO_V2 */
-
 /* CGB retrigger semantics: NRx4 trigger bit must fire on note start only,
  * NEVER on subsequent envelope-update vblanks.  Real GB hardware resets
  * the wave RAM position (NR34 trigger) and noise LFSR (NR44 trigger) on
@@ -2965,9 +2898,8 @@ static void test_v2_psg_wave_audible(void)
  * Reference: mGBA / hardware (see project_audio_reference_target.md);
  * also matches v1 + real m4a behaviour: ChnVolSetCgb computes envelope;
  * CgbSound writes NRx2 every tick but NRx4-with-trigger only on fresh
- * note.  This is a DRIVER-side regression — runs in the M4A_DRIVER_V2
- * build slice without HW_AUDIO_V2, since the contract is purely about
- * which Layer-1.5 events the driver emits. */
+ * note.  This is a DRIVER-side regression and does not require the chip,
+ * since the contract is purely about which Layer-1.5 events the driver emits. */
 static void test_v2_cgb_trigger_only_on_note_start(void)
 {
     printf("Testing v2 NRx4 trigger fires once on note start, not on sustain...\n");
@@ -3323,7 +3255,6 @@ static void test_v2_no_event_drops_over_long_run(void)
     m4a_driver_destroy(drv);
 }
 
-#    if defined(HW_AUDIO_V2)
 /* Step 5 acceptance: a DirectSound voice + note_on flows through the
  * full chain — driver mixes PCM into M4APcmRing, chip S&Hs at
  * pcm_rate→host, sums into outL/outR.  Verifies non-zero output that
@@ -3665,8 +3596,6 @@ static void test_v2_pcm_publish_timing(void)
     free(wd);
 }
 
-#    endif /* HW_AUDIO_V2 */
-
 /* m4a_all_sound_off must silence every CGB channel immediately — not via
  * release.  CC 0x78 and plugin stop/reset rely on this. */
 static void test_v2_all_sound_off_immediate(void)
@@ -3703,12 +3632,9 @@ static void test_v2_all_sound_off_immediate(void)
 
     m4a_driver_destroy(drv);
 }
-#endif
 
-#if defined(HW_AUDIO_V2)
-/* ---- Chip-only canned-event tests.  Run under HW_AUDIO_V2 alone (no
- * M4A_DRIVER_V2 needed): construct M4ARegWriteBatch by hand and feed
- * directly to hw_audio_render_events.  Per plan §10 step 4 these are
+/* ---- Chip-only canned-event tests.  Construct M4ARegWriteBatch by hand and
+ * feed directly to hw_audio_render_events.  Per plan §10 step 4 these are
  * the right granularity for chip-side parity work without booting the
  * driver. ---- */
 
@@ -5087,17 +5013,17 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 
 /* Helper macro: apply SOUNDBIAS via a setup call, then run a
  * trivial play call to trigger the start-of-call rate sync. */
-#    define SOUNDBIAS_TRANSITION(sc_value)                                                                             \
-        do                                                                                                             \
-        {                                                                                                              \
-            uint32_t sb_payload = 0x200u | ((uint32_t)(sc_value) << 14);                                               \
-            M4ARegWrite setup_ev[] = {{0, M4A_REG_SOUNDBIAS, sb_payload}};                                             \
-            M4ARegWriteBatch setup = {.events = setup_ev, .count = 1};                                                 \
-            M4ARegWriteBatch empty = {.events = NULL, .count = 0};                                                     \
-            float scratch[1];                                                                                          \
-            hw_audio_render_events(hw, &setup, NULL, scratch, scratch, 1);                                             \
-            hw_audio_render_events(hw, &empty, NULL, scratch, scratch, 1);                                             \
-        } while (0)
+#define SOUNDBIAS_TRANSITION(sc_value)                                                                                 \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        uint32_t sb_payload = 0x200u | ((uint32_t)(sc_value) << 14);                                                   \
+        M4ARegWrite setup_ev[] = {{0, M4A_REG_SOUNDBIAS, sb_payload}};                                                 \
+        M4ARegWriteBatch setup = {.events = setup_ev, .count = 1};                                                     \
+        M4ARegWriteBatch empty = {.events = NULL, .count = 0};                                                         \
+        float scratch[1];                                                                                              \
+        hw_audio_render_events(hw, &setup, NULL, scratch, scratch, 1);                                                 \
+        hw_audio_render_events(hw, &empty, NULL, scratch, scratch, 1);                                                 \
+    } while (0)
 
     /* sampling_cycle 1 and 2 stay pinned at the floor
      * (max(131072, 32768<<sc) = 131072 for sc ≤ 2). */
@@ -5115,7 +5041,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
     SOUNDBIAS_TRANSITION(0);
     ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle back to 0 returns internal to 131072 Hz");
 
-#    undef SOUNDBIAS_TRANSITION
+#undef SOUNDBIAS_TRANSITION
 
     /* Single-call boundary check: applying SOUNDBIAS doesn't change
      * internal_rate within the same call.  This is the documented
@@ -5528,7 +5454,6 @@ static void test_chip_canned_soundbias_cycle_0_vs_3_levels(void)
     float ratio = peak0 > 1e-9f ? peak3 / peak0 : 0.0f;
     ASSERT(ratio > 0.9f && ratio < 1.1f, "sc=0 vs sc=3 peak amplitudes within 10%");
 }
-#endif /* HW_AUDIO_V2 */
 
 int main(void)
 {
@@ -5540,7 +5465,6 @@ int main(void)
     test_midi_key_to_cgb_freq();
     test_engine_init();
     test_basic_audio();
-#if defined(M4A_DRIVER_V2)
     test_trk_vol_pit_set();
     test_xcmd_subcommands();
     test_polyphony_stealing();
@@ -5577,19 +5501,15 @@ int main(void)
     test_v2_lfo_lfodl_resets_running_modulation();
     test_v2_cgb_trigger_only_on_note_start();
     test_v2_pcm_publish_event_per_vblank();
-#    if defined(HW_AUDIO_V2)
     test_v2_psg_square_audible();
     test_v2_psg_pan_routing();
     test_v2_psg_wave_audible();
     test_v2_directsound_audible();
     test_v2_pcm_chunk_size_invariance();
     test_v2_pcm_publish_timing();
-#    endif
     test_v2_no_event_drops_over_long_run();
     test_v2_all_sound_off_immediate();
-#endif
 
-#if defined(HW_AUDIO_V2)
     test_hw_psg_frame_sequencer_init_convention();
     test_hw_psg_frame_sequencer_dispatch_table();
     test_hw_psg_frame_sequencer_chunk_invariance();
@@ -5605,9 +5525,8 @@ int main(void)
     test_hw_psg_sq1_trigger_uses_dac_enabled_state();
     test_hw_psg_nr52_power_cycle_preserves_wave_ram();
 
-    /* Chip-only canned-event tests — no driver needed.  These also run
-     * under full-v2 (M4A_DRIVER_V2 + HW_AUDIO_V2) but their value is
-     * the chip-only build which doesn't have the driver. */
+    /* Chip-only canned-event tests.  These also run under full v2, but their
+     * value is the chip-only setup that does not depend on driver events. */
     test_chip_canned_square_audible();
     test_chip_canned_master_disable_silences();
     test_chip_canned_pan_routing();
@@ -5631,7 +5550,6 @@ int main(void)
     test_chip_canned_solo_mask_isolates_channels();
     test_chip_canned_solo_mask_empty_falls_back_to_full();
     test_chip_canned_soundbias_cycle_0_vs_3_levels();
-#endif
     test_voicegroup_loader_run_all();
     test_recorder_core_run_all();
     test_gui_assets_run_all();
