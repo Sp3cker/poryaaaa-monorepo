@@ -19,16 +19,9 @@
 
 #include <vector>
 
-#ifdef _WIN32
-#    include <process.h>
-#else
-#    include <unistd.h>
-#endif
-
 #include "core/command_spec.h"
 #include "core/sender_core.h"
 #include "gui/ccomidi_editor.h"
-#include "ipc/pc_bus.h"
 #include "plugin/ccomidi_plugin_shared.h"
 #include "plugin/param_ids.h"
 
@@ -525,10 +518,6 @@ bool plugin_activate(const clap_plugin_t* plugin, double sampleRate, std::uint32
         return false;
 
     self->active = true;
-    // Open the PC sidechannel bus. Non-fatal if it fails (shm_open denied,
-    // sandbox locks down /dev/shm, etc.) — PC then only travels via
-    // CLAP_EVENT_MIDI, which may or may not survive host routing.
-    self->pcBus.open();
     std::lock_guard<std::mutex> lock(self->stateMutex);
     self->core.reset_runtime_state();
     return true;
@@ -540,7 +529,6 @@ void plugin_deactivate(const clap_plugin_t* plugin)
     if (!self)
         return;
     self->active = false;
-    self->pcBus.close();
 }
 
 bool plugin_start_processing(const clap_plugin_t* plugin)
@@ -565,41 +553,6 @@ void plugin_reset(const clap_plugin_t* plugin)
         return;
     std::lock_guard<std::mutex> lock(self->stateMutex);
     self->core.reset_runtime_state();
-}
-
-// Sidechannel publish for Program Change events. Reader (poryaaaa's embedded
-// recorder) doesn't trust host MIDI routing for PC because Live/etc. may
-// filter it; the bus is authoritative.
-// blockSteadyTime is process->steady_time (samples). May be negative if the
-// host doesn't expose it, in which case we publish a sentinel so the reader
-// falls back to its own arrival timestamp.
-void publish_program_changes(const PlannedEvents& planned,
-                             std::uint32_t timeOffset,
-                             std::int64_t blockSteadyTime,
-                             ipc::PCBus* bus)
-{
-    if (!bus || !bus->is_open())
-        return;
-
-#ifdef _WIN32
-    const std::uint32_t pid = static_cast<std::uint32_t>(_getpid());
-#else
-    const std::uint32_t pid = static_cast<std::uint32_t>(getpid());
-#endif
-
-    for (std::size_t i = 0; i < planned.count; ++i)
-    {
-        const MidiEvent& ev = planned.events[i];
-        if ((ev.status & 0xF0) != 0xC0)
-            continue;
-        const std::uint8_t channel = static_cast<std::uint8_t>(ev.status & 0x0F);
-        ipc::PCBusSlot slot = {};
-        slot.program = ev.data1;
-        slot.writer_pid = pid;
-        slot.host_steady_sample_time =
-            (blockSteadyTime >= 0) ? blockSteadyTime + static_cast<std::int64_t>(ev.time + timeOffset) : -1;
-        bus->publish(channel, slot);
-    }
 }
 
 void push_planned_events(const PlannedEvents& planned, std::uint32_t timeOffset, const clap_output_events_t* outEvents)
@@ -676,7 +629,6 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     }
 
     push_planned_events(pendingUiEvents, 0, process->out_events);
-    publish_program_changes(pendingUiEvents, 0, process->steady_time, &self->pcBus);
     emit_pending_ui_param_events(self, process->out_events);
 
     std::uint8_t activeOutputChannel = 0;
@@ -703,7 +655,6 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
                                      &planned);
         }
         push_merged_events(planned, sliceForwardedMidi, sliceStart, process->out_events);
-        publish_program_changes(planned, sliceStart, process->steady_time, &self->pcBus);
         sliceAutomation.clear();
         sliceForwardedMidi.clear();
         sliceStart = endTime;
@@ -1321,9 +1272,6 @@ void params_flush(const clap_plugin_t* plugin, const clap_input_events_t* in, co
     if (needRescanInfo && self->host && self->host->request_callback)
         self->host->request_callback(self->host);
     push_planned_events(planned, 0, out);
-    // No clap_process_t in params_flush — publish with -1 sentinel so the
-    // reader stamps PC at its own arrival tick.
-    publish_program_changes(planned, 0, -1, &self->pcBus);
     emit_pending_ui_param_events(self, out);
 }
 
