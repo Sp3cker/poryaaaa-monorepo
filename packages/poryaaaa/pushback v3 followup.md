@@ -48,9 +48,7 @@ Pattern at each site:
 
 ```c
 m4a_engine_note_on(&data->engine, channel, msg[1], msg[2]);
-#if defined(M4A_DRIVER_V2)
 m4a_note_on(data->m4a_v2, channel, msg[1], msg[2]);
-#endif
 ```
 
 Counts:
@@ -70,21 +68,16 @@ is a file-scope static lazily initialised at the first ingress.
 
 ### 3. Lifecycle gates split: driver vs chip
 
-`g_v2_drv` / `data->m4a_v2` are now created/destroyed under
-`#if defined(M4A_DRIVER_V2)` *alone*.  `g_v2_hw` / `data->hw_v2` are
-under `#if defined(HW_AUDIO_V2)` alone.  The render fork stays gated on
-both.  This makes all four combinations from §8 produce a coherent build:
+Historical scaffold note: at this point in the rewrite, the driver and chip
+could still be toggled separately to isolate responsibilities.  That was useful
+while validating Layer 1 driver ingress and Layer 2 chip rendering, but it is no
+longer the current product shape.
 
-| `M4A_DRIVER_V2` | `HW_AUDIO_V2` | What runs | Test result |
-|---|---|---|---|
-| OFF | OFF | pure v1 | 86/86 pass |
-| ON  | OFF | v2 driver receives ingress; v1 chip renders | 86/86 pass |
-| OFF | ON  | v1 driver; v2 chip stub never reached (render falls through to v1) | 86/86 pass |
-| ON  | ON  | full v2 — silent scaffold | 85/85 pass (audio assertion gated off) |
+Current cutover state: `M4ADriver` and `HwAudio` are both linked and owned
+unconditionally, and render call sites use the v2 event-stream path directly.
 
-The driver-only combo is what the expert called out as needed for
-Layer 1 driver-isolation testing; it now compiles, runs, and lets us
-A/B v1 vs v2 driver ingress without involving the chip.
+If driver-only or chip-only build coverage is needed again, it should be added
+as an explicit comparison harness rather than a product-wide feature flag.
 
 ### 4. Plan §9 updated
 
@@ -99,15 +92,12 @@ Plan now documents:
 
 ```
 build/poryaaaa_unit_tests             (default)        86/86 pass
-build-v2/poryaaaa_unit_tests          (both ON)        85/85 pass
-build-driver-only/poryaaaa_unit_tests (driver ON)      86/86 pass
-build-chip-only/poryaaaa_unit_tests   (chip   ON)      86/86 pass
 
-build-v2/poryaaaa_render … --output /tmp/v2_silent2.wav
+build/poryaaaa_render … --output /tmp/v2_silent2.wav
   → 655360 data bytes, 0 non-zero samples
 ```
 
-CLAP plugin builds clean under all four flag combinations.
+CLAP plugin built clean under the historical scaffold configurations.
 
 ---
 
@@ -122,7 +112,7 @@ CLAP plugin builds clean under all four flag combinations.
 
 Layer 1 can now land into `plugin/m4a/` and immediately be exercised
 through the existing entry points (CLAP, render CLI, test harnesses)
-under `M4A_DRIVER_V2=ON`.  No further ingress plumbing required at the
+with the v2 driver enabled unconditionally.  No further ingress plumbing required at the
 boundary.
 
 Holler if anything else looks off.

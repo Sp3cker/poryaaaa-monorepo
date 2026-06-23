@@ -36,7 +36,7 @@ Files actually touched:
   / unknown-selector safety, sticky-selector behaviour, and a
   render-level proof that `xSUST` changes ring-output amplitude.
 - All 324/324 unit tests pass on `cmake --build build --target poryaaaa_unit_tests`
-  with `M4A_DRIVER_V2=ON HW_AUDIO_V2=ON`.
+  in the default v2 build.
 
 ## Problem
 

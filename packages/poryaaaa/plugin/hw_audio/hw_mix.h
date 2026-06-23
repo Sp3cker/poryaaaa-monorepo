@@ -27,10 +27,8 @@ extern "C"
      *
      * ⚠ Self-consistency tested but mGBA / hardware parity NOT proven —
      * see plan §12.10b.  This module computes the correct mix-bus + DAC
-     * math at the chip-internal rate (`max(131072, 32768 << sampling_
-     * cycle)` per plan §7b — driven by SOUNDBIAS), and the polyphase
-     * resampler downstream brings it to host rate with anti-alias band-
-     * limiting.  Don't make spectral / level / per-channel comparisons
+     * math at the chip-internal render rate, and the polyphase
+     * resampler downstream brings it to host rate.  Don't make spectral / level / per-channel comparisons
      * against mGBA captures from this module's output until §12.10b
      * lands.
      *

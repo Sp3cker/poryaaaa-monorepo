@@ -42,14 +42,11 @@
 #include "m4a_engine.h"
 #include "voicegroup/voicegroup_loader.h"
 
-#if defined(M4A_DRIVER_V2)
-#    include "m4a/m4a_driver.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
+
 static M4ADriver* g_v2_drv;
-#endif
-#if defined(HW_AUDIO_V2)
-#    include "hw_audio/hw_audio.h"
 static HwAudio* g_v2_hw;
-#endif
 
 /* ========================================================================
  * WAV writing helpers (matching test_wav_export.c)
@@ -791,7 +788,6 @@ static void playback_callback(ma_device* dev, void* out, const void* in, ma_uint
  * CLI
  * ======================================================================== */
 
-#if defined(HW_AUDIO_V2)
 /* Parse --solo NAME into a HwAudioSoloBits mask.  Names match the
  * patched mGBA capture tool's `--solo` channel set
  * (`tools/captures/mgba-headless-channel-mute/`) so the same name
@@ -822,7 +818,6 @@ static uint32_t parse_solo_name(const char* name)
         return HW_AUDIO_SOLO_DMA_B;
     return 0;
 }
-#endif
 
 static void print_usage(const char* prog)
 {
@@ -853,7 +848,7 @@ static void print_usage(const char* prog)
             "  --total-duration-seconds <s>  Override loop-count; set exact total duration\n"
             "                                (fadeout occupies the final --fadeout seconds)\n"
             "\n"
-            "Capture options (HW_AUDIO_V2 builds only):\n"
+            "Capture options:\n"
             "  --solo <name>               Render only one channel/group; matches the\n"
             "                              patched mGBA capture tool's --solo names so\n"
             "                              the same name selects the same channel on\n"
@@ -884,42 +879,30 @@ static void dispatch_event(M4AEngine* engine, const RenderEvent* ev, int useTrac
     {
         double bpm = (double)((uint16_t)ev->data0 | ((uint16_t)ev->data1 << 8));
         m4a_engine_set_tempo_bpm(engine, bpm);
-#if defined(M4A_DRIVER_V2)
         m4a_set_tempo_bpm(g_v2_drv, bpm);
-#endif
         break;
     }
     case 0x8: /* Note Off */
         m4a_engine_note_off(engine, trackIdx, ev->data0);
-#if defined(M4A_DRIVER_V2)
         m4a_note_off(g_v2_drv, trackIdx, ev->data0);
-#endif
         break;
     case 0x9: /* Note On */
         m4a_engine_note_on(engine, trackIdx, ev->data0, ev->data1);
-#if defined(M4A_DRIVER_V2)
         m4a_note_on(g_v2_drv, trackIdx, ev->data0, ev->data1);
-#endif
         break;
     case 0xB: /* Control Change */
         m4a_engine_cc(engine, trackIdx, ev->data0, ev->data1);
-#if defined(M4A_DRIVER_V2)
         m4a_cc(g_v2_drv, trackIdx, ev->data0, ev->data1);
-#endif
         break;
     case 0xC: /* Program Change */
         m4a_engine_program_change(engine, trackIdx, ev->data0);
-#if defined(M4A_DRIVER_V2)
         m4a_program_change(g_v2_drv, trackIdx, ev->data0);
-#endif
         break;
     case 0xE: /* Pitch Bend — convert MIDI 14-bit unsigned to signed -8192..+8191 */
     {
         int16_t bend = (int16_t)(((int)(ev->data1 << 7) | ev->data0) - 8192);
         m4a_engine_pitch_bend(engine, trackIdx, bend);
-#if defined(M4A_DRIVER_V2)
         m4a_pitch_bend(g_v2_drv, trackIdx, bend);
-#endif
         break;
     }
     }
@@ -932,7 +915,6 @@ static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t 
     uint64_t pos = startSample;
     while (remaining > 0)
     {
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
         /* Cap each render-event-consume cycle at the driver's
          * recommended maximum so the bounded event queue never
          * overflows — see m4a_driver.h on M4A_RECOMMENDED_MAX_ADVANCE_FRAMES. */
@@ -943,10 +925,6 @@ static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t 
         hw_audio_render_events(
             g_v2_hw, m4a_get_pending_writes(g_v2_drv), m4a_get_pcm_ring(g_v2_drv), outL + pos, outR + pos, chunk);
         m4a_consume_writes(g_v2_drv);
-#else
-        int chunk = (remaining > 0x7FFFFFFF) ? 0x7FFFFFFF : (int)remaining;
-        m4a_engine_process(engine, outL + pos, outR + pos, chunk);
-#endif
         pos += (uint64_t)chunk;
         remaining -= (uint64_t)chunk;
     }
@@ -975,7 +953,7 @@ int main(int argc, char* argv[])
     int loopCount = 2;
     double fadeoutSeconds = 5.0;
     double totalDurSeconds = -1.0; /* -1 = not set */
-    const char* soloName = NULL;   /* --solo, HW_AUDIO_V2 only */
+    const char* soloName = NULL;
 
     for (int i = 3; i < argc; i++)
     {
@@ -1264,10 +1242,7 @@ int main(int argc, char* argv[])
         free(events);
         return 1;
     }
-#if defined(M4A_DRIVER_V2)
     g_v2_drv = m4a_driver_create((float)sampleRate);
-#endif
-#if defined(HW_AUDIO_V2)
     g_v2_hw = hw_audio_create((float)sampleRate);
     if (soloName)
     {
@@ -1281,27 +1256,17 @@ int main(int argc, char* argv[])
         hw_audio_set_solo_mask(g_v2_hw, mask);
         printf("Solo mask: %s (0x%02X)\n", soloName, (unsigned)mask);
     }
-#else
-    if (soloName)
-    {
-        fprintf(stderr, "Warning: --solo requires HW_AUDIO_V2 builds; ignoring '%s'.\n", soloName);
-    }
-#endif
     m4a_engine_set_voicegroup(&engine, vg->voices);
     m4a_engine_set_song_volume(&engine, (uint8_t)songVolume);
     /* MIDI default tempo is 120 BPM until a Set Tempo event applies. */
     m4a_engine_set_tempo_bpm(&engine, 120.0);
-#if defined(M4A_DRIVER_V2)
     m4a_driver_set_voicegroup(g_v2_drv, vg->voices);
     m4a_set_song_volume(g_v2_drv, (uint8_t)songVolume);
     m4a_set_tempo_bpm(g_v2_drv, 120.0);
-#endif
     m4a_engine_set_reverb_amount(&engine, (uint8_t)reverbAmount);
-#if defined(M4A_DRIVER_V2)
     m4a_set_reverb_amount(g_v2_drv, (uint8_t)reverbAmount);
     m4a_set_analog_filter(g_v2_drv, analogFilter);
     m4a_set_max_pcm_channels(g_v2_drv, cgbOnly ? 0 : (uint8_t)maxChannels);
-#endif
 
     /* ---- Allocate output buffers ---- */
     float* outL = calloc(totalSamples, sizeof(float));
@@ -1312,14 +1277,10 @@ int main(int argc, char* argv[])
         free(outL);
         free(outR);
         m4a_engine_destroy(&engine);
-#if defined(M4A_DRIVER_V2)
         m4a_driver_destroy(g_v2_drv);
         g_v2_drv = NULL;
-#endif
-#if defined(HW_AUDIO_V2)
         hw_audio_destroy(g_v2_hw);
         g_v2_hw = NULL;
-#endif
         voicegroup_free(vg);
         free(extEvts);
         free(events->events);
@@ -1440,14 +1401,10 @@ int main(int argc, char* argv[])
     free(outL);
     free(outR);
     m4a_engine_destroy(&engine);
-#if defined(M4A_DRIVER_V2)
     m4a_driver_destroy(g_v2_drv);
     g_v2_drv = NULL;
-#endif
-#if defined(HW_AUDIO_V2)
     hw_audio_destroy(g_v2_hw);
     g_v2_hw = NULL;
-#endif
     voicegroup_free(vg);
     free(extEvts);
     free(events->events);

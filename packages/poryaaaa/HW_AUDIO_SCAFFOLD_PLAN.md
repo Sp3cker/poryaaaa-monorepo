@@ -15,7 +15,7 @@ audibility sweep, block-size invariance, DC streaming, anti-alias,
 direct internal_rate switching assertion, two-stage drain regression,
 fresh-trigger-only event-stream regression, PCM chunk-size
 invariance, PCM publish-timing).  Audible + band-limited end-to-end
-behind v2 flags.  **Current plan direction:** v1 should be deprecated
+through the v2 path.  **Current plan direction:** v1 should be deprecated
 and removed from normal build products; it remains only as a comparison
 reference until the v2 path has measured parity evidence.  The immediate
 next step is not more tuning or v1 deletion: it is §12.11 comparison
@@ -50,8 +50,7 @@ content there is still valid as future work; this doc replaces the
 
 ## 0. Progress snapshot — 2026-04-29
 
-The v2 path is **audible end-to-end** under all four flag combos.
-Production v2 (`M4A_DRIVER_V2=ON`, `HW_AUDIO_V2=ON`) drives the
+The v2 path is **audible end-to-end** in the normal build. Production v2 drives the
 event-stream API: `m4a_advance()` queues `M4ARegWrite` events with
 sample offsets, `hw_audio_render_events()` segments the render span at
 each event and produces audible PSG (square + wave + noise) plus
@@ -132,16 +131,18 @@ sampling_cycle changes are deferred to next render boundary; this
 matches Pokemon Emerald and ROMhacks that set SOUNDBIAS at boot)
 is documented as a chosen scope reduction, not a closed parity gate.
 
-Verification most recently observed (2026-04-30):
+Historical scaffold verification observed during the rewrite (2026-04-30):
 
-| `M4A_DRIVER_V2` / `HW_AUDIO_V2` | `poryaaaa_unit_tests` |
+| Historical scaffold configuration | `poryaaaa_unit_tests` |
 |---|---|
-| OFF / OFF (deprecated v1 reference) | 86 / 86 |
-| ON / OFF (v2 driver, v1 chip — incl. LFO + reverb + retrigger + PCM publish driver-side regressions) | 190 / 190 |
-| OFF / ON (chip-only canned-event tests + solo-mask) | 148 / 148 |
-| ON / ON (full v2 — driver + LFO + reverb + retrigger + PCM publish + chip incl. PCM two-stage / mix / polyphase / cadence sweep + PCM chunk-size invariance + PCM publish-timing + solo-mask) | 267 / 267 |
+| deprecated v1 reference | 86 / 86 |
+| v2 driver with compatibility chip path | 190 / 190 |
+| chip-only canned-event tests + solo-mask | 148 / 148 |
+| full v2 — driver + LFO + reverb + retrigger + PCM publish + chip incl. PCM two-stage / mix / polyphase / cadence sweep + PCM chunk-size invariance + PCM publish-timing + solo-mask | 267 / 267 |
 
-`poryaaaa` and `poryaaaa_render` built in v1 and full-v2 configs.
+Current product builds no longer expose that scaffold matrix: the v2 driver and
+chip are linked unconditionally, and the event-stream render path is the normal
+path for `poryaaaa`, `poryaaaa_render`, and tests.
 
 Closed during the rewrite (highlights):
 
@@ -357,28 +358,13 @@ bit layouts.  Reasons:
   timing-sensitive behavior.  The decoded snapshot is a cache for
   scaffold/debug/UI paths, not the authoritative chip timing interface.
 
-### 2f. Two CMake flags, not one — driver/chip independent
+### 2f. Driver/chip module split
 
-CMake exposes `M4A_DRIVER_V2` and `HW_AUDIO_V2` independently, each
-defaulting OFF in the original scaffold.  That was correct while v1
-was the safety path.  The project is now moving out of scaffold mode:
-v1 should be deprecated and no longer built for normal products.  The
-flags may remain temporarily as comparison / bisect controls, but
-full-v2 should become the normal build configuration once the cutover
-plumbing is in place.  Reasons the flags still matter during this
-transition:
-- Each Layer 1–7 pass can be merged independently and validated against
-  v1 by toggling either flag.
-- v1 can remain a reference path for comparison tests without being the
-  shipped or default product path.
-- A/B diff testing (render same MIDI through v1 and v2, take diff WAV)
-  becomes trivial with multiple builds.
-- **Independent validation**: with driver-only ON we can A/B the m4a
-  port against v1's chip path.  With chip-only ON we can feed canned
-  snapshots during the scaffold, and canned `M4ARegWriteBatch` events
-  after Layer 1.5, into `hw_audio` tests without booting a driver.
+CMake now builds the v2 driver and chip unconditionally.  Normal product
+targets use the event-stream path directly; scaffold-time compatibility
+branches are gone from the current build.
 
-The flags also document intent: `plugin/m4a/` is *only* the v2 driver,
+The modules still document intent: `plugin/m4a/` is *only* the v2 driver,
 `plugin/hw_audio/` is *only* the v2 chip.  v1 stays under
 `plugin/m4a_engine.c` and friends only as a deprecated comparison
 reference until v2 cutover removes it from normal targets.
@@ -488,18 +474,17 @@ open parity gate):
   driver emits per-CgbSound writes with sample offsets; chip's
   `hw_audio_render_events()` segments at each offset, applies events to
   PSG + PCM subsystems, and produces audible output.
-- CMake `M4A_DRIVER_V2` and `HW_AUDIO_V2` independent flags currently
-  drive a 4-way build matrix (v1 reference / driver-only / chip-only /
-  full v2).  V1 is deprecated and should stop being built for normal
-  product targets; keep it only where comparison tests explicitly need
-  the reference path.
+- CMake now builds the v2 driver and chip unconditionally.  The old
+  scaffold-time flag matrix is gone from normal product targets; keep
+  comparison-only targets explicit if a future parity investigation needs
+  a reference path.
 - All four entry points (CLAP `process`, headless export, CLI render,
   unit tests) chunk at `M4A_RECOMMENDED_MAX_ADVANCE_FRAMES` and feed
   `m4a_advance` / `hw_audio_render_events` / `m4a_consume_writes`.
 - `hw_audio_render()` (the legacy snapshot-driven API) is preserved as
   a trigger-consumption-only no-render path for any call site that
   hasn't migrated; production v2 does NOT use it.
-- v1 path (both flags OFF) is **deprecated reference code**.  It should
+- v1 path is **deprecated reference code**.  It should
   no longer be the normal product build, but it remains useful until
   comparison tests have captured the v1-vs-v2 and mGBA-vs-v2 deltas.
 
@@ -1019,54 +1004,23 @@ allocation, locks, or unbounded event queue growth inside `plugin_process()`.
 
 ## 8. CMake wiring
 
-Two independent flags so we can validate the driver and the chip in
-isolation during the rewrite.  Original scaffold default:
+The v2 driver and chip libraries are unconditional.
 
 ```cmake
-option(M4A_DRIVER_V2 "Use v2 m4a software driver" OFF)
-option(HW_AUDIO_V2   "Use v2 hw_audio chip emulation" OFF)
-
-if(M4A_DRIVER_V2)
-    add_subdirectory(plugin/m4a)
-endif()
-if(HW_AUDIO_V2)
-    add_subdirectory(plugin/hw_audio)
-endif()
+add_subdirectory(plugin/m4a)
+add_subdirectory(plugin/hw_audio)
 ```
 
-Next cutover direction: v1 is deprecated and should no longer be built
-for normal product targets.  Full-v2 should become the normal build
-path; v1 should survive only behind explicit comparison / bisect targets
-until parity evidence is captured and reviewed.
-
-Combinations:
-- `ON / ON`: full v2 path through both modules; target normal product
-  configuration after cutover.
-- `OFF / OFF`: pure v1 — deprecated reference configuration only.
-- `ON / OFF`: v2 driver feeds its register/ring output into a v1
-  chip-side adapter (Layer 1 has a small shim that drives v1's
-  `m4a_pcm_channel_render` / `m4a_cgb_channel_render` from the v2
-  register snapshot).  Lets us A/B the driver port in isolation.
-- `OFF / ON`: scripted unit tests feed canned `M4ARegisterFile` +
-  `M4APcmRing` into `hw_audio_render` during the scaffold, and canned
-  `M4ARegWriteBatch` events into `hw_audio_render_events` after Layer
-  1.5.  Lets us PSG-test the chip in isolation.
+Normal targets link both libraries and use the full v2 event-stream render
+path.  If a future parity investigation needs a comparison path, it should be
+introduced as an explicit comparison target rather than a product-wide feature
+flag.
 
 ```cmake
-if(M4A_DRIVER_V2)
-    foreach(tgt poryaaaa poryaaaa_test poryaaaa_render
-                poryaaaa_unit_tests)
-        target_link_libraries(${tgt} PRIVATE m4a_driver)
-        target_compile_definitions(${tgt} PRIVATE M4A_DRIVER_V2=1)
-    endforeach()
-endif()
-if(HW_AUDIO_V2)
-    foreach(tgt poryaaaa poryaaaa_test poryaaaa_render
-                poryaaaa_unit_tests)
-        target_link_libraries(${tgt} PRIVATE hw_audio)
-        target_compile_definitions(${tgt} PRIVATE HW_AUDIO_V2=1)
-    endforeach()
-endif()
+foreach(tgt poryaaaa poryaaaa_test poryaaaa_render
+            poryaaaa_unit_tests)
+    target_link_libraries(${tgt} PRIVATE m4a_driver hw_audio)
+endforeach()
 ```
 
 `plugin/m4a/CMakeLists.txt`:
@@ -1105,46 +1059,37 @@ Four entry points call `m4a_engine_process()`:
 - `cmd/poryaaaa_render.c:732` — CLI renderer
 - `test/test_engine.c:380` — unit tests
 
-Each gains a `#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)` fork
-**at the render call**.  Both modules' lifecycle is gated on its
-respective flag alone (`M4A_DRIVER_V2` for `M4ADriver`,
-`HW_AUDIO_V2` for `HwAudio`) so the four combinations from §8 each
-produce a coherent build.
+Each production call site now uses the v2 render-event path directly.
+`M4ADriver` and `HwAudio` lifecycles are both unconditional.
 
 ```c
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
-    m4a_advance(g_driver, nframes);
-    hw_audio_render(g_hw,
-                    m4a_get_register_file_mut(g_driver),
-                    m4a_get_pcm_ring(g_driver),
-                    outL, outR, nframes);
-#else
-    m4a_engine_process(engine, outL, outR, nframes);
-#endif
+m4a_advance(g_driver, nframes);
+hw_audio_render_events(g_hw,
+                       m4a_get_pending_writes(g_driver),
+                       m4a_get_pcm_ring(g_driver),
+                       outL, outR, nframes);
+m4a_consume_writes(g_driver);
 ```
 
 **Ingress mirroring** (added 2026-04-28 per pushback v3 follow-up).
 Every direct v1 engine ingress call site (`m4a_engine_set_voicegroup`, `note_on`,
 `note_off`, `cc`, `pitch_bend`, `program_change`, `all_sound_off`,
 `refresh_voices`, `set_song_volume`, `set_tempo_bpm`,
-`set_xcmd_callback`) gains a sibling `#if defined(M4A_DRIVER_V2)`
-mirror that forwards the same arguments into the v2 driver:
+`set_xcmd_callback`) forwards the same arguments into the v2 driver:
 
 ```c
 m4a_engine_note_on(&data->engine, channel, key, vel);
-#if defined(M4A_DRIVER_V2)
 m4a_note_on(data->m4a_v2, channel, key, vel);
-#endif
 ```
 
 This way the v2 driver is the recipient of the direct engine ingress
-surface regardless of which flag combination is set.  The remaining
+surface unconditionally.  The remaining
 non-engine ingress paths are tracked in §12a so Layer 1 work can land
 into the v2 driver and immediately become testable through the existing
 entry points without further plumbing.  During early scaffold builds the
 driver absorbed these calls as no-ops; it now has partial behavior, so
 new ingress mirrors must be backed by parity tests before being treated
-as complete.  `OFF / OFF` behaviour is preserved only as a reference for
+as complete.  Legacy behaviour is preserved only as a reference for
 comparison tests; it should not remain the default product path.
 
 For the scaffold, `g_driver` and `g_hw` are file-scope statics in the
@@ -1160,41 +1105,24 @@ Layer 1 ports the real MIDI/state machinery.
 
 ## 10. Verification
 
-Latest observed verification (2026-04-28):
+Historical scaffold verification (2026-04-28):
 
 ```
 cmake --build build --target poryaaaa_unit_tests
 ./build/poryaaaa_unit_tests                      # 86/86
 
-cmake --build build-v2 --target poryaaaa_unit_tests
-./build-v2/poryaaaa_unit_tests                   # 160/160
-
-cmake --build build-driver-only --target poryaaaa_unit_tests
-./build-driver-only/poryaaaa_unit_tests          # 160/160
-
-cmake --build build-chip-only --target poryaaaa_unit_tests
-./build-chip-only/poryaaaa_unit_tests            # 86/86
-
 cmake --build build --target poryaaaa poryaaaa_render
-cmake --build build-v2 --target poryaaaa poryaaaa_render
 ```
 
-Historical scaffold acceptance commands:
+Historical scaffold acceptance commands, retained for context only:
 
 1. **Default build unaffected**:
    ```
    rm -rf build && cmake -B build && cmake --build build --target poryaaaa poryaaaa_render poryaaaa_unit_tests
    ```
-   succeeds; v1 path identical.
+   succeeded at the time; the current default path is v2.
 
-2. **v2 build compiles**:
-   ```
-   rm -rf build-v2 && cmake -B build-v2 -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON
-   cmake --build build-v2 --target poryaaaa poryaaaa_render poryaaaa_unit_tests
-   ```
-   succeeds.
-
-3. **v2 produced a valid silent WAV during the silence-only scaffold**:
+2. **v2 produced a valid silent WAV during the silence-only scaffold**:
    ```
    build-v2/poryaaaa_render <project> <vg> --midi <song.mid> --output /tmp/v2_silent.wav \
        --sample-rate 32768 --total-duration-seconds 5 --fadeout 0 --tail 0 --reverb 0
@@ -1205,9 +1133,9 @@ Historical scaffold acceptance commands:
    Real-song renders now produce non-zero output end-to-end; see
    §12 step 4/5/7 status entries for the current audibility evidence.
 
-4. **Unit tests both paths**: v1 passes unchanged (86/86); v2 passes
-   the full suite at all four flag combos (86 / 161 / 99 / 185 as of
-   2026-04-29).  v2 tests assert trigger semantics, event-stream
+4. **Unit tests both paths**: historical v1 passed unchanged (86/86);
+   historical scaffold configurations passed 86 / 161 / 99 / 185 as of
+   2026-04-29.  v2 tests assert trigger semantics, event-stream
    ordering / consumption / drop-counter, wave-RAM byte event order,
    song-volume rescale for CGB, PCM ring fill, PCM frequency scaling,
    CGB pan-mask routing, PCM CC7 refresh, MODT recomputation smoke,
@@ -1269,8 +1197,7 @@ Completed or substantially progressed:
 
 - `M4ADriver` and `HwAudio` are owned per `M4APluginData` in the CLAP
   path, rather than by scaffold globals.
-- Driver/chip lifecycle is wired across default, full-v2, driver-only,
-  and chip-only build combinations.
+- Driver/chip lifecycle is wired into the normal product build.
 - CLAP/plugin state now pushes the main engine-level controls into v2:
   song volume, master volume, reverb amount, analog filter, max PCM
   channels, tempo, voicegroup, refresh voices, and all-sound-off.
@@ -1284,7 +1211,7 @@ Completed or substantially progressed:
 - `m4a_all_notes_off()` and `m4a_all_sound_off()` now touch PCM channels
   as well as CGB channels.
 - `m4a_sound_main()` now calls `m4a_sound_main_ram()`, so DirectSound
-  notes can populate the PCM ring in driver-v2 builds.
+  notes can populate the PCM ring in v2 driver builds.
 - CGB pan routing, DirectSound frequency scaling, active PCM refresh,
   MODT recomputation, event/snapshot trigger consumption, and wave-RAM
   byte-event ordering have focused tests and currently pass.
@@ -1318,10 +1245,8 @@ Historical scaffold items to continue watching:
 - Treat the v1 `M4AEngine` activity in full-v2 builds as temporary
   shadow plumbing.  It is acceptable while GUI/state/params still depend
   on v1 data, but the long-term owner is `M4ADriver` + `HwAudio`.
-- Clean up v2 lifecycle in partial-flag validation builds: destroy
-  `M4ADriver` when only `M4A_DRIVER_V2` is enabled, destroy `HwAudio`
-  when only `HW_AUDIO_V2` is enabled, and avoid leaving lazy test globals
-  allocated at process exit.
+- Keep v2 lifecycle cleanup paired: destroy `M4ADriver` and `HwAudio`
+  together, and avoid leaving lazy test globals allocated at process exit.
 - Keep the Layer 1 acceptance gate explicit: real entry points
   (`plugin_process`, `poryaaaa_render`, and tests) must feed v2 state,
   not just compile a ported internal routine.
@@ -1436,8 +1361,8 @@ Historical scaffold items to continue watching:
    event tests cover DC offset, asymmetric clip, PSG vol code 25/50/
    100%, and DMA vol code 50/100% scaling.  Step 9 then moved synth +
    mix from host rate to the chip-internal render rate (131072 Hz);
-   that part counts as step 9's contribution.  All four flag combos
-   green: 86 / 161 / 113 / 199.
+   that part counts as step 9's contribution.  Historical scaffold
+   configurations were green: 86 / 161 / 113 / 199.
 9. **`hw_audio/` resampler** — ✅ **Closed 2026-04-29.**
    Windowed-sinc polyphase resampler in `hw_resample.{h,c}` (TAPS=32,
    PHASES=64, Hann window, kernel cut at `min(internal,host)/2`,
@@ -1457,7 +1382,7 @@ Historical scaffold items to continue watching:
    chunks within 1e-4), DC streaming (constant DC across 200 ×
    73-frame chunks within 5e-5), and per-cadence sweep (audibility
    + comparable peaks across all four sampling_cycle values).
-   All four flag combos green: 86 / 161 / 126 / 212.
+   Historical scaffold configurations were green: 86 / 161 / 126 / 212.
    ⚠ **Known limitation**: mid-call SOUNDBIAS sampling_cycle changes
    are deferred to the next render boundary (snapshot at start-of-
    call).  In practice SOUNDBIAS is set at boot and not changed
@@ -1487,7 +1412,7 @@ Historical scaffold items to continue watching:
       reference.
     - Pan routing, master-disable, DAC-off, SOUNDBIAS asymmetric clip,
       PSG vol code 25/50/100%, DMA vol code 50/100% — all covered by
-      the `test_chip_canned_*` suite under HW_AUDIO_V2.
+      the `test_chip_canned_*` suite.
     
     **10b. mGBA capture-comparison parity** — ⚠ **OPEN.**
     The original §12.10 spec called for chip-only canned outputs
@@ -1578,8 +1503,8 @@ Historical scaffold items to continue watching:
 
 ### Blocking gates before parity claims
 
-The current v2 build is **audible end-to-end** under all four flag
-combos but is **not** a parity-faithful chip model.  The following
+The current v2 build is **audible end-to-end** but is **not** a
+parity-faithful chip model.  The following
 gates must close before any spectral, level, or per-channel parity
 claim against v1 / mGBA / real hardware is valid.  Anything claiming
 "v2 reaches parity" before these close is wrong and the project
@@ -1587,7 +1512,7 @@ documentation should explicitly say so.
 
 | Gate | What it unblocks | Why it's blocking | Closing artefacts |
 |---|---|---|---|
-| **§12.10b mGBA capture parity** — chip-only canned outputs compared to mGBA reference captures at SOUNDBIAS=0/1/2/3 | Empirical confirmation that the v2 chip matches mGBA on identical canned event sequences | §12.10a self-consistency tests landed but they only prove the v2 chip's pipeline is internally coherent — they do NOT compare to a reference. | Reference captures via `tools/captures/mgba-headless-channel-mute/` (patched mGBA headless binary; `--audio-out FILE` for native WAV, `--solo LIST` / `--mute LIST` for discrete channel isolation, `--hold-a-frames` / `--tap-a-frames` for menu state setup).  v2-side captures via `poryaaaa_render --solo <name>` (HW_AUDIO_V2 builds; channel-name parity with the mGBA tool: full / psg / directsound / ch1\|sq1 / ch2\|sq2 / wave / noise / fifo-a\|dma-a / fifo-b\|dma-b).  Plus a cross-render comparator harness, tolerance bounds on RMS / peak / spectral envelope, CI regression. |
+| **§12.10b mGBA capture parity** — chip-only canned outputs compared to mGBA reference captures at SOUNDBIAS=0/1/2/3 | Empirical confirmation that the v2 chip matches mGBA on identical canned event sequences | §12.10a self-consistency tests landed but they only prove the v2 chip's pipeline is internally coherent — they do NOT compare to a reference. | Reference captures via `tools/captures/mgba-headless-channel-mute/` (patched mGBA headless binary; `--audio-out FILE` for native WAV, `--solo LIST` / `--mute LIST` for discrete channel isolation, `--hold-a-frames` / `--tap-a-frames` for menu state setup).  v2-side captures via `poryaaaa_render --solo <name>` (channel-name parity with the mGBA tool: full / psg / directsound / ch1\|sq1 / ch2\|sq2 / wave / noise / fifo-a\|dma-a / fifo-b\|dma-b).  Plus a cross-render comparator harness, tolerance bounds on RMS / peak / spectral envelope, CI regression. |
 | **Wave trigger / phase contract** | A documented, tested agreement between `hw_psg.{h,c}`, `m4a_cgb.c`, and the audio reference on whether a real fresh-note NR34 trigger should reset chip `wave_phase` (and likewise the noise LFSR on NR44) | Today's `freshStart` fix means MO_VOL events no longer re-trigger, so the contract only fires on note-start.  But on a legitimate note-start trigger the chip resets `wave_phase=0` (matches GBATEK / mGBA gb_audio.c) while v1 preserves phase — that divergence is unresolved against v1.  Reference target is mGBA / hardware (per `project_audio_reference_target.md`), so v2's current chip behaviour is correct; the work is verifying it against captures and adding a regression. | Use the §12.10b mGBA capture infrastructure to capture wave output through the v2 chip on a sustained-wave-with-MO_VOL sequence; assert phase coherence + match vs mGBA; add a chip-side regression that pins the contract. |
 | **PSG/DC/absolute-level parity** — structural unipolar work landed; level tuning remains open | Sample-domain raw / DC / RMS parity (not just AC-normalized) between poryaaaa per-channel + full-mix WAVs and mGBA captures. | **Closed:** `hw_psg.c` now synthesises unipolar at the synth boundary per mGBA `GBAudioSamplePSG`, `hw_mix.c` mirrors mGBA `_applyBias`, and DirectSound int8 DC follow-up is closed in the 2026-05-01 capture pass.  **Open:** absolute level tuning remains blocked on cleaner reference captures because the current savestate captures include gameplay SFX and mGBA headless `--audio-out` collapses to mono regardless of stereo panning. | First land §12.11 comparison tests so every level/DC change is measured through the same pipeline.  Then tune remaining PSG / mix scale issues against clean captures and pin final raw + AC metrics within tolerance. |
 

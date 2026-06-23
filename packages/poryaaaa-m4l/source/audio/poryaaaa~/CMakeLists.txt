@@ -30,7 +30,6 @@ list(REMOVE_ITEM LOCAL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/m4a_engine_recorder_stub
 
 set(ENGINE_SRC
     "${PORYA_ROOT}/plugin/m4a_engine.c"
-    "${PORYA_ROOT}/plugin/m4a_tables.c"
 )
 
 file(GLOB VG_SRC "${PORYA_ROOT}/plugin/voicegroup/*.c")

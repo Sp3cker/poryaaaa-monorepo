@@ -48,9 +48,11 @@ export interface VoicesService {
 
 interface StatePayload {
   slots?: unknown;
+  unavailable?: unknown;
 }
 
 const PLACEHOLDER_WAITING = "(waiting for poryaaaa)";
+const PLACEHOLDER_UNAVAILABLE = "(no voicegroup loaded)";
 const NO_VOICE_LABEL = "(no voice)";
 
 // `typeCode` is the raw GBA ToneData.type byte. Multiple values map to the
@@ -128,6 +130,11 @@ export class CcomidiVoicesService implements VoicesService {
     this.deps.outlet("slots", "append", PLACEHOLDER_WAITING);
   }
 
+  private emitUnavailable(): void {
+    this.deps.outlet("slots", "clear");
+    this.deps.outlet("slots", "append", PLACEHOLDER_UNAVAILABLE);
+  }
+
   private emitMenu(): void {
     this.deps.outlet("slots", "clear");
     for (let i = 0; i < this.slots.length; i++) {
@@ -151,6 +158,14 @@ export class CcomidiVoicesService implements VoicesService {
   }
 
   private applyState(payload: StatePayload): void {
+    // Empty `slots` frames are ignored for old malformed payloads, so
+    // unavailable needs its own flag to intentionally clear the waiting gate.
+    if (payload.unavailable === true) {
+      this.slots = [];
+      this.gated = false;
+      this.emitUnavailable();
+      return;
+    }
     const next = parseSlots(payload.slots);
     if (next.length === 0) return;
     this.slots = next;

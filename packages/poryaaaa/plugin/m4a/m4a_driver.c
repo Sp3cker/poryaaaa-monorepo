@@ -23,8 +23,7 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->tempo_bpm = 120.0;
 
     /* Register-file defaults match what real m4a writes during init —
-     * NR50/NR51/SOUNDCNT_H/SOUNDBIAS — so a chip reading the snapshot
-     * before any vblank doesn't see globally-muted defaults.  See
+     * NR50/NR51/SOUNDCNT_H/SOUNDBIAS  See
      * pokeemerald m4a.c m4a_init for the canonical writes. */
     drv->regs.psg_master_enabled = true;
     drv->regs.master_vol_left = 7;   /* NR50 high nibble: max */
@@ -107,7 +106,7 @@ void m4a_driver_refresh_voices(M4ADriver* drv)
 {
     if (!drv || !drv->voicegroup)
         return;
-    /* Mirror v1 m4a_engine_refresh_voices: re-copy each track's voice from
+    /* re-copy each track's voice from
      * the (possibly edited) voicegroup so currentVoice picks up GUI-side
      * tweaks for already-programmed tracks.  No channel state changes —
      * the next note_on uses the refreshed voice. */
