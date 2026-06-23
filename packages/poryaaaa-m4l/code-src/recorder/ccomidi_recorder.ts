@@ -253,20 +253,20 @@ export function createDumpHandshake(opts: {
                     timer = timers.setTimeout(() => {
                         if (!pending || pending.path !== path) return;
                         pending = null;
-                        opts.post(`recorder: dump timed out waiting for poryaaaa~ reply path=${path}\n`);
+                        // opts.post(`recorder: dump timed out waiting for poryaaaa~ reply path=${path}\n`);
                         reject(new Error(`dump timed out waiting for poryaaaa~ reply: ${path}`));
                     }, timeoutMs);
                 } else {
                     opts.post("recorder: setTimeout unavailable in this v8 runtime; dump timeout disabled\n");
                 }
                 pending = { path, resolve, reject, timer };
-                opts.post(`recorder: requesting dump from poryaaaa~ path=${path}\n`);
+                // opts.post(`recorder: requesting dump from poryaaaa~ path=${path}\n`);
                 opts.outlet(0, "dump", path);
             });
         },
         dumped(path, count) {
             if (!pending) {
-                opts.post("recorder: ignoring unexpected dumped reply\n");
+                // opts.post("recorder: ignoring unexpected dumped reply\n");
                 return;
             }
             const expected = pending;
@@ -285,7 +285,7 @@ export function createDumpHandshake(opts: {
         },
         dumpfailed(path, reason) {
             if (!pending) {
-                opts.post("recorder: ignoring unexpected dumpfailed reply\n");
+                // opts.post("recorder: ignoring unexpected dumpfailed reply\n");
                 return;
             }
             const expected = pending;
@@ -348,16 +348,16 @@ export function createRecorderService(deps: ServiceDeps): RecorderService {
         ready() {
             const projectId = deps.getProjectId();
             if (!projectId) {
-                deps.post("ccomidi_recorder: Live Set unsaved, no filename to restore\n");
+                // deps.post("ccomidi_recorder: Live Set unsaved, no filename to restore\n");
                 return;
             }
             const saved = deps.readFilename(projectId);
             if (saved) {
                 currentFilename = saved;
-                deps.post(`ccomidi_recorder: restored filename "${currentFilename}"\n`);
+                // deps.post(`ccomidi_recorder: restored filename "${currentFilename}"\n`);
                 deps.outlet(1, "set", currentFilename);
             } else {
-                deps.post(`ccomidi_recorder: no saved filename for project "${projectId}"\n`);
+                // deps.post(`ccomidi_recorder: no saved filename for project "${projectId}"\n`);
             }
             // Restore Start/Length from persistence, if available. Independent
             // of the filename — a saved range is useful even without one.
@@ -384,15 +384,15 @@ export function createRecorderService(deps: ServiceDeps): RecorderService {
         setFilename(filename) {
             currentFilename = filename.trim();
             if (!currentFilename) {
-                deps.post("ccomidi_recorder: filename cleared\n");
+                // deps.post("ccomidi_recorder: filename cleared\n");
                 return;
             }
             const projectId = deps.getProjectId();
             if (projectId) {
                 deps.writeFilename(projectId, currentFilename);
-                deps.post(`ccomidi_recorder: filename "${currentFilename}" saved to project state\n`);
+                // deps.post(`ccomidi_recorder: filename "${currentFilename}" saved to project state\n`);
             } else {
-                deps.post(`ccomidi_recorder: filename "${currentFilename}" set (Live Set unsaved — held in memory only)\n`);
+                // deps.post(`ccomidi_recorder: filename "${currentFilename}" set (Live Set unsaved — held in memory only)\n`);
             }
         },
 
@@ -760,42 +760,42 @@ function installMaxHandlers(): void {
     // Raw user-entered beat counts. Empty text clears the field; any
     // whitespace-only payload also clears.
     function startbeat(...args: MaxAtom[]): void {
-        post(`recorder: startbeat received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: startbeat received raw args=${JSON.stringify(args)}\n`);
         const s = args.map((a) => String(a)).join(" ");
         service.setStartBeat(s);
     }
 
     function lengthbeats(...args: MaxAtom[]): void {
-        post(`recorder: lengthbeats received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: lengthbeats received raw args=${JSON.stringify(args)}\n`);
         const s = args.map((a) => String(a)).join(" ");
         service.setLengthBeats(s);
     }
 
     function loopstart(...args: MaxAtom[]): void {
-        post(`recorder: loopstart received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: loopstart received raw args=${JSON.stringify(args)}\n`);
         const s = args.map((a) => String(a)).join(" ");
         service.setLoopStart(s);
     }
 
     function loopend(...args: MaxAtom[]): void {
-        post(`recorder: loopend received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: loopend received raw args=${JSON.stringify(args)}\n`);
         const s = args.map((a) => String(a)).join(" ");
         service.setLoopEnd(s);
     }
 
     function record(...args: MaxAtom[]): void {
-        post(`recorder: record received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: record received raw args=${JSON.stringify(args)}\n`);
         recordArmed = Number(args[0] ?? 0) !== 0;
         service.resetStatus();
     }
 
     function save(): void {
         // Fire-and-forget — async errors are surfaced via post().
-        post(`recorder: save clicked currentFilename="${service.getFilename()}"\n`);
+        // post(`recorder: save clicked currentFilename="${service.getFilename()}"\n`);
         service.save().catch((e) => {
             const err = e as { name?: unknown; message?: unknown; stack?: unknown };
-            post(`recorder: save rejected: ${String(e)}\n`);
-            post(`recorder: save rejected detail name=${String(err.name ?? "")} message=${String(err.message ?? "")}\n`);
+            // post(`recorder: save rejected: ${String(e)}\n`);
+            // post(`recorder: save rejected detail name=${String(err.name ?? "")} message=${String(err.message ?? "")}\n`);
             if (err.stack) post(`recorder: save rejected stack=${String(err.stack)}\n`);
         });
     }
@@ -804,14 +804,14 @@ function installMaxHandlers(): void {
     // status outlet. These settle the pending dump promise so Save cannot
     // remain stuck at "Saving...".
     function dumped(...args: MaxAtom[]): void {
-        post(`recorder: dumped received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: dumped received raw args=${JSON.stringify(args)}\n`);
         const path  = String(args[0] ?? "");
         const count = Number(args[1] ?? 0);
         handshake.dumped(path, count);
     }
 
     function dumpfailed(...args: MaxAtom[]): void {
-        post(`recorder: dumpfailed received raw args=${JSON.stringify(args)}\n`);
+        // post(`recorder: dumpfailed received raw args=${JSON.stringify(args)}\n`);
         const path = String(args[0] ?? "");
         const reason = String(args[1] ?? "dump_failed");
         handshake.dumpfailed(path, reason);

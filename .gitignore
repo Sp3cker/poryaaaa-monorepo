@@ -1,1 +1,3 @@
 packages/poryaaaa/tools/captures/mgba-headless-channel-mute/mgba
+build/*
+.cache/*

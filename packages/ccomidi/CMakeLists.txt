@@ -157,23 +157,6 @@ target_include_directories(ccomidi_voicegroup_bridge_tests PRIVATE
     ${CCOMIDI_MONOREPO_ROOT}/shared
 )
 
-add_library(ccomidi_clay STATIC
-    src/gui/clay_context.cpp
-    src/gui/drum_pad_grid.cpp
-    src/gui/clay_imgui_adapter.cpp
-)
-ccomidi_enable_project_warnings(ccomidi_clay)
-
-target_include_directories(ccomidi_clay PUBLIC
-    src
-    ${CCOMIDI_SHARED_GUI_DIR}
-    ${IMGUI_DIR}
-)
-
-target_include_directories(ccomidi_clay SYSTEM PUBLIC
-    ${CCOMIDI_THIRD_PARTY_DIR}/clay
-)
-
 add_library(ccomidi_gui STATIC
     ${PUGL_SOURCES}
     ${IMGUI_SOURCES}
@@ -218,11 +201,11 @@ add_library(ccomidi MODULE
     src/plugin/ccomidi_plugin.cpp
     src/plugin/voicegroup_bridge.cpp
     src/gui/ccomidi_editor.cpp
+    src/gui/drum_pad_grid.cpp
 )
 ccomidi_enable_project_warnings(ccomidi)
 
 target_link_libraries(ccomidi PRIVATE
-    ccomidi_clay
     ccomidi_core
     ccomidi_gui
     ccomidi_ipc

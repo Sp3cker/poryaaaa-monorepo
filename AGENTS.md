@@ -30,6 +30,7 @@ Instructions for coding agents working in this monorepo.
 This repository contains the first-party poryaaaa projects:
 
 - `packages/poryaaaa`: GBA m4a audio engine, CLAP instrument, and renderer
+    - Contains voicegroup module
 - `packages/ccomidi`: CLAP MIDI/control sender
 - `packages/poryaaaa-m4l`: Max for Live package, externals, hand-maintained .amxd devices, and TypeScript controllers
 

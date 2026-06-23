@@ -27,7 +27,7 @@ export interface CcomidiVoicegroupClientOptions {
 }
 
 const DEFAULT_URL = "ws://127.0.0.1:17777/";
-const DEFAULT_RECONNECT_DELAY_MS = 500;
+const DEFAULT_RECONNECT_DELAY_MS = 1500;
 
 export class CcomidiVoicegroupClient {
   private readonly url: string;

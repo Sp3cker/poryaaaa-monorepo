@@ -26,9 +26,12 @@ export function scanVoicegroupBanks(root: string): string[] {
     .map((name) => name.slice(0, -".inc".length))
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
+const maxApi = require("max-api")
 
 export function parseVoicegroup(root: string, bank: string): VoicegroupParseResult {
-  return native().parseVoicegroup(root, bank.endsWith(".inc") ? bank.slice(0, -4) : bank);
+  const res = native().parseVoicegroup(root, bank.endsWith(".inc") ? bank.slice(0, -4) : bank);
+  maxApi.post(res)
+  return res
 }
 
 function native(): NativeVoicegroupParser {

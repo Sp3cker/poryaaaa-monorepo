@@ -1,5 +1,11 @@
 {
-  "clangd.arguments": [
-    "--compile-commands-dir=${workspaceFolder}/packages/textedit/build"
-  ]
+  "C_Cpp.default.compileCommands": [
+    "${workspaceFolder}/packages/poryaaaa/build/compile_commands.json",
+    "${workspaceFolder}/packages/ccomidi/build/compile_commands.json"
+  ],
+  "C_Cpp.default.browse.path": [
+    "${workspaceFolder}/packages/poryaaaa",
+    "${workspaceFolder}/packages/ccomidi"
+  ],
+  "cmake.sourceDirectory": "/Users/sallegrezza/dev/cProjects/poryaaaa-monorepo/packages/poryaaaa"
 }

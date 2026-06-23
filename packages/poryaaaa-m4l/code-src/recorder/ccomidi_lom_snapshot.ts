@@ -185,23 +185,23 @@ function parameterDebugEntries(makeApi: LiveApiFactory, devicePath: string): Par
 function logDeviceNode(makeApi: LiveApiFactory, devicePath: string, log?: LomSnapshotLogger): void {
     if (!log) return;
     const device = makeApi(devicePath);
-    log(
-        `recorder: LOM ccomidi node path=${devicePath} `
-        + `name="${getStringProp(device, "name")}" `
-        + `class_display_name="${getStringProp(device, "class_display_name")}" `
-        + `class_name="${getStringProp(device, "class_name")}"\n`,
-    );
+    // log(
+    //     `recorder: LOM ccomidi node path=${devicePath} `
+    //     + `name="${getStringProp(device, "name")}" `
+    //     + `class_display_name="${getStringProp(device, "class_display_name")}" `
+    //     + `class_name="${getStringProp(device, "class_name")}"\n`,
+    // );
     const params = parameterDebugEntries(makeApi, devicePath);
     if (params.length === 0) {
-        log(`recorder: LOM ccomidi params ${devicePath}: <none>\n`);
+        // log(`recorder: LOM ccomidi params ${devicePath}: <none>\n`);
         return;
     }
     for (const param of params) {
-        log(
-            `recorder: LOM ccomidi param ${devicePath} #${param.index} `
-            + `name="${param.name}" original_name="${param.originalName}" `
-            + `value=${param.value === null ? "<unreadable>" : param.value}\n`,
-        );
+        // log(
+        //     `recorder: LOM ccomidi param ${devicePath} #${param.index} `
+        //     + `name="${param.name}" original_name="${param.originalName}" `
+        //     + `value=${param.value === null ? "<unreadable>" : param.value}\n`,
+        // );
     }
 }
 

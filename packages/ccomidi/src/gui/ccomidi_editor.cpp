@@ -29,7 +29,6 @@ struct EditorState
     std::string windowTitle = {};
     EditorPanel activePanel = EditorPanel::Controls;
     int activePadNote = -1;
-    ClayImguiState clay = {};
 };
 
 namespace
@@ -362,9 +361,7 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
     if (editor->activePanel == EditorPanel::Drumset && currentVoice)
     {
         set_active_pad_note(
-            editor,
-            plugin,
-            draw_drum_pad_grid(&editor->clay, *currentVoice, editor->activePadNote, padLabelFont, boldFont));
+            editor, plugin, draw_drum_pad_grid(*currentVoice, editor->activePadNote, padLabelFont, boldFont));
         ImGui::End();
         return;
     }
