@@ -98,11 +98,9 @@ extern "C"
         int8_t held_quirk_a;
         int8_t held_quirk_b;
 
-        /* Render rate (chip-internal).  Driven by HwAudio: this is the
-         * chip-internal rate `max(131072, 32768 << sampling_cycle)` —
-         * 131072 Hz for SOUNDBIAS sampling_cycle 0/1/2; 262144 Hz for
-         * sampling_cycle 3 — NOT the host rate.  Output is then resampled
-         * to host by hw_resample.c. */
+        /* Render rate (chip-internal).  Driven by HwAudio: this is
+         * `max(131072, 32768 << sampling_cycle)`, NOT the host rate.
+         * Output is then resampled to host by hw_resample.c. */
         float render_rate;
 
         /* SOUNDBIAS-derived quirk rate (32k/65k/131k/262k Hz) at which

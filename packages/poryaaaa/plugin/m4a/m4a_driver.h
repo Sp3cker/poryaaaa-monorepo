@@ -76,13 +76,7 @@ extern "C"
         /* Per §6c: wave RAM is byte-granular (16 events for a full rewrite,
          * matching m4a's STMIA write order).  value = (addr_in_wave_ram << 8) | byte. */
         M4A_REG_WAVE_RAM_BYTE,
-        /* PCM ring publish gate.  Driver emits one per vblank at
-         * sample_offset = vblank firing offset.  Chip-side `hw_pcm`
-         * advances `pcm_published_through` by M4A_PCM_SAMPLES_PER_VBLANK
-         * on each event; reads from the ring are clamped to the published
-         * range so pre-vblank host samples can't see ring data that
-         * later vblanks within the same render call wrote.  No payload —
-         * the increment is constant.  See HW_AUDIO_SCAFFOLD_PLAN.md
+        /* PCM ring publish gate.   See HW_AUDIO_SCAFFOLD_PLAN.md
          * "DirectSound PCM event/ring timing" blocking gate. */
         M4A_REG_PCM_PUBLISH,
     } M4ARegId;
@@ -110,8 +104,7 @@ extern "C"
     void m4a_driver_set_voicegroup(M4ADriver* drv, ToneData* vg);
     void m4a_driver_refresh_voices(M4ADriver* drv);
 
-    /* MIDI ingress.  Signatures mirror the v1 engine surface so the v2
-     * mirror call at each ingress site is mechanical. */
+    /* MIDI ingress. */
     void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity);
     void m4a_note_off(M4ADriver* drv, int track, uint8_t key);
     void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value);
@@ -120,8 +113,7 @@ extern "C"
     void m4a_all_notes_off(M4ADriver* drv, int track);
     void m4a_all_sound_off(M4ADriver* drv);
 
-    /* Engine-level params. Mirror the same surface the plugin uses to push
-     * host/GUI config into the v1 engine. */
+    /* Engine-level params. */
     void m4a_set_song_volume(M4ADriver* drv, uint8_t volume);
     void m4a_set_master_volume(M4ADriver* drv, uint8_t volume); /* 0..15 m4a master */
     void m4a_set_reverb_amount(M4ADriver* drv, uint8_t amount); /* 0..127 */
@@ -155,20 +147,9 @@ extern "C"
      * the const accessor above. */
     M4ARegisterFile* m4a_get_register_file_mut(M4ADriver* drv);
 
-/* Layer 1.5 event-stream accessors.  Every m4a_advance() call appends
- * register-write events to the per-render-span queue, tagged with the
- * sample_offset (host-frame relative to the start of the *current*
- * render span — i.e. since the last m4a_consume_writes call).  Chip
- * calls m4a_get_pending_writes() to read the batch, then
- * m4a_consume_writes() after applying them.  The latter clears the
- * queue and resets the sample_offset counter.
+/* Layer 1.5 event-stream accessors. 
  *
- * Capacity / chunking: the queue is bounded.  Each vblank emits up to
- * ~40 events (4 channels × 5 NRxx writes + NR51 + 16 wave-RAM bytes
- * on a fresh wave-channel note).  Render call sites should chunk
- * m4a_advance into windows of at most M4A_RECOMMENDED_MAX_ADVANCE_FRAMES
- * and call hw_audio_render_events + m4a_consume_writes between chunks
- * — otherwise events overflow.  m4a_get_events_dropped() returns a
+ * Capacity / chunking: the queue is bounded. m4a_get_events_dropped() returns a
  * monotonic counter incremented on overflow; tests assert it stays 0. */
 #define M4A_RECOMMENDED_MAX_ADVANCE_FRAMES 2048
 

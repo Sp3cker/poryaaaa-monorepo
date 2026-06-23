@@ -3973,6 +3973,46 @@ static void test_hw_psg_nr52_power_cycle_preserves_wave_ram(void)
     ASSERT(preserved, "NR52 disable/re-enable does not clear channel 3 wave RAM");
 }
 
+static void test_hw_psg_square_duty_phase_matches_mgba(void)
+{
+    printf("Testing hw_psg square duty phase matches mGBA...\n");
+
+    /* mGBA src/gb/audio.c _squareChannelDuty.  freq_word 2040 gives
+     * audio_hz = 131072 / 8 at render_rate 131072, so the first eight
+     * rendered samples walk duty indices 0..7 exactly once. */
+    static const int expected[4][8] = {
+        {0, 0, 0, 0, 0, 0, 0, 1},
+        {1, 0, 0, 0, 0, 0, 0, 1},
+        {1, 0, 0, 0, 0, 1, 1, 1},
+        {0, 1, 1, 1, 1, 1, 1, 0},
+    };
+
+    for (int duty = 0; duty < 4; duty++)
+    {
+        HwPsgSynth psg;
+        hw_psg_init(&psg, 131072.0f);
+
+        M4ARegWrite ev[] = {
+            {0, M4A_REG_NR52, 0x80},
+            {0, M4A_REG_NR21, (uint32_t)duty << 6},
+            {0, M4A_REG_NR22, 0xF8},
+            {0, M4A_REG_NR23, 2040 & 0xFF},
+            {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7)},
+        };
+        for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
+            hw_psg_apply_event(&psg, &ev[i]);
+
+        float sq2[8];
+        hw_psg_render(&psg, NULL, sq2, NULL, NULL, 8);
+
+        for (int i = 0; i < 8; i++)
+        {
+            float want = expected[duty][i] ? 1.0f : 0.0f;
+            ASSERT_NEAR(sq2[i], want, 0.00001f, "SQ2 duty phase sample matches mGBA");
+        }
+    }
+}
+
 static void test_chip_canned_square_audible(void)
 {
     printf("Testing chip-only: canned NRxx events drive sq2 audible...\n");
@@ -4080,6 +4120,81 @@ static void test_chip_canned_master_disable_silences(void)
         }
     }
     ASSERT(secondSilent, "second half (master disabled) all-zero past smear");
+
+    hw_audio_destroy(hw);
+}
+
+static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
+{
+    printf("Testing chip-only: after sq2 playback, empty blocks stay silent...\n");
+
+    HwAudio* hw = hw_audio_create(44100.0f);
+
+    M4ARegWrite start[] = {
+        {0, M4A_REG_NR52, 0x80},
+        {0, M4A_REG_NR50, 0x77},
+        {0, M4A_REG_NR51, 0x22},
+        {0, M4A_REG_SOUNDCNT_H, 0x02},
+        {0, M4A_REG_NR21, 0x80},
+        {0, M4A_REG_NR22, 0xF8},
+        {0, M4A_REG_NR23, 1700 & 0xFF},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+    };
+    M4ARegWriteBatch start_batch = {.events = start, .count = sizeof(start) / sizeof(start[0])};
+    M4ARegWrite stop[] = {
+        {0, M4A_REG_NR52, 0x00},
+    };
+    M4ARegWriteBatch stop_batch = {.events = stop, .count = sizeof(stop) / sizeof(stop[0])};
+    M4ARegWriteBatch empty = {.events = NULL, .count = 0};
+
+    enum
+    {
+        CHUNK = 257,
+        PLAY_CHUNKS = 256,
+        SILENT_CHUNKS = 256
+    };
+    float L[CHUNK], R[CHUNK];
+
+    hw_audio_render_events(hw, &start_batch, NULL, L, R, CHUNK);
+    for (int chunk_i = 1; chunk_i < PLAY_CHUNKS; chunk_i++)
+        hw_audio_render_events(hw, &empty, NULL, L, R, CHUNK);
+
+    hw_audio_render_events(hw, &stop_batch, NULL, L, R, CHUNK);
+
+    float worst = 0.0f;
+    int worst_chunk = -1;
+    int worst_sample = -1;
+    for (int chunk_i = 0; chunk_i < SILENT_CHUNKS; chunk_i++)
+    {
+        for (int i = 0; i < CHUNK; i++)
+        {
+            L[i] = 123.0f;
+            R[i] = -123.0f;
+        }
+        hw_audio_render_events(hw, &empty, NULL, L, R, CHUNK);
+
+        for (int i = 0; i < CHUNK; i++)
+        {
+            float a = L[i];
+            if (a < 0.0f)
+                a = -a;
+            float b = R[i];
+            if (b < 0.0f)
+                b = -b;
+            float m = a > b ? a : b;
+            if (m > worst)
+            {
+                worst = m;
+                worst_chunk = chunk_i;
+                worst_sample = i;
+            }
+        }
+    }
+
+    if (worst > 5e-5f)
+        printf(
+            "  [debug] worst after-playback silent dev = %g at chunk %d sample %d\n", worst, worst_chunk, worst_sample);
+    ASSERT(worst < 5e-5f, "empty blocks after playback stay silent and overwrite the whole output buffer");
 
     hw_audio_destroy(hw);
 }
@@ -4348,10 +4463,9 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * SCOPE: these tests validate the mix-bus *algebra* — SOUNDCNT_L/H
  * routing/scaling math, SOUNDBIAS bias_level DC offset math, and the
  * 10-bit DAC bias-add+clip math (default + asymmetric).  All of these
- * tests run with the chip at its post-§12.9 internal render rate
- * (`max(131072, 32768 << sampling_cycle)`) and through the polyphase
- * resampler to host.  Per-cadence tests live in the §12.10a block
- * below (cadence sweep + direct internal_rate switching assertion).
+ * tests run with the chip at its internal render rate and through the
+ * polyphase resampler to host.  Per-cadence tests live in the §12.10a
+ * block below (cadence sweep + direct internal_rate switching assertion).
  *
  * They do NOT prove parity against mGBA / real-hardware captures —
  * that's §12.10b, still open.  See HW_AUDIO_SCAFFOLD_PLAN.md §12
@@ -4606,9 +4720,10 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
 
 /* ---- §12 step 9: polyphase resampler quality ----
  *
- * Anti-aliasing check: a square wave whose fundamental is above host
- * Nyquist (22050 Hz @ 44100) must be attenuated by the resampler's
- * low-pass kernel, NOT aliased into the audible band.  Compares peak
+ * Anti-aliasing check: at sampling_cycle=2 (131072 Hz chip cadence), a
+ * square wave whose fundamental is above host Nyquist (22050 Hz @ 44100)
+ * must be attenuated by the resampler's low-pass kernel, NOT aliased
+ * into the audible band.  Compares peak
  * at a low fundamental (~1300 Hz, well in passband) to peak at a high
  * fundamental (~26214 Hz, above host Nyquist).  A linear-interp or
  * zero-order-hold resampler would let aliasing leak through and the
@@ -4628,6 +4743,12 @@ static void test_chip_canned_resample_antialias(void)
     /* Low-frequency reference: F=1947 → audio_hz = 131072/(2048-1947)
      * = 131072/101 ≈ 1298 Hz, deep in passband. */
     HwAudio* hw_low = hw_audio_create(44100.0f);
+    M4ARegWrite setup_sc2[] = {
+        {0, M4A_REG_SOUNDBIAS, 0x200u | (2u << 14)},
+    };
+    M4ARegWriteBatch setup_batch = {.events = setup_sc2, .count = sizeof(setup_sc2) / sizeof(setup_sc2[0])};
+    float setup_l[1], setup_r[1];
+    hw_audio_render_events(hw_low, &setup_batch, NULL, setup_l, setup_r, 1);
     M4ARegWrite ev_low[] = {
         {0, M4A_REG_NR52, 0x80},
         {0, M4A_REG_NR50, 0x77},
@@ -4656,6 +4777,7 @@ static void test_chip_canned_resample_antialias(void)
     /* High-frequency: F=2043 → audio_hz = 131072/5 = 26214 Hz, above
      * the host Nyquist of 22050 Hz.  Falls in the resampler's stopband. */
     HwAudio* hw_high = hw_audio_create(44100.0f);
+    hw_audio_render_events(hw_high, &setup_batch, NULL, setup_l, setup_r, 1);
     M4ARegWrite ev_high[] = {
         {0, M4A_REG_NR52, 0x80},
         {0, M4A_REG_NR50, 0x77},
@@ -4913,11 +5035,10 @@ static void test_chip_canned_dc_streaming(void)
 /* ---- §12 step 10: per-SOUNDBIAS-cadence parity ----
  *
  * SOUNDBIAS bits 14-15 are the "amplitude resolution selector"
- * (sampling_cycle).  Plan §7b says the chip's internal output rate is
- * `max(131072, quirk_rate)` where `quirk_rate = 32768 << sampling_cycle`.
- * For sampling_cycle 0/1/2 the floor pins internal at 131072 Hz; only
- * sampling_cycle = 3 bumps it to 262144 Hz (the case that ROMhacks
- * use for cleaner PCM).
+ * (sampling_cycle).  The PCM FIFO drain tracks that quirk cadence
+ * directly.  The chip's PSG/mix/resampler render rate stays at
+ * `max(131072, 32768 << sampling_cycle)` so common host rates remain
+ * on the downsampling path.
  *
  * These tests exercise all four cadences via the setup-then-play
  * pattern: one short render call applies SOUNDBIAS, the next call
@@ -4988,13 +5109,11 @@ static void test_chip_canned_soundbias_cycle_audible_sweep(void)
     }
 }
 
-/* Direct rate-switching test: assert hw_audio_internal_rate() actually
- * tracks SOUNDBIAS sampling_cycle.  An implementation that ignored
- * sampling_cycle and stayed at a fixed 131072 Hz internal rate would
- * fail this test — the level-comparison test below CAN'T detect that
- * (host-rate output is the same for any internal rate ≥ 2 × host_rate
- * on a low-frequency signal).  This is the unambiguous proof that
- * cadence switching is wired up.
+/* Direct rate-switching test: assert hw_audio_internal_rate() applies
+ * the render-rate floor and still tracks sampling_cycle when it rises
+ * above that floor.  Lower SOUNDBIAS cadences are represented by
+ * HwPcm's FIFO drain quirk rate, not by lowering the whole render/
+ * resampler pipeline below common host rates.
  *
  * Test pattern matches the documented boot-time-only target: a
  * SOUNDBIAS event applied in one render call takes effect at the
@@ -5008,7 +5127,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 
     HwAudio* hw = hw_audio_create(44100.0f);
 
-    /* Default sampling_cycle = 0 → internal at the 131072 Hz floor. */
+    /* Default sampling_cycle = 0 → internal rate floor. */
     ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "default sampling_cycle = 0 yields internal 131072 Hz");
 
 /* Helper macro: apply SOUNDBIAS via a setup call, then run a
@@ -5025,21 +5144,18 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
         hw_audio_render_events(hw, &empty, NULL, scratch, scratch, 1);                                                 \
     } while (0)
 
-    /* sampling_cycle 1 and 2 stay pinned at the floor
-     * (max(131072, 32768<<sc) = 131072 for sc ≤ 2). */
     SOUNDBIAS_TRANSITION(1);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 1 still pinned at 131072 Hz floor");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 1 stays at internal 131072 Hz floor");
 
     SOUNDBIAS_TRANSITION(2);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 2 still pinned at 131072 Hz floor");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 2 yields internal 131072 Hz");
 
-    /* sampling_cycle 3 bumps to 262144 Hz. */
     SOUNDBIAS_TRANSITION(3);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 262144, "sampling_cycle = 3 bumps internal to 262144 Hz");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 262144, "sampling_cycle = 3 yields internal 262144 Hz");
 
     /* Switching back lowers internal rate again. */
     SOUNDBIAS_TRANSITION(0);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle back to 0 returns internal to 131072 Hz");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle back to 0 returns internal to 131072 Hz floor");
 
 #undef SOUNDBIAS_TRANSITION
 
@@ -5220,11 +5336,11 @@ static void test_chip_canned_pcm_constant_byte(void)
  * transition at session start, so ring[0] was silently skipped and
  * the first byte actually consumed was ring[1].
  *
- * This test pins that fix: place a positive impulse at ring[0] and
- * silence everywhere else.  The fixed pipeline produces a brief
- * positive transient in the host output (ring[0] held for a few
- * pcm-rate ticks at session start, then ring[1+] = 0).  An
- * implementation that skips ring[0] would output silence throughout. */
+ * This test pins that fix: place an impulse at ring[0] and silence
+ * everywhere else.  The fixed pipeline produces a brief resampler
+ * transient in the host output (ring[0] held for a few pcm-rate ticks
+ * at session start, then ring[1+] = 0).  An implementation that skips
+ * ring[0] would output silence throughout. */
 static void test_chip_canned_pcm_first_byte_consumed(void)
 {
     printf("Testing chip-only: ring[0] is read at session start (no off-by-one)...\n");
@@ -5252,24 +5368,19 @@ static void test_chip_canned_pcm_first_byte_consumed(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, &ring, L, R, N);
 
-    /* The fixed pipeline holds ring[0] = 100 for ~10 internal samples
-     * (until pcm_pos crosses 1 with pcm_step ≈ 0.102), producing a
-     * brief positive transient at the very start of the host output
-     * which the resampler smears across ~TAPS/2/step ≈ 5 host
-     * samples.  Sum-of-positive-L is the cleanest invariant: the
-     * fixed code yields a small positive sum; the broken
-     * implementation that skipped ring[0] yields exactly 0. */
-    float sum_pos_L = 0.0f;
+    /* The fixed pipeline holds ring[0] = 100 for a few internal samples.
+     * The startup resampler kernel turns that into a tiny bipolar transient,
+     * so use absolute energy rather than positive-only sum.  A broken
+     * implementation that skipped ring[0] would still yield exactly 0. */
+    float sum_abs_L = 0.0f;
     for (int i = 0; i < N; i++)
     {
-        if (L[i] > 0.0f)
-            sum_pos_L += L[i];
+        float a = L[i];
+        if (a < 0.0f)
+            a = -a;
+        sum_abs_L += a;
     }
-    /* Threshold rationale: ring[0]=100 drives ~10 internal-rate
-     * samples × (100 << 2) × 48/32768 = ~5.86 of total signal energy
-     * at internal rate; resampled + smeared this still produces a sum
-     * well above 0.001. */
-    ASSERT(sum_pos_L > 0.001f, "ring[0] consumed at session start (positive transient present)");
+    ASSERT(sum_abs_L > 0.0001f, "ring[0] consumed at session start (transient present)");
 
     hw_audio_destroy(hw);
 }
@@ -5424,7 +5535,7 @@ static void test_chip_canned_soundbias_cycle_0_vs_3_levels(void)
     };
     float L0[N], R0[N], L3[N], R3[N];
 
-    /* sampling_cycle=0 → internal_rate stays at 131072 Hz floor. */
+    /* sampling_cycle=0 → internal_rate stays at the 131072 Hz floor. */
     uint32_t sb0 = 0x200u | (0u << 14);
     float peak0 = run_sq2_at_soundbias(sb0, N, L0, R0);
 
@@ -5524,11 +5635,13 @@ int main(void)
     test_hw_psg_sq1_negative_direction_change_quirk();
     test_hw_psg_sq1_trigger_uses_dac_enabled_state();
     test_hw_psg_nr52_power_cycle_preserves_wave_ram();
+    test_hw_psg_square_duty_phase_matches_mgba();
 
     /* Chip-only canned-event tests.  These also run under full v2, but their
      * value is the chip-only setup that does not depend on driver events. */
     test_chip_canned_square_audible();
     test_chip_canned_master_disable_silences();
+    test_chip_canned_after_playback_empty_blocks_stay_silent();
     test_chip_canned_pan_routing();
     test_chip_canned_wave_audible();
     test_chip_canned_pcm_routing();

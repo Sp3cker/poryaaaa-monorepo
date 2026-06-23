@@ -152,7 +152,6 @@ add_subdirectory(plugin/hw_audio)
 # m4a audio engine sources (shared between plugin, renderer, tests).
 set(ENGINE_SOURCES
     plugin/m4a_engine.c
-    plugin/m4a_tables.c
 )
 
 # ---- CLAP Plugin ----

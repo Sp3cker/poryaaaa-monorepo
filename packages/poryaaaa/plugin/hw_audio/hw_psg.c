@@ -9,12 +9,12 @@
 #endif
 
 /* GB square duty patterns.  Top 3 bits of the 32-bit phase index into
- * an 8-bit pattern; bit value (0/1) → ±amplitude.  Patterns chosen to
- * match real GB output (bit 0 = first emitted sample). */
+ * an 8-bit pattern; bit value (0/1) → channel amplitude.  Matches mGBA
+ * _squareChannelDuty index order; bit 0 = first emitted sample. */
 static const uint8_t kDutyPatterns[4] = {
-    0x01, /* 12.5%: 0000_0001 */
+    0x80, /* 12.5%: 0000_0001 */
     0x81, /* 25%:   1000_0001 */
-    0x87, /* 50%:   1000_0111 */
+    0xE1, /* 50%:   1000_0111 */
     0x7E, /* 75%:   0111_1110 */
 };
 
@@ -177,12 +177,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
  * into a 32-bit phase increment per render-rate sample.  audio_freq_hz
  * = RATE_NUM / (2048 - F); phase_inc = audio_hz / render_rate × 2^32.
  *
- * Step 9 sets render_rate to a fixed chip-internal rate (131072 Hz)
- * well above any host Nyquist, so PSG synth no longer aliases against
- * host rate.  The polyphase resampler in hw_resample.c band-limits at
- * host_rate/2 when downsampling to host.  SOUNDBIAS sampling_cycle
- * variation (max(131072, quirk_rate) per plan §7b) is still pending
- * — see hw_psg.h header banner. */
+ * HwAudio sets render_rate to the chip-internal render rate.  The
+ * polyphase resampler in hw_resample.c bridges that rate to host rate. */
 static uint32_t phase_inc_from_freq(uint16_t freq_word, float rate_num, float render_rate)
 {
     int denom = 2048 - (int)(freq_word & 0x07FF);
