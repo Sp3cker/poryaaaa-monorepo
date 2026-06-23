@@ -10,6 +10,10 @@ export interface CcomidiSnapshot {
   slots: Array<VoiceSlot | null>;
 }
 
+export type CcomidiVoicegroupFrame =
+  | { type: "snapshot"; slots: Array<VoiceSlot | null> }
+  | { type: "unavailable" };
+
 export type PoryaaaaVoicegroupOutput =
   | { tag: "bank"; args: unknown[] }
   | { tag: "path"; args: unknown[] }
@@ -45,7 +49,13 @@ export class PoryaaaaVoicegroupService {
       ws.on("message", () => {
         // Inbound client messages are reserved for future two-way protocol work.
       });
-      if (this.latest) this.sendSnapshot(ws, this.latest);
+      if (this.latest) {
+        this.sendFrame(ws, { type: "snapshot", slots: this.latest.slots });
+      } else {
+        // New clients must learn that startup completed with no valid
+        // voicegroup; silence leaves ccomidi stuck on "waiting for poryaaaa".
+        this.sendFrame(ws, { type: "unavailable" });
+      }
     });
 
     wss.on("error", (err) => {
@@ -137,23 +147,23 @@ export class PoryaaaaVoicegroupService {
     this.emit("bank", "append", "(no project loaded)");
   }
 
-  private sendSnapshot(ws: WebSocket, snapshot: CcomidiSnapshot): void {
-    ws.send(JSON.stringify({ type: "snapshot", slots: snapshot.slots }));
+  private sendFrame(ws: WebSocket, frame: CcomidiVoicegroupFrame): void {
+    ws.send(JSON.stringify(frame));
   }
 
-  private broadcastSnapshot(snapshot: CcomidiSnapshot): void {
+  private broadcastFrame(frame: CcomidiVoicegroupFrame): void {
     if (!this.wss) return;
-    const frame = JSON.stringify({ type: "snapshot", slots: snapshot.slots });
+    const payload = JSON.stringify(frame);
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(frame);
+        client.send(payload);
       }
     }
   }
 
   private updateLatestSnapshot(snapshot: CcomidiSnapshot): void {
     this.latest = snapshot;
-    this.broadcastSnapshot(snapshot);
+    this.broadcastFrame({ type: "snapshot", slots: snapshot.slots });
   }
 
   private clearLatestSnapshot(): void {
@@ -199,6 +209,9 @@ export class PoryaaaaVoicegroupService {
       for (const diagnostic of parsed.diagnostics) {
         this.deps.post(`voicegroups: ${diagnostic}\n`);
       }
+      // With no previous snapshot to keep showing, tell clients the bank is
+      // unavailable instead of leaving their last connection state pending.
+      if (!this.latest) this.broadcastFrame({ type: "unavailable" });
       return false;
     }
 

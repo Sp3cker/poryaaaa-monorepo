@@ -5,12 +5,10 @@
  *
  * Rates inside the chip:
  *   quirk rate       = 32768 << bias_sampling_cycle (32k/65k/131k/262k Hz)
- *                      — read from SOUNDBIAS, stored on HwMixBus.
- *   internal rate    = max(131072, quirk_rate).  131072 Hz for
- *                      sampling_cycle 0/1/2; 262144 Hz for sampling_
- *                      cycle 3.  Synced from sampling_cycle at start
- *                      of each render call (boot-time-only target —
- *                      mid-call SOUNDBIAS changes deferred to next
+ *                      — read from SOUNDBIAS and used by HwFifoDrain.
+ *   internal rate    = max(131072, quirk_rate).  Synced from sampling_cycle
+ *                      at the start of each render call (boot-time-only
+ *                      target — mid-call SOUNDBIAS changes deferred to next
  *                      render boundary; see hw_audio.c).
  *   host rate        = whatever the caller passes to hw_audio_set_host_rate.
  *                      Polyphase resampler bridges internal → host.

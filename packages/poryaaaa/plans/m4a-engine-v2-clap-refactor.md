@@ -412,7 +412,6 @@ follow-up only if those targets are not built by the CLAP target.
   - remove analog-filter option
   - keep musical controls such as reverb
   - use `m4a_engine_process()` only
-- Remove `M4A_DRIVER_V2` / `HW_AUDIO_V2` options after all shipped targets are
-  unconditionally v2-backed.
+- Done: shipped targets are now unconditionally backed by the v2 driver and chip.
 - Delete `m4a_channel.*` and `m4a_reverb.*` from the repo once no tests or
   non-CLAP targets include them.

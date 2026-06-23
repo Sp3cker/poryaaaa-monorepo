@@ -92,7 +92,7 @@ user bend -32, BENDR 2  -> data2 32 -> track->bend -32 -> effective -64
 
 - [ ] **Step 1: Add a failing driver-level test**
 
-Add this test near the other `M4A_DRIVER_V2` engine tests in `packages/poryaaaa/test/test_engine.c`:
+Add this test near the other v2 engine tests in `packages/poryaaaa/test/test_engine.c`:
 
 ```c
 static void test_v2_pitch_bend_uses_m4a_units(void)
@@ -117,7 +117,7 @@ static void test_v2_pitch_bend_uses_m4a_units(void)
 }
 ```
 
-Call it from `main()` inside the `#if defined(M4A_DRIVER_V2)` block:
+Call it from `main()` with the other v2 engine tests:
 
 ```c
 	test_v2_pitch_bend_uses_m4a_units();
@@ -266,9 +266,7 @@ In `packages/poryaaaa/cmd/poryaaaa_render.c`, replace the render-time pitch bend
     {
         int16_t bend = (int16_t)(((int)(ev->data1 << 7) | ev->data0) - 8192);
         m4a_engine_pitch_bend(engine, trackIdx, bend);
-#if defined(M4A_DRIVER_V2)
         m4a_pitch_bend(g_v2_drv, trackIdx, bend);
-#endif
         break;
     }
 ```
@@ -280,9 +278,7 @@ with:
     {
         int8_t bend = (int8_t)((int)ev->data1 - 64);
         m4a_engine_pitch_bend(engine, trackIdx, bend);
-#if defined(M4A_DRIVER_V2)
         m4a_pitch_bend(g_v2_drv, trackIdx, bend);
-#endif
         break;
     }
 ```
@@ -297,9 +293,7 @@ In `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`, replace:
         case 0xE: {
             int16_t signed14 = (int16_t)(((d2 << 7) | d1) - 8192);
             m4a_engine_pitch_bend(&x->engine, ch, signed14);
-#if defined(M4A_DRIVER_V2)
             m4a_pitch_bend(x->m4a_v2, ch, signed14);
-#endif
             break;
         }
 ```
@@ -310,9 +304,7 @@ with:
         case 0xE: {
             int8_t bend = (int8_t)((int)d2 - 64);
             m4a_engine_pitch_bend(&x->engine, ch, bend);
-#if defined(M4A_DRIVER_V2)
             m4a_pitch_bend(x->m4a_v2, ch, bend);
-#endif
             break;
         }
 ```

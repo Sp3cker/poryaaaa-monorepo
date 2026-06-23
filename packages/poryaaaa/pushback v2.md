@@ -197,8 +197,8 @@ Adopted in the order you proposed.  Plan §12 verification reorders to:
 5. Real song / capture comparisons last (full-mix A/B vs mGBA Qt).
 
 Subjective song matching becomes the final gate, not the first line of
-defense.  Driver-only and chip-only flag combinations (§8 in the plan)
-make 1–4 trivially writable as unit tests — no full pipeline needed.
+defense.  Driver and chip module boundaries make 1–4 trivially writable
+as unit tests — no full pipeline needed.
 
 ---
 

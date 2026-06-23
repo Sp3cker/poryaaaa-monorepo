@@ -30,6 +30,7 @@ Instructions for coding agents working in this monorepo.
 This repository contains the first-party poryaaaa projects:
 
 - `packages/poryaaaa`: GBA m4a audio engine, CLAP instrument, and renderer
+    - Contains voicegroup module
 - `packages/ccomidi`: CLAP MIDI/control sender
 - `packages/poryaaaa-m4l`: Max for Live package, externals, hand-maintained .amxd devices, and TypeScript controllers
 
@@ -71,3 +72,17 @@ Migration and repo-maintenance commits in this repository should use:
 git config user.name "Sp3cker"
 git config user.email "speker97@protonmail.com"
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The repo uses the default five-role triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a multi-context domain-doc layout. See `docs/agents/domain.md`.

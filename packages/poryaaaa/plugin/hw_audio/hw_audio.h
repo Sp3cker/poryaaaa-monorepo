@@ -14,13 +14,11 @@ extern "C"
      *
      * Status (2026-04-29):
      *   - PSG square / wave / noise: synthesised at the chip-internal
-     *     render rate (`max(131072, 32768 << sampling_cycle)` per plan
-     *     §7b — 131072 Hz for SOUNDBIAS sampling_cycle 0/1/2; 262144 Hz
-     *     for sampling_cycle 3).  Sampling_cycle synced from HwMixBus at
+     *     render rate (`max(131072, 32768 << sampling_cycle)`).  Sampling_cycle synced from HwMixBus at
      *     start-of-render-call (boot-time-only target — see hw_audio.c).
      *   - PCM DirectSound: two-stage drain (§12 step 5 closed).
      *     HwDmaToFifo reads M4APcmRing at pcm_rate_hz; HwFifoDrain
-     *     snapshots the FIFO head at SOUNDBIAS-derived quirk_rate
+     *     snapshots the FIFO head at the SOUNDBIAS-derived quirk rate
      *     (32k/65k/131k/262k Hz); output at internal_rate is the held
      *     quirk byte sign-extended.
      *   - Mix bus: full SOUNDCNT_L (NR50/NR51) + SOUNDCNT_H + SOUNDBIAS
@@ -47,10 +45,10 @@ extern "C"
 
     /* ⚠ DEBUG / TEST VISIBILITY ONLY — not part of the production chip
      * timing contract.  Returns the chip's current internal render rate
-     * (PSG/PCM/mix synth rate, before the polyphase resampler).  Per
-     * plan §7b this is `max(131072, 32768 << sampling_cycle)` — 131072
-     * Hz for SOUNDBIAS sampling_cycle 0/1/2, 262144 Hz for sampling_
-     * cycle 3.  Exposed because it caught a real class of cadence-
+     * (PSG/PCM/mix synth rate, before the polyphase resampler).  This is
+     * `max(131072, 32768 << sampling_cycle)`: 131072 Hz for sampling_cycle
+     * 0/1/2 and 262144 Hz for sampling_cycle 3.  Exposed because it caught
+     * a real class of cadence-
      * switching bug (a fixed-rate implementation that ignored
      * sampling_cycle would silently still produce audible output for
      * typical low-frequency test signals — only an explicit rate

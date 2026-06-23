@@ -1,8 +1,7 @@
 {
   "configurations": [
     {
-      "name": "Mac",
-      "compileCommands": "${workspaceFolder}/packages/textedit/build/compile_commands.json"
+      "name": "Mac"
     }
   ],
   "version": 4

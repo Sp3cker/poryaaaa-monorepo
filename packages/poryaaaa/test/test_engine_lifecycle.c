@@ -8,12 +8,8 @@
 #include "m4a_engine.h"
 #include "voicegroup/voicegroup_loader.h"
 
-#if defined(M4A_DRIVER_V2)
-#    include "m4a/m4a_driver.h"
-#endif
-#if defined(HW_AUDIO_V2)
-#    include "hw_audio/hw_audio.h"
-#endif
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
 
 #define SAMPLE_RATE 44100.0f
 #define DEFAULT_LOOPS 1000
@@ -161,7 +157,6 @@ static bool run_engine_cycle(ToneData* voices, int program)
     return peak > 0.0001f;
 }
 
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
 static bool run_driver_hw_cycle(ToneData* voices, int program)
 {
     M4ADriver* drv = m4a_driver_create(SAMPLE_RATE);
@@ -210,7 +205,6 @@ static bool run_driver_hw_cycle(ToneData* voices, int program)
 
     return peak > 0.0001f;
 }
-#endif
 
 static void run_synthetic_cycles(int loops)
 {
@@ -226,9 +220,7 @@ static void run_synthetic_cycles(int loops)
         make_test_voicegroup(voices, wd);
 
         CHECK(run_engine_cycle(voices, 0), "M4AEngine cycle produces audio");
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
         CHECK(run_driver_hw_cycle(voices, 0), "M4ADriver/HwAudio cycle produces audio");
-#endif
 
         free(wd);
     }
@@ -254,9 +246,7 @@ static void run_loaded_voicegroup_cycles(const char* project_root, const char* v
         }
 
         CHECK(run_engine_cycle(vg->voices, program), "loaded voicegroup engine cycle produces audio");
-#if defined(M4A_DRIVER_V2) && defined(HW_AUDIO_V2)
         CHECK(run_driver_hw_cycle(vg->voices, program), "loaded voicegroup driver/hw cycle produces audio");
-#endif
 
         voicegroup_free(vg);
     }

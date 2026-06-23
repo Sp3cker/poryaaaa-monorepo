@@ -10,7 +10,7 @@
 extern void m4a_chn_vol_set_cgb(M4ADriverCgbChan* ch, M4ADriverTrack* track);
 extern void m4a_drv_cgb_start(M4ADriverCgbChan* ch);
 extern void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx);
-extern void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type);
+extern void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32_t startOffset);
 
 /* TrkVolPitSet — pokeemerald m4a.c equivalent.
  * Recomputes the per-track effective L/R volume (volMR/volML) and effective
@@ -459,7 +459,9 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
             ch->frequency = (uint32_t)((uint64_t)f * (uint64_t)divFreq);
         }
 
-        m4a_drv_pcm_start(ch, voice->wav, voice->type);
+        /* xcmd 0D is carried in the track's extended value and starts
+         * DirectSound playback from an offset inside the source sample. */
+        m4a_drv_pcm_start(ch, voice->wav, voice->type, t->extendedValue);
 
         /* Pre-compute envelope volumes so the very first vblank's mix is
          * audible — SoundMainRAM_Tick fires at vblank rate, but the

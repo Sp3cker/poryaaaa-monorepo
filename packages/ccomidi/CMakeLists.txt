@@ -184,6 +184,7 @@ add_library(ccomidi MODULE
     src/plugin/ccomidi_plugin.cpp
     src/plugin/voicegroup_bridge.cpp
     src/gui/ccomidi_editor.cpp
+    src/gui/drum_pad_grid.cpp
 )
 ccomidi_enable_project_warnings(ccomidi)
 

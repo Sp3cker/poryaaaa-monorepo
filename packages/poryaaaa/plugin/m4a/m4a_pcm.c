@@ -17,12 +17,19 @@
  * register file. */
 
 /* PCM channel start — pokeemerald m4a.c equivalent. */
-void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type)
+void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32_t startOffset)
 {
+    /* xcmd 0D starts DirectSound playback inside the source sample.  Reverse
+     * voices still keep m4a's one-past cursor convention, so the same offset
+     * is measured back from the sample end. */
+    if (startOffset > wav->size)
+        startOffset = wav->size;
+
     ch->wav = wav;
     ch->type = type;
-    ch->currentPointer = wav->data;
-    ch->count = (int32_t)wav->size;
+    ch->currentPointer = (type & VOICE_TYPE_REV) ? wav->data + wav->size - startOffset : wav->data + startOffset;
+    ch->sampleStored = 0;
+    ch->count = (int32_t)(wav->size - startOffset);
     ch->fw = 0;
     ch->envelopeVolume = 0;
 
@@ -87,6 +94,7 @@ static void pcm_channel_tick(M4ADriverPcmChan* ch, uint8_t masterVolume)
         if (ch->isLoop)
             ch->status |= M4A_CHN_LOOP;
         envVol = 0;
+        ch->sampleStored = 0;
         ch->fw = 0;
     }
 
@@ -238,87 +246,181 @@ static void sound_main_ram_reverb(M4ADriver* drv)
     drv->reverbPos = pos;
 }
 
-/* Render one PCM channel into the mix buffer.  Per output sample: read +
- * interpolate, scale by envelope, sum into mix; advance fw by frequency.
- * Loop wraparound matches v1 / pokeemerald m4a_1.s. */
+static void mix_pcm_sample(int32_t sample, int32_t envR, int32_t envL, int16_t* mixL, int16_t* mixR, int index)
+{
+    /* Sum scaled sample (×env >> 8) into the int16 mix buffer with
+     * saturation so loud chords don't wrap. */
+    int32_t addR = (sample * envR) >> 8;
+    int32_t addL = (sample * envL) >> 8;
+    int32_t newR = (int32_t)mixR[index] + addR;
+    int32_t newL = (int32_t)mixL[index] + addL;
+    if (newR > 32767)
+        newR = 32767;
+    else if (newR < -32768)
+        newR = -32768;
+    if (newL > 32767)
+        newL = 32767;
+    else if (newL < -32768)
+        newL = -32768;
+    mixR[index] = (int16_t)newR;
+    mixL[index] = (int16_t)newL;
+}
+
+typedef struct
+{
+    int8_t* ptr;       /* current source byte in playback order */
+    int8_t* loopFirst; /* first source byte after loop wrap */
+    int32_t count;     /* playback-order samples remaining before stop/wrap */
+    int32_t countBase; /* converts playback-order count back to ch->count */
+    int32_t loopLen;
+    int32_t step;
+    int32_t pointerBias; /* converts current source byte back to ch->currentPointer */
+    int8_t loopPrevious; /* source byte immediately before loopFirst in playback order */
+    int8_t endPaddingSample;
+    bool looped;
+    bool padEnd;
+    bool endedWithPadding;
+} PcmSource;
+
+/* Normalize forward and reverse DirectSound channels into playback order so
+ * start offsets, loop wrap, and interpolation share one update path. */
+static PcmSource pcm_source_from_channel(M4ADriverPcmChan* ch)
+{
+    PcmSource source;
+    source.ptr = ch->currentPointer;
+    source.loopFirst = ch->loopStart;
+    source.count = ch->count;
+    source.countBase = 0;
+    source.loopLen = ch->loopLen;
+    source.step = 1;
+    source.pointerBias = 0;
+    source.loopPrevious = ch->wav ? ch->wav->data[ch->wav->size - 1] : 0;
+    source.endPaddingSample = 0;
+    source.looped = ch->isLoop && ch->loopLen > 0 && ch->wav;
+    source.padEnd = false;
+    source.endedWithPadding = false;
+
+    if (ch->type & VOICE_TYPE_REV)
+    {
+        int32_t loopStartOffset = source.looped ? (int32_t)(ch->loopStart - ch->wav->data) : 0;
+        source.ptr = ch->currentPointer - 1;
+        source.loopFirst = ch->wav->data + ch->wav->size - 1;
+        source.count = ch->count - loopStartOffset;
+        source.countBase = loopStartOffset;
+        source.step = -1;
+        source.pointerBias = 1;
+        source.loopPrevious = source.looped ? ch->loopStart[0] : 0;
+        source.padEnd = true;
+    }
+
+    return source;
+}
+
+static int32_t pcm_source_current_sample(const PcmSource* source)
+{
+    return source->ptr[0];
+}
+
+static bool pcm_source_advance(PcmSource* source, uint32_t advance, bool fixed, int32_t* sampleStored, bool* stopped)
+{
+    if (advance == 0)
+        return true;
+
+    source->count -= (int32_t)advance;
+    if (source->count <= 0)
+    {
+        if (source->looped)
+        {
+            while (source->count <= 0)
+                source->count += source->loopLen;
+            source->ptr = source->loopFirst + (source->loopLen - source->count) * source->step;
+            if (!fixed)
+                *sampleStored = source->count == source->loopLen ? source->loopPrevious : source->ptr[-source->step];
+        }
+        else
+        {
+            *stopped = true;
+            if (source->padEnd && !fixed)
+            {
+                /* A resampled reverse voice needs one synthetic zero byte past
+                 * the sample start so interpolation can emit its final source
+                 * byte before the channel stops. */
+                *sampleStored = source->ptr[0];
+                source->ptr = &source->endPaddingSample;
+                source->step = 0;
+                source->count = 0x3FFFFFFF;
+                source->endedWithPadding = true;
+                return true;
+            }
+            return false;
+        }
+    }
+    else
+    {
+        source->ptr += (int32_t)advance * source->step;
+        if (!fixed)
+            *sampleStored = source->ptr[-source->step];
+    }
+    return true;
+}
+
+/* Render one PCM channel into the mix buffer.  Reverse voices are mapped
+ * into a playback-order cursor before the common mixer sees them, keeping
+ * interpolation, loop/end handling, and sample-store updates in one path. */
 static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR)
 {
     if (!(ch->status & M4A_CHN_ON) || (ch->status & M4A_CHN_START))
         return;
+    if (!ch->wav || !ch->currentPointer || ch->count <= 0)
+        return;
 
-    int8_t* ptr = ch->currentPointer;
+    PcmSource source = pcm_source_from_channel(ch);
+    int32_t sampleStored = ch->sampleStored;
     uint32_t fw = ch->fw;
-    int32_t count = ch->count;
     bool fixed = (ch->type & VOICE_TYPE_FIX) != 0;
     uint32_t freq = ch->frequency;
     int32_t envR = ch->envelopeVolumeRight;
     int32_t envL = ch->envelopeVolumeLeft;
+    bool stopped = false;
 
-    if (!ptr)
+    if (source.count <= 0)
         return;
 
     for (int i = 0; i < M4A_PCM_SAMPLES_PER_VBLANK; i++)
     {
+        int32_t sourceSample = pcm_source_current_sample(&source);
         int32_t sample;
         if (fixed)
         {
-            sample = ptr[0];
+            sample = sourceSample;
         }
         else
         {
-            int32_t s0 = ptr[0];
-            int32_t s1 = ptr[1];
-            int32_t diff = s1 - s0;
+            int32_t s0 = sampleStored;
+            int32_t diff = sourceSample - s0;
             sample = s0 + (int32_t)(((int64_t)diff * (int32_t)fw) >> 23);
         }
 
-        /* Sum scaled sample (×env >> 8) into the int16 mix buffer with
-         * saturation so loud chords don't wrap. */
-        int32_t addR = (sample * envR) >> 8;
-        int32_t addL = (sample * envL) >> 8;
-        int32_t newR = (int32_t)mixR[i] + addR;
-        int32_t newL = (int32_t)mixL[i] + addL;
-        if (newR > 32767)
-            newR = 32767;
-        else if (newR < -32768)
-            newR = -32768;
-        if (newL > 32767)
-            newL = 32767;
-        else if (newL < -32768)
-            newL = -32768;
-        mixR[i] = (int16_t)newR;
-        mixL[i] = (int16_t)newL;
+        mix_pcm_sample(sample, envR, envL, mixL, mixR, i);
 
         fw += freq;
         uint32_t advance = fw >> 23;
         if (advance)
         {
             fw &= 0x7FFFFF;
-            count -= (int32_t)advance;
-            if (count <= 0)
+            if (!pcm_source_advance(&source, advance, fixed, &sampleStored, &stopped))
             {
-                if (ch->isLoop && ch->loopLen > 0)
-                {
-                    while (count <= 0)
-                        count += ch->loopLen;
-                    ptr = ch->loopStart + (ch->loopLen - count);
-                }
-                else
-                {
-                    ch->status = 0;
-                    break;
-                }
-            }
-            else
-            {
-                ptr += advance;
+                break;
             }
         }
     }
 
-    ch->currentPointer = ptr;
+    ch->currentPointer = source.endedWithPadding ? ch->wav->data : source.ptr + source.pointerBias;
+    ch->sampleStored = (int8_t)sampleStored;
     ch->fw = fw;
-    ch->count = count;
+    ch->count = source.endedWithPadding ? 0 : source.countBase + source.count;
+    if (stopped)
+        ch->status = 0;
 }
 
 /* SoundMainRAM — vanilla Sappy m4a per-vblank PCM mixer. */

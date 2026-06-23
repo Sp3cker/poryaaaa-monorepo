@@ -44,11 +44,10 @@ extern "C"
      * see plan §12.10b.  Don't make spectral / level / per-channel
      * comparisons against v1 or mGBA captures from this code yet.
      *
-     * Synth runs at the chip-internal "render rate" — set by HwAudio to
-     * `max(131072, 32768 << sampling_cycle)` per plan §7b (131072 Hz for
-     * SOUNDBIAS sampling_cycle 0/1/2; 262144 Hz for sampling_cycle 3),
-     * NOT at the actual host rate.  Step 9's polyphase resampler bridges
-     * from render rate to host rate and band-limits at host_rate/2.
+     * Synth runs at the chip-internal render rate — set by HwAudio to
+     * `max(131072, 32768 << sampling_cycle)`, NOT at the actual host
+     * rate.  Step 9's polyphase resampler bridges from render rate to
+     * host rate and band-limits at host_rate/2.
      *
      * Open gates that must close before parity claims are valid (plan §12
      * "blocking gates"):
@@ -112,11 +111,10 @@ extern "C"
          * are powered down, not just muted at the mix stage. */
         bool master_enabled;
 
-        /* Synth render rate.  Driven by HwAudio: this is the chip-
-         * internal rate `max(131072, 32768 << sampling_cycle)` — 131072 Hz
-         * for SOUNDBIAS sampling_cycle 0/1/2; 262144 Hz for sampling_cycle
-         * 3 — NOT the host rate.  The polyphase resampler downstream
-         * converts render-rate output to host rate. */
+        /* Synth render rate.  Driven by HwAudio: this is
+         * `max(131072, 32768 << sampling_cycle)`, NOT the host rate.
+         * The polyphase resampler downstream converts render-rate output
+         * to host rate. */
         float render_rate;
 
         /* Shared 512 Hz PSG frame sequencer.  Mirrors mGBA GBA-mode

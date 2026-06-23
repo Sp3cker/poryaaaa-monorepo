@@ -11,6 +11,8 @@
 typedef enum
 {
     VG_MACRO_DIRECTSOUND,
+    VG_MACRO_DIRECTSOUND_ALT,
+    VG_MACRO_DIRECTSOUND_NO_RESAMPLE,
     VG_MACRO_SQUARE_1,
     VG_MACRO_SQUARE_2,
     VG_MACRO_PROG_WAVE,
@@ -33,8 +35,8 @@ typedef struct
  * doesn't fire early.
  */
 static const VoicegroupMacro vg_voice_macros[] = {
-    {"voice_directsound_no_resample", VOICE_DIRECTSOUND_NO_RESAMPLE, VG_MACRO_DIRECTSOUND},
-    {"voice_directsound_alt", VOICE_DIRECTSOUND_ALT, VG_MACRO_DIRECTSOUND},
+    {"voice_directsound_no_resample", VOICE_DIRECTSOUND_NO_RESAMPLE, VG_MACRO_DIRECTSOUND_NO_RESAMPLE},
+    {"voice_directsound_alt", VOICE_DIRECTSOUND_ALT, VG_MACRO_DIRECTSOUND_ALT},
     {"voice_directsound", VOICE_DIRECTSOUND, VG_MACRO_DIRECTSOUND},
     {"voice_square_1_alt", VOICE_SQUARE_1_ALT, VG_MACRO_SQUARE_1},
     {"voice_square_1", VOICE_SQUARE_1, VG_MACRO_SQUARE_1},

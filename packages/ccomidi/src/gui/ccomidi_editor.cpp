@@ -8,6 +8,7 @@
 
 #include "imgui.h"
 
+#include "gui/drum_pad_grid.h"
 #include "gui/editor_shell.h"
 #include "plugin/param_ids.h"
 #include "typographic_scale.h"
@@ -41,11 +42,6 @@ constexpr std::uint32_t kDefaultHeight = 620;
 const float kBodyFontSize = text::Base;
 const float kSectionFontSize = text::Lg;
 const float kTitleFontSize = text::Xl;
-const float kPadLabelFontSize = text::Lg;
-const float kPadTextInsetX = text::Sm;
-const float kPadTextInsetY = text::Sm;
-const float kPadSampleInsetY = text::Lg + text::Sm;
-const float kPadKeyBandHeight = text::Lg + text::Sm;
 const float kPanelTabSpacing = text::Base;
 
 ImU32 output_channel_color(std::uint8_t outputChannel)
@@ -71,77 +67,26 @@ ImU32 output_channel_color(std::uint8_t outputChannel)
     return kChannelColors[std::clamp<int>(outputChannel, 0, kMaxSelectableOutputChannelIndex)];
 }
 
-std::string note_label(int note)
+void set_active_pad_note(EditorState* editor, Plugin* plugin, int nextNote)
 {
-    static const char* kNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "Bb", "B"};
-    note = std::clamp(note, 0, 127);
-    return std::string(kNames[note % 12]) + std::to_string(note / 12 - 2);
-}
-
-std::string pad_name_label(const std::string& name)
-{
-    static const std::string kPrefix = "DirectSoundWaveData_";
-    if (name.rfind(kPrefix, 0) == 0)
-        return name.substr(kPrefix.size());
-    return name;
-}
-
-ImU32 pad_name_color(const std::string& name)
-{
-    if (name.find("Kick") != std::string::npos)
-        return IM_COL32(0xFF, 0x5A, 0x8C, 0xFF);
-    if (name.find("Snare") != std::string::npos)
-        return IM_COL32(0x30, 0xD7, 0xFF, 0xFF);
-    if (name.find("Rim") != std::string::npos)
-        return IM_COL32(0xB7, 0xE2, 0x5D, 0xFF);
-    if (name.find("Ride") != std::string::npos)
-        return IM_COL32(0x33, 0xE6, 0xE0, 0xFF);
-    if (name.find("Perc") != std::string::npos)
-        return IM_COL32(0xFF, 0x8A, 0x5A, 0xFF);
-    return IM_COL32(0xD8, 0xBF, 0x7A, 0xFF);
-}
-
-float pixel_snap(float value)
-{
-    return std::floor(value);
-}
-
-ImVec2 pixel_snap(ImVec2 value)
-{
-    return ImVec2(pixel_snap(value.x), pixel_snap(value.y));
-}
-
-void add_pad_text(ImDrawList* drawList,
-                  ImFont* font,
-                  float fontSize,
-                  ImVec2 pos,
-                  ImU32 color,
-                  const std::string& text,
-                  float wrapWidth = 0.0f)
-{
-    drawList->AddText(font, fontSize, pixel_snap(pos), color, text.c_str(), nullptr, wrapWidth);
-}
-
-void queue_pad_note(Plugin* plugin, int note, bool on)
-{
-    if (!plugin || note < 0 || note > 127)
+    if (!plugin || editor->activePadNote == nextNote)
         return;
+    const auto queue = [plugin](int note, bool on)
     {
-        std::lock_guard<std::mutex> lock(plugin->stateMutex);
+        if (note < 0 || note > 127)
+            return;
         if (on)
             plugin->core.queue_note_on(static_cast<std::uint8_t>(note));
         else
             plugin->core.queue_note_off(static_cast<std::uint8_t>(note));
+    };
+    {
+        std::lock_guard<std::mutex> lock(plugin->stateMutex);
+        queue(editor->activePadNote, false);
+        queue(nextNote, true);
     }
+    editor->activePadNote = nextNote >= 0 ? nextNote : -1;
     request_host_param_sync(plugin);
-}
-
-void release_active_pad_note(EditorState* editor, Plugin* plugin)
-{
-    if (editor->activePadNote < 0)
-        return;
-    queue_pad_note(plugin, editor->activePadNote, false);
-    editor->activePadNote = -1;
 }
 
 void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
@@ -157,70 +102,6 @@ void draw_panel_tab(EditorState* editor, EditorPanel panel, const char* label)
         editor->activePanel = panel;
     if (selected)
         ImGui::PopStyleColor(3);
-}
-
-void draw_drumset_panel(
-    EditorState* editor, Plugin* plugin, const VoiceSlot& voice, ImFont* padLabelFont, ImFont* keyLabelFont)
-{
-    const int columns = 8;
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float gap = style.ItemSpacing.x;
-    const float availableWidth = ImGui::GetContentRegionAvail().x;
-    const float padWidth = std::max(1.0f, (availableWidth - gap * static_cast<float>(columns - 1)) / columns);
-    const ImVec2 padSize(padWidth, text::Lg + text::Xl * 2.0f + kPadSampleInsetY);
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    int hoveredNote = -1;
-    for (std::size_t i = 0; i < voice.drumset.size(); ++i)
-    {
-        if (i > 0 && i % columns != 0)
-            ImGui::SameLine();
-        const DrumPad& pad = voice.drumset[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::Button("##pad", padSize);
-        const ImVec2 min = ImGui::GetItemRectMin();
-        const ImVec2 max = ImGui::GetItemRectMax();
-        const bool active = editor->activePadNote == pad.note;
-        const bool hovered = ImGui::IsMouseHoveringRect(min, max);
-        if (hovered)
-            hoveredNote = pad.note;
-        const int pitchClass = pad.note % 12;
-        const bool accidental =
-            pitchClass == 1 || pitchClass == 3 || pitchClass == 6 || pitchClass == 8 || pitchClass == 10;
-        const ImU32 bg = active    ? (accidental ? IM_COL32(0x52, 0x52, 0x52, 0xFF) : IM_COL32(0x70, 0x70, 0x70, 0xFF))
-                         : hovered ? (accidental ? IM_COL32(0x32, 0x32, 0x32, 0xFF) : IM_COL32(0x4A, 0x4A, 0x4A, 0xFF))
-                         : accidental ? IM_COL32(0x22, 0x22, 0x22, 0xFF)
-                                      : IM_COL32(0x3A, 0x3A, 0x3A, 0xFF);
-        drawList->AddRectFilled(min, max, bg, 6.0f);
-        const std::string keyLabel = note_label(pad.note);
-        const std::string sampleLabel = pad_name_label(pad.name);
-        const ImVec2 sampleMax(max.x, max.y - kPadKeyBandHeight);
-        const ImVec2 keyMin(min.x, sampleMax.y);
-        drawList->AddRectFilled(keyMin, max, IM_COL32(0x00, 0x00, 0x00, 0x28));
-        drawList->AddLine(keyMin, sampleMax, IM_COL32(0xFF, 0xFF, 0xFF, 0x18));
-        drawList->PushClipRect(min, sampleMax, true);
-        add_pad_text(drawList,
-                     padLabelFont,
-                     text::Xl,
-                     ImVec2(min.x + kPadTextInsetX, min.y + kPadTextInsetY),
-                     pad_name_color(pad.name),
-                     sampleLabel,
-                     std::max(1.0f, padSize.x - kPadTextInsetX * 2.0f));
-        drawList->PopClipRect();
-        const ImVec2 keyPos(min.x + kPadTextInsetX, max.y - kPadLabelFontSize - kPadTextInsetY);
-        drawList->PushClipRect(min, max, true);
-        add_pad_text(drawList, keyLabelFont, kPadLabelFontSize, keyPos, IM_COL32(0xF1, 0xF1, 0xF1, 0xFF), keyLabel);
-        drawList->PopClipRect();
-        ImGui::PopID();
-    }
-    const int nextPadNote = ImGui::IsMouseDown(ImGuiMouseButton_Left) ? hoveredNote : -1;
-    if (editor->activePadNote == nextPadNote)
-        return;
-    release_active_pad_note(editor, plugin);
-    if (nextPadNote >= 0)
-    {
-        queue_pad_note(plugin, nextPadNote, true);
-        editor->activePadNote = nextPadNote;
-    }
 }
 
 int field_count_for_type(CommandType type)
@@ -479,11 +360,12 @@ void draw_frame(void* userData, std::uint32_t width, std::uint32_t height)
 
     if (editor->activePanel == EditorPanel::Drumset && currentVoice)
     {
-        draw_drumset_panel(editor, plugin, *currentVoice, padLabelFont, boldFont);
+        set_active_pad_note(
+            editor, plugin, draw_drum_pad_grid(*currentVoice, editor->activePadNote, padLabelFont, boldFont));
         ImGui::End();
         return;
     }
-    release_active_pad_note(editor, plugin);
+    set_active_pad_note(editor, plugin, -1);
 
     if (boldFont)
         ImGui::PushFont(boldFont, kSectionFontSize);

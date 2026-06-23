@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Floor for the chip-internal render rate.  SOUNDBIAS sampling_cycle
- * 0/1/2 all pin to this floor (the resampler is always downsampling
- * to host); sampling_cycle = 3 bumps internal_rate to 262144 Hz per
- * plan §7b's `max(131072, quirk_rate)` rule.  See chip_internal_rate(). */
+/* Floor for the chip-internal render rate.  The FIFO drain cadence
+ * still follows SOUNDBIAS exactly, but the PSG/mix/resampler pipeline
+ * stays at or above this rate so normal 44.1/48 kHz hosts remain in
+ * the downsampling path. */
 #define HW_AUDIO_INTERNAL_RATE_FLOOR 131072
 
 /* Inner chunk size for the internal-rate render loop.  Each segment of
@@ -71,21 +71,18 @@ struct HwAudio
      *     tests landed at §12.10a but match-against-reference is open */
 };
 
-/* SOUNDBIAS-derived quirk rate (the chip's actual DAC cadence).
+/* SOUNDBIAS-derived quirk rate.
  * 32768 / 65536 / 131072 / 262144 Hz for sampling_cycle 0 / 1 / 2 / 3.
- * Used by HwFifoDrain to bridge pcm_rate → internal mix rate; also
- * the floor argument to chip_internal_rate(). */
+ * Used by HwFifoDrain to sample the PCM FIFO head. */
 static int chip_quirk_rate(uint8_t sampling_cycle)
 {
     return 32768 << (sampling_cycle & 0x3);
 }
 
-/* Per plan §7b, the chip-internal render rate is
- *   internal_rate = max(131072, quirk_rate)
- * sampling_cycle = 0/1/2 → quirk 32k/65k/131k → internal pinned at
- * the floor 131072 Hz.  sampling_cycle = 3 → quirk 262144 → internal
- * bumps to 262144 Hz so the chip never has to downsample its own
- * synth output before the resampler hits host. */
+/* PSG/PCM/mix render rate.  Keep the synthesis/resampler pipeline at
+ * 131072 Hz for sampling_cycle 0/1/2; sampling_cycle 3 raises it to
+ * 262144 Hz.  The lower SOUNDBIAS cadences are still represented by
+ * chip_quirk_rate() in the PCM FIFO drain. */
 static int chip_internal_rate(uint8_t sampling_cycle)
 {
     int q = chip_quirk_rate(sampling_cycle);
@@ -343,11 +340,8 @@ void hw_audio_render_events(
         hw->total_inputs_pushed = 0;
         hw->total_outputs_target = 0;
     }
-    /* quirk_rate tracks sampling_cycle independently of internal_rate
-     * (sampling_cycle 0/1/2 all map to the same internal_rate floor of
-     * 131072 but produce DIFFERENT quirk rates 32k/65k/131k that drive
-     * HwFifoDrain's S&H cadence).  Always push the current quirk rate
-     * — cheap if unchanged. */
+    /* The FIFO drain cadence tracks SOUNDBIAS independently of the
+     * render-rate floor.  Always push it here — cheap if unchanged. */
     hw_pcm_set_quirk_rate(&hw->pcm, desired_quirk_rate);
 
     /* PCM publish-gate fallback for canned-mode callers.

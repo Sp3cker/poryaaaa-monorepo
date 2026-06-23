@@ -545,6 +545,8 @@ static int consume_voice_line(char* trimmed, int* voiceIndex, int* voicesInSecti
     switch (macro->kind)
     {
     case VG_MACRO_DIRECTSOUND:
+    case VG_MACRO_DIRECTSOUND_ALT:
+    case VG_MACRO_DIRECTSOUND_NO_RESAMPLE:
         ok = handle_directsound(td, macro->typeCode, args, ctx);
         break;
     case VG_MACRO_SQUARE_1:
