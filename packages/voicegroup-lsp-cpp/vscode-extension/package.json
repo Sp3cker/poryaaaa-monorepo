@@ -1,0 +1,63 @@
+{
+  "name": "voicegroup-lsp-vscode",
+  "displayName": "Voicegroup LSP",
+  "description": "Language support for Pokemon GBA sound/voicegroups .inc files.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:voicegroup-inc"
+  ],
+  "main": "./out/extension.js",
+  "files": [
+    "README.md",
+    "language-configuration.json",
+    "out/**/*",
+    "server/**/*"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "voicegroup-inc",
+        "aliases": [
+          "Voicegroup INC"
+        ],
+        "filenamePatterns": [
+          "**/sound/voicegroups/**/*.inc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Voicegroup LSP",
+      "properties": {
+        "voicegroupLSP.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the voicegroup-lsp executable. Empty uses the bundled server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:server": "node scripts/prepare-server.js",
+    "compile": "tsc -p ./",
+    "package": "npm run build:server && npm run compile && vsce package --target darwin-arm64 --out voicegroup-lsp-vscode-darwin-arm64.vsix",
+    "test:server": "npm run build:server && node scripts/test-server.js",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.4.0"
+  }
+}
