@@ -33,14 +33,7 @@ void project_asset_index_set_override(ProjectAssetIndex* idx,
                                       int voiceIndex,
                                       ProjectAssetKind kind,
                                       const char* fileName);
-void project_asset_index_clear_override(ProjectAssetIndex* idx, int voiceIndex);
 void project_asset_index_clear_all_overrides(ProjectAssetIndex* idx);
-
-/*
- * Find an asset entry by kind and fileName. Returns NULL if not found.
- */
-const ProjectAssetEntry*
-project_asset_index_find(const ProjectAssetIndex* idx, ProjectAssetKind kind, const char* fileName);
 
 /*
  * Apply all active overrides to a loaded voicegroup.

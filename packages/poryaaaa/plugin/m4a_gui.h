@@ -110,13 +110,6 @@ extern "C"
     bool m4a_gui_poll_changes(M4AGuiState* gui, M4AGuiSettings* out, bool* reload_voicegroup);
 
     /*
-     * Poll for a channel voicegroup extract request. Returns true once after the
-     * user clicks Extract.
-     */
-    bool m4a_gui_poll_extract_request(M4AGuiState* gui);
-    void m4a_gui_set_extract_status(M4AGuiState* gui, const char* status);
-
-    /*
      * Provide the GUI with direct pointers to voice data for the voice editor tab.
      * Pass NULL for all pointers to clear (e.g. when voicegroup is unloaded).
      */

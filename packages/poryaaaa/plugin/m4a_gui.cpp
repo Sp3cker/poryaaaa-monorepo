@@ -158,8 +158,6 @@ struct M4AGuiState
     /* Pending change flags (cleared by poll_changes) */
     bool settingsChanged;
     bool reloadRequested;
-    bool extractRequested;
-    char extractStatus[256];
     double midiActivityUntil[16];
 
     /* True after the user closes the floating window */
@@ -386,9 +384,8 @@ static void render_general_tab(M4AGuiState* gui)
     ImGui::SameLine();
     {
         float reloadW = 80.0f;
-        float extractW = 80.0f;
         float spacing = ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reloadW - extractW - spacing * 2.0f);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reloadW - spacing);
     }
     ImGui::InputText("##vg", gui->voicegroupBuf, sizeof(gui->voicegroupBuf));
     ImGui::SameLine();
@@ -399,11 +396,6 @@ static void render_general_tab(M4AGuiState* gui)
         gui->settingsChanged = true;
         gui->reloadRequested = true;
     }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!gui->settings.voicegroupLoaded);
-    if (ImGui::Button("Extract", ImVec2(80, 0)))
-        gui->extractRequested = true;
-    ImGui::EndDisabled();
 
     /* Voicegroup load status */
     ImGui::AlignTextToFramePadding();
@@ -415,12 +407,6 @@ static void render_general_tab(M4AGuiState* gui)
         ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "%s", gui->settings.voicegroupError);
     else
         ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "Voicegroup not loaded");
-    if (gui->extractStatus[0])
-    {
-        ImGui::Text("Extract:     ");
-        ImGui::SameLine();
-        ImGui::TextUnformatted(gui->extractStatus);
-    }
 
     ImGui::Spacing();
 
@@ -1041,21 +1027,6 @@ extern "C"
         gui->settingsChanged = false;
         gui->reloadRequested = false;
         return true;
-    }
-
-    bool m4a_gui_poll_extract_request(M4AGuiState* gui)
-    {
-        if (!gui || !gui->extractRequested)
-            return false;
-        gui->extractRequested = false;
-        return true;
-    }
-
-    void m4a_gui_set_extract_status(M4AGuiState* gui, const char* status)
-    {
-        if (!gui)
-            return;
-        snprintf(gui->extractStatus, sizeof(gui->extractStatus), "%s", status ? status : "");
     }
 
     bool m4a_gui_was_closed(M4AGuiState* gui)

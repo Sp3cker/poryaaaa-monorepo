@@ -57,19 +57,12 @@ void project_asset_index_set_override(ProjectAssetIndex* idx,
     idx->overrides[voiceIndex].fileName[sizeof(idx->overrides[voiceIndex].fileName) - 1] = '\0';
 }
 
-void project_asset_index_clear_override(ProjectAssetIndex* idx, int voiceIndex)
-{
-    if (voiceIndex < 0 || voiceIndex >= VOICEGROUP_SIZE)
-        return;
-    memset(&idx->overrides[voiceIndex], 0, sizeof(idx->overrides[voiceIndex]));
-}
-
 void project_asset_index_clear_all_overrides(ProjectAssetIndex* idx)
 {
     memset(idx->overrides, 0, sizeof(idx->overrides));
 }
 
-const ProjectAssetEntry*
+static const ProjectAssetEntry*
 project_asset_index_find(const ProjectAssetIndex* idx, ProjectAssetKind kind, const char* fileName)
 {
     const ProjectAssetEntry* arr;

@@ -12,7 +12,6 @@ add_library(voicegroup_loader STATIC
     vg_source.c
     vg_wav.c
     vg_parser.c
-    voicegroup_channel_export.c
     voicegroup_project_state.c
 )
 if(COMMAND poryaaaa_enable_project_warnings)
