@@ -2,3 +2,4 @@ packages/poryaaaa/tools/captures/mgba-headless-channel-mute/mgba
 build/*
 .cache/*
 packages/poryaaaa/compile_commands.json
+packages/voicegroup-lsp/
