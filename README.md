@@ -1,5 +1,5 @@
 # poryaaaa-monorepo
-
+# This is not the *real* poryaaaa repo, use hurdelem/poryaaaa
 Monorepo for the first-party poryaaaa projects.
 
 ## Setup
