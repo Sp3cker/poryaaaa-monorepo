@@ -89,6 +89,12 @@ if(APPLE)
     set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
         "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/${PORYAAAA_VOICEGROUP_CORE_RUST_TARGET}/release/libvoicegroup_core.a")
 endif()
+if(EXISTS "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+    add_library(voicegroup_core_static STATIC IMPORTED GLOBAL)
+    set_target_properties(voicegroup_core_static PROPERTIES
+        IMPORTED_LOCATION "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+endif()
+
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -202,6 +208,7 @@ target_include_directories(poryaaaa PRIVATE
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
     ${PUGL_DIR}/src
+    "${PORYAAAA_VOICEGROUP_CORE_DIR}/include"
 )
 target_include_directories(poryaaaa SYSTEM PRIVATE
     ${PORYAAAA_FILEBROWSER_DIR}
@@ -227,6 +234,10 @@ set_target_properties(poryaaaa PROPERTIES
 )
 
 target_link_libraries(poryaaaa PRIVATE clap voicegroup_loader recorder)
+if(TARGET voicegroup_core_static)
+    target_link_libraries(poryaaaa PRIVATE voicegroup_core_static)
+endif()
+
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa PRIVATE m X11 Xcursor Xrandr Xext)
@@ -341,10 +352,7 @@ endif()
 
 # ---- Unit Tests ----
 set(PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES)
-if(EXISTS "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
-    add_library(voicegroup_core_static STATIC IMPORTED GLOBAL)
-    set_target_properties(voicegroup_core_static PROPERTIES
-        IMPORTED_LOCATION "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+if(TARGET voicegroup_core_static)
     set(PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES test/test_voicegroup_core_parity.c)
 endif()
 

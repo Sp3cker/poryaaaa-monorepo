@@ -34,6 +34,9 @@ enum VoiceGroupSource {
         relative_path: String,
         label: String,
     },
+    File {
+        relative_path: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +57,7 @@ impl ProjectIndex {
         };
 
         index.discover_monolithic_voicegroups()?;
+        index.discover_included_voicegroup_files("sound/voice_groups.inc")?;
         index.index_standard_symbol_files()?;
         index.index_keysplit_tables()?;
 
@@ -80,12 +84,12 @@ impl ProjectIndex {
             )
     }
 
-    pub fn direct_sound_assets(&self) -> Vec<ResolvedAsset> {
-        self.direct_sound_assets.values().cloned().collect()
+    pub fn direct_sound_assets(&self) -> impl Iterator<Item = &ResolvedAsset> {
+        self.direct_sound_assets.values()
     }
 
-    pub fn programmable_wave_assets(&self) -> Vec<ResolvedAsset> {
-        self.programmable_wave_assets.values().cloned().collect()
+    pub fn programmable_wave_assets(&self) -> impl Iterator<Item = &ResolvedAsset> {
+        self.programmable_wave_assets.values()
     }
 
     pub fn keysplit_table(&self, symbol: &str) -> Option<&[u8; 128]> {
@@ -174,6 +178,48 @@ impl ProjectIndex {
         Ok(())
     }
 
+    fn discover_included_voicegroup_files(
+        &mut self,
+        include_table_relative_path: &str,
+    ) -> io::Result<()> {
+        let path = self.root.join(include_table_relative_path);
+        if !path.is_file() {
+            return Ok(());
+        }
+
+        let text = fs::read_to_string(path)?;
+        for line in text.lines() {
+            let stripped = strip_comment(line).trim();
+            let Some(relative_path) = include_path(stripped) else {
+                continue;
+            };
+            if !is_voicegroup_include_path(&relative_path) {
+                continue;
+            }
+            self.discover_voicegroup_file(&relative_path)?;
+        }
+
+        Ok(())
+    }
+
+    fn discover_voicegroup_file(&mut self, relative_path: &str) -> io::Result<()> {
+        let path = self.root.join(relative_path);
+        if !path.is_file() {
+            return Ok(());
+        }
+
+        let text = fs::read_to_string(path)?;
+        for voice_group in parse_document(&text).voice_groups {
+            self.voice_groups
+                .entry(voice_group.name.text)
+                .or_insert_with(|| VoiceGroupSource::File {
+                    relative_path: relative_path.to_string(),
+                });
+        }
+
+        Ok(())
+    }
+
     fn index_standard_symbol_files(&mut self) -> io::Result<()> {
         self.index_symbol_file("sound/direct_sound_data.inc", AssetKind::DirectSound)?;
         self.index_symbol_file(
@@ -251,6 +297,10 @@ impl ProjectIndex {
                             "combined voicegroup section is no longer present",
                         )
                     })
+            }
+            VoiceGroupSource::File { relative_path } => {
+                let text = fs::read_to_string(self.root.join(relative_path))?;
+                Ok((relative_path.clone(), text))
             }
         }
     }
@@ -340,6 +390,25 @@ fn incbin_path(line: &str) -> Option<String> {
     let start = trimmed.find('"')? + 1;
     let end = trimmed[start..].find('"')? + start;
     Some(trimmed[start..end].to_string())
+}
+
+fn include_path(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with(".include") {
+        return None;
+    }
+    let start = trimmed.find('"')? + 1;
+    let end = trimmed[start..].find('"')? + start;
+    Some(trimmed[start..end].to_string())
+}
+
+fn is_voicegroup_include_path(path: &str) -> bool {
+    path.starts_with("sound/voicegroups/")
+        && path.ends_with(".inc")
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn parse_keysplit_tables(text: &str) -> BTreeMap<String, [u8; 128]> {

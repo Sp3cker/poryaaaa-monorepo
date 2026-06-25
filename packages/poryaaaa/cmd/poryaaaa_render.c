@@ -1223,7 +1223,13 @@ int main(int argc, char* argv[])
     LoadedVoiceGroup* vg = voicegroup_load(projectRoot, vgName);
     if (!vg)
     {
-        fprintf(stderr, "Failed to load voicegroup '%s'\n", vgName);
+        const char* err = voicegroup_loader_last_error();
+        if (err && err[0] && strncmp(err, "Bad project root:", strlen("Bad project root:")) == 0)
+            fprintf(stderr, "%s\n", err);
+        else if (err && err[0])
+            fprintf(stderr, "%s. Failed to load voicegroup '%s'\n", err, vgName);
+        else
+            fprintf(stderr, "Failed to load voicegroup '%s'\n", vgName);
         free(extEvts);
         free(events->events);
         free(events);

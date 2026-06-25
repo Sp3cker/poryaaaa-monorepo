@@ -206,6 +206,10 @@ typedef struct VoicegroupCoreKeysplitProgram {
   uint8_t table[128];
 } VoicegroupCoreKeysplitProgram;
 
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
 /**
  * Loads a project index and writes an opaque handle to `out_index`.
  *
@@ -427,5 +431,9 @@ bool voicegroup_core_bank_result_program_noise(const struct VoicegroupCoreBankRe
 bool voicegroup_core_bank_result_program_keysplit(const struct VoicegroupCoreBankResult *result,
                                                   size_t slot,
                                                   struct VoicegroupCoreKeysplitProgram *out_program);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  /* VOICEGROUP_CORE_H */

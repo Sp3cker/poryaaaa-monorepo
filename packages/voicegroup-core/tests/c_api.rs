@@ -157,6 +157,75 @@ split 2, 128
 }
 
 #[test]
+fn c_api_exposes_cry_and_keysplit_all_metadata() {
+    let root = temp_project("metadata");
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "\
+DirectSoundWaveData_Cry::
+\t.incbin \"sound/direct_sound_samples/cry.bin\"
+",
+    );
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+main::
+\tvoice_keysplit_all voicegroup_drums
+\tcry_reverse DirectSoundWaveData_Cry
+
+drums::
+\tvoice_noise 60, 0, 0, 1, 2, 8, 3
+",
+    );
+
+    let root_c = CString::new(root.to_string_lossy().as_bytes()).expect("root CString");
+    let mut index = std::ptr::null_mut();
+
+    unsafe {
+        assert_eq!(
+            voicegroup_core_project_index_load(root_c.as_ptr(), &mut index),
+            VoicegroupCoreStatus::Ok
+        );
+        assert!(!index.is_null());
+
+        let bank_name = CString::new("main").expect("bank name CString");
+        let mut result = std::ptr::null_mut();
+        assert_eq!(
+            voicegroup_core_project_index_load_program_bank(index, bank_name.as_ptr(), &mut result),
+            VoicegroupCoreStatus::Ok
+        );
+        assert!(!result.is_null());
+        assert!(voicegroup_core_bank_result_has_bank(result));
+        assert_eq!(voicegroup_core_bank_result_diagnostic_count(result), 0);
+
+        assert_eq!(
+            voicegroup_core_bank_result_program_kind(result, 0),
+            VoicegroupCoreProgramKind::KeysplitAll
+        );
+        let sub_voicegroup = copied_string(|buffer, len| {
+            voicegroup_core_bank_result_program_sub_voicegroup(result, 0, buffer, len)
+        });
+        assert_eq!(sub_voicegroup, "drums");
+
+        assert_eq!(
+            voicegroup_core_bank_result_program_kind(result, 1),
+            VoicegroupCoreProgramKind::Cry
+        );
+        let relative_path = copied_string(|buffer, len| {
+            voicegroup_core_bank_result_program_relative_path(result, 1, buffer, len)
+        });
+        assert_eq!(relative_path, "sound/direct_sound_samples/cry.bin");
+
+        voicegroup_core_bank_result_free(result);
+        voicegroup_core_project_index_free(index);
+    }
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
 fn c_api_clears_output_handles_on_argument_failures() {
     let mut index = std::ptr::dangling_mut();
 

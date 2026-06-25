@@ -84,7 +84,6 @@ voicegroup_strings::
     assert_eq!(
         index
             .direct_sound_assets()
-            .iter()
             .map(|asset| (asset.symbol.as_str(), asset.relative_path.as_str()))
             .collect::<Vec<_>>(),
         [
@@ -101,7 +100,6 @@ voicegroup_strings::
     assert_eq!(
         index
             .programmable_wave_assets()
-            .iter()
             .map(|asset| (asset.symbol.as_str(), asset.relative_path.as_str()))
             .collect::<Vec<_>>(),
         [(
@@ -167,6 +165,72 @@ voice_group route104
     assert_eq!(
         diagnostic_codes(&result.diagnostics),
         ["missing-voicegroup"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn loads_per_file_voicegroups_referenced_by_project_include_table() {
+    let root = temp_project("included-voicegroups");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+.include \"sound/voicegroups/petalburg.inc\"
+.include \"sound/voicegroups/drumsets/petalburg.inc\"
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/petalburg.inc",
+        "\
+voice_group petalburg
+\tvoice_keysplit_all voicegroup_petalburg_drumset
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/drumsets/petalburg.inc",
+        "\
+voice_group petalburg_drumset, 36
+\tvoice_square_2 60, 0, 2, 1, 2, 8, 3
+",
+    );
+
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let result = index.load_program_bank("petalburg");
+    let bank = result.bank.expect("included bank should load");
+    assert_eq!(result.diagnostics, []);
+    assert_eq!(bank.name, "petalburg");
+    assert_eq!(bank.source_relative_path, "sound/voicegroups/petalburg.inc");
+    assert_eq!(
+        bank.programs[0].as_ref().expect("slot 0").data,
+        ProgramData::KeysplitAll(voicegroup_core::program_bank::KeysplitAllProgram {
+            sub_voicegroup: "petalburg_drumset".to_string(),
+        })
+    );
+
+    let drumset = index.load_program_bank("petalburg_drumset");
+    let drumset_bank = drumset.bank.expect("included drumset should load");
+    assert_eq!(drumset.diagnostics, []);
+    assert_eq!(
+        drumset_bank.source_relative_path,
+        "sound/voicegroups/drumsets/petalburg.inc"
+    );
+    assert!(drumset_bank.programs[35].is_none());
+    assert_eq!(
+        drumset_bank.programs[36].as_ref().expect("slot 36").data,
+        ProgramData::Square2(voicegroup_core::program_bank::Square2Program {
+            key: 60,
+            pan: 0,
+            duty: 2,
+            attack: 1,
+            decay: 2,
+            sustain: 8,
+            release: 3,
+        })
     );
 
     fs::remove_dir_all(root).expect("remove temp project");

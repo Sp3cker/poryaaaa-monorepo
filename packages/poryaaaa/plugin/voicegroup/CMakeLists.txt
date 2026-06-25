@@ -21,4 +21,10 @@ endif()
 # PUBLIC so consumers pick up the "voicegroup/xxx.h" prefix we use
 # throughout the project.
 target_include_directories(voicegroup_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_include_directories(voicegroup_loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../shared)
+target_include_directories(voicegroup_loader PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../shared
+    "${PORYAAAA_VOICEGROUP_CORE_DIR}/include"
+)
+if(TARGET voicegroup_core_static)
+    target_link_libraries(voicegroup_loader PUBLIC voicegroup_core_static)
+endif()

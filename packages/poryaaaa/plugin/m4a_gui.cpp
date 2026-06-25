@@ -76,6 +76,10 @@ static void display_project_root_browser(ImGui::FileBrowser& browser)
         browser.Close();
     }
 }
+static bool is_project_root_error(const char* error)
+{
+    return error && strncmp(error, "Bad project root:", strlen("Bad project root:")) == 0;
+}
 
 static bool project_root_button(const char* label, const ImVec2& size)
 {
@@ -375,6 +379,17 @@ static void render_general_tab(M4AGuiState* gui)
         gui->projectRootBrowser.ClearSelected();
     }
 
+    const bool projectRootError = is_project_root_error(gui->settings.voicegroupError);
+    if (projectRootError)
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Root Error:  ");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.35f, 0.35f, 1.0f));
+        ImGui::TextWrapped("%s", gui->settings.voicegroupError);
+        ImGui::PopStyleColor();
+    }
+
     ImGui::AlignTextToFramePadding();
     if (gui->boldFont)
         ImGui::PushFont(gui->boldFont, 0.0f);
@@ -403,8 +418,14 @@ static void render_general_tab(M4AGuiState* gui)
     ImGui::SameLine();
     if (gui->settings.voicegroupLoaded)
         ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Voicegroup loaded");
-    else if (gui->settings.voicegroupError[0])
-        ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "%s", gui->settings.voicegroupError);
+    else if (gui->settings.voicegroupError[0] && !projectRootError)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.35f, 0.35f, 1.0f));
+        ImGui::TextWrapped("%s", gui->settings.voicegroupError);
+        ImGui::PopStyleColor();
+    }
+    else if (projectRootError)
+        ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "Fix project root above");
     else
         ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.0f), "Voicegroup not loaded");
 
