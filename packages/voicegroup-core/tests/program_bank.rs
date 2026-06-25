@@ -3,7 +3,8 @@
 use voicegroup_core::catalog::VoiceType;
 use voicegroup_core::parser::parse_document;
 use voicegroup_core::program_bank::{
-    build_program_bank, ProgramBankContext, ProgramData, ResolvedAsset, PROGRAM_BANK_SIZE,
+    build_program_bank, ProgramBankContext, ProgramData, ResolvedAsset,
+    VOICEGROUP_CORE_PROGRAM_BANK_SIZE,
 };
 
 fn diagnostic_codes(
@@ -57,7 +58,7 @@ voice_group route104
     assert_eq!(result.diagnostics, []);
     assert_eq!(bank.name, "route104");
     assert_eq!(bank.source_relative_path, "sound/voicegroups/route104.inc");
-    assert_eq!(bank.programs.len(), PROGRAM_BANK_SIZE);
+    assert_eq!(bank.programs.len(), VOICEGROUP_CORE_PROGRAM_BANK_SIZE);
 
     let directsound = bank.programs[0].as_ref().expect("slot 0");
     assert_eq!(directsound.macro_name, "voice_directsound");
@@ -144,7 +145,7 @@ voice_group route104
     assert_eq!(
         bank.programs[5].as_ref().expect("slot 5").data,
         ProgramData::Keysplit(voicegroup_core::program_bank::KeysplitProgram {
-            child_bank: "voicegroup_strings".to_string(),
+            sub_voicegroup: "voicegroup_strings".to_string(),
             table_symbol: "keysplit_strings".to_string(),
             table: [42; 128],
         })
@@ -156,7 +157,7 @@ voice_group route104
     assert_eq!(
         bank.programs[6].as_ref().expect("slot 6").data,
         ProgramData::KeysplitAll(voicegroup_core::program_bank::KeysplitAllProgram {
-            child_bank: "voicegroup_drums".to_string(),
+            sub_voicegroup: "voicegroup_drums".to_string(),
         })
     );
     assert_eq!(

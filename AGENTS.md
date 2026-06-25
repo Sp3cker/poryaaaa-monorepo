@@ -25,6 +25,7 @@ Instructions for coding agents working in this monorepo.
     ```c++
     bool isDrumset = name.find("Square") != std::string::npos;
     ```
+- Functions should have a simple comment explaining their worth.
 ## Purpose
 
 This repository contains the first-party poryaaaa projects:

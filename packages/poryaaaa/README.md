@@ -11,7 +11,7 @@ These are the available poryaaaa tools:
 - **`poryaaaa.clap`**: a CLAP instrument plugin. Insert it on a MIDI track in your DAW and hear the GBA-accurate audio in real time as you compose.
 - **`poryaaaa_render(.exe)`**: a command-line renderer. Feed it a MIDI file and a voicegroup name; it outputs a WAV file and/or plays audio through your speakers. Supports looping with configurable repeat count and fadeout.
 
-All tools auto-discover the project structure and work with [pokeemerald](https://github.com/pret/pokeemerald), [pokefirered](https://github.com/pret/pokefirered), and forked projects (including those with custom sound data directories).
+All tools read project voicegroups from `sound/voice_groups.inc` and sample symbols from the standard sound data files.
 
 ## Usage
 
@@ -147,8 +147,6 @@ Notes:
 | `reverb` | `0` | Reverb amount (0–127) |
 | `master_volume` | `15` | M4A master volume (0–15) |
 | `song_master_volume` | `127` | Song-level volume multiplier (0–127) |
-| `sound_data_paths` | *(auto)* | Extra `.inc` files for sample symbols (semicolon-separated, relative to project root) |
-| `voicegroup_paths` | *(auto)* | Extra voicegroup search directories or files |
 | `log` | *(off)* | Diagnostic log file path |
 
 #### GUI
@@ -269,13 +267,13 @@ The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelo
 
 The loader auto-discovers and parses project assembly source files at runtime:
 
-1. **Project discovery**: scans the `sound/` directory tree to locate symbol definition files, voicegroup directories, monolithic voicegroup files, and `.wav` sample directories. Works with pokeemerald's individual-file layout (`sound/voicegroups/<name>.inc`) and pokefirered's monolithic layout (`sound/voice_groups.inc` with labeled sections).
+1. **Project discovery**: reads `sound/voice_groups.inc` for labeled voicegroup sections and standard sound symbol files.
 2. **Symbol maps**: parses `direct_sound_data.inc` and `programmable_wave_data.inc` to build symbol-to-file mappings for PCM and programmable wave samples.
 3. **Keysplit tables**: parses `keysplit_tables.inc`, supporting both pokeemerald's macro format (`keysplit name, startNote`) and pokefirered's raw format (`.set`/`.byte` directives).
 4. **Voice definitions**: parses voice macros (`directsound`, `square`, `noise`, `keysplit`, etc.) from the discovered voicegroup file.
 5. **Sample loading**: loads `.wav` samples with a deduplication cache. When a sample symbol isn't found in the symbol map, the loader falls back to searching discovered `.wav` directories.
 
-Keysplit and drumset sub-voicegroups are resolved recursively across all discovered voicegroup directories. Additional search paths can be configured for projects with non-standard layouts.
+Keysplit and drumset sub-voicegroups are resolved recursively from labels in `sound/voice_groups.inc`.
 
 ## GBA source reference
 

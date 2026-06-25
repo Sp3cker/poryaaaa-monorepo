@@ -27,7 +27,7 @@ void project_asset_index_destroy(ProjectAssetIndex* idx);
 /*
  * Rebuild the asset catalog from a project. Frees any previous catalog data.
  */
-bool project_asset_index_rebuild(ProjectAssetIndex* idx, const char* projectRoot, const VoicegroupLoaderConfig* config);
+bool project_asset_index_rebuild(ProjectAssetIndex* idx, const char* projectRoot);
 
 void project_asset_index_set_override(ProjectAssetIndex* idx,
                                       int voiceIndex,

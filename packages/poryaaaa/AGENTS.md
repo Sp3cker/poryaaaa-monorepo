@@ -123,9 +123,7 @@ Do not break these:
 
 ### Voicegroup Loader
 
-- `plugin/voicegroup_loader.c` must continue supporting both:
-  - pokeemerald-style per-file layouts
-  - pokefirered-style monolithic `voice_groups.inc`
+- `plugin/voicegroup_loader.c` must treat `sound/voice_groups.inc` as the project voicegroup source of truth.
 - Asset-loading work needs both code-path preservation and graceful behavior when expected files are absent.
 
 ### Plugin State And Config

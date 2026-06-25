@@ -39,9 +39,27 @@ build target:
         cd packages/poryaaaa-m4l
         npm run build
         ;;
+      vg-core|voicegroup-core)
+        rust_target=""
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+          case "$(uname -m)" in
+            arm64) rust_target="aarch64-apple-darwin" ;;
+            x86_64) rust_target="x86_64-apple-darwin" ;;
+          esac
+        fi
+        command -v cbindgen >/dev/null
+        mkdir -p packages/voicegroup-core/include
+        cd packages/voicegroup-core
+        if [[ -n "$rust_target" ]]; then
+          cargo build --release --target "$rust_target"
+        else
+          cargo build --release
+        fi
+        cbindgen --quiet --config cbindgen.toml --crate voicegroup-core --output include/voicegroup_core.h .
+        ;;
       *)
         echo "unknown build target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, voicegroup-bridge, swift-dylib, textedit, m4l" >&2
+        echo "known targets: poryaaaa, ccomidi, voicegroup-bridge, swift-dylib, textedit, m4l, vg-core" >&2
         exit 2
         ;;
     esac
@@ -86,6 +104,7 @@ test target:
     set -euo pipefail
     case "{{target}}" in
       poryaaaa)
+        just build vg-core
         cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/poryaaaa/build --config Release --target poryaaaa_unit_tests
         packages/poryaaaa/build/poryaaaa_unit_tests

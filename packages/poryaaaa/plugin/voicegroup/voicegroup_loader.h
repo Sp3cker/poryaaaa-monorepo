@@ -10,19 +10,6 @@
 #define VG_MAX_VOICE_SAMPLE_NAME 128
 
 /*
- * Optional configuration for the voicegroup loader.
- * All paths are relative to the project root directory.
- * Zero-initialized config means "auto-discover everything".
- */
-typedef struct
-{
-    char soundDataPaths[8][VG_MAX_PATH_LEN]; /* extra .inc files with sample symbol definitions */
-    int soundDataPathCount;
-    char voicegroupPaths[8][VG_MAX_PATH_LEN]; /* extra voicegroup directories or files */
-    int voicegroupPathCount;
-} VoicegroupLoaderConfig;
-
-/*
  * Loaded voicegroup data - holds all allocated resources.
  * Must be freed with voicegroup_free() when done.
  */
@@ -64,17 +51,14 @@ typedef struct
  *
  * projectRoot: path to the project root directory
  * voicegroupName: name of the voicegroup (e.g. "petalburg", "voicegroup000")
- * config: optional loader configuration (NULL for pure auto-discovery)
  *
- * The loader auto-discovers project structure (pokeemerald, pokefirered,
- * and forks with custom sound directories). Config overrides can
- * specify additional search paths.
+ * The loader reads voicegroups from sound/voice_groups.inc and samples from
+ * standard project sound data files.
  *
  * Returns a LoadedVoiceGroup on success, or NULL on failure.
  * The caller must free the result with voicegroup_free().
  */
-LoadedVoiceGroup*
-voicegroup_load(const char* projectRoot, const char* voicegroupName, const VoicegroupLoaderConfig* config);
+LoadedVoiceGroup* voicegroup_load(const char* projectRoot, const char* voicegroupName);
 
 /*
  * Free all resources associated with a loaded voicegroup.
@@ -118,9 +102,7 @@ typedef struct
  * Populates out->directsound and out->progWave with malloc'd arrays.
  * Returns true on success. Caller must free with voicegroup_loader_free_project_assets().
  */
-bool voicegroup_loader_collect_project_assets(const char* projectRoot,
-                                              const VoicegroupLoaderConfig* config,
-                                              VoicegroupProjectAssets* out);
+bool voicegroup_loader_collect_project_assets(const char* projectRoot, VoicegroupProjectAssets* out);
 
 void voicegroup_loader_free_project_assets(VoicegroupProjectAssets* assets);
 

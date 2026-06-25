@@ -230,7 +230,7 @@ static void run_loaded_voicegroup_cycles(const char* project_root, const char* v
 {
     for (int i = 0; i < loops; i++)
     {
-        LoadedVoiceGroup* vg = voicegroup_load(project_root, voicegroup_name, NULL);
+        LoadedVoiceGroup* vg = voicegroup_load(project_root, voicegroup_name);
         CHECK(vg != NULL, "voicegroup_load succeeds");
         if (!vg)
         {

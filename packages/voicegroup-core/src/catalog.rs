@@ -70,10 +70,6 @@ pub struct MacroDefinition {
 const MIDI_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const PAN_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const BYTE_RANGE: NumericRange = NumericRange { min: 0, max: 255 };
-const DUTY_RANGE: NumericRange = NumericRange { min: 0, max: 3 };
-const ENVELOPE_NIBBLE_RANGE: NumericRange = NumericRange { min: 0, max: 7 };
-const SUSTAIN_RANGE: NumericRange = NumericRange { min: 0, max: 15 };
-const NOISE_PERIOD_RANGE: NumericRange = NumericRange { min: 0, max: 1 };
 
 const DIRECT_SOUND_ARGUMENTS: &[MacroArgument] = &[
     integer_argument("base_midi_key", MIDI_RANGE),
@@ -94,21 +90,21 @@ const SQUARE_1_ARGUMENTS: &[MacroArgument] = &[
     integer_argument("base_midi_key", MIDI_RANGE),
     integer_argument("pan", PAN_RANGE),
     integer_argument("sweep", BYTE_RANGE),
-    integer_argument("duty_cycle", DUTY_RANGE),
-    integer_argument("attack", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("decay", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("sustain", SUSTAIN_RANGE),
-    integer_argument("release", ENVELOPE_NIBBLE_RANGE),
+    integer_argument("duty_cycle", BYTE_RANGE),
+    integer_argument("attack", BYTE_RANGE),
+    integer_argument("decay", BYTE_RANGE),
+    integer_argument("sustain", BYTE_RANGE),
+    integer_argument("release", BYTE_RANGE),
 ];
 
 const SQUARE_2_ARGUMENTS: &[MacroArgument] = &[
     integer_argument("base_midi_key", MIDI_RANGE),
     integer_argument("pan", PAN_RANGE),
-    integer_argument("duty_cycle", DUTY_RANGE),
-    integer_argument("attack", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("decay", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("sustain", SUSTAIN_RANGE),
-    integer_argument("release", ENVELOPE_NIBBLE_RANGE),
+    integer_argument("duty_cycle", BYTE_RANGE),
+    integer_argument("attack", BYTE_RANGE),
+    integer_argument("decay", BYTE_RANGE),
+    integer_argument("sustain", BYTE_RANGE),
+    integer_argument("release", BYTE_RANGE),
 ];
 
 const PROGRAMMABLE_WAVE_ARGUMENTS: &[MacroArgument] = &[
@@ -120,20 +116,20 @@ const PROGRAMMABLE_WAVE_ARGUMENTS: &[MacroArgument] = &[
             namespace: SymbolNamespace::ProgrammableWave,
         },
     },
-    integer_argument("attack", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("decay", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("sustain", SUSTAIN_RANGE),
-    integer_argument("release", ENVELOPE_NIBBLE_RANGE),
+    integer_argument("attack", BYTE_RANGE),
+    integer_argument("decay", BYTE_RANGE),
+    integer_argument("sustain", BYTE_RANGE),
+    integer_argument("release", BYTE_RANGE),
 ];
 
 const NOISE_ARGUMENTS: &[MacroArgument] = &[
     integer_argument("base_midi_key", MIDI_RANGE),
     integer_argument("pan", PAN_RANGE),
-    integer_argument("period", NOISE_PERIOD_RANGE),
-    integer_argument("attack", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("decay", ENVELOPE_NIBBLE_RANGE),
-    integer_argument("sustain", SUSTAIN_RANGE),
-    integer_argument("release", ENVELOPE_NIBBLE_RANGE),
+    integer_argument("period", BYTE_RANGE),
+    integer_argument("attack", BYTE_RANGE),
+    integer_argument("decay", BYTE_RANGE),
+    integer_argument("sustain", BYTE_RANGE),
+    integer_argument("release", BYTE_RANGE),
 ];
 
 const KEYSPLIT_ALL_ARGUMENTS: &[MacroArgument] = &[MacroArgument {

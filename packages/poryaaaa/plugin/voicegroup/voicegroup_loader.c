@@ -25,8 +25,7 @@
  * temporary state (maps, discovery) that all three steps share, and
  * to free it in the right order.
  */
-LoadedVoiceGroup*
-voicegroup_load(const char* projectRoot, const char* voicegroupName, const VoicegroupLoaderConfig* config)
+LoadedVoiceGroup* voicegroup_load(const char* projectRoot, const char* voicegroupName)
 {
     vg_clear_error();
     vg_log("voicegroup_load: start root='%s' vg='%s'", projectRoot, voicegroupName);
@@ -45,12 +44,11 @@ voicegroup_load(const char* projectRoot, const char* voicegroupName, const Voice
         return NULL;
     }
 
-    vg_discover_project(projectRoot, config, disc);
-    vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d vgDirs=%d monoFiles=%d",
+    vg_discover_project(projectRoot, disc);
+    vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d monoFiles=%d",
            disc->directSoundDataFiles.count,
            disc->progWaveDataFiles.count,
            disc->keySplitTableFiles.count,
-           disc->voicegroupDirs.count,
            disc->combinedVGFiles.count);
 
     SymbolMap dsMap, pwMap;
@@ -128,16 +126,14 @@ static bool build_asset_array(const SymbolMap* map, ProjectAssetKind kind, Proje
     return true;
 }
 
-bool voicegroup_loader_collect_project_assets(const char* projectRoot,
-                                              const VoicegroupLoaderConfig* config,
-                                              VoicegroupProjectAssets* out)
+bool voicegroup_loader_collect_project_assets(const char* projectRoot, VoicegroupProjectAssets* out)
 {
     memset(out, 0, sizeof(*out));
 
     ProjectDiscovery* disc = calloc(1, sizeof(ProjectDiscovery));
     if (!disc)
         return false;
-    vg_discover_project(projectRoot, config, disc);
+    vg_discover_project(projectRoot, disc);
 
     SymbolMap dsMap, pwMap;
     vg_symbol_map_init(&dsMap);

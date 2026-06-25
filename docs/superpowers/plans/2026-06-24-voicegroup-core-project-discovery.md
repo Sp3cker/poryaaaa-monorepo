@@ -87,10 +87,9 @@ Payloads hold typed numeric values plus resolved project-relative assets or keys
 
 ## Project Index
 
-`ProjectIndex::load(root, config)` is the only disk-touching core tier.
+`ProjectIndex::load(root)` is the only disk-touching core tier.
 
 It must:
-- Discover per-file `sound/voicegroups/<name>.inc`.
 - Discover monolithic `sound/voice_groups.inc`.
 - Discover DirectSound, programmable-wave, and keysplit source files.
 - Store all paths project-relative.
@@ -98,7 +97,6 @@ It must:
 - Expose directsound/prog-wave asset lists for poryaaaa asset APIs and NAPI.
 
 Tests:
-- Temporary fixture for per-file voicegroups.
 - Temporary fixture for monolithic voice groups.
 - DirectSound symbol -> relative sample path.
 - Programmable-wave symbol -> relative sample path.

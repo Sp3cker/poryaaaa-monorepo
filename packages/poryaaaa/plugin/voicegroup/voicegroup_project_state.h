@@ -32,10 +32,8 @@ extern "C"
         VoicegroupProjectStateSlot slots[VOICEGROUP_SIZE];
     } VoicegroupProjectState;
 
-    bool voicegroup_project_state_collect(const char* projectRoot,
-                                          const char* voicegroupName,
-                                          const VoicegroupLoaderConfig* config,
-                                          VoicegroupProjectState* out);
+    bool
+    voicegroup_project_state_collect(const char* projectRoot, const char* voicegroupName, VoicegroupProjectState* out);
 
     bool voicegroup_project_state_write(const char* projectRoot,
                                         const char* voicegroupName,

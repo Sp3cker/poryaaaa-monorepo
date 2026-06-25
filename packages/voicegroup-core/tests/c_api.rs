@@ -10,15 +10,15 @@ use voicegroup_core::c_api::{
     voicegroup_core_bank_result_diagnostic_code, voicegroup_core_bank_result_diagnostic_count,
     voicegroup_core_bank_result_diagnostic_range, voicegroup_core_bank_result_diagnostic_severity,
     voicegroup_core_bank_result_free, voicegroup_core_bank_result_has_bank,
-    voicegroup_core_bank_result_program_child_bank,
     voicegroup_core_bank_result_program_direct_sound, voicegroup_core_bank_result_program_keysplit,
     voicegroup_core_bank_result_program_keysplit_table_symbol,
     voicegroup_core_bank_result_program_kind, voicegroup_core_bank_result_program_relative_path,
+    voicegroup_core_bank_result_program_sub_voicegroup,
     voicegroup_core_bank_result_program_type_code, voicegroup_core_project_index_free,
     voicegroup_core_project_index_load, voicegroup_core_project_index_load_program_bank,
     VoicegroupCoreDiagnosticSeverity, VoicegroupCoreDirectSoundProgram,
-    VoicegroupCoreKeysplitProgram, VoicegroupCoreProgramKind, VoicegroupCoreProjectConfig,
-    VoicegroupCoreSourceRange, VoicegroupCoreStatus,
+    VoicegroupCoreKeysplitProgram, VoicegroupCoreProgramKind, VoicegroupCoreSourceRange,
+    VoicegroupCoreStatus,
 };
 
 fn temp_project(name: &str) -> PathBuf {
@@ -64,18 +64,13 @@ DirectSoundWaveData_Kick::
     );
     write_file(
         &root,
-        "sound/voicegroups/main.inc",
+        "sound/voice_groups.inc",
         "\
-voice_group main
+main::
 \tvoice_directsound 60, 7, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
-\tvoice_keysplit child_bank, keysplit_drums
-",
-    );
-    write_file(
-        &root,
-        "sound/voicegroups/child_bank.inc",
-        "\
-voice_group child_bank
+\tvoice_keysplit voicegroup_sub_voicegroup, keysplit_drums
+
+sub_voicegroup::
 \tvoice_noise 60, 0, 0, 1, 2, 8, 3
 ",
     );
@@ -91,11 +86,10 @@ split 2, 128
 
     let root_c = CString::new(root.to_string_lossy().as_bytes()).expect("root CString");
     let mut index = std::ptr::null_mut();
-    let config = VoicegroupCoreProjectConfig::default();
 
     unsafe {
         assert_eq!(
-            voicegroup_core_project_index_load(root_c.as_ptr(), &config, &mut index),
+            voicegroup_core_project_index_load(root_c.as_ptr(), &mut index),
             VoicegroupCoreStatus::Ok
         );
         assert!(!index.is_null());
@@ -146,10 +140,10 @@ split 2, 128
         ));
         assert_eq!(keysplit.table[0], 1);
         assert_eq!(keysplit.table[64], 2);
-        let child_bank = copied_string(|buffer, len| {
-            voicegroup_core_bank_result_program_child_bank(result, 1, buffer, len)
+        let sub_voicegroup = copied_string(|buffer, len| {
+            voicegroup_core_bank_result_program_sub_voicegroup(result, 1, buffer, len)
         });
-        assert_eq!(child_bank, "child_bank");
+        assert_eq!(sub_voicegroup, "sub_voicegroup");
         let table_symbol = copied_string(|buffer, len| {
             voicegroup_core_bank_result_program_keysplit_table_symbol(result, 1, buffer, len)
         });
@@ -168,7 +162,7 @@ fn c_api_clears_output_handles_on_argument_failures() {
 
     unsafe {
         assert_eq!(
-            voicegroup_core_project_index_load(std::ptr::null(), std::ptr::null(), &mut index),
+            voicegroup_core_project_index_load(std::ptr::null(), &mut index),
             VoicegroupCoreStatus::NullArgument
         );
         assert!(index.is_null());
@@ -180,11 +174,10 @@ fn c_api_reports_missing_bank_diagnostics_without_rust_types() {
     let root = temp_project("missing");
     let root_c = CString::new(root.to_string_lossy().as_bytes()).expect("root CString");
     let mut index = std::ptr::null_mut();
-    let config = VoicegroupCoreProjectConfig::default();
 
     unsafe {
         assert_eq!(
-            voicegroup_core_project_index_load(root_c.as_ptr(), &config, &mut index),
+            voicegroup_core_project_index_load(root_c.as_ptr(), &mut index),
             VoicegroupCoreStatus::Ok
         );
 

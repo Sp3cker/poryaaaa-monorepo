@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use crate::ast::{Diagnostic, DiagnosticSeverity, ParsedProgram, ParsedVoiceGroup, SourceRange};
 use crate::catalog::{find_macro, MacroDefinition, MacroKind, VoiceType};
 
-pub const PROGRAM_BANK_SIZE: usize = 128;
+pub const VOICEGROUP_CORE_PROGRAM_BANK_SIZE: usize = 128;
+const PROGRAM_BANK_SIZE: usize = VOICEGROUP_CORE_PROGRAM_BANK_SIZE;
 pub type ProgramBankDiagnostic = Diagnostic;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,14 +105,14 @@ pub struct NoiseProgram {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeysplitProgram {
-    pub child_bank: String,
+    pub sub_voicegroup: String,
     pub table_symbol: String,
     pub table: [u8; 128],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeysplitAllProgram {
-    pub child_bank: String,
+    pub sub_voicegroup: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +133,7 @@ pub struct ProgramBankContext {
     direct_sound_assets: BTreeMap<String, ResolvedAsset>,
     programmable_wave_assets: BTreeMap<String, ResolvedAsset>,
     keysplit_tables: BTreeMap<String, [u8; 128]>,
+    voice_groups: BTreeMap<String, ()>,
 }
 
 impl ProgramBankContext {
@@ -149,6 +151,19 @@ impl ProgramBankContext {
     pub fn with_keysplit_table(mut self, symbol: impl Into<String>, table: [u8; 128]) -> Self {
         self.keysplit_tables.insert(symbol.into(), table);
         self
+    }
+
+    pub fn with_voice_group(mut self, symbol: impl Into<String>) -> Self {
+        self.voice_groups.insert(symbol.into(), ());
+        self
+    }
+
+    fn resolve_sub_voicegroup(&self, symbol: &str) -> String {
+        symbol
+            .strip_prefix("voicegroup_")
+            .filter(|stripped| self.voice_groups.contains_key(*stripped))
+            .unwrap_or(symbol)
+            .to_string()
     }
 }
 
@@ -259,10 +274,10 @@ fn build_program_data(
                 pan: args.pan,
                 wave_symbol: wave_asset.symbol.clone(),
                 wave_relative_path: wave_asset.relative_path.clone(),
-                attack: args.attack,
-                decay: args.decay,
-                sustain: args.sustain,
-                release: args.release,
+                attack: args.attack & 0x07,
+                decay: args.decay & 0x07,
+                sustain: args.sustain & 0x0f,
+                release: args.release & 0x07,
             }))
         }
         MacroKind::Square1 => Square1Args::from_program(program).map(|args| {
@@ -270,33 +285,33 @@ fn build_program_data(
                 key: args.key,
                 pan: args.pan,
                 sweep: args.sweep,
-                duty: args.duty,
-                attack: args.attack,
-                decay: args.decay,
-                sustain: args.sustain,
-                release: args.release,
+                duty: args.duty & 0x03,
+                attack: args.attack & 0x07,
+                decay: args.decay & 0x07,
+                sustain: args.sustain & 0x0f,
+                release: args.release & 0x07,
             })
         }),
         MacroKind::Square2 => Square2Args::from_program(program).map(|args| {
             ProgramData::Square2(Square2Program {
                 key: args.key,
                 pan: args.pan,
-                duty: args.duty,
-                attack: args.attack,
-                decay: args.decay,
-                sustain: args.sustain,
-                release: args.release,
+                duty: args.duty & 0x03,
+                attack: args.attack & 0x07,
+                decay: args.decay & 0x07,
+                sustain: args.sustain & 0x0f,
+                release: args.release & 0x07,
             })
         }),
         MacroKind::Noise => NoiseArgs::from_program(program).map(|args| {
             ProgramData::Noise(NoiseProgram {
                 key: args.key,
                 pan: args.pan,
-                period: args.period,
-                attack: args.attack,
-                decay: args.decay,
-                sustain: args.sustain,
-                release: args.release,
+                period: args.period & 0x01,
+                attack: args.attack & 0x07,
+                decay: args.decay & 0x07,
+                sustain: args.sustain & 0x0f,
+                release: args.release & 0x07,
             })
         }),
         MacroKind::Keysplit => {
@@ -309,7 +324,7 @@ fn build_program_data(
                 ));
             };
             Ok(ProgramData::Keysplit(KeysplitProgram {
-                child_bank: args.child_bank.to_string(),
+                sub_voicegroup: context.resolve_sub_voicegroup(args.sub_voicegroup),
                 table_symbol: args.table_symbol.to_string(),
                 table: *table,
             }))
@@ -317,7 +332,7 @@ fn build_program_data(
         MacroKind::KeysplitAll => {
             let args = KeysplitAllArgs::from_program(program)?;
             Ok(ProgramData::KeysplitAll(KeysplitAllProgram {
-                child_bank: args.child_bank.to_string(),
+                sub_voicegroup: context.resolve_sub_voicegroup(args.sub_voicegroup),
             }))
         }
         MacroKind::Cry => {
@@ -359,11 +374,11 @@ fn display_name(
         ProgramData::Keysplit(data) => program
             .trailing_comment
             .clone()
-            .unwrap_or_else(|| data.child_bank.clone()),
+            .unwrap_or_else(|| data.sub_voicegroup.clone()),
         ProgramData::KeysplitAll(data) => program
             .trailing_comment
             .clone()
-            .unwrap_or_else(|| data.child_bank.clone()),
+            .unwrap_or_else(|| data.sub_voicegroup.clone()),
         ProgramData::Cry(data) => data
             .asset_display_name(&context.direct_sound_assets)
             .unwrap_or_else(|| path_basename(&data.sample_relative_path)),
@@ -521,27 +536,27 @@ impl NoiseArgs {
 }
 
 struct KeysplitArgs<'a> {
-    child_bank: &'a str,
+    sub_voicegroup: &'a str,
     table_symbol: &'a str,
 }
 
 impl<'a> KeysplitArgs<'a> {
     fn from_program(program: &'a ParsedProgram) -> Result<Self, ProgramBankDiagnostic> {
         Ok(Self {
-            child_bank: argument_text(program, 0)?,
+            sub_voicegroup: argument_text(program, 0)?,
             table_symbol: argument_text(program, 1)?,
         })
     }
 }
 
 struct KeysplitAllArgs<'a> {
-    child_bank: &'a str,
+    sub_voicegroup: &'a str,
 }
 
 impl<'a> KeysplitAllArgs<'a> {
     fn from_program(program: &'a ParsedProgram) -> Result<Self, ProgramBankDiagnostic> {
         Ok(Self {
-            child_bank: argument_text(program, 0)?,
+            sub_voicegroup: argument_text(program, 0)?,
         })
     }
 }

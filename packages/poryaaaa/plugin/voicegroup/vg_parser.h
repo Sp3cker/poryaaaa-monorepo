@@ -1,7 +1,7 @@
 #ifndef VG_PARSER_H
 #define VG_PARSER_H
 
-#include "voicegroup_loader.h" /* LoadedVoiceGroup, VoicegroupLoaderConfig */
+#include "voicegroup_loader.h" /* LoadedVoiceGroup */
 #include "vg_discovery.h"
 #include "vg_keysplit.h"
 #include "vg_symbols.h"
