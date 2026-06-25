@@ -1,3 +1,5 @@
+//! Pure structural analyzer for parsed voicegroup documents and project-provided symbols.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{

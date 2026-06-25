@@ -1,0 +1,263 @@
+//! ProjectIndex tests for project discovery, symbol indexing, and selected-bank loading.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use voicegroup_core::analyzer::analyze_document;
+use voicegroup_core::catalog::VoiceType;
+use voicegroup_core::parser::parse_document;
+use voicegroup_core::program_bank::ProgramData;
+use voicegroup_core::project_index::{ProjectConfig, ProjectIndex};
+
+fn temp_project(name: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("voicegroup-core-{name}-{nonce}"));
+    fs::create_dir_all(&root).expect("create temp project");
+    root
+}
+
+fn write_file(root: &Path, relative_path: &str, contents: &str) {
+    let path = root.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent directories");
+    }
+    fs::write(path, contents).expect("write fixture file");
+}
+
+fn diagnostic_codes(diagnostics: &[voicegroup_core::parser::Diagnostic]) -> Vec<&str> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect()
+}
+
+#[test]
+fn indexes_standard_project_and_loads_per_file_program_bank() {
+    let root = temp_project("standard");
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "\
+DirectSoundWaveData_Kick::
+\t.incbin \"sound/direct_sound_samples/kick.bin\"
+DirectSoundWaveData_Cry::
+\t@ comment between label and incbin must not drop the pending symbol
+\t.incbin \"sound/direct_sound_samples/cry.bin\"
+",
+    );
+    write_file(
+        &root,
+        "sound/programmable_wave_data.inc",
+        "\
+ProgrammableWaveData_Pulse::
+\t.incbin \"sound/programmable_wave_samples/pulse.pcm\"
+",
+    );
+    write_file(
+        &root,
+        "sound/keysplit_tables.inc",
+        "\
+keysplit strings, 0
+split 1, 64
+split 2, 128
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/route104.inc",
+        "\
+voice_group route104
+\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
+\tvoice_programmable_wave 61, 0, ProgrammableWaveData_Pulse, 1, 2, 8, 3
+\tvoice_keysplit voicegroup_strings, keysplit_strings
+\tcry DirectSoundWaveData_Cry
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/voicegroup_strings.inc",
+        "\
+voice_group voicegroup_strings
+\tvoice_noise 60, 0, 0, 1, 2, 8, 3
+",
+    );
+
+    let index = ProjectIndex::load(&root, ProjectConfig::default()).expect("load project index");
+
+    assert_eq!(
+        index
+            .direct_sound_assets()
+            .iter()
+            .map(|asset| (asset.symbol.as_str(), asset.relative_path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "DirectSoundWaveData_Cry",
+                "sound/direct_sound_samples/cry.bin"
+            ),
+            (
+                "DirectSoundWaveData_Kick",
+                "sound/direct_sound_samples/kick.bin"
+            ),
+        ]
+    );
+    assert_eq!(
+        index
+            .programmable_wave_assets()
+            .iter()
+            .map(|asset| (asset.symbol.as_str(), asset.relative_path.as_str()))
+            .collect::<Vec<_>>(),
+        [(
+            "ProgrammableWaveData_Pulse",
+            "sound/programmable_wave_samples/pulse.pcm"
+        )]
+    );
+    assert_eq!(
+        index.keysplit_table("keysplit_strings").expect("keysplit")[0],
+        1
+    );
+    assert_eq!(
+        index.keysplit_table("keysplit_strings").expect("keysplit")[63],
+        1
+    );
+    assert_eq!(
+        index.keysplit_table("keysplit_strings").expect("keysplit")[64],
+        2
+    );
+
+    let document =
+        parse_document(&fs::read_to_string(root.join("sound/voicegroups/route104.inc")).unwrap());
+    assert_eq!(
+        analyze_document(&document, &index.analysis_context()),
+        [],
+        "project index should provide every contextual symbol this bank uses"
+    );
+
+    let result = index.load_program_bank("route104");
+    let bank = result.bank.expect("bank should load");
+
+    assert_eq!(result.diagnostics, []);
+    assert_eq!(bank.name, "route104");
+    assert_eq!(bank.source_relative_path, "sound/voicegroups/route104.inc");
+    assert_eq!(
+        bank.programs[0].as_ref().expect("slot 0").type_code,
+        VoiceType::DirectSound
+    );
+    assert_eq!(
+        bank.programs[1].as_ref().expect("slot 1").display_name,
+        "pulse.pcm"
+    );
+    assert_eq!(
+        bank.programs[2].as_ref().expect("slot 2").data,
+        ProgramData::Keysplit(voicegroup_core::program_bank::KeysplitProgram {
+            child_bank: "voicegroup_strings".to_string(),
+            table_symbol: "keysplit_strings".to_string(),
+            table: *index.keysplit_table("keysplit_strings").expect("keysplit"),
+        })
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn loads_selected_bank_from_monolithic_voice_groups_file() {
+    let root = temp_project("monolithic");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+\t.align 2
+NotAVoiceGroup::
+\t.byte 1, 2, 3
+
+\t.align 2
+voicegroup000::
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+
+\t.align 2
+voicegroup001::
+\tvoice_noise 61, 0, 1, 1, 2, 8, 3
+",
+    );
+
+    let index = ProjectIndex::load(&root, ProjectConfig::default()).expect("load project index");
+    let result = index.load_program_bank("voicegroup001");
+    let bank = result.bank.expect("monolithic bank should load");
+
+    assert_eq!(result.diagnostics, []);
+    assert_eq!(bank.name, "voicegroup001");
+    assert_eq!(bank.source_relative_path, "sound/voice_groups.inc");
+    assert_eq!(
+        bank.programs[0].as_ref().expect("slot 0").data,
+        ProgramData::Noise(voicegroup_core::program_bank::NoiseProgram {
+            key: 61,
+            pan: 0,
+            period: 1,
+            attack: 1,
+            decay: 2,
+            sustain: 8,
+            release: 3,
+        })
+    );
+
+    let data_label = index.load_program_bank("NotAVoiceGroup");
+    assert!(data_label.bank.is_none());
+    assert_eq!(
+        diagnostic_codes(&data_label.diagnostics),
+        ["missing-voicegroup"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn selected_bank_loading_deduplicates_analyzer_and_builder_diagnostics() {
+    let root = temp_project("diagnostics");
+    write_file(
+        &root,
+        "sound/voicegroups/broken.inc",
+        "\
+voice_group broken
+\tvoice_directsound 60, 0, DirectSoundWaveData_Missing, 255, 0, 255, 242
+",
+    );
+
+    let index = ProjectIndex::load(&root, ProjectConfig::default()).expect("load project index");
+    let result = index.load_program_bank("broken");
+
+    assert!(result.bank.is_some());
+    assert_eq!(
+        diagnostic_codes(&result.diagnostics),
+        ["unknown-directsound-symbol"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn reports_missing_selected_bank_without_fabricating_programs() {
+    let root = temp_project("missing");
+    write_file(
+        &root,
+        "sound/voicegroups/existing.inc",
+        "\
+voice_group existing
+\tvoice_square_2 60, 0, 2, 1, 2, 8, 3
+",
+    );
+
+    let index = ProjectIndex::load(&root, ProjectConfig::default()).expect("load project index");
+    let result = index.load_program_bank("missing");
+
+    assert!(result.bank.is_none());
+    assert_eq!(
+        diagnostic_codes(&result.diagnostics),
+        ["missing-voicegroup"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}

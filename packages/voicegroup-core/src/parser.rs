@@ -1,3 +1,5 @@
+//! Pest-backed parser that turns voicegroup source text into source-ranged parsed documents.
+
 use pest::iterators::Pair;
 use pest::Parser as PestParser;
 use pest_derive::Parser;

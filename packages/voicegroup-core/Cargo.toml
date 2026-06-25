@@ -1,7 +1,11 @@
+# Rust crate manifest for the voicegroup-core parser, macro catalog, and analyzer.
 [package]
 name = "voicegroup-core"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 pest = "2.8.6"

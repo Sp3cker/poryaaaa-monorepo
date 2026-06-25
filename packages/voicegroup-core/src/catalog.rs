@@ -1,3 +1,5 @@
+//! Canonical voice macro catalog: names, type codes, macro families, and argument schemas.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
     DirectSound,

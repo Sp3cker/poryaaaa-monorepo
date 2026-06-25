@@ -1,3 +1,5 @@
+//! Analyzer and catalog contract tests for macro schemas, diagnostics, and symbol context.
+
 use voicegroup_core::analyzer::{analyze_document, AnalysisContext};
 use voicegroup_core::catalog::{
     all_macros, find_macro, ArgumentSchema, MacroKind, NumericRange, SymbolNamespace, VoiceType,

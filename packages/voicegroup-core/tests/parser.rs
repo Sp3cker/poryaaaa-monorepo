@@ -1,3 +1,5 @@
+//! Parser contract tests for normal voicegroups, symbol labels, diagnostics, and source ranges.
+
 use voicegroup_core::parser::{parse_document, DiagnosticSeverity, ParsedDocument, SourceRange};
 
 fn range_text<'a>(source: &'a str, range: &SourceRange) -> &'a str {

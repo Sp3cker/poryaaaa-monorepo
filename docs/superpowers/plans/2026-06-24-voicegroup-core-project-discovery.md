@@ -1,258 +1,192 @@
-# Voicegroup Core Project Discovery Implementation Plan
+# Voicegroup Core Rust Rewrite Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans. Keep steps task-by-task, test-first, and package-local.
 
-**Goal:** Move voicegroup source reading, discovery, tokenization, argument parsing, source indexing, and symbol validation out of `packages/poryaaaa` and into `packages/voicegroup-core`, while keeping poryaaaa responsible for runtime `ToneData`/`WaveData` materialization.
+**Goal:** Make `packages/voicegroup-core` the Rust source of truth for voicegroup syntax, macro definitions, project indexing, structural analysis, and checked loadable bank records.
 
-**Architecture:** `voicegroup-core` becomes the project-aware C++ voicegroup package: it takes a project root and requested bank name, discovers relevant source files, reads them, indexes symbols, parses/analyzes the selected bank, and returns ordered slot records with project-relative asset paths. `poryaaaa` keeps its C public loader API but replaces its internal voicegroup parser/discovery/indexing code with a thin C++ materialization bridge that turns core records into `LoadedVoiceGroup`.
+**Architecture:** Core owns parsing, indexing, analysis, and loadable records. Poryaaaa consumes loadable records through a C-shaped adapter and still owns `ToneData`, `WaveData`, sample decoding, allocation, lifetime, recursion materialization, plugin state, and audio behavior. NAPI consumes the same core records for JS snapshots and diagnostics, not audio materialization.
 
-**Tech Stack:** C++20 for `packages/voicegroup-core` and the poryaaaa bridge, C public ABI for `voicegroup_loader.h`, existing poryaaaa C runtime types, CMake, poryaaaa unit tests.
+**Tech Stack:** Rust 2021, pest, Cargo tests, Rust FFI/C adapter for poryaaaa, N-API adapter for JS snapshots.
 
 ---
 
-## Scope Decision
+## Current State
 
-This plan supersedes the earlier direction in `docs/superpowers/plans/2026-06-23-voice-macro-grammar-source.md` where poryaaaa's C macro catalog stayed the source of truth. The source of truth now lives in `packages/voicegroup-core`.
+Done:
+- Rust crate scaffold, `.gitignore`, `Cargo.toml`, `Cargo.lock`.
+- Pest parser over in-memory text.
+- Source-preserving parsed model with ranges and diagnostics.
+- Normal `voice_group` sections split from assembly `label::` symbols.
+- Macro catalog with typed argument schemas and poryaaaa type codes.
+- Pure analyzer with typed symbol namespaces and parser-diagnostic preservation.
+- Poryaaaa-facing `ProgramBank` model with typed program payloads and build diagnostics.
+- `ProjectIndex` with standard project discovery, symbol indexing, keysplit indexing, and selected-bank loading.
+- C-shaped adapter with opaque index/result handles, diagnostic ranges/severity, slot kinds, type codes, relative paths, child-bank/table symbols, and typed payload accessors.
+- Parser/analyzer fixture tests.
+- Removed stale previous `voicegroup-core` files.
+- Thermo review cleanup: removed unused NAPI dependencies until the adapter exists, made C accessors borrow bank records, and removed fabricated combined-bank fallback source.
+- Verified: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo check`.
 
-`packages/poryaaaa` will no longer store package-local code for:
+Not done:
+- NAPI adapter for JS snapshots.
+- Poryaaaa loader migration.
 
-- voicegroup file reading
-- voicegroup section/bank discovery
-- voice macro tokenization
-- voice macro argument parsing
-- DirectSound, programmable-wave, and keysplit source indexing
-- voicegroup symbol validation
+## Core Model
 
-`packages/poryaaaa` will still store package-local code for:
+Keep parser output separate from checked records:
 
-- `ToneData` and `LoadedVoiceGroup` ownership
-- `WaveData` decoding/loading
-- DirectSound `.bin` declaration to runtime `.wav` loading behavior
-- cry `.bin` loading behavior
-- programmable-wave runtime loading
-- keysplit table allocation/copying
-- sub-voicegroup runtime materialization
-- CLAP/plugin UI state and sample-swap overrides
-
-## File Structure
-
-Create `packages/voicegroup-core` as the reusable C++ package:
-
-- Create: `packages/voicegroup-core/CMakeLists.txt`
-- Create: `packages/voicegroup-core/include/voicegroup_core/diagnostic.hpp`
-- Create: `packages/voicegroup-core/include/voicegroup_core/macro_catalog.hpp`
-- Create: `packages/voicegroup-core/include/voicegroup_core/project_index.hpp`
-- Create: `packages/voicegroup-core/include/voicegroup_core/voicegroup_document.hpp`
-- Create: `packages/voicegroup-core/src/macro_catalog.cpp`
-- Create: `packages/voicegroup-core/src/project_index.cpp`
-- Create: `packages/voicegroup-core/src/voicegroup_parser.cpp`
-- Create: `packages/voicegroup-core/test/voicegroup_core_tests.cpp`
-
-Keep poryaaaa's public C API, but replace internals with a C++ bridge:
-
-- Modify: `packages/poryaaaa/CMakeLists.txt`
-- Modify: `packages/poryaaaa/plugin/voicegroup/CMakeLists.txt`
-- Modify: `packages/poryaaaa/plugin/voicegroup/voicegroup_loader.h`
-- Replace: `packages/poryaaaa/plugin/voicegroup/voicegroup_loader.c` with `packages/poryaaaa/plugin/voicegroup/voicegroup_loader.cpp`
-- Replace: `packages/poryaaaa/plugin/voicegroup/vg_parser.c` and `vg_parser.h` with `packages/poryaaaa/plugin/voicegroup/vg_materialize.cpp` and `vg_materialize.hpp`
-- Modify: `packages/poryaaaa/plugin/voicegroup/project_asset_index.c`
-- Modify: `packages/poryaaaa/plugin/voicegroup/voicegroup_project_state.c`
-- Modify: `packages/poryaaaa/test/test_voicegroup_loader.c`
-
-Delete poryaaaa source/discovery/parser modules after replacement tests pass:
-
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_discovery.c`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_discovery.h`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_source.c`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_source.h`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_symbols.c`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_symbols.h`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_voice_macro.h`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_keysplit.c`
-- Delete: `packages/poryaaaa/plugin/voicegroup/vg_keysplit.h`
-
-Keep poryaaaa runtime helpers:
-
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_wav.c`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_wav.h`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_paths.c`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_paths.h`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_log.c`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_log.h`
-- Keep: `packages/poryaaaa/plugin/voicegroup/vg_alloc.h`
-
-## Core API Shape
-
-`voicegroup-core` should expose a small C++ API like this:
-
-```cpp
-namespace voicegroup {
-
-enum class MacroKind {
-    DirectSound,
-    DirectSoundAlt,
-    DirectSoundNoResample,
-    Square1,
-    Square2,
-    ProgrammableWave,
-    Noise,
-    Keysplit,
-    KeysplitAll,
-    Cry,
-};
-
-enum class ArgumentKind {
-    Integer,
-    DirectSoundSymbol,
-    ProgrammableWaveSymbol,
-    VoicegroupSymbol,
-    KeysplitSymbol,
-};
-
-struct MacroDefinition {
-    std::string_view name;
-    std::uint8_t typeCode;
-    MacroKind kind;
-    std::span<const ArgumentKind> arguments;
-};
-
-struct ResolvedAsset {
-    std::string symbol;
-    std::string relativePath;
-};
-
-struct ParsedProgram {
-    int slot = 0;
-    const MacroDefinition* macro = nullptr;
-    std::vector<std::string> rawArguments;
-    std::optional<ResolvedAsset> directSound;
-    std::optional<ResolvedAsset> programmableWave;
-    std::optional<std::string> voicegroupSymbol;
-    std::optional<std::vector<std::uint8_t>> keysplitTable;
-    std::optional<std::string> trailingComment;
-    SourceRange range;
-};
-
-struct LoadedBank {
-    std::string name;
-    std::string sourceRelativePath;
-    std::array<std::optional<ParsedProgram>, 128> programs;
-    std::vector<Diagnostic> diagnostics;
-};
-
-// Result of pure tokenization of in-memory document text. No disk, no index.
-// The resolution-only fields on ParsedProgram (directSound, programmableWave,
-// keysplitTable) stay empty here; only loadBank() fills them against the index.
-struct ParsedDocument {
-    std::vector<ParsedProgram> programs;
-    std::vector<Diagnostic> diagnostics;   // syntax-level only
-};
-
-struct ProjectConfig {
-    std::vector<std::string> extraSoundDataPaths;
-    std::vector<std::string> extraVoicegroupPaths;
-};
-
-class ProjectIndex {
-public:
-    static ProjectIndex load(std::filesystem::path projectRoot, ProjectConfig config = {});
-    LoadedBank loadBank(std::string_view bankName) const;
-    std::vector<ResolvedAsset> directSoundAssets() const;
-    std::vector<ResolvedAsset> programmableWaveAssets() const;
-};
-
-// --- Pure analysis entry points (the LSP's live-diagnostics path) ---------
-// Both are referentially transparent: same inputs -> same output, no I/O, no
-// shared state. Safe to call on the editor's unsaved buffer every keystroke.
-ParsedDocument          parseDocument(std::string_view text);
-std::vector<Diagnostic> analyze(const ParsedDocument& document, const ProjectIndex& index);
-
-// loadBank() is built on these: read file -> parseDocument -> analyze ->
-// resolve assets. The loader uses loadBank(); the LSP calls analyze(
-// parseDocument(buffer), index) directly so its parser/analyzer collapse into core.
-
-} // namespace voicegroup
+```text
+parse_document(text) -> ParsedDocument
+analyze_document(parsed, &ProjectIndex::analysis_context()) -> Vec<Diagnostic>
+ProjectIndex::load_program_bank(name) -> ProgramBankLoadResult
 ```
 
-The exact container choices can change during implementation, but the boundary cannot: core returns ordered bank records plus relative paths and diagnostics; poryaaaa does not parse voicegroup source files. Two consumption paths exist on purpose — the loader's `loadBank()` (disk in, materialization records out) and the LSP's pure `parseDocument()` + `analyze()` (caller-supplied text in, diagnostics out). `loadBank()` is implemented in terms of the pure pair, so there is one parser and one analyzer, not two.
+`ParsedDocument` is source-shaped: declarations, labels, raw arguments, comments, ranges, syntax diagnostics.
 
-## Tasks
+`ProgramBank` is consumer-shaped:
 
-### Task 1: Establish `voicegroup-core` Build And Macro Catalog
+```rust
+pub struct ProgramBank {
+    pub name: String,
+    pub source_relative_path: String,
+    pub programs: [Option<ProgramRecord>; 128],
+}
 
-- [ ] Create `packages/voicegroup-core/CMakeLists.txt` with a static library target named `voicegroup_core` and a test executable named `voicegroup_core_tests`.
-- [ ] Add `macro_catalog.hpp`/`.cpp` with the canonical voice macro table, including macro name, poryaaaa-compatible type code, macro kind, and argument schema.
-- [ ] Port the current macro list from `packages/poryaaaa/plugin/voicegroup/vg_voice_macro.h` and the richer argument schema from `packages/voicegroup-lsp/Sources/VoicegroupCore/MacroCatalog.swift`.
-- [ ] Add a `voicegroup_core_tests` case that checks the catalog contains `voice_directsound_no_resample`, `voice_directsound_alt`, `voice_directsound`, `voice_keysplit_all`, `voice_keysplit`, `cry_reverse`, and `cry`.
-- [ ] Run `cmake --build packages/poryaaaa/build --target voicegroup_core_tests` after the poryaaaa build includes the core subdirectory, or run the package-local core test target if implemented first.
+pub struct ProgramBankBuildResult {
+    pub bank: ProgramBank,
+    pub diagnostics: Vec<Diagnostic>,
+}
 
-### Task 2: Add Core Project Discovery And Source Reading
+pub struct ProgramBankLoadResult {
+    pub bank: Option<ProgramBank>,
+    pub diagnostics: Vec<Diagnostic>,
+}
 
-- [ ] Implement `ProjectIndex::load(projectRoot, config)` in `project_index.cpp`.
-- [ ] Move the behavior from poryaaaa's `vg_discovery.c` into core: discover direct-sound data files, programmable-wave data files, keysplit table files, voicegroup directories, and monolithic voicegroup files.
-- [ ] Preserve poryaaaa's two required layouts: pokeemerald per-file voicegroups and pokefirered monolithic `voice_groups.inc`.
-- [ ] Keep paths returned by core project-relative. Do not expose absolute paths in `ResolvedAsset`.
-- [ ] Add tests using temporary fixture directories for both per-file and monolithic layouts.
+pub struct ProgramRecord {
+    pub slot: usize,
+    pub macro_name: String,
+    pub type_code: VoiceType,
+    pub trailing_comment: Option<String>,
+    pub source_range: SourceRange,
+    pub data: ProgramData,
+}
 
-### Task 3: Add Core Symbol Indexing
+pub enum ProgramData {
+    DirectSound(DirectSoundProgram),
+    ProgrammableWave(ProgrammableWaveProgram),
+    Square1(Square1Program),
+    Square2(Square2Program),
+    Noise(NoiseProgram),
+    Keysplit(KeysplitProgram),
+    KeysplitAll(KeysplitAllProgram),
+    Cry(CryProgram),
+}
+```
 
-- [ ] Move DirectSound and programmable-wave source indexing from poryaaaa's `vg_symbols.c` into `ProjectIndex`.
-- [ ] Move keysplit table parsing from poryaaaa's `vg_keysplit.c` into `ProjectIndex`.
-- [ ] Store DirectSound and programmable-wave assets as `{symbol, relativePath}`.
-- [ ] Store keysplit tables as parsed 128-byte data associated with their source symbol.
-- [ ] Add tests that prove `ProjectIndex::directSoundAssets()` and `ProjectIndex::programmableWaveAssets()` return the same symbols and relative paths poryaaaa currently exposes through `voicegroup_loader_collect_project_assets`.
+Payloads hold typed numeric values plus resolved project-relative assets or keysplit data. Do not add optional resolved fields to parser structs.
 
-### Task 4: Add Core Bank Parsing And Analysis
+## Project Index
 
-- [ ] Implement `parseDocument(text)` as a pure tokenizer over in-memory text: labels, `voice_group` declarations, voice macro lines, comma-separated arguments, and trailing `@` comments. No disk access, no index. Emit syntax-level diagnostics only.
-- [ ] Implement `analyze(document, index)` as a pure function: validate unknown macros, wrong argument count, invalid integers, range violations, slot out of range, duplicate populated slots, missing DirectSound symbols, missing programmable-wave symbols, missing keysplit tables, and missing sub-voicegroup references (contextual checks resolved against the passed `ProjectIndex`). No disk access, no shared state.
-- [ ] Implement `ProjectIndex::loadBank(bankName)` **in terms of** `parseDocument` + `analyze`: read the bank file, parse it, analyze it, then resolve DirectSound/programmable-wave arguments to project-relative asset paths and keysplit arguments to parsed table bytes + sub-voicegroup symbols, populating `LoadedBank.programs[slot]`. There must be exactly one parser and one analyzer; `loadBank` adds only file reading and asset resolution.
-- [ ] Add tests for `loadBank`: directsound, CGB square/noise, programmable wave, keysplit, keysplit_all, cry, duplicate slot, and missing symbol diagnostics.
-- [ ] Add a test for the LSP path: call `analyze(parseDocument(text), index)` on in-memory text (no file on disk) and assert it returns the same contextual diagnostics; assert calling it twice on the same inputs yields identical results (referential transparency).
+`ProjectIndex::load(root, config)` is the only disk-touching core tier.
 
-### Task 5: Link poryaaaa To `voicegroup-core`
+It must:
+- Discover per-file `sound/voicegroups/<name>.inc`.
+- Discover monolithic `sound/voice_groups.inc`.
+- Discover DirectSound, programmable-wave, and keysplit source files.
+- Store all paths project-relative.
+- Build `AnalysisContext` from indexed symbols.
+- Expose directsound/prog-wave asset lists for poryaaaa asset APIs and NAPI.
 
-- [ ] Add `add_subdirectory("${PORYAAAA_MONOREPO_ROOT}/packages/voicegroup-core" "${CMAKE_CURRENT_BINARY_DIR}/voicegroup-core")` from `packages/poryaaaa/CMakeLists.txt` or another single poryaaaa CMake entry point.
-- [ ] Link `voicegroup_loader` against `voicegroup_core`.
-- [ ] Convert `voicegroup_loader.c` to `voicegroup_loader.cpp` so it can create a `voicegroup::ProjectIndex`.
-- [ ] Keep `voicegroup_loader.h` C-callable by wrapping declarations with `extern "C"` when compiled as C++.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests` from `packages/poryaaaa`.
+Tests:
+- Temporary fixture for per-file voicegroups.
+- Temporary fixture for monolithic voice groups.
+- DirectSound symbol -> relative sample path.
+- Programmable-wave symbol -> relative sample path.
+- Keysplit symbol -> `[u8; 128]`.
+- `analysis_context()` produces the same diagnostics as hand-built context tests.
 
-### Task 6: Replace poryaaaa Parsing With Runtime Materialization
+## Project Bank Loading
 
-- [ ] Create `vg_materialize.cpp` to convert `voicegroup::LoadedBank` into `LoadedVoiceGroup`.
-- [ ] For DirectSound programs, use the core-provided relative path and preserve poryaaaa's existing runtime `.bin` to `.wav` loading behavior.
-- [ ] For cry programs, use the core-provided relative path and preserve poryaaaa's existing `.bin` loading behavior.
-- [ ] For programmable-wave programs, use the core-provided relative path and preserve poryaaaa's existing prog-wave loading behavior.
-- [ ] For keysplit programs, copy the core-provided keysplit table bytes into poryaaaa-owned memory and recursively materialize the referenced sub-voicegroup through core.
-- [ ] Preserve `voiceSampleNames[slot]` by using the basename of the core-provided relative path for DirectSound, programmable-wave, and cry programs.
-- [ ] Run `./build/poryaaaa_unit_tests` from `packages/poryaaaa`.
+`ProjectIndex::load_program_bank(bank_name)` must:
+- Read the selected source file.
+- Call `parse_document`.
+- Call `analyze_document`.
+- If diagnostics include errors, return diagnostics and any safely built records only if unambiguous.
+- Resolve symbol arguments through the index.
+- Convert catalog-checked raw arguments into typed `ProgramData`.
+- Populate `[Option<ProgramRecord>; 128]`.
 
-### Task 7: Move Project Asset And Project State Readers To Core Results
+Tests:
+- DirectSound, DirectSound alt, no-resample.
+- Square1, Square2, programmable wave, noise.
+- Keysplit, keysplit_all, cry, cry_reverse.
+- Start slot handling.
+- Duplicate slot diagnostics.
+- Missing symbol diagnostics.
+- Referential transparency for parse/analyze path.
 
-- [ ] Update `voicegroup_loader_collect_project_assets()` to call `ProjectIndex::directSoundAssets()` and `ProjectIndex::programmableWaveAssets()`.
-- [ ] Keep `project_asset_index.c` as the plugin's override store, but stop using poryaaaa-local source indexing to rebuild it.
-- [ ] Update `voicegroup_project_state_collect()` to use `ProjectIndex::loadBank()` and the returned program records instead of `vg_read_voicegroup_lines()` and `vg_voice_macro_match()`.
-- [ ] Preserve the existing JSON state format unless a separate task explicitly changes the format.
-- [ ] Run `./build/poryaaaa_unit_tests` from `packages/poryaaaa`.
+## Poryaaaa Consumption
 
-### Task 8: Delete poryaaaa Source/Discovery/Parser Code
+Poryaaaa should see a narrow C-shaped adapter, not Rust internals:
+- Stable handles for index/bank lifetimes.
+- C structs/enums for diagnostics, slots, program kind, type code, relative path, and typed arguments.
+- No Rust `Vec`, `String`, parser trivia, or pest details across the seam.
 
-- [ ] Remove `vg_discovery.c`, `vg_discovery.h`, `vg_source.c`, `vg_source.h`, `vg_symbols.c`, `vg_symbols.h`, `vg_voice_macro.h`, `vg_keysplit.c`, `vg_keysplit.h`, `vg_parser.c`, and `vg_parser.h` from the poryaaaa source tree.
-- [ ] Remove those files from `packages/poryaaaa/plugin/voicegroup/CMakeLists.txt`.
-- [ ] Remove tests that include `vg_voice_macro.h` directly; replace them with core catalog tests or poryaaaa loader behavior tests.
-- [ ] Run `rg "vg_discovery|vg_source|vg_symbols|vg_voice_macro|vg_keysplit|vg_parse_voicegroup" packages/poryaaaa` and verify there are no remaining references.
-- [ ] Run `cmake --build build --target poryaaaa_unit_tests` and `./build/poryaaaa_unit_tests` from `packages/poryaaaa`.
+Poryaaaa materializer then:
+- Converts `ProgramBank` slots to `LoadedVoiceGroup`.
+- Decodes DirectSound/cry/prog-wave assets.
+- Allocates/copies keysplit tables.
+- Recurses sub-voicegroups.
+- Preserves `voiceSampleNames` from asset display names.
+- Keeps `voicegroup_free()` ownership correct.
 
-### Task 9: Build Plugin Artifact After Loader Migration
+Keep plugin-specific publication separate: generic load stays pure; any `projects.json` update belongs in a poryaaaa wrapper.
 
-- [ ] Run `cmake --build build --target poryaaaa` from `packages/poryaaaa`.
-- [ ] Verify the installed CLAP bundle under `~/Library/Audio/Plug-Ins/CLAP/poryaaaa.clap` was refreshed by the build.
-- [ ] Report any platform caveat caused by linking C++ into the formerly pure-C `voicegroup_loader` target.
+## NAPI Consumption
+
+NAPI should call the same core path and return JS metadata:
+
+```ts
+{
+  parsed: boolean,
+  diagnostics: Diagnostic[],
+  slots: Array<null | {
+    slot: number,
+    macroName: string,
+    typeCode: number,
+    kind: string,
+    symbol?: string,
+    relativePath?: string,
+    displayName?: string,
+    trailingComment?: string
+  }>
+}
+```
+
+NAPI must not decode samples and must not implement a second parser/catalog.
+
+## Poryaaaa Migration
+
+After Rust core has `ProjectIndex` and project-level bank loading:
+- Link poryaaaa to the Rust adapter.
+- Replace poryaaaa source discovery/parser/indexing calls with core calls.
+- Keep runtime helpers: `vg_wav`, `vg_paths`, `vg_log`, `vg_alloc`.
+- Delete old poryaaaa discovery/source/symbol/macro/keysplit/parser modules after tests pass.
+- Update project asset and project state readers to use core results.
 
 ## Verification
 
-Required checks before calling the migration complete:
+Core:
+
+```bash
+cd packages/voicegroup-core
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo check
+```
+
+Poryaaaa after adapter work:
 
 ```bash
 cd packages/poryaaaa
@@ -261,18 +195,9 @@ cmake --build build --target poryaaaa_unit_tests
 cmake --build build --target poryaaaa
 ```
 
-Required source checks:
+Source checks:
 
 ```bash
 rg "vg_discovery|vg_source|vg_symbols|vg_voice_macro|vg_keysplit|vg_parse_voicegroup" packages/poryaaaa
-rg "voicegroup-core|voicegroup_core|ProjectIndex|LoadedBank" packages/poryaaaa packages/voicegroup-core
+rg "voicegroup-core|ProjectIndex|ProgramBank" packages/poryaaaa packages/voicegroup-core
 ```
-
-The first `rg` command should only return historical references in docs or no references at all. The second should show poryaaaa using `voicegroup-core` through the bridge and core owning the project-aware voicegroup implementation.
-
-## Risks
-
-- The C public loader API must remain stable because the plugin, renderer, and tests already consume it.
-- `voicegroup_loader` becoming a C++-linked target may expose missing `extern "C"` declarations or CMake link-order issues.
-- Recursive keysplit materialization must keep poryaaaa ownership rules intact so `voicegroup_free()` still frees every loaded sample, prog wave, subgroup, and keysplit table.
-- Core must return project-relative paths. Absolute paths would couple core output to one machine and make poryaaaa config/state harder to reason about.

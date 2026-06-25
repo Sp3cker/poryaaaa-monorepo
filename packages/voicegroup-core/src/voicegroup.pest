@@ -1,3 +1,4 @@
+// Pest grammar for one-line voicegroup source forms and syntax-diagnostic fallbacks.
 spacing = _{ " " | "\t" }
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 voice_group_name = @{ ident_char+ }
