@@ -1,6 +1,6 @@
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub const PROGRAM_COUNT: usize = 16;
 
@@ -8,6 +8,10 @@ pub const PROGRAM_COUNT: usize = 16;
 pub struct PoryaaaaParams {
     #[persist = "editor-state"]
     pub editor_state: Arc<EguiState>,
+    #[persist = "project-root"]
+    pub project_root: Arc<RwLock<String>>,
+    #[persist = "voicegroup"]
+    pub voicegroup: Arc<RwLock<String>>,
     #[id = "p00"]
     pub program_00: IntParam,
     #[id = "p01"]
@@ -46,6 +50,8 @@ impl Default for PoryaaaaParams {
     fn default() -> Self {
         Self {
             editor_state: EguiState::from_size(420, 260),
+            project_root: Arc::new(RwLock::new(String::new())),
+            voicegroup: Arc::new(RwLock::new(String::new())),
             program_00: channel_program_param(0),
             program_01: channel_program_param(1),
             program_02: channel_program_param(2),

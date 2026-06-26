@@ -11,6 +11,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 egui = { version = "=0.34.1", features = ["default_fonts"] }
-nice-plug = { git = "https://codeberg.org/RustAudio/nice-plug.git", rev = "a80e0e267e52027be4bc07480bef77e798d3342c", default-features = false }
-nice-plug-egui = { git = "https://codeberg.org/RustAudio/nice-plug.git", rev = "a80e0e267e52027be4bc07480bef77e798d3342c" }
+egui-file-dialog = "0.13.0"
+nice-plug = { path = "../../../third_party/nice-plug/crates/nice-plug", default-features = false }
+nice-plug-egui = { path = "../../../third_party/nice-plug/crates/nice-plug-egui" }
 voicegroup-core = { path = "../../voicegroup-core" }

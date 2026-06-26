@@ -30,6 +30,101 @@ mod tests {
 
         assert!(crate::editor::create_editor(params).is_some());
     }
+
+    #[test]
+    fn editor_advertises_and_applies_host_resize() {
+        let params = Arc::new(PoryaaaaParams::default());
+        let editor = crate::editor::create_editor(params.clone()).expect("editor");
+
+        assert!(editor.resize_hint().can_resize);
+        assert!(editor.set_size(800, 600));
+        assert_eq!(editor.size(), (800, 600));
+
+        assert!(editor.set_size(1, 1));
+        assert_eq!(editor.size(), (420, 260));
+    }
+
+    #[test]
+    fn directory_picker_selection_updates_persisted_project_root() {
+        let params = PoryaaaaParams::default();
+        let root = temp_project("selected-root");
+
+        crate::editor::apply_project_root_selection(&params, &root);
+
+        assert_eq!(
+            params
+                .project_root
+                .read()
+                .expect("project root read")
+                .as_str(),
+            root.to_string_lossy()
+        );
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+    #[test]
+    fn editor_frame_expands_to_resizable_window_area() {
+        let ctx = egui::Context::default();
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(640.0, 480.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let available = ui.available_rect_before_wrap();
+                let response = crate::editor::show_editor_frame(ui, |ui| {
+                    ui.label("content");
+                })
+                .response;
+
+                assert!((response.rect.width() - available.width()).abs() <= 1.0);
+                assert!((response.rect.height() - available.height()).abs() <= 1.0);
+            },
+        );
+    }
+
+    #[test]
+    fn remaining_width_for_leading_field_reserves_trailing_control() {
+        assert_eq!(
+            crate::editor::remaining_width_for_leading_field(900.0, 72.0, 8.0),
+            820.0
+        );
+        assert_eq!(
+            crate::editor::remaining_width_for_leading_field(40.0, 72.0, 8.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn project_root_selector_text_field_expands_with_window_width() {
+        let ctx = egui::Context::default();
+        let mut project_root = "/tmp/poryaaaa-project".to_string();
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(900.0, 260.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let available = ui.available_width();
+                let response = crate::editor::show_project_root_selector(ui, &mut project_root);
+
+                assert!(
+                    response.text_rect.width() > available * 0.75,
+                    "project root text field width {} did not track available width {available}",
+                    response.text_rect.width()
+                );
+            },
+        );
+    }
+
     #[test]
     fn config_loads_first_pass_poryaaaa_cfg_keys() {
         let root = temp_project("config");
@@ -112,6 +207,68 @@ route104::
             }
         );
         assert_eq!(result.diagnostics, []);
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn voicegroup_load_reports_core_diagnostic_to_gui() {
+        let root = temp_project("voicegroup-load-missing");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+route104::
+    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
+",
+        );
+        let params = PoryaaaaParams::default();
+        *params.project_root.write().expect("project root write") =
+            root.to_string_lossy().into_owned();
+        *params.voicegroup.write().expect("voicegroup write") = "missing_bank".to_string();
+
+        let status = crate::editor::load_voicegroup_from_params(&params);
+
+        assert!(status.is_error);
+        assert_eq!(
+            status.text,
+            "Error missing-voicegroup: voicegroup bank is not declared in the project index"
+        );
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn voicegroup_load_reports_loaded_bank_to_gui() {
+        let root = temp_project("voicegroup-load-success");
+        write_file(
+            &root,
+            "sound/direct_sound_data.inc",
+            "\
+DirectSoundWaveData_Kick::
+    .incbin \"sound/direct_sound_samples/kick.bin\"
+",
+        );
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+route104::
+    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
+",
+        );
+        let params = PoryaaaaParams::default();
+        *params.project_root.write().expect("project root write") =
+            root.to_string_lossy().into_owned();
+        *params.voicegroup.write().expect("voicegroup write") = "route104".to_string();
+
+        let status = crate::editor::load_voicegroup_from_params(&params);
+
+        assert!(!status.is_error);
+        assert_eq!(
+            status.text,
+            "Loaded route104 from sound/voice_groups.inc (1 occupied slot)"
+        );
 
         fs::remove_dir_all(root).expect("remove temp project");
     }

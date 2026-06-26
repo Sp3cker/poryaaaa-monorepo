@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build poryaaaa-rs CLAP debug bundle",
+            "type": "shell",
+            "command": "cargo build --manifest-path packages/poryaaaa/plugin/Cargo.toml && rm -rf packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap && mkdir -p packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap/Contents/MacOS && cp packages/poryaaaa/plugin/target/debug/libporyaaaa_clap_plugin.dylib packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap/Contents/MacOS/poryaaaa-rs && cp packages/poryaaaa/plugin/Info.plist packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap/Contents/Info.plist && plutil -replace CFBundleExecutable -string poryaaaa-rs packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap/Contents/Info.plist && plutil -replace CFBundleIdentifier -string com.sp3cker.poryaaaa-rs packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap/Contents/Info.plist",
+            "options": {
+                "cwd": "${workspaceFolder:poryaaaa-monorepo}"
+            },
+            "group": "build",
+            "problemMatcher": "$rustc"
+        }
+    ]
+}

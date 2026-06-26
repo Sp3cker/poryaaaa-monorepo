@@ -38,3 +38,40 @@ fn params_default_channel_programs_match_channel_numbers() {
 
     assert!(params.program(PROGRAM_COUNT).is_none());
 }
+
+#[test]
+fn project_inputs_persist_through_plugin_state() {
+    let params = PoryaaaaParams::default();
+    *params.project_root.write().expect("project root write") = "/tmp/poryaaaa-project".to_string();
+    *params.voicegroup.write().expect("voicegroup write") = "voicegroup001".to_string();
+
+    let serialized = params.serialize_fields();
+    assert_eq!(
+        serialized.get("project-root").map(String::as_str),
+        Some("\"/tmp/poryaaaa-project\"")
+    );
+    assert_eq!(
+        serialized.get("voicegroup").map(String::as_str),
+        Some("\"voicegroup001\"")
+    );
+
+    let restored = PoryaaaaParams::default();
+    restored.deserialize_fields(&serialized);
+
+    assert_eq!(
+        restored
+            .project_root
+            .read()
+            .expect("project root read")
+            .as_str(),
+        "/tmp/poryaaaa-project"
+    );
+    assert_eq!(
+        restored
+            .voicegroup
+            .read()
+            .expect("voicegroup read")
+            .as_str(),
+        "voicegroup001"
+    );
+}
