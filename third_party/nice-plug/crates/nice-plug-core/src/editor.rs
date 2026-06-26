@@ -127,6 +127,15 @@ pub trait Editor: Send {
         false
     }
 
+    /// Adjust a host-proposed size before the host commits it. CLAP calls this
+    /// during resize negotiation so the plugin can clamp the proposal to a
+    /// valid size, then later receive that size through [`set_size()`][Self::set_size].
+    /// The default accepts every size for resizable editors and rejects resize
+    /// proposals for fixed-size editors.
+    fn adjust_size(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        self.resize_hint().adjust_size(width, height, self.size())
+    }
+
     /// Describes whether and how the host may resize this editor. The wrapper
     /// reads this to answer the host's resize-capability queries (CLAP's
     /// `gui.can_resize` / `gui.get_resize_hints`, VST3's `canResize`).
@@ -194,6 +203,58 @@ impl ResizeHint {
             can_resize: true,
             ..Self::default()
         }
+    }
+
+    /// Apply this resize hint to a proposed logical size.
+    pub fn adjust_size(
+        &self,
+        width: u32,
+        height: u32,
+        current_size: (u32, u32),
+    ) -> Option<(u32, u32)> {
+        if !self.can_resize {
+            return None;
+        }
+
+        let mut adjusted_width = if self.can_resize_horizontally {
+            width
+        } else {
+            current_size.0
+        };
+        let mut adjusted_height = if self.can_resize_vertically {
+            height
+        } else {
+            current_size.1
+        };
+
+        if self.preserve_aspect_ratio
+            && self.aspect_ratio_width != 0
+            && self.aspect_ratio_height != 0
+        {
+            match (self.can_resize_horizontally, self.can_resize_vertically) {
+                (true, true) => {
+                    adjusted_height = ((adjusted_width as u64 * self.aspect_ratio_height as u64
+                        + self.aspect_ratio_width as u64 / 2)
+                        / self.aspect_ratio_width as u64)
+                        as u32;
+                }
+                (true, false) => {
+                    adjusted_width = ((adjusted_height as u64 * self.aspect_ratio_width as u64
+                        + self.aspect_ratio_height as u64 / 2)
+                        / self.aspect_ratio_height as u64)
+                        as u32;
+                }
+                (false, true) => {
+                    adjusted_height = ((adjusted_width as u64 * self.aspect_ratio_height as u64
+                        + self.aspect_ratio_width as u64 / 2)
+                        / self.aspect_ratio_width as u64)
+                        as u32;
+                }
+                (false, false) => {}
+            }
+        }
+
+        Some((adjusted_width.max(1), adjusted_height.max(1)))
     }
 }
 

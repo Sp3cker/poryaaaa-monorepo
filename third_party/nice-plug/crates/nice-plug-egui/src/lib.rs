@@ -8,12 +8,12 @@
 use crossbeam::atomic::AtomicCell;
 use egui::{Context, Ui};
 use nice_plug_core::context::gui::ParamSetter;
-use nice_plug_core::editor::Editor;
+use nice_plug_core::editor::{Editor, ResizeHint};
 use nice_plug_core::params::persist::PersistentField;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[cfg(not(any(feature = "opengl", feature = "wgpu")))]
 compile_error!("There's currently no software rendering support for egui");
@@ -31,6 +31,8 @@ pub mod widgets;
 #[derive(Default, Debug, Clone)]
 pub struct EguiSettings {
     pub graphics_config: GraphicsConfig,
+    pub resize_hint: ResizeHint,
+    pub min_size: (u32, u32),
 
     #[cfg(all(feature = "opengl", not(feature = "wgpu")))]
     /// By default this is set to `false`.
@@ -81,6 +83,15 @@ where
     B: Fn(&Context, &mut Queue, &mut T) + 'static + Send + Sync,
     U: Fn(&mut Ui, &ParamSetter, &mut Queue, &mut T) + 'static + Send + Sync,
 {
+    let min_size = (settings.min_size.0.max(1), settings.min_size.1.max(1));
+    if let Some(size) = settings
+        .resize_hint
+        .adjust_size(egui_state.size().0, egui_state.size().1, egui_state.size())
+        .map(|size| (size.0.max(min_size.0), size.1.max(min_size.1)))
+    {
+        egui_state.size.store(size);
+    }
+
     Some(Box::new(editor::EguiEditor {
         egui_state,
         user_state: Arc::new(Mutex::new(user_state)),
@@ -109,6 +120,10 @@ pub struct EguiState {
     #[serde(skip)]
     requested_size: AtomicCell<Option<(u32, u32)>>,
 
+    /// The host-accepted size that still needs to be applied to the egui window.
+    #[serde(skip)]
+    applied_size: AtomicCell<Option<(u32, u32)>>,
+
     /// Whether the editor's window is currently open.
     #[serde(skip)]
     open: AtomicBool,
@@ -134,6 +149,7 @@ impl EguiState {
         Arc::new(EguiState {
             size: AtomicCell::new((width, height)),
             requested_size: Default::default(),
+            applied_size: Default::default(),
             open: AtomicBool::new(false),
         })
     }
@@ -151,6 +167,182 @@ impl EguiState {
 
     /// Set the new size (in logical pixels) that will be used to resize the window if the host allows.
     pub fn set_requested_size(&self, new_size: (u32, u32)) {
-        self.requested_size.store(Some(new_size));
+        self.requested_size
+            .store(Some((new_size.0.max(1), new_size.1.max(1))));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nice_plug_core::editor::ResizeHint;
+
+    #[test]
+    fn editor_resize_policy_clamps_host_and_requested_sizes() {
+        let egui_state = EguiState::from_size(420, 260);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+        settings.min_size = (420, 260);
+
+        let editor = create_egui_editor(
+            egui_state,
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert!(editor.resize_hint().can_resize);
+        assert_eq!(editor.adjust_size(1, 1), Some((420, 260)));
+        assert!(editor.set_size(1, 1));
+        assert_eq!(editor.size(), (420, 260));
+    }
+
+    #[test]
+    fn host_resize_does_not_queue_plugin_resize_request() {
+        let egui_state = EguiState::from_size(420, 260);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+
+        let editor = create_egui_editor(
+            egui_state.clone(),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert!(editor.set_size(800, 600));
+        assert_eq!(egui_state.requested_size.load(), None);
+        assert_eq!(egui_state.applied_size.load(), Some((800, 600)));
+        assert_eq!(editor.size(), (800, 600));
+    }
+
+    #[test]
+    fn host_resize_clears_stale_plugin_resize_request() {
+        let egui_state = EguiState::from_size(640, 480);
+        egui_state.set_requested_size((900, 700));
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+        let editor = create_egui_editor(
+            egui_state.clone(),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert!(editor.set_size(800, 600));
+        assert_eq!(egui_state.requested_size.load(), None);
+        assert_eq!(egui_state.applied_size.load(), Some((800, 600)));
+        assert_eq!(editor.size(), (800, 600));
+    }
+
+    #[test]
+    fn editor_resize_policy_honors_axis_and_aspect_hints() {
+        let egui_state = EguiState::from_size(400, 200);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint {
+            can_resize: true,
+            can_resize_horizontally: false,
+            can_resize_vertically: true,
+            preserve_aspect_ratio: false,
+            aspect_ratio_width: 1,
+            aspect_ratio_height: 1,
+        };
+
+        let editor = create_egui_editor(
+            egui_state.clone(),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert_eq!(editor.adjust_size(900, 300), Some((400, 300)));
+
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint {
+            can_resize: true,
+            can_resize_horizontally: true,
+            can_resize_vertically: true,
+            preserve_aspect_ratio: true,
+            aspect_ratio_width: 2,
+            aspect_ratio_height: 1,
+        };
+        let editor = create_egui_editor(
+            egui_state,
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert_eq!(editor.adjust_size(900, 300), Some((900, 450)));
+
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint {
+            can_resize: true,
+            can_resize_horizontally: false,
+            can_resize_vertically: true,
+            preserve_aspect_ratio: true,
+            aspect_ratio_width: 2,
+            aspect_ratio_height: 1,
+        };
+        let editor = create_egui_editor(
+            EguiState::from_size(400, 200),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert_eq!(editor.adjust_size(900, 300), Some((400, 200)));
+
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint {
+            can_resize: true,
+            can_resize_horizontally: true,
+            can_resize_vertically: false,
+            preserve_aspect_ratio: true,
+            aspect_ratio_width: 2,
+            aspect_ratio_height: 1,
+        };
+        let editor = create_egui_editor(
+            EguiState::from_size(400, 200),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert_eq!(editor.adjust_size(900, 300), Some((400, 200)));
+    }
+
+    #[test]
+    fn editor_creation_clamps_persisted_size_to_resize_policy() {
+        let egui_state = EguiState::from_size(100, 100);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+        settings.min_size = (420, 260);
+
+        let editor = create_egui_editor(
+            egui_state.clone(),
+            (),
+            settings,
+            |_egui_ctx, _queue, _state| {},
+            |_ui, _setter, _queue, _state| {},
+        )
+        .expect("editor");
+
+        assert_eq!(egui_state.size(), (420, 260));
+        assert_eq!(editor.size(), (420, 260));
     }
 }

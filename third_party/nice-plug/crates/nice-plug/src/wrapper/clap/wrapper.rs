@@ -2887,14 +2887,38 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_gui_adjust_size(
-        _plugin: *const clap_plugin,
-        _width: *mut u32,
-        _height: *mut u32,
+        plugin: *const clap_plugin,
+        width: *mut u32,
+        height: *mut u32,
     ) -> bool {
-        // We accept whatever size the host proposes as-is (no snapping). The
-        // width/height are left untouched, signalling that the requested size is
-        // acceptable.
-        true
+        check_null_ptr!(
+            false,
+            plugin,
+            unsafe { (*plugin).plugin_data },
+            width,
+            height
+        );
+        let wrapper = unsafe { &*((*plugin).plugin_data as *const Self) };
+
+        let scaling_factor = wrapper.editor_scaling_factor.load(Ordering::Relaxed);
+        let logical_width = (unsafe { *width } as f32 / scaling_factor).round() as u32;
+        let logical_height = (unsafe { *height } as f32 / scaling_factor).round() as u32;
+
+        match wrapper
+            .editor
+            .borrow()
+            .as_ref()
+            .and_then(|editor| editor.lock().adjust_size(logical_width, logical_height))
+        {
+            Some((adjusted_width, adjusted_height)) => {
+                unsafe {
+                    *width = (adjusted_width as f32 * scaling_factor).round() as u32;
+                    *height = (adjusted_height as f32 * scaling_factor).round() as u32;
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     unsafe extern "C" fn ext_gui_set_size(

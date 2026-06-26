@@ -9,12 +9,11 @@ use egui_baseview::baseview::{PhySize, Size, WindowHandle, WindowOpenOptions, Wi
 use egui_baseview::{EguiWindow, Queue};
 use nice_plug_core::context::gui::GuiContext;
 use nice_plug_core::context::gui::ParamSetter;
-use nice_plug_core::editor::Editor;
-use nice_plug_core::editor::ParentWindowHandle;
+use nice_plug_core::editor::{Editor, ParentWindowHandle, ResizeHint};
 use parking_lot::Mutex;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 /// An [`Editor`] implementation that calls an egui draw loop.
 pub(crate) struct EguiEditor<T> {
@@ -73,6 +72,7 @@ where
         let update = self.update.clone();
         let state = self.user_state.clone();
         let egui_state = self.egui_state.clone();
+        let settings = self.settings.clone();
 
         #[cfg(all(feature = "opengl", not(feature = "wgpu")))]
         let gl_config = {
@@ -87,7 +87,9 @@ where
             gl_config
         };
 
-        let (unscaled_width, unscaled_height) = self.egui_state.size();
+        let (unscaled_width, unscaled_height) = self
+            .adjust_size(self.egui_state.size().0, self.egui_state.size().1)
+            .unwrap_or_else(|| self.egui_state.size());
         let scaling_factor = self.scaling_factor.load();
 
         #[cfg(all(feature = "opengl", not(feature = "wgpu")))]
@@ -125,25 +127,12 @@ where
             move |egui_ctx, queue, state| {
                 let setter = ParamSetter::new(context.as_ref());
 
-                // If the window was requested to resize
-                if let Some(new_size) = egui_state.requested_size.swap(None) {
-                    // Ask the plugin host to resize to self.size()
-                    if context.request_resize() {
-                        // Resize the content of egui window
-                        let scale = egui_ctx.pixels_per_point();
-                        queue.resize(PhySize::new(
-                            (new_size.0 as f32 * scale).round() as u32,
-                            (new_size.1 as f32 * scale).round() as u32,
-                        ));
-
-                        egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
-                            new_size.0 as f32,
-                            new_size.1 as f32,
-                        )));
-
-                        // Update the state
-                        egui_state.size.store(new_size);
-                    }
+                if let Some(new_size) = egui_state.applied_size.swap(None) {
+                    resize_window(egui_ctx, queue, new_size);
+                } else if let Some(new_size) = egui_state.requested_size.swap(None) {
+                    request_host_resize(&settings, egui_state.as_ref(), new_size, || {
+                        context.request_resize()
+                    });
                 }
 
                 // For now, just always redraw. Most plugin GUIs have meters, and those almost always
@@ -169,10 +158,30 @@ where
         // This method will be used to ask the host for new size.
         // If the editor is currently being resized and new size hasn't been consumed and set yet, return new requested size.
         if let Some(new_size) = new_size {
-            new_size
+            self.adjust_size(new_size.0, new_size.1)
+                .unwrap_or_else(|| self.egui_state.size())
         } else {
             self.egui_state.size()
         }
+    }
+
+    fn set_size(&self, width: u32, height: u32) -> bool {
+        if let Some(size) = self.adjust_size(width, height) {
+            self.egui_state.size.store(size);
+            self.egui_state.requested_size.store(None);
+            self.egui_state.applied_size.store(Some(size));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn adjust_size(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        adjust_size(&self.settings, self.egui_state.size(), (width, height))
+    }
+
+    fn resize_hint(&self) -> ResizeHint {
+        self.settings.resize_hint
     }
 
     fn set_scale_factor(&self, factor: f32) -> bool {
@@ -196,6 +205,86 @@ where
 
     fn param_values_changed(&self) {
         // Same
+    }
+}
+
+fn adjust_size(
+    settings: &EguiSettings,
+    current_size: (u32, u32),
+    requested_size: (u32, u32),
+) -> Option<(u32, u32)> {
+    let min_size = (settings.min_size.0.max(1), settings.min_size.1.max(1));
+    settings
+        .resize_hint
+        .adjust_size(requested_size.0, requested_size.1, current_size)
+        .map(|size| (size.0.max(min_size.0), size.1.max(min_size.1)))
+}
+
+fn request_host_resize(
+    settings: &EguiSettings,
+    egui_state: &EguiState,
+    requested_size: (u32, u32),
+    request_resize: impl FnOnce() -> bool,
+) -> bool {
+    let previous_size = egui_state.size();
+    let Some(new_size) = adjust_size(settings, previous_size, requested_size) else {
+        return false;
+    };
+
+    egui_state.size.store(new_size);
+    if request_resize() {
+        true
+    } else {
+        egui_state.size.store(previous_size);
+        false
+    }
+}
+
+fn resize_window(egui_ctx: &Context, queue: &mut Queue, new_size: (u32, u32)) {
+    let scale = egui_ctx.pixels_per_point();
+    queue.resize(PhySize::new(
+        (new_size.0 as f32 * scale).round() as u32,
+        (new_size.1 as f32 * scale).round() as u32,
+    ));
+
+    egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+        new_size.0 as f32,
+        new_size.1 as f32,
+    )));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nice_plug_core::editor::ResizeHint;
+
+    #[test]
+    fn requested_resize_is_reported_while_asking_host() {
+        let egui_state = EguiState::from_size(420, 260);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+
+        let accepted = request_host_resize(&settings, egui_state.as_ref(), (800, 600), || {
+            assert_eq!(egui_state.size(), (800, 600));
+            true
+        });
+
+        assert!(accepted);
+        assert_eq!(egui_state.size(), (800, 600));
+        assert_eq!(egui_state.applied_size.load(), None);
+    }
+
+    #[test]
+    fn rejected_requested_resize_restores_previous_size() {
+        let egui_state = EguiState::from_size(420, 260);
+        let mut settings = EguiSettings::default();
+        settings.resize_hint = ResizeHint::resizable();
+
+        let accepted = request_host_resize(&settings, egui_state.as_ref(), (800, 600), || false);
+
+        assert!(!accepted);
+        assert_eq!(egui_state.size(), (420, 260));
+        assert_eq!(egui_state.applied_size.load(), None);
     }
 }
 

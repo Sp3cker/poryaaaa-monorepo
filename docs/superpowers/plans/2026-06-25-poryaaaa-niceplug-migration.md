@@ -42,6 +42,25 @@
 - Incoming MIDI program-change messages are input-only: they call `m4a_engine_program_change()` so m4a channels choose voices. The Rust plugin does not need to emit PC changes, mirror them to GUI state, or preserve the old C plugin's host-visible param echo.
 - Rust GUI first uses General-tab snapshots plus explicit commands. It must not pass a raw plugin-data pointer into UI code like `m4a_gui_set_plugin_data()` does today.
 
+## Voicegroup Load/Commit Decisions From 2026-06-26 Grilling
+
+- Keep three concepts separate:
+  - **Draft UI strings:** text currently typed in the editor.
+  - **CLAP persisted selection:** the plugin instance's committed `project_root` and `voicegroup`/bank strings.
+  - **Project voicegroup file:** project-level voicegroup metadata, including slot information, owned by `voicegroup-core`.
+- Project file reading/writing is handled by `packages/voicegroup-core`. The Rust plugin must not port `voicegroup_project_state_collect()`, `voicegroup_project_state_write()`, or any `projects.json` slot serialization.
+- The editor Load button calls one editor-facing `voicegroup-core` API with the draft root and bank. That API validates a structurally loadable bank and publishes/merges the project file internally on success.
+- The commit success bar is structural/loadable-bank success only. PCM/sample materialization, `LoadedVoiceGroup`, `ToneData`, and `m4a_engine_set_voicegroup()` remain the separate audio-runtime load gate.
+- Phase 1 plugin-facing return shape from `voicegroup-core` is deliberately small:
+  - success/failure
+  - on success: committed `root` and `bank`
+  - on failure: one human-readable error string for the editor to display
+  - no slot metadata DTO, no structured diagnostics UI, no sample buffers, no `ToneData`
+- On successful commit, the plugin updates NicePlug/CLAP persisted `project_root` and `voicegroup` state through proper NicePlug state APIs, then triggers the chosen reload/restart path.
+- On failed commit, the plugin leaves the committed persisted selection unchanged, keeps the last-known-good runtime voicegroup playing if one exists, and displays the `voicegroup-core` error string.
+- The current Rust `voicegroup-core` probe in `plugin/src/voicegroup.rs` is diagnostics/status only. Do not describe that path as "load" in runtime code; runtime load means materializing audio data and applying it to `M4AEngine`.
+
+
 ## Files
 
 - Create: `packages/poryaaaa/plugin/src/plugin.rs`
@@ -110,9 +129,10 @@ packages/poryaaaa/build/poryaaaa_unit_tests
 ### Task 3: Port New Rust Parameters And State
 
 - [x] Add `packages/poryaaaa/plugin/src/params.rs` with 16 stepped `IntParam`s for channel programs 0..127, defaults 0..15, using new stable NicePlug string ids.
-- [ ] Persist first-pass non-automated plugin settings separately: project root, voicegroup name, volume, reverb, and egui window state. Recorder path/armed state comes later with the Recorder tab.
+- [ ] Persist first-pass non-automated plugin settings separately: committed project root, committed voicegroup/bank, volume, reverb, and egui window state. Recorder path/armed state comes later with the Recorder tab.
 - [ ] Add `packages/poryaaaa/plugin/src/state.rs` for the new Rust plugin state format only. Do not parse or migrate `M4A_PLUGIN_STATE_VERSION == 2`; old C plugin state compatibility is an explicit break because the Rust plugin has a new CLAP identity.
-- [ ] Add tests for default params, program range clamping, and new-state round trip. Default params and range shape are covered; state round trip remains pending.
+- [ ] Ensure project root and voicegroup/bank persisted fields are updated only after the editor-facing `voicegroup-core` commit API succeeds. Failed validation/materialization must not overwrite the committed CLAP selection.
+- [ ] Add tests for default params, program range clamping, new-state round trip, and failed-commit preservation of the previous committed root/bank. Default params and range shape are covered; state round trip remains pending.
 - [ ] Verify:
 
 ```bash
@@ -140,10 +160,10 @@ packages/poryaaaa/build/poryaaaa_engine_lifecycle 1
 ### Task 5: Bridge Config And Voicegroup Loading
 
 - [x] Add `packages/poryaaaa/plugin/src/config.rs` to load first-pass `poryaaaa.cfg` keys: `project_root`, `voicegroup`, `reverb`, `volume`. Tolerate but do not implement the old `log` key; plugin logging will be refactored later.
-- [x] Add a Rust `voicegroup-core` probe in `packages/poryaaaa/plugin/src/voicegroup.rs` that loads `ProjectIndex`, calls `load_program_bank`, and returns typed diagnostics plus load status for the General tab.
+- [x] Add a Rust `voicegroup-core` probe in `packages/poryaaaa/plugin/src/voicegroup.rs` that loads `ProjectIndex`, calls `load_program_bank`, and returns typed diagnostics plus load status for the General tab. Treat this as a probe/status path, not the runtime audio load path.
+- [ ] Add a Rust wrapper for the new editor-facing `voicegroup-core` commit API: input draft root/bank; output success with committed root/bank, or failure with one human-readable error string. Keep project-file read/write and slot serialization inside `voicegroup-core`.
 - [ ] Add a C materialization bridge that calls `voicegroup_load`, stores the loaded voicegroup handle, applies it to the engine, and clears the engine's voicegroup reference before freeing the loaded voicegroup.
-- [ ] Keep project-state publication plugin-specific, but do not port project asset indexes, sample overrides, or voice editing in this slice.
-- [ ] Rebuild/reload voicegroup data only on project-root or voicegroup changes.
+- [ ] Rebuild/reload voicegroup data only after root/bank commit succeeds and the committed root/bank differs from the previous committed selection.
 - [ ] Verify:
 
 ```bash
@@ -157,9 +177,9 @@ Progress verified: `cargo test config`, `cargo test voicegroup`, full `cargo tes
 ### Task 6: Port The egui General Tab
 
 - [x] Add `packages/poryaaaa/plugin/src/editor.rs` using `create_egui_editor`.
-- [ ] Implement only General tab first: project root field, voicegroup field, reload command, loaded/error status, volume, and reverb.
-- [ ] Use explicit command messages for reload/config changes. Use `ParamSetter` only for values that are actually modeled as automatable params.
-- [ ] Replace the current editor-local project root / voicegroup strings with the real snapshot/command seam before treating Task 6 as complete.
+- [ ] Implement only General tab first: draft project root field, draft voicegroup/bank field, Load command, loaded/error status, volume, and reverb.
+- [ ] Use explicit command messages for Load/config changes. Use `ParamSetter` only for values that are actually modeled as automatable params.
+- [ ] Keep draft editor strings separate from committed persisted state. On Load failure, display the single `voicegroup-core` error string and leave committed root/bank unchanged; on Load success, commit root/bank through NicePlug state APIs and trigger the chosen reload/restart path.
 - [ ] Do not add Voices or Recorder tabs in this slice.
 - [ ] Verify:
 
@@ -209,9 +229,11 @@ Manual verification: installed Rust bundle timestamp is fresh, host scans the ne
 - The current GUI mutates live `ToneData*`. Rust should use snapshots and commands so GUI concerns do not leak into engine internals again; voice editing is deferred until after the first Rust plugin works.
 - The existing CMake target auto-installs the C/C++ CLAP bundle. The Rust workflow must not replace that developer loop until Rust scan/load/render/editor checks pass.
 - External MIDI realtime clock support and recorder parity are deferred. Do not fork or patch NicePlug for `0xF8`, `0xFA`, `0xFB`, or `0xFC` in the first rewrite.
+- Project-level voicegroup persistence must remain inside `voicegroup-core`; duplicating legacy C project-state serialization in Rust would create a second source of truth.
 
 ## Stop Conditions
 
 - Stop before deleting old C plugin files unless the Rust CLAP bundle scans, renders audio, opens the editor, loads voicegroups, and passes focused tests.
 - Stop if Rust-to-C native linkage requires changing C engine semantics. That belongs in a separate engine-seam decision.
 - Stop if a first-pass FFI addition would expose engine internals outside `ffi.rs` or the safe engine wrapper.
+- Stop if implementing General-tab Load requires the Rust plugin to serialize or merge project voicegroup files itself. Add/finish the missing `voicegroup-core` API instead.

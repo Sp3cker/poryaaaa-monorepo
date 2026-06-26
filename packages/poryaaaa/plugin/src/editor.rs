@@ -2,8 +2,7 @@ use crate::{voicegroup, PoryaaaaParams};
 use egui::{Margin, Vec2};
 use egui_file_dialog::FileDialog;
 use nice_plug::prelude::*;
-use nice_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, EguiState};
-use std::any::Any;
+use nice_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, EguiSettings};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -116,70 +115,17 @@ pub(crate) fn show_editor_frame<R>(
         })
 }
 
-struct ResizableEguiEditor {
-    inner: Box<dyn Editor>,
-    egui_state: Arc<EguiState>,
-}
-
-impl Editor for ResizableEguiEditor {
-    fn spawn(
-        &self,
-        parent: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
-    ) -> Box<dyn Any + Send> {
-        self.inner.spawn(parent, context)
-    }
-
-    fn size(&self) -> (u32, u32) {
-        self.inner.size()
-    }
-
-    fn set_scale_factor(&self, factor: f32) -> bool {
-        self.inner.set_scale_factor(factor)
-    }
-
-    fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        self.inner.param_value_changed(id, normalized_value);
-    }
-
-    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
-        self.inner.param_modulation_changed(id, modulation_offset);
-    }
-
-    fn param_values_changed(&self) {
-        self.inner.param_values_changed();
-    }
-
-    fn on_virtual_key_from_host(
-        &self,
-        key_code: VirtualKeyCode,
-        is_down: bool,
-        modifiers: Modifiers,
-    ) -> bool {
-        self.inner
-            .on_virtual_key_from_host(key_code, is_down, modifiers)
-    }
-
-    fn set_size(&self, width: u32, height: u32) -> bool {
-        self.egui_state
-            .set_requested_size((width.max(MIN_WINDOW_WIDTH), height.max(MIN_WINDOW_HEIGHT)));
-        true
-    }
-
-    fn resize_hint(&self) -> ResizeHint {
-        ResizeHint::resizable()
-    }
-}
-
 /// Builds the egui editor around Rust-owned params.
 pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Editor>> {
     let egui_state = params.editor_state.clone();
-    let resize_state = egui_state.clone();
+    let mut settings = EguiSettings::default();
+    settings.resize_hint = ResizeHint::resizable();
+    settings.min_size = (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
 
-    let editor = create_egui_editor(
+    create_egui_editor(
         egui_state.clone(),
         GuiState::default(),
-        Default::default(),
+        settings,
         |_egui_ctx, _queue, _gui_state| {},
         move |ui, _setter, _queue, gui_state| {
             ResizableWindow::new("poryaaaa-main")
@@ -242,10 +188,5 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
                     });
                 });
         },
-    )?;
-
-    Some(Box::new(ResizableEguiEditor {
-        inner: editor,
-        egui_state: resize_state,
-    }))
+    )
 }
