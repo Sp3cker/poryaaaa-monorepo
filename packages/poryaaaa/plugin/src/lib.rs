@@ -12,7 +12,6 @@ mod voicegroup;
 pub use config::PluginConfig;
 pub use params::{PoryaaaaParams, PROGRAM_COUNT};
 pub use plugin::PoryaaaaPlugin;
-pub use voicegroup::{probe_voicegroup_bank, VoicegroupProbeResult, VoicegroupProbeStatus};
 
 nice_plug::nice_export_clap!(PoryaaaaPlugin);
 
@@ -45,19 +44,21 @@ mod tests {
     }
 
     #[test]
-    fn directory_picker_selection_updates_persisted_project_root() {
+    fn directory_picker_selection_updates_draft_project_root_only() {
         let params = PoryaaaaParams::default();
         let root = temp_project("selected-root");
+        let mut gui_state = crate::editor::GuiState::from_params(&params);
 
-        crate::editor::apply_project_root_selection(&params, &root);
+        crate::editor::apply_project_root_selection(&mut gui_state, &root);
 
+        assert_eq!(gui_state.draft_project_root, root.to_string_lossy());
         assert_eq!(
             params
                 .project_root
                 .read()
                 .expect("project root read")
                 .as_str(),
-            root.to_string_lossy()
+            ""
         );
 
         fs::remove_dir_all(root).expect("remove temp project");
@@ -172,74 +173,7 @@ volume=255
     }
 
     #[test]
-    fn voicegroup_probe_loads_bank_with_typed_core_status() {
-        let root = temp_project("voicegroup-probe");
-        write_file(
-            &root,
-            "sound/direct_sound_data.inc",
-            "\
-DirectSoundWaveData_Kick::
-    .incbin \"sound/direct_sound_samples/kick.bin\"
-",
-        );
-        write_file(
-            &root,
-            "sound/voice_groups.inc",
-            "\
-route104::
-    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
-",
-        );
-        let config = crate::config::PluginConfig {
-            project_root: root.to_string_lossy().into_owned(),
-            voicegroup: "route104".to_string(),
-            ..Default::default()
-        };
-
-        let result = crate::voicegroup::probe_voicegroup_bank(&config).expect("probe voicegroup");
-
-        assert_eq!(
-            result.status,
-            crate::voicegroup::VoicegroupProbeStatus::Loaded {
-                bank_name: "route104".to_string(),
-                source_relative_path: "sound/voice_groups.inc".to_string(),
-                occupied_slots: 1,
-            }
-        );
-        assert_eq!(result.diagnostics, []);
-
-        fs::remove_dir_all(root).expect("remove temp project");
-    }
-
-    #[test]
-    fn voicegroup_load_reports_core_diagnostic_to_gui() {
-        let root = temp_project("voicegroup-load-missing");
-        write_file(
-            &root,
-            "sound/voice_groups.inc",
-            "\
-route104::
-    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
-",
-        );
-        let params = PoryaaaaParams::default();
-        *params.project_root.write().expect("project root write") =
-            root.to_string_lossy().into_owned();
-        *params.voicegroup.write().expect("voicegroup write") = "missing_bank".to_string();
-
-        let status = crate::editor::load_voicegroup_from_params(&params);
-
-        assert!(status.is_error);
-        assert_eq!(
-            status.text,
-            "Error missing-voicegroup: voicegroup bank is not declared in the project index"
-        );
-
-        fs::remove_dir_all(root).expect("remove temp project");
-    }
-
-    #[test]
-    fn voicegroup_load_reports_loaded_bank_to_gui() {
+    fn plugin_load_success_commits_params_and_emits_projects_json() {
         let root = temp_project("voicegroup-load-success");
         write_file(
             &root,
@@ -258,31 +192,132 @@ route104::
 ",
         );
         let params = PoryaaaaParams::default();
-        *params.project_root.write().expect("project root write") =
-            root.to_string_lossy().into_owned();
-        *params.voicegroup.write().expect("voicegroup write") = "route104".to_string();
+        let projects_json_path = root.join("out/projects.json");
 
-        let status = crate::editor::load_voicegroup_from_params(&params);
+        let status = PoryaaaaPlugin::load_voicegroup(
+            &params,
+            &root.to_string_lossy(),
+            "route104",
+            &projects_json_path,
+        );
 
         assert!(!status.is_error);
+        assert_eq!(status.text, "Loaded route104");
         assert_eq!(
-            status.text,
-            "Loaded route104 from sound/voice_groups.inc (1 occupied slot)"
+            params
+                .project_root
+                .read()
+                .expect("project root read")
+                .as_str(),
+            root.to_string_lossy()
+        );
+        assert_eq!(
+            params.voicegroup.read().expect("voicegroup read").as_str(),
+            "route104"
+        );
+        assert!(fs::read_to_string(&projects_json_path)
+            .expect("projects.json emitted")
+            .contains("\"bank\": \"route104\""));
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn restored_committed_voicegroup_loads_projects_json() {
+        let root = temp_project("restored-voicegroup-load");
+        write_file(
+            &root,
+            "sound/direct_sound_data.inc",
+            "\
+DirectSoundWaveData_Kick::
+    .incbin \"sound/direct_sound_samples/kick.bin\"
+",
+        );
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+route104::
+    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
+",
+        );
+        let params = PoryaaaaParams::default();
+        *params.project_root.write().expect("project root write") = root.to_string_lossy().into();
+        *params.voicegroup.write().expect("voicegroup write") = "route104".to_string();
+        let projects_json_path = root.join("out/projects.json");
+
+        let status = PoryaaaaPlugin::load_committed_voicegroup(&params, &projects_json_path)
+            .expect("committed state should request a load");
+
+        assert!(!status.is_error);
+        assert_eq!(status.text, "Loaded route104");
+        assert!(fs::read_to_string(&projects_json_path)
+            .expect("projects.json emitted from restored state")
+            .contains("\"bank\": \"route104\""));
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn plugin_load_failure_preserves_committed_params_and_projects_json() {
+        let root = temp_project("voicegroup-load-failure");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+route104::
+    voice_directsound 60, 0, DirectSoundWaveData_Missing, 255, 0, 255, 242 @ Kick
+",
+        );
+        let projects_json_path = root.join("out/projects.json");
+        write_file(
+            &root,
+            "out/projects.json",
+            "{\"root\":\"old\",\"bank\":\"old\",\"slots\":[]}",
+        );
+        let params = PoryaaaaParams::default();
+        *params.project_root.write().expect("project root write") = "/committed/root".to_string();
+        *params.voicegroup.write().expect("voicegroup write") = "committed_bank".to_string();
+
+        let status = PoryaaaaPlugin::load_voicegroup(
+            &params,
+            &root.to_string_lossy(),
+            "route104",
+            &projects_json_path,
+        );
+
+        assert!(status.is_error);
+        assert!(status.text.contains("unknown-directsound-symbol"));
+        assert_eq!(
+            params
+                .project_root
+                .read()
+                .expect("project root read")
+                .as_str(),
+            "/committed/root"
+        );
+        assert_eq!(
+            params.voicegroup.read().expect("voicegroup read").as_str(),
+            "committed_bank"
+        );
+        assert_eq!(
+            fs::read_to_string(&projects_json_path).expect("projects.json preserved"),
+            "{\"root\":\"old\",\"bank\":\"old\",\"slots\":[]}"
         );
 
         fs::remove_dir_all(root).expect("remove temp project");
     }
 
     #[test]
-    fn voicegroup_probe_does_not_scan_cwd_without_config() {
-        let result = crate::voicegroup::probe_voicegroup_bank(&PluginConfig::default())
-            .expect("probe default config");
+    fn gui_state_initializes_drafts_from_committed_params() {
+        let params = PoryaaaaParams::default();
+        *params.project_root.write().expect("project root write") = "/committed/root".to_string();
+        *params.voicegroup.write().expect("voicegroup write") = "committed_bank".to_string();
 
-        assert_eq!(
-            result.status,
-            crate::voicegroup::VoicegroupProbeStatus::NotConfigured
-        );
-        assert_eq!(result.diagnostics, []);
+        let gui_state = crate::editor::GuiState::from_params(&params);
+
+        assert_eq!(gui_state.draft_project_root, "/committed/root");
+        assert_eq!(gui_state.draft_voicegroup, "committed_bank");
     }
 
     fn temp_project(name: &str) -> PathBuf {

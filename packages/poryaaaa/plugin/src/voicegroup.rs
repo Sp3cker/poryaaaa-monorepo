@@ -1,130 +1,117 @@
-use crate::{PluginConfig, PoryaaaaParams};
-use std::io;
-use voicegroup_core::parser::{Diagnostic, DiagnosticSeverity};
-use voicegroup_core::project_index::ProjectIndex;
+use std::env;
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoicegroupProbeResult {
-    pub status: VoicegroupProbeStatus,
-    pub diagnostics: Vec<Diagnostic>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VoicegroupProbeStatus {
-    NotConfigured,
-    Missing,
-    Loaded {
-        bank_name: String,
-        source_relative_path: String,
-        occupied_slots: usize,
-    },
-}
-
+///TODO: better name. "Status" irkfull
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoicegroupLoadStatus {
     pub text: String,
     pub is_error: bool,
 }
 
-/// Loads voicegroup-core's typed project index and selected bank status for GUI diagnostics.
-pub fn probe_voicegroup_bank(config: &PluginConfig) -> io::Result<VoicegroupProbeResult> {
-    if config.project_root.is_empty() || config.voicegroup.is_empty() {
-        return Ok(VoicegroupProbeResult {
-            status: VoicegroupProbeStatus::NotConfigured,
-            diagnostics: Vec::new(),
-        });
-    }
-
-    let index = ProjectIndex::load(&config.project_root)?;
-    let load_result = index.load_program_bank(&config.voicegroup);
-    let status = match &load_result.bank {
-        Some(bank) => VoicegroupProbeStatus::Loaded {
-            bank_name: bank.name.clone(),
-            source_relative_path: bank.source_relative_path.clone(),
-            occupied_slots: bank
-                .programs
-                .iter()
-                .filter(|program| program.is_some())
-                .count(),
-        },
-        None => VoicegroupProbeStatus::Missing,
-    };
-
-    Ok(VoicegroupProbeResult {
-        status,
-        diagnostics: load_result.diagnostics,
-    })
+/// Returns the shared projects.json path used by poryaaaa and ccomidi.
+/// This is *not read* by poryaaaa. CComidi reads it to get voice name & line numbers
+pub(crate) fn default_projects_json_path() -> Option<PathBuf> {
+    let dir = projects_json_dir_for_env(
+        env::var("APPDATA").ok().as_deref(),
+        env::var("USERPROFILE").ok().as_deref(),
+        env::var("HOME").ok().as_deref(),
+        env::var("XDG_CONFIG_HOME").ok().as_deref(),
+    )?;
+    Some(dir.join("projects.json"))
 }
 
-/// Loads the selected voicegroup through voicegroup-core and formats GUI status text.
-pub fn load_voicegroup_from_params(params: &PoryaaaaParams) -> VoicegroupLoadStatus {
-    let config = PluginConfig {
-        project_root: params
-            .project_root
-            .read()
-            .expect("project root read")
-            .clone(),
-        voicegroup: params.voicegroup.read().expect("voicegroup read").clone(),
-        ..Default::default()
-    };
-
-    match probe_voicegroup_bank(&config) {
-        Ok(result) => load_status_from_probe(result),
-        Err(error) => VoicegroupLoadStatus {
-            text: format!("Bad project root: {error}"),
-            is_error: true,
-        },
-    }
-}
-
-fn load_status_from_probe(result: VoicegroupProbeResult) -> VoicegroupLoadStatus {
-    if let Some(diagnostic) = result
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+fn projects_json_dir_for_env(
+    _appdata: Option<&str>,
+    _userprofile: Option<&str>,
+    home: Option<&str>,
+    _xdg_config_home: Option<&str>,
+) -> Option<PathBuf> {
+    #[cfg(windows)]
     {
-        return VoicegroupLoadStatus {
-            text: format_diagnostic(diagnostic),
-            is_error: true,
-        };
+        if let Some(appdata) = non_empty_value(_appdata) {
+            return Some(PathBuf::from(appdata).join("poryaaaa"));
+        }
+        let home = non_empty_value(_userprofile).or_else(|| non_empty_value(home))?;
+        Some(
+            PathBuf::from(home)
+                .join("AppData")
+                .join("Roaming")
+                .join("poryaaaa"),
+        )
     }
 
-    match result.status {
-        VoicegroupProbeStatus::NotConfigured => VoicegroupLoadStatus {
-            text: "Enter a project root and voicegroup before loading.".to_string(),
-            is_error: true,
-        },
-        VoicegroupProbeStatus::Missing => {
-            let text = result
-                .diagnostics
-                .first()
-                .map(format_diagnostic)
-                .unwrap_or_else(|| {
-                    "Error missing-voicegroup: voicegroup bank was not found".to_string()
-                });
-            VoicegroupLoadStatus {
-                text,
-                is_error: true,
-            }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let home = non_empty_value(home)?;
+        if let Some(xdg) = non_empty_value(_xdg_config_home) {
+            return Some(PathBuf::from(xdg).join("poryaaaa"));
         }
-        VoicegroupProbeStatus::Loaded {
-            bank_name,
-            source_relative_path,
-            occupied_slots,
-        } => VoicegroupLoadStatus {
-            text: format!(
-                "Loaded {bank_name} from {source_relative_path} ({occupied_slots} occupied {})",
-                if occupied_slots == 1 { "slot" } else { "slots" }
-            ),
-            is_error: false,
-        },
+        Some(PathBuf::from(home).join(".config").join("poryaaaa"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = non_empty_value(home)?;
+        Some(PathBuf::from(home).join("Library/Application Support/poryaaaa"))
     }
 }
 
-fn format_diagnostic(diagnostic: &Diagnostic) -> String {
-    let severity = match diagnostic.severity {
-        DiagnosticSeverity::Error => "Error",
-        DiagnosticSeverity::Warning => "Warning",
-    };
-    format!("{severity} {}: {}", diagnostic.code, diagnostic.message)
+fn non_empty_value(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_path_policy_matches_shared_macos_helper() {
+        assert_eq!(
+            super::projects_json_dir_for_env(None, None, Some("/Users/tester"), None)
+                .expect("macos home")
+                .to_string_lossy(),
+            "/Users/tester/Library/Application Support/poryaaaa"
+        );
+        assert!(super::projects_json_dir_for_env(None, None, None, Some("/xdg")).is_none());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn default_path_policy_matches_shared_linux_helper() {
+        assert_eq!(
+            super::projects_json_dir_for_env(None, None, Some("/home/tester"), Some("/xdg"))
+                .expect("linux xdg")
+                .to_string_lossy(),
+            "/xdg/poryaaaa"
+        );
+        assert_eq!(
+            super::projects_json_dir_for_env(None, None, Some("/home/tester"), None)
+                .expect("linux home")
+                .to_string_lossy(),
+            "/home/tester/.config/poryaaaa"
+        );
+        assert!(super::projects_json_dir_for_env(None, None, None, Some("/xdg")).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_path_policy_matches_shared_windows_helper() {
+        assert_eq!(
+            super::projects_json_dir_for_env(
+                Some("C:\\Users\\tester\\AppData\\Roaming"),
+                None,
+                None,
+                None
+            )
+            .expect("windows appdata")
+            .to_string_lossy(),
+            "C:\\Users\\tester\\AppData\\Roaming\\poryaaaa"
+        );
+        assert_eq!(
+            super::projects_json_dir_for_env(None, Some("C:\\Users\\tester"), None, None)
+                .expect("windows userprofile")
+                .to_string_lossy(),
+            "C:\\Users\\tester\\AppData\\Roaming\\poryaaaa"
+        );
+        assert!(super::projects_json_dir_for_env(None, None, None, None).is_none());
+    }
 }

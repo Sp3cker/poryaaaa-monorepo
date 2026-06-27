@@ -1,6 +1,8 @@
-use crate::{editor, PoryaaaaParams};
+use crate::{editor, voicegroup, PoryaaaaParams};
 use nice_plug::prelude::*;
+use std::path::Path;
 use std::sync::Arc;
+use voicegroup_core::plugin_load;
 
 pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
@@ -11,6 +13,59 @@ impl Default for PoryaaaaPlugin {
         Self {
             params: Arc::new(PoryaaaaParams::default()),
         }
+    }
+}
+
+impl PoryaaaaPlugin {
+    /// Commits a draft voicegroup selection after voicegroup-core accepts it.
+    pub(crate) fn load_voicegroup(
+        params: &PoryaaaaParams,
+        draft_project_root: &str,
+        draft_bank: &str,
+        projects_json_path: &Path,
+    ) -> voicegroup::VoicegroupLoadStatus {
+        match plugin_load::load_for_plugin(
+            Path::new(draft_project_root),
+            draft_bank,
+            projects_json_path,
+        ) {
+            Ok(()) => {
+                *params.project_root.write().expect("project root write") =
+                    draft_project_root.to_string();
+                *params.voicegroup.write().expect("voicegroup write") = draft_bank.to_string();
+                voicegroup::VoicegroupLoadStatus {
+                    text: format!("Loaded {draft_bank}"),
+                    is_error: false,
+                }
+            }
+            Err(message) => voicegroup::VoicegroupLoadStatus {
+                text: message,
+                is_error: true,
+            },
+        }
+    }
+
+    /// Loads the committed CLAP-state voicegroup selection when restored state is present.
+    pub(crate) fn load_committed_voicegroup(
+        params: &PoryaaaaParams,
+        projects_json_path: &Path,
+    ) -> Option<voicegroup::VoicegroupLoadStatus> {
+        let project_root = params
+            .project_root
+            .read()
+            .expect("project root read")
+            .clone();
+        let bank = params.voicegroup.read().expect("voicegroup read").clone();
+        if project_root.is_empty() || bank.is_empty() {
+            return None;
+        }
+
+        Some(Self::load_voicegroup(
+            params,
+            &project_root,
+            &bank,
+            projects_json_path,
+        ))
     }
 }
 
@@ -28,6 +83,18 @@ impl Plugin for PoryaaaaPlugin {
 
     type SysExMessage = ();
     type BackgroundTask = ();
+
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        _buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
+        if let Some(path) = voicegroup::default_projects_json_path() {
+            let _ = Self::load_committed_voicegroup(self.params.as_ref(), &path);
+        }
+        true
+    }
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()

@@ -1,4 +1,4 @@
-use crate::{voicegroup, PoryaaaaParams};
+use crate::{voicegroup, PoryaaaaParams, PoryaaaaPlugin};
 use egui::{Margin, Vec2};
 use egui_file_dialog::FileDialog;
 use nice_plug::prelude::*;
@@ -11,29 +11,30 @@ const MIN_WINDOW_HEIGHT: u32 = 260;
 const PROJECT_ROOT_BROWSE_WIDTH: f32 = 72.0;
 const VOICEGROUP_LOAD_WIDTH: f32 = 56.0;
 
-struct GuiState {
+pub(crate) struct GuiState {
+    pub(crate) draft_project_root: String,
+    pub(crate) draft_voicegroup: String,
     project_root_dialog: FileDialog,
     voicegroup_status: Option<voicegroup::VoicegroupLoadStatus>,
 }
 
-impl Default for GuiState {
-    fn default() -> Self {
+impl GuiState {
+    pub(crate) fn from_params(params: &PoryaaaaParams) -> Self {
         Self {
+            draft_project_root: params
+                .project_root
+                .read()
+                .expect("project root read")
+                .clone(),
+            draft_voicegroup: params.voicegroup.read().expect("voicegroup read").clone(),
             project_root_dialog: project_root_dialog(None),
             voicegroup_status: None,
         }
     }
 }
 
-pub(crate) fn apply_project_root_selection(params: &PoryaaaaParams, path: &Path) {
-    *params.project_root.write().expect("project root write") = path.to_string_lossy().into_owned();
-}
-
-/// Loads the currently entered voicegroup and returns GUI-ready status text.
-pub(crate) fn load_voicegroup_from_params(
-    params: &PoryaaaaParams,
-) -> voicegroup::VoicegroupLoadStatus {
-    voicegroup::load_voicegroup_from_params(params)
+pub(crate) fn apply_project_root_selection(gui_state: &mut GuiState, path: &Path) {
+    gui_state.draft_project_root = path.to_string_lossy().into_owned();
 }
 
 pub(crate) struct ProjectRootSelectorResponse {
@@ -124,10 +125,10 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
 
     create_egui_editor(
         egui_state.clone(),
-        GuiState::default(),
+        GuiState::from_params(params.as_ref()),
         settings,
         |_egui_ctx, _queue, _gui_state| {},
-        move |ui, _setter, _queue, gui_state| {
+        move |ui, setter, _queue, gui_state| {
             ResizableWindow::new("poryaaaa-main")
                 .min_size(Vec2::new(MIN_WINDOW_WIDTH as f32, MIN_WINDOW_HEIGHT as f32))
                 .show(ui, egui_state.as_ref(), |ui| {
@@ -136,25 +137,22 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
                         ui.separator();
 
                         ui.label("Project root");
-                        let mut project_root =
-                            params.project_root.write().expect("project root write");
-                        let selector = show_project_root_selector(ui, &mut project_root);
+                        let selector =
+                            show_project_root_selector(ui, &mut gui_state.draft_project_root);
                         if selector.browse_clicked {
-                            let initial_directory = (!project_root.is_empty())
-                                .then(|| PathBuf::from(project_root.as_str()));
+                            let initial_directory = (!gui_state.draft_project_root.is_empty())
+                                .then(|| PathBuf::from(gui_state.draft_project_root.as_str()));
                             gui_state.project_root_dialog = project_root_dialog(initial_directory);
                             gui_state.project_root_dialog.pick_directory();
                         }
-                        drop(project_root);
 
                         gui_state.project_root_dialog.update(ui.ctx());
                         if let Some(path) = gui_state.project_root_dialog.take_picked() {
-                            apply_project_root_selection(params.as_ref(), &path);
+                            apply_project_root_selection(gui_state, &path);
                         }
 
                         ui.label("Voicegroup");
                         let mut load_requested = false;
-                        let mut voicegroup = params.voicegroup.write().expect("voicegroup write");
                         ui.horizontal(|ui| {
                             let field_width = remaining_width_for_leading_field(
                                 ui.available_width(),
@@ -163,7 +161,7 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
                             );
                             ui.add_sized(
                                 [field_width, ui.spacing().interact_size.y],
-                                egui::TextEdit::singleline(&mut *voicegroup),
+                                egui::TextEdit::singleline(&mut gui_state.draft_voicegroup),
                             );
                             load_requested = ui
                                 .add_sized(
@@ -172,10 +170,26 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
                                 )
                                 .clicked();
                         });
-                        drop(voicegroup);
                         if load_requested {
-                            gui_state.voicegroup_status =
-                                Some(load_voicegroup_from_params(params.as_ref()));
+                            gui_state.voicegroup_status = Some(
+                                if let Some(path) = voicegroup::default_projects_json_path() {
+                                    let status = PoryaaaaPlugin::load_voicegroup(
+                                        params.as_ref(),
+                                        &gui_state.draft_project_root,
+                                        &gui_state.draft_voicegroup,
+                                        &path,
+                                    );
+                                    if !status.is_error {
+                                        setter.request_restart();
+                                    }
+                                    status
+                                } else {
+                                    voicegroup::VoicegroupLoadStatus {
+                                        text: "Bad project root: HOME is not set".to_string(),
+                                        is_error: true,
+                                    }
+                                },
+                            );
                         }
 
                         if let Some(status) = &gui_state.voicegroup_status {
