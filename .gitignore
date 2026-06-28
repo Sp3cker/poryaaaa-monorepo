@@ -5,3 +5,4 @@ packages/poryaaaa/compile_commands.json
 packages/poryaaaa/plugin/target/
 packages/voicegroup-lsp/
 .DS_STORE
+.worktrees/
