@@ -16,6 +16,10 @@ const MIN_WINDOW_HEIGHT: u32 = 260;
 const PROJECT_ROOT_BROWSE_WIDTH: f32 = 72.0;
 const VOICEGROUP_LOAD_WIDTH: f32 = 56.0;
 pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
+pub(crate) const CALAMITY_REGULAR_FONT: &str = "Calamity Regular";
+pub(crate) const CALAMITY_BOLD_FONT: &str = "Calamity Bold";
+pub(crate) const CALAMITY_BOLD_FAMILY: &str = "Calamity Bold";
+
 const MIDI_ACTIVITY_REPAINT: Duration = Duration::from_millis(33);
 
 pub(crate) struct GuiState {
@@ -174,6 +178,37 @@ fn show_activity_light(ui: &mut egui::Ui, label: &str, active: bool) {
     ui.colored_label(color, label);
 }
 
+pub(crate) fn calamity_font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        CALAMITY_REGULAR_FONT.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../../../shared/assets/fonts/Calamity/Calamity-Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        CALAMITY_BOLD_FONT.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../../../shared/assets/fonts/Calamity/Calamity-Bold.ttf"
+        ))),
+    );
+
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, CALAMITY_REGULAR_FONT.to_owned());
+    fonts.families.insert(
+        egui::FontFamily::Name(CALAMITY_BOLD_FAMILY.into()),
+        vec![CALAMITY_BOLD_FONT.to_owned()],
+    );
+    fonts
+}
+
+fn apply_calamity_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(calamity_font_definitions());
+}
+
 /// Builds the egui editor around Rust-owned params.
 pub(crate) fn create_editor(
     params: Arc<PoryaaaaParams>,
@@ -188,99 +223,95 @@ pub(crate) fn create_editor(
         egui_state.clone(),
         GuiState::from_params(params.as_ref()),
         settings,
-        |_egui_ctx, _queue, _gui_state| {},
+        |egui_ctx, _queue, _gui_state| {
+            apply_calamity_fonts(egui_ctx);
+        },
         move |ui, _setter, _queue, gui_state| {
-            ResizableWindow::new("poryaaaa-main")
-                .min_size(Vec2::new(MIN_WINDOW_WIDTH as f32, MIN_WINDOW_HEIGHT as f32))
-                .show(ui, egui_state.as_ref(), |ui| {
-                    show_editor_frame(ui, |ui| {
-                        ui.heading("poryaaaa");
-                        ui.separator();
-                        show_midi_activity(ui, gui_state, params.midi_activity.snapshot());
-                        ui.separator();
+            ResizableWindow::new("poryaaaa-main").show(ui, egui_state.as_ref(), |ui| {
+                show_editor_frame(ui, |ui| {
+                    ui.heading("poryaaaa");
+                    ui.separator();
+                    show_midi_activity(ui, gui_state, params.midi_activity.snapshot());
+                    ui.separator();
 
-                        ui.label("Project root");
-                        let selector =
-                            show_project_root_selector(ui, &mut gui_state.draft_project_root);
-                        if selector.browse_clicked {
-                            let initial_directory = (!gui_state.draft_project_root.is_empty())
-                                .then(|| PathBuf::from(gui_state.draft_project_root.as_str()));
-                            gui_state.project_root_dialog = project_root_dialog(initial_directory);
-                            gui_state.project_root_dialog.pick_directory();
-                        }
+                    ui.label("Project root");
+                    let selector =
+                        show_project_root_selector(ui, &mut gui_state.draft_project_root);
+                    if selector.browse_clicked {
+                        let initial_directory = (!gui_state.draft_project_root.is_empty())
+                            .then(|| PathBuf::from(gui_state.draft_project_root.as_str()));
+                        gui_state.project_root_dialog = project_root_dialog(initial_directory);
+                        gui_state.project_root_dialog.pick_directory();
+                    }
 
-                        gui_state.project_root_dialog.update(ui.ctx());
-                        if let Some(path) = gui_state.project_root_dialog.take_picked() {
-                            apply_project_root_selection(gui_state, &path);
-                        }
+                    gui_state.project_root_dialog.update(ui.ctx());
+                    if let Some(path) = gui_state.project_root_dialog.take_picked() {
+                        apply_project_root_selection(gui_state, &path);
+                    }
 
-                        ui.label("Voicegroup");
-                        let mut load_requested = false;
-                        ui.horizontal(|ui| {
-                            let field_width = remaining_width_for_leading_field(
-                                ui.available_width(),
-                                VOICEGROUP_LOAD_WIDTH,
-                                ui.spacing().item_spacing.x,
-                            );
-                            ui.add_sized(
-                                [field_width, ui.spacing().interact_size.y],
-                                egui::TextEdit::singleline(&mut gui_state.draft_voicegroup),
-                            );
-                            load_requested = ui
-                                .add_sized(
-                                    [VOICEGROUP_LOAD_WIDTH, ui.spacing().interact_size.y],
-                                    egui::Button::new("Load"),
-                                )
-                                .clicked();
-                        });
-                        if load_requested {
-                            if let Some(path) = voicegroup::default_projects_json_path() {
-                                let status = voicegroup::VoicegroupLoadStatus {
-                                    text: format!("Loading {}", gui_state.draft_voicegroup),
-                                    is_error: false,
-                                };
-                                *params
-                                    .runtime_voicegroup_status
-                                    .write()
-                                    .expect("runtime voicegroup status write") =
-                                    Some(status.clone());
-                                gui_state.voicegroup_status = Some(status);
-                                async_executor.execute_gui(
-                                    PoryaaaaBackgroundTask::LoadVoicegroup {
-                                        project_root: gui_state.draft_project_root.clone(),
-                                        bank: gui_state.draft_voicegroup.clone(),
-                                        projects_json_path: path,
-                                    },
-                                );
-                            } else {
-                                let status = voicegroup::VoicegroupLoadStatus {
-                                    text: "Bad project root: HOME is not set".to_string(),
-                                    is_error: true,
-                                };
-                                *params
-                                    .runtime_voicegroup_status
-                                    .write()
-                                    .expect("runtime voicegroup status write") =
-                                    Some(status.clone());
-                                gui_state.voicegroup_status = Some(status);
-                            }
-                        }
-
-                        gui_state.voicegroup_status = params
-                            .runtime_voicegroup_status
-                            .read()
-                            .expect("runtime voicegroup status read")
-                            .clone();
-
-                        if let Some(status) = &gui_state.voicegroup_status {
-                            if status.is_error {
-                                ui.colored_label(egui::Color32::RED, &status.text);
-                            } else {
-                                ui.label(&status.text);
-                            }
-                        }
+                    ui.label("Voicegroup");
+                    let mut load_requested = false;
+                    ui.horizontal(|ui| {
+                        let field_width = remaining_width_for_leading_field(
+                            ui.available_width(),
+                            VOICEGROUP_LOAD_WIDTH,
+                            ui.spacing().item_spacing.x,
+                        );
+                        ui.add_sized(
+                            [field_width, ui.spacing().interact_size.y],
+                            egui::TextEdit::singleline(&mut gui_state.draft_voicegroup),
+                        );
+                        load_requested = ui
+                            .add_sized(
+                                [VOICEGROUP_LOAD_WIDTH, ui.spacing().interact_size.y],
+                                egui::Button::new("Load"),
+                            )
+                            .clicked();
                     });
+                    if load_requested {
+                        if let Some(path) = voicegroup::default_projects_json_path() {
+                            let status = voicegroup::VoicegroupLoadStatus {
+                                text: format!("Loading {}", gui_state.draft_voicegroup),
+                                is_error: false,
+                            };
+                            *params
+                                .runtime_voicegroup_status
+                                .write()
+                                .expect("runtime voicegroup status write") = Some(status.clone());
+                            gui_state.voicegroup_status = Some(status);
+                            async_executor.execute_gui(PoryaaaaBackgroundTask::LoadVoicegroup {
+                                project_root: gui_state.draft_project_root.clone(),
+                                bank: gui_state.draft_voicegroup.clone(),
+                                projects_json_path: path,
+                            });
+                        } else {
+                            let status = voicegroup::VoicegroupLoadStatus {
+                                text: "Bad project root: HOME is not set".to_string(),
+                                is_error: true,
+                            };
+                            *params
+                                .runtime_voicegroup_status
+                                .write()
+                                .expect("runtime voicegroup status write") = Some(status.clone());
+                            gui_state.voicegroup_status = Some(status);
+                        }
+                    }
+
+                    gui_state.voicegroup_status = params
+                        .runtime_voicegroup_status
+                        .read()
+                        .expect("runtime voicegroup status read")
+                        .clone();
+
+                    if let Some(status) = &gui_state.voicegroup_status {
+                        if status.is_error {
+                            ui.colored_label(egui::Color32::RED, &status.text);
+                        } else {
+                            ui.label(&status.text);
+                        }
+                    }
                 });
+            });
         },
     )
 }

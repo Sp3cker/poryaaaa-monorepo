@@ -141,6 +141,36 @@ mod tests {
     }
 
     #[test]
+    fn editor_font_definitions_use_calamity_faces() {
+        let fonts = crate::editor::calamity_font_definitions();
+
+        assert!(fonts
+            .font_data
+            .contains_key(crate::editor::CALAMITY_REGULAR_FONT));
+        assert!(fonts
+            .font_data
+            .contains_key(crate::editor::CALAMITY_BOLD_FONT));
+        assert_eq!(
+            fonts
+                .families
+                .get(&egui::FontFamily::Proportional)
+                .and_then(|family| family.first())
+                .map(String::as_str),
+            Some(crate::editor::CALAMITY_REGULAR_FONT)
+        );
+
+        let bold_family = egui::FontFamily::Name(crate::editor::CALAMITY_BOLD_FAMILY.into());
+        assert_eq!(
+            fonts
+                .families
+                .get(&bold_family)
+                .and_then(|family| family.first())
+                .map(String::as_str),
+            Some(crate::editor::CALAMITY_BOLD_FONT)
+        );
+    }
+
+    #[test]
     fn midi_activity_light_holds_recent_counter_changes_briefly() {
         let mut light = crate::editor::MidiActivityLight::default();
         let now = Instant::now();
