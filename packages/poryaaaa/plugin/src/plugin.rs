@@ -263,7 +263,7 @@ impl Plugin for PoryaaaaPlugin {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         let config = EngineConfig {
-            sample_rate: buffer_config.sample_rate as f32,
+            sample_rate: buffer_config.sample_rate,
             volume: self.config.volume,
             reverb: self.config.reverb,
         };
