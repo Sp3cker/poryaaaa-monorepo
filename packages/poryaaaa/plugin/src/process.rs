@@ -199,6 +199,41 @@ mod tests {
     }
 
     #[test]
+    fn midi_program_change_is_forwarded_to_runtime() {
+        let mut runtime = RecordingRuntime::default();
+        let mut left = [0.0; 1];
+        let mut right = [0.0; 1];
+        let mut events = vec![NoteEvent::MidiProgramChange {
+            timing: 0,
+            channel: 4,
+            program: 17,
+        }]
+        .into_iter();
+
+        super::process_stereo(&mut runtime, &mut left, &mut right, None, || events.next());
+
+        assert_eq!(runtime.actions[0], Action::Program(4, 17));
+    }
+
+    #[test]
+    fn process_chunks_render_spans_above_engine_limit() {
+        let mut runtime = RecordingRuntime::default();
+        let mut left = vec![0.0; 4097];
+        let mut right = vec![0.0; 4097];
+
+        super::process_stereo(&mut runtime, &mut left, &mut right, None, || None);
+
+        assert_eq!(
+            runtime.actions,
+            [
+                Action::Render(2048),
+                Action::Render(2048),
+                Action::Render(1)
+            ]
+        );
+    }
+
+    #[test]
     fn process_translates_controller_and_pitch_values() {
         let mut runtime = RecordingRuntime::default();
         let mut left = [0.0; 1];

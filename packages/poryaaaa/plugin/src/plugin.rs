@@ -15,19 +15,13 @@ pub enum PoryaaaaBackgroundTask {
 pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
     runtime: Arc<Mutex<Option<CPluginRuntime>>>,
-    runtime_programs: [u8; PROGRAM_COUNT],
-    last_seen_program_params: [u8; PROGRAM_COUNT],
 }
 
 impl Default for PoryaaaaPlugin {
     fn default() -> Self {
-        let params = Arc::new(PoryaaaaParams::default());
-        let programs = read_program_params(params.as_ref());
         Self {
-            params,
+            params: Arc::new(PoryaaaaParams::default()),
             runtime: Arc::new(Mutex::new(None)),
-            runtime_programs: programs,
-            last_seen_program_params: programs,
         }
     }
 }
@@ -191,28 +185,15 @@ impl PoryaaaaPlugin {
         }
     }
 
-    /// Mirrors host program params only when they actually change.
-    fn poll_program_params(&mut self) {
+    /// Applies restored/default host program params to a fresh or reset runtime.
+    fn sync_host_program_params_to_runtime(&mut self) {
         let programs = read_program_params(self.params.as_ref());
-        for channel in 0..PROGRAM_COUNT {
-            if programs[channel] != self.last_seen_program_params[channel] {
-                self.runtime_programs[channel] = programs[channel];
-                if let Some(runtime) = self.runtime.lock().expect("runtime lock").as_mut() {
-                    runtime.program_change(channel as i32, programs[channel]);
-                }
-            }
-        }
-        self.last_seen_program_params = programs;
-    }
-
-    /// Pushes the current private program mirror into the runtime engine.
-    fn sync_program_params_to_runtime(&mut self) {
         let mut runtime = self.runtime.lock().expect("runtime lock");
         let Some(runtime) = runtime.as_mut() else {
             return;
         };
         for channel in 0..PROGRAM_COUNT {
-            runtime.program_change(channel as i32, self.runtime_programs[channel]);
+            runtime.program_change(channel as i32, programs[channel]);
         }
     }
 }
@@ -297,9 +278,8 @@ impl Plugin for PoryaaaaPlugin {
             }
         }
 
-        self.poll_program_params();
         *self.runtime.lock().expect("runtime lock") = Some(runtime);
-        self.sync_program_params_to_runtime();
+        self.sync_host_program_params_to_runtime();
         true
     }
 
@@ -311,7 +291,7 @@ impl Plugin for PoryaaaaPlugin {
             .as_mut()
             .is_some_and(CPluginRuntime::reset);
         if reset {
-            self.sync_program_params_to_runtime();
+            self.sync_host_program_params_to_runtime();
         }
     }
 
@@ -333,8 +313,6 @@ impl Plugin for PoryaaaaPlugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.poll_program_params();
-
         let channels = buffer.as_slice();
         if channels.len() < 2 {
             for channel in channels {

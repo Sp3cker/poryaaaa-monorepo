@@ -593,6 +593,197 @@ route104::
         assert!(plugin.has_runtime());
     }
 
+    #[test]
+    fn process_without_runtime_clears_stereo_and_returns_normal() {
+        use nice_plug::prelude::*;
+
+        let mut plugin = PoryaaaaPlugin::default();
+        let mut output = vec![vec![1.0; 8], vec![-1.0; 8]];
+        let mut context = TestProcessContext::default();
+
+        let status = process_with_output(&mut plugin, &mut output, &mut context);
+
+        assert_eq!(status, ProcessStatus::Normal);
+        assert!(output[0].iter().all(|sample| *sample == 0.0));
+        assert!(output[1].iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn process_without_loaded_voicegroup_clears_stereo_and_returns_normal() {
+        use nice_plug::prelude::*;
+
+        let mut plugin = PoryaaaaPlugin::default();
+        let mut init_context = TestInitContext;
+        assert!(plugin.initialize(
+            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
+            &test_buffer_config(),
+            &mut init_context,
+        ));
+        assert!(!plugin.runtime_has_loaded_voicegroup());
+        let mut output = vec![vec![1.0; 8], vec![-1.0; 8]];
+        let mut context = TestProcessContext::default();
+
+        let status = process_with_output(&mut plugin, &mut output, &mut context);
+
+        assert_eq!(status, ProcessStatus::Normal);
+        assert!(output[0].iter().all(|sample| *sample == 0.0));
+        assert!(output[1].iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn process_with_loaded_voicegroup_renders_audio_and_returns_keepalive() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("plugin-process-loaded");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let mut plugin = PoryaaaaPlugin::default();
+        let mut init_context = TestInitContext;
+        assert!(plugin.initialize(
+            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
+            &test_buffer_config(),
+            &mut init_context,
+        ));
+        let execute = plugin.task_executor();
+        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
+            project_root: root.to_string_lossy().into_owned(),
+            bank: "voicegroup000".to_owned(),
+            projects_json_path: root.join("out/projects.json"),
+        });
+        assert!(plugin.runtime_has_loaded_voicegroup());
+
+        let mut context = TestProcessContext::with_events(vec![
+            NoteEvent::MidiCC {
+                timing: 0,
+                channel: 0,
+                cc: 7,
+                value: 1.0,
+            },
+            NoteEvent::MidiCC {
+                timing: 0,
+                channel: 0,
+                cc: 10,
+                value: 0.5,
+            },
+            NoteEvent::NoteOn {
+                timing: 0,
+                voice_id: None,
+                channel: 0,
+                note: 60,
+                velocity: 1.0,
+            },
+        ]);
+        let mut peak = 0.0f32;
+        for _ in 0..8 {
+            let mut output = vec![vec![0.0; 512], vec![0.0; 512]];
+            let status = process_with_output(&mut plugin, &mut output, &mut context);
+            assert_eq!(status, ProcessStatus::KeepAlive);
+            peak = output
+                .iter()
+                .flatten()
+                .fold(peak, |peak, sample| peak.max(sample.abs()));
+        }
+
+        assert!(peak > 0.0001);
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    fn test_buffer_config() -> nice_plug::prelude::BufferConfig {
+        nice_plug::prelude::BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: nice_plug::prelude::ProcessMode::Realtime,
+        }
+    }
+
+    fn process_with_output(
+        plugin: &mut PoryaaaaPlugin,
+        output: &mut Vec<Vec<f32>>,
+        context: &mut TestProcessContext,
+    ) -> nice_plug::prelude::ProcessStatus {
+        use nice_plug::prelude::*;
+
+        let samples = output[0].len();
+        let mut buffer = Buffer::default();
+        unsafe {
+            buffer.set_slices(samples, |output_slices| {
+                let (left, right) = output.split_at_mut(1);
+                *output_slices = vec![&mut left[0], &mut right[0]];
+            });
+        }
+        let mut aux_inputs: Vec<Buffer> = Vec::new();
+        let mut aux_outputs: Vec<Buffer> = Vec::new();
+        let mut aux = AuxiliaryBuffers {
+            inputs: aux_inputs.as_mut_slice(),
+            outputs: aux_outputs.as_mut_slice(),
+        };
+        plugin.process(&mut buffer, &mut aux, context)
+    }
+
+    struct TestProcessContext {
+        transport: nice_plug::prelude::Transport,
+        events: std::vec::IntoIter<nice_plug::prelude::NoteEvent<()>>,
+        sent_events: Vec<nice_plug::prelude::NoteEvent<()>>,
+    }
+
+    impl Default for TestProcessContext {
+        fn default() -> Self {
+            Self::with_events(Vec::new())
+        }
+    }
+
+    impl TestProcessContext {
+        fn with_events(events: Vec<nice_plug::prelude::NoteEvent<()>>) -> Self {
+            Self {
+                transport: nice_plug::prelude::Transport::new(48_000.0),
+                events: events.into_iter(),
+                sent_events: Vec::new(),
+            }
+        }
+    }
+
+    impl nice_plug::prelude::ProcessContext<PoryaaaaPlugin> for TestProcessContext {
+        fn plugin_api(&self) -> nice_plug::prelude::PluginApi {
+            nice_plug::prelude::PluginApi::Clap
+        }
+
+        fn execute_background(
+            &self,
+            _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask,
+        ) {
+        }
+
+        fn execute_gui(
+            &self,
+            _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask,
+        ) {
+        }
+
+        fn transport(&self) -> &nice_plug::prelude::Transport {
+            &self.transport
+        }
+
+        fn next_event(&mut self) -> Option<nice_plug::prelude::PluginNoteEvent<PoryaaaaPlugin>> {
+            self.events.next()
+        }
+
+        fn send_event(&mut self, event: nice_plug::prelude::PluginNoteEvent<PoryaaaaPlugin>) {
+            self.sent_events.push(event);
+        }
+
+        fn set_latency_samples(&self, _samples: u32) {}
+
+        fn set_current_voice_capacity(&self, _capacity: u32) {}
+    }
+
     struct TestInitContext;
 
     impl nice_plug::prelude::InitContext<PoryaaaaPlugin> for TestInitContext {

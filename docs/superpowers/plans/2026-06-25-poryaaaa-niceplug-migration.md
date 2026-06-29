@@ -14,7 +14,7 @@
 - The migration target is the scaffold in `packages/poryaaaa/plugin/Cargo.toml` and `packages/poryaaaa/plugin/src/`.
 - The C audio engine behavior is not rewritten as part of this plan.
 - Later Rust FFI mirrors the current C `M4AEngine` layout only inside `ffi.rs`; normal Rust modules use a safe wrapper and never rely on C layout details.
-- Recorder functionality, external MIDI realtime clock parity, plugin logging, voice editing, sample overrides, and final bundle replacement are not first-pass requirements.
+- Recorder functionality, external MIDI realtime clock parity, plugin logging, voice/ADSR editing, sample overrides, restore-original voice commands, and final bundle replacement are out of scope for the Rust plugin migration unless a later plan explicitly reintroduces them; the legacy C++ plugin remains the live voice editor.
 - Rust Cargo commands for this plugin should run from `packages/poryaaaa/plugin` so the local `rust-toolchain.toml` selects nightly.
 
 ## Current Responsibility Map
@@ -37,8 +37,8 @@
 - `#[derive(Params)]` replaces the manual `CLAP_EXT_PARAMS` table for new Rust-plugin params. Old numeric CLAP param ids do not need to be preserved.
 - `nice_plug_egui::create_egui_editor` and `EguiState` replace the CLAP GUI extension, timer callback, Pugl shell, and ImGui state.
 - Later Rust process code reads incoming NicePlug `NoteEvent`s, translates them to C `m4a_engine_*` calls, and chunks `m4a_engine_process()` to `M4A_ENGINE_MAX_PROCESS_FRAMES`.
-- Later incoming MIDI program-change messages are input-only: they call `m4a_engine_program_change()` so m4a channels choose voices.
-- Rust GUI first uses General-tab snapshots plus explicit commands. It must not pass a raw plugin-data pointer into UI code like `m4a_gui_set_plugin_data()` does today.
+- Later incoming MIDI program-change messages are transient engine input only: they call `m4a_engine_program_change()` so m4a channels choose voices, do not mutate NicePlug host params or GUI state, and are not persisted or replayed across reset/voicegroup reload. If a channel receives a note before any program-change, the engine may play its default voice.
+- Rust GUI first uses General-tab draft state plus read-only snapshots. It must not pass a raw plugin-data pointer into UI code like `m4a_gui_set_plugin_data()` does today.
 
 ## Voicegroup Load/Commit Decisions From 2026-06-26 Grilling
 
@@ -102,9 +102,9 @@ Prior verification included plugin config/load/editor/default-path tests, full p
 
 ### Task 5: Later Add A Narrow C Engine FFI
 
-Contract: keep C engine types opaque in Rust. Add `ffi.rs`, C lifecycle helpers `m4a_engine_create/free`, tiny accessor `voicegroup_loaded_voices`, and a safe `CPluginRuntime` cradle owning `M4AEngine*` plus `LoadedVoiceGroup*`. Rust may use existing `voicegroup_load/free` for the fast audio slice; do not duplicate voicegroup parsing/materialization or expose driver/hw/voice-editing internals.
+Contract: keep C engine types opaque in Rust. Add `ffi.rs`, C lifecycle helpers `m4a_engine_create/free`, tiny accessor `voicegroup_loaded_voices` only if read-only inspection needs it, and a safe `CPluginRuntime` cradle owning `M4AEngine*` plus `LoadedVoiceGroup*`. Rust may use existing `voicegroup_load/free` for the fast audio slice; do not duplicate voicegroup parsing/materialization, expose driver/hw internals, or add GUI-facing mutable voice FFI.
 
-Lifecycle: `initialize` creates runtime; `deactivate` destroys engine before freeing loaded voicegroup; `reset` calls `m4a_engine_reset` and replays program/voicegroup state only when engine remains valid. If committed root+bank are valid but C materialization fails, initialize returns true, preserves committed params, exposes error, clears runtime voicegroup binding, and renders silence.
+Lifecycle: `initialize` creates runtime; `deactivate` destroys engine before freeing loaded voicegroup; `reset` calls `m4a_engine_reset` and rebinds the loaded voicegroup only when engine remains valid. Transient MIDI program-change state is not replayed across reset or voicegroup reload; persisted host program params are restored/default state only. If committed root+bank are valid but C materialization fails, initialize returns true, preserves committed params, exposes error, clears runtime voicegroup binding, and renders silence.
 
 Replacement/build: user/state voicegroup replacement while running is transactional: validate/load new bank first, commit/swap only on success, preserve previous loaded voicegroup on failure. Add Cargo-owned `build.rs` using `cc` for only fast-audio native closure; no stale CMake `.a` dependency; keep Rust plugin using Rust `voicegroup-core` directly for Load/projects.json even if C loader links the C ABI/staticlib too.
 
@@ -127,9 +127,9 @@ Run this task after the narrow C engine FFI exists and before treating Task 6, T
 If the worktree already contains `packages/poryaaaa/plugin/src/process.rs` or a `Plugin::process` path that renders through `CPluginRuntime`, treat the branch as Task 5 + Task 6 in progress. Do not leave a half-ported process adapter in a "Task 5 only" merge. Either remove the process adapter from the Task 5 branch, or, by default for the fast audio slice, finish the Task 6 acceptance items listed below in this task and in Task 6.
 
 - [x] Keep explicit user/state voicegroup replacement transactional while running. The editor does not receive a raw plugin/runtime pointer; it dispatches a `LoadVoicegroup` background task, validates/publishes through `voicegroup-core`, then swaps the active `CPluginRuntime` voicegroup with `CPluginRuntime::load_voicegroup`. Failed replacement leaves the previous loaded runtime voicegroup intact and surfaces the error.
-- [ ] If `process.rs` remains in this branch, complete the Task 6 program-state seam now: process through a plugin-owned adapter or equivalent state owner so incoming MIDI Program Change updates the private runtime program mirror and C engine, never NicePlug host params or GUI-visible draft state. Engine reset and voicegroup reload must replay that mirror.
-- [ ] If `process.rs` remains in this branch, add the Task 6 process proofs now: loaded-runtime process path produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; no-runtime and no-loaded-voicegroup paths clear stereo and return `ProcessStatus::Normal`; render chunking is tested above `M4A_ENGINE_MAX_PROCESS_FRAMES`.
-- [ ] Update this plan's checkboxes to match observed implementation and verification. Check only items that are implemented and covered; leave remaining Task 6 proof items unchecked until their tests exist and pass.
+- [x] If `process.rs` remains in this branch, complete the Task 6 program-change seam now: incoming MIDI Program Change is transient engine input only, calls the safe runtime/C engine `program_change` path, never mutates NicePlug host params or GUI-visible draft state, and is not mirrored or replayed across engine reset or voicegroup reload.
+- [x] If `process.rs` remains in this branch, add the Task 6 process proofs now: loaded-runtime process path produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; no-runtime and no-loaded-voicegroup paths clear stereo and return `ProcessStatus::Normal`; render chunking is tested above `M4A_ENGINE_MAX_PROCESS_FRAMES`.
+- [x] Update this plan's checkboxes to match observed implementation and verification. Check only items that are implemented and covered; leave remaining Task 6 proof items unchecked until their tests exist and pass.
 
 Verify:
 
@@ -146,16 +146,16 @@ packages/poryaaaa/build/poryaaaa_engine_lifecycle 1
 
 - [ ] Add `packages/poryaaaa/plugin/src/process.rs` for NicePlug event translation and render chunking.
 - [ ] Translate `NoteEvent::NoteOn`, `NoteEvent::NoteOff`, `NoteEvent::Choke`, `NoteEvent::MidiProgramChange`, `NoteEvent::MidiCC`, and `NoteEvent::MidiPitchBend` to existing C engine calls.
-- [ ] Program changes are consumed only as engine input. Do not emit program-change events, do not mirror them into GUI state, and do not preserve the old C plugin's param echo behavior.
-- [ ] Treat host program `IntParam`s as restored/default state and keep a private per-channel runtime program mirror for the current engine state. MIDI Program Change updates the runtime mirror and engine only; host param changes update the runtime mirror when observed. Engine reset/voicegroup reload replays the runtime mirror.
-- [ ] Add `process.rs` tests proving incoming `MidiProgramChange` calls only the safe engine wrapper's `program_change`/`m4a_engine_program_change` path and does not update NicePlug program params or GUI-visible program state.
+- [x] Program changes are consumed only as engine input. Do not emit program-change events, do not mirror them into GUI state, and do not preserve the old C plugin's param echo behavior.
+- [x] Treat host program `IntParam`s as restored/default state only. Incoming MIDI Program Change updates the C engine for the current runtime instance only; the plugin does not keep a private runtime program mirror, does not update host params from MIDI PC, and does not replay prior MIDI PC state after reset or voicegroup reload.
+- [x] Add `process.rs` tests proving incoming `MidiProgramChange` calls the safe engine wrapper's `program_change`/`m4a_engine_program_change` path. Verify the non-mutation requirement by code trace: the MIDI PC path must not have access to NicePlug program params, GUI-visible program state, or any private replay mirror/state.
 - [ ] Apply host tempo only for the fast audio slice: when `context.transport().tempo` is finite and positive, call `m4a_engine_set_tempo_bpm()` before consuming timed events or rendering that NicePlug process callback/sub-block. Cache `last_host_tempo_bpm` for reapply after engine reset/reinit. Defer external MIDI clock (`0xF8`/`0xFA`/`0xFB`/`0xFC`) and recorder beat mapping.
-- [ ] Preserve chunking to `M4A_ENGINE_MAX_PROCESS_FRAMES`.
+- [x] Preserve chunking to `M4A_ENGINE_MAX_PROCESS_FRAMES`.
 - [ ] Preserve sample-accurate event/render interleaving from `m4a_plugin.c`: advance an outer `frame_pos`, apply all NicePlug events whose `NoteEvent::timing() <= frame_pos`, render only until the next event time through chunked `m4a_engine_process`, then advance.
 - [ ] Treat NicePlug `Buffer` as a strict stereo planar overwrite target matching the declared stereo output layout: split channel 0/1 into left/right, pass their slice pointers directly to `m4a_engine_process`, and let C overwrite/pad rendered samples. Do not pre-clear before successful render, do not accumulate, and do not add mono/surround policy. Fill silence only on explicit no-runtime/no-loaded-voicegroup fallback paths.
-- [ ] Return `ProcessStatus::Normal` for no-runtime/no-loaded-voicegroup silent fallback paths; return `ProcessStatus::KeepAlive` only after a successful process block with a loaded C runtime/voicegroup. Do not use `ProcessStatus::Tail(_)` until the engine can report a real finite tail length.
-- [ ] Add a pure-Rust process-order test with a mock engine that records `(timing, action)` and proves events and renders interleave, for example note at 0, render `N`, note at `N`; do not accept an implementation that drains every event before rendering the whole block.
-- [ ] Add a Rust process-path audio proof: drive the process path through a loaded-runtime seam and assert a canned note/program setup produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; assert no-runtime/no-loaded-voicegroup fallback writes silence and returns `ProcessStatus::Normal`. Keep `poryaaaa_engine_lifecycle 1` as the real C backend audibility smoke; do not require a host/CLAP scan or WAV artifact comparison for this fast slice.
+- [x] Return `ProcessStatus::Normal` for no-runtime/no-loaded-voicegroup silent fallback paths; return `ProcessStatus::KeepAlive` only after a successful process block with a loaded C runtime/voicegroup. Do not use `ProcessStatus::Tail(_)` until the engine can report a real finite tail length.
+- [x] Add a pure-Rust process-order test with a mock engine that records `(timing, action)` and proves events and renders interleave, for example note at 0, render `N`, note at `N`; do not accept an implementation that drains every event before rendering the whole block.
+- [x] Add a Rust process-path audio proof: drive the process path through a loaded-runtime seam and assert a canned note/program setup produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; assert no-runtime/no-loaded-voicegroup fallback writes silence and returns `ProcessStatus::Normal`. Keep `poryaaaa_engine_lifecycle 1` as the real C backend audibility smoke; do not require a host/CLAP scan or WAV artifact comparison for this fast slice.
 - [ ] Verify:
 
 ```bash
@@ -165,10 +165,10 @@ packages/poryaaaa/build/poryaaaa_unit_tests
 packages/poryaaaa/build/poryaaaa_engine_lifecycle 1
 ```
 
-### Task 7: Later Port Voices And Recorder Tabs Without Raw Plugin Pointers
+### Task 7: Later Port Read-Only Voices Inspection And Recorder Tabs Without Raw Plugin Pointers
 
 - [ ] Defer this task until the Rust plugin can scan, render audio, receive a `voicegroup-core` file-path handoff, build the runtime voicegroup from that handoff, and open the General tab.
-- [ ] Port Voices tab as display-only before adding edits. Editing voices, ADSR edits, CGB key/duty/period edits, sample override requests, and restore-original commands are not first-pass scope.
+- [ ] Port the Voices tab only as read-only inspection from safe snapshots such as `voicegroup-core`/`projects.json` slot data, or defer it entirely. Do not implement voice mutation, ADSR/envelope edits, CGB key/duty/period edits, sample override requests, `m4a_engine_refresh_voices`, restore-original commands, `ToneData*` mutation, or any GUI-facing mutable voice FFI.
 - [ ] Port Recorder tab through recorder FFI and Rust-owned UI state after the core plugin works. Temporary loss of recorder functionality is acceptable during the first Rust rewrite.
 - [ ] Do not pass a raw `PoryaaaaPlugin*` or `M4APluginData*` equivalent into the editor.
 - [ ] Verify when this later task is in scope:
@@ -201,7 +201,7 @@ Manual verification: installed Rust bundle timestamp is fresh, host scans the ne
 
 - The Rust plugin intentionally breaks old C plugin state and automation compatibility by using a new CLAP name/id and new parameter ids.
 - Cargo/Rust native linkage must deliberately choose how to link the C engine, C++ recorder if/when used, voicegroup loader, `m4a_driver`, `hw_audio`, and `voicegroup-core` without duplicate static Rust symbols.
-- The current GUI mutates live `ToneData*`. Rust should use snapshots and commands so GUI concerns do not leak into engine internals again; voice editing is deferred until after the first Rust plugin works.
+- The current GUI mutates live `ToneData*`. The Rust editor must not hold live `ToneData*` or reproduce that mutation path; the legacy C++ GUI remains the live voice editor, while Rust may use safe read-only snapshots for inspection.
 - The existing CMake target auto-installs the C/C++ CLAP bundle. The Rust workflow must not replace that developer loop until Rust scan, validation/publish, runtime voicegroup build, render, and editor checks pass.
 - External MIDI realtime clock support and recorder parity are deferred. Do not fork or patch NicePlug for `0xF8`, `0xFA`, `0xFB`, or `0xFC` in the first rewrite.
 - Project-level `projects.json` emission must remain inside `voicegroup-core`; duplicating legacy C project-state serialization in the Rust plugin would create a second source of truth.
