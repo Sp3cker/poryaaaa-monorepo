@@ -742,20 +742,30 @@ route104::
 
     #[test]
     fn c_runtime_creates_resets_and_drops_engine() {
-        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+        let config = crate::runtime::EngineConfig {
+            sample_rate: 48_000.0,
+            volume: 127,
+            reverb: 0,
+        };
+        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
 
-        assert!(runtime.reset());
-        assert!(!runtime.has_loaded_voicegroup());
+        assert!(runtime.reset().is_ok());
+        assert!(!runtime.is_ready());
     }
 
     #[test]
     fn failed_runtime_voicegroup_load_keeps_no_loaded_voicegroup() {
-        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+        let config = crate::runtime::EngineConfig {
+            sample_rate: 48_000.0,
+            volume: 127,
+            reverb: 0,
+        };
+        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
 
         let result = runtime.load_voicegroup("/definitely/not/a/poryaaaa/project", "voicegroup000");
 
         assert!(result.is_err());
-        assert!(!runtime.has_loaded_voicegroup());
+        assert!(!runtime.is_ready());
     }
 
     #[test]
@@ -770,7 +780,12 @@ route104::
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
-        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+        let config = crate::runtime::EngineConfig {
+            sample_rate: 48_000.0,
+            volume: 127,
+            reverb: 0,
+        };
+        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
         runtime
             .load_voicegroup(&root.to_string_lossy(), "voicegroup000")
             .expect("initial load");
@@ -778,9 +793,9 @@ route104::
         let result = runtime.load_voicegroup("/definitely/not/a/poryaaaa/project", "voicegroup000");
 
         assert!(result.is_err());
-        assert!(runtime.has_loaded_voicegroup());
-        assert!(runtime.reset());
-        assert!(runtime.has_loaded_voicegroup());
+        assert!(runtime.is_ready());
+        assert!(runtime.reset().is_ok());
+        assert!(runtime.is_ready());
 
         runtime.program_change(0, 0);
         runtime.cc(0, 7, 127);

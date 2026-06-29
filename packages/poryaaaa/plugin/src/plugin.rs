@@ -2,7 +2,7 @@ use crate::{
     config::PluginConfig,
     editor,
     process::{self, ProcessRuntime},
-    runtime::CPluginRuntime,
+    runtime::{M4aEngine, EngineConfig},
     voicegroup, PoryaaaaParams, PROGRAM_COUNT,
 };
 use nice_plug::prelude::*;
@@ -20,7 +20,7 @@ pub enum PoryaaaaBackgroundTask {
 
 pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
-    runtime: Arc<Mutex<Option<CPluginRuntime>>>,
+    runtime: Arc<Mutex<Option<M4aEngine>>>,
     last_host_tempo_bpm: Option<f64>,
     config: PluginConfig,
 }
@@ -101,7 +101,7 @@ impl PoryaaaaPlugin {
             .lock()
             .expect("runtime lock")
             .as_ref()
-            .is_some_and(CPluginRuntime::has_loaded_voicegroup)
+            .is_some_and(M4aEngine::is_ready)
     }
 
     /// Lets tests seed persisted params without exposing the production field.
@@ -162,7 +162,7 @@ impl PoryaaaaPlugin {
     /// Runs a GUI-dispatched voicegroup load against the active runtime when present.
     fn run_background_task(
         params: &PoryaaaaParams,
-        runtime: &Mutex<Option<CPluginRuntime>>,
+        runtime: &Mutex<Option<M4aEngine>>,
         task: PoryaaaaBackgroundTask,
     ) {
         match task {
@@ -186,11 +186,11 @@ impl PoryaaaaPlugin {
 
                 let mut runtime = runtime.lock().expect("runtime lock");
                 if let Some(runtime) = runtime.as_mut() {
-                    if let Err(message) = runtime.load_voicegroup(&project_root, &bank) {
+                    if let Err(err) = runtime.load_voicegroup(&project_root, &bank) {
                         Self::write_runtime_voicegroup_status(
                             params,
                             Some(voicegroup::VoicegroupLoadStatus {
-                                text: message,
+                                text: err.to_string(),
                                 is_error: true,
                             }),
                         );
@@ -262,17 +262,19 @@ impl Plugin for PoryaaaaPlugin {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        let mut runtime = match CPluginRuntime::new(buffer_config.sample_rate) {
+        let config = EngineConfig {
+            sample_rate: buffer_config.sample_rate as f32,
+            volume: self.config.volume,
+            reverb: self.config.reverb,
+        };
+        let mut runtime = match M4aEngine::new(config) {
             Ok(runtime) => runtime,
-            Err(message) => {
-                self.set_runtime_voicegroup_error(message);
+            Err(err) => {
+                self.set_runtime_voicegroup_error(err.to_string());
                 *self.runtime.lock().expect("runtime lock") = None;
                 return false;
             }
         };
-        runtime.set_volume(self.config.volume);
-        runtime.set_reverb_amount(self.config.reverb);
-
         let project_root = self
             .params
             .project_root
@@ -295,8 +297,8 @@ impl Plugin for PoryaaaaPlugin {
                 }
                 Some(_) => match runtime.load_voicegroup(&project_root, &bank) {
                     Ok(()) => Self::write_runtime_voicegroup_status(self.params.as_ref(), None),
-                    Err(message) => {
-                        self.set_runtime_voicegroup_error(message);
+                    Err(err) => {
+                        self.set_runtime_voicegroup_error(err.to_string());
                         runtime.clear_voicegroup();
                     }
                 },
@@ -315,14 +317,20 @@ impl Plugin for PoryaaaaPlugin {
     }
 
     fn reset(&mut self) {
-        let reset = self
+        let reset_result = self
             .runtime
             .lock()
             .expect("runtime lock")
             .as_mut()
-            .is_some_and(CPluginRuntime::reset);
-        if reset {
-            self.reapply_host_state_to_runtime();
+            .map(|runtime| runtime.reset());
+        match reset_result {
+            Some(Ok(())) => {
+                self.reapply_host_state_to_runtime();
+            }
+            Some(Err(err)) => {
+                self.set_runtime_voicegroup_error(err.to_string());
+            }
+            None => {}
         }
     }
 
@@ -365,14 +373,13 @@ impl Plugin for PoryaaaaPlugin {
             });
             return ProcessStatus::Normal;
         };
-        if !runtime.has_loaded_voicegroup() {
+        if !runtime.is_ready() {
             process::clear_stereo(left, right);
             process::drain_midi_activity(self.params.midi_activity.as_ref(), || {
                 context.next_event()
             });
             return ProcessStatus::Normal;
         }
-
         process::process_stereo(
             runtime,
             left,
