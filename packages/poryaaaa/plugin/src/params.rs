@@ -4,6 +4,8 @@ use nice_plug_egui::EguiState;
 use std::sync::{Arc, RwLock};
 
 pub const PROGRAM_COUNT: usize = 16;
+pub(crate) const DEFAULT_EDITOR_WIDTH: u32 = 525;
+pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 325;
 
 #[derive(Params)]
 pub struct PoryaaaaParams {
@@ -52,7 +54,7 @@ pub struct PoryaaaaParams {
 impl Default for PoryaaaaParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(420, 260),
+            editor_state: EguiState::from_size(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT),
             project_root: Arc::new(RwLock::new(String::new())),
             voicegroup: Arc::new(RwLock::new(String::new())),
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),

@@ -148,7 +148,7 @@ DirectSoundWaveData_sc88pro_glockenspiel::
 }
 
 #[test]
-fn reports_voice_macro_after_assembly_label_as_outside_voice_group() {
+fn parses_voice_macros_after_assembly_label_as_voice_group() {
     let source = "\
 \t.align 2
 voicegroup192::
@@ -157,14 +157,41 @@ voicegroup192::
 
     let document = parse_document(source);
 
+    assert_no_diagnostics(&document);
+    assert_eq!(document.voice_groups.len(), 1);
+    assert_eq!(document.assembly_labels.len(), 1);
+
+    let voice_group = &document.voice_groups[0];
+    assert_eq!(voice_group.name.text, "voicegroup192");
+    assert_eq!(voice_group.start_slot, 0);
+    assert_eq!(
+        range_text(source, &voice_group.declaration_range),
+        "voicegroup192::"
+    );
+    assert_eq!(voice_group.programs.len(), 1);
+    assert_eq!(voice_group.programs[0].slot, 0);
+    assert_eq!(voice_group.programs[0].macro_name.text, "voice_square_1");
+}
+
+#[test]
+fn does_not_keep_assembly_label_pending_across_unrecognized_line() {
+    let source = "\
+voicegroup192::
+not voicegroup source
+\tvoice_square_1 60, 0, 0, 2, 0, 0, 15, 0
+";
+
+    let document = parse_document(source);
+
     assert_eq!(document.voice_groups.len(), 0);
     assert_eq!(document.assembly_labels.len(), 1);
-    assert_eq!(document.diagnostics.len(), 1);
-    assert_eq!(document.diagnostics[0].severity, DiagnosticSeverity::Error);
-    assert_eq!(document.diagnostics[0].code, "macro-outside-voice-group");
     assert_eq!(
-        range_text(source, &document.diagnostics[0].range),
-        "voice_square_1"
+        document
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["unrecognized-line", "macro-outside-voice-group"]
     );
 }
 
@@ -338,6 +365,29 @@ fn parses_rs_drumset_fixture_start_slot_shape() {
     assert_eq!(document.voice_groups[0].programs.len(), 8);
     assert_eq!(document.voice_groups[0].programs[0].slot, 36);
     assert_eq!(document.voice_groups[0].programs[7].slot, 43);
+}
+
+#[test]
+fn parses_hearth_voicegroup192_fixture_shape() {
+    let source = include_str!("fixtures/voicegroup192.inc");
+
+    let document = parse_document(source);
+
+    assert_no_diagnostics(&document);
+    assert_eq!(document.voice_groups.len(), 1);
+    assert_eq!(document.assembly_labels.len(), 1);
+
+    let voice_group = &document.voice_groups[0];
+    assert_eq!(voice_group.name.text, "voicegroup192");
+    assert_eq!(voice_group.start_slot, 0);
+    assert_eq!(voice_group.programs.len(), 114);
+    assert_eq!(
+        voice_group.programs[0].macro_name.text,
+        "voice_directsound_no_resample"
+    );
+    assert_eq!(voice_group.programs[42].slot, 42);
+    assert_eq!(voice_group.programs[42].macro_name.text, "voice_noise");
+    assert_eq!(voice_group.programs[113].slot, 113);
 }
 
 #[test]

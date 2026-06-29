@@ -132,6 +132,13 @@ mod tests {
         let editor =
             crate::editor::create_editor(params.clone(), test_async_executor()).expect("editor");
 
+        assert_eq!(
+            editor.size(),
+            (
+                crate::params::DEFAULT_EDITOR_WIDTH,
+                crate::params::DEFAULT_EDITOR_HEIGHT
+            )
+        );
         assert!(editor.resize_hint().can_resize);
         assert!(editor.set_size(800, 600));
         assert_eq!(editor.size(), (800, 600));

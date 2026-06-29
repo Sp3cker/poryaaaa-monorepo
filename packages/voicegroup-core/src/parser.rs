@@ -21,33 +21,62 @@ pub fn parse_document(text: &str) -> ParsedDocument {
     };
     let mut current_voice_group = None;
     let mut current_slot = 0;
+    let mut pending_label = None;
 
     for (line_index, line) in text.lines().enumerate() {
         let line_number = line_index + 1;
         let parsed_line = parse_source_line(line, line_number);
+        let has_diagnostics = !parsed_line.diagnostics.is_empty();
         document.diagnostics.extend(parsed_line.diagnostics);
 
         match parsed_line.line {
-            None | Some(ParsedLine::Directive) => {}
+            None => {
+                if has_diagnostics && current_voice_group.is_none() {
+                    pending_label = None;
+                }
+            }
+            Some(ParsedLine::Directive) => {
+                if current_voice_group.is_none() {
+                    pending_label = None;
+                }
+            }
             Some(ParsedLine::VoiceGroup(voice_group)) => {
                 current_slot = voice_group.start_slot;
                 document.voice_groups.push(voice_group);
                 current_voice_group = Some(document.voice_groups.len() - 1);
+                pending_label = None;
             }
             Some(ParsedLine::AssemblyLabel(label)) => {
-                document.assembly_labels.push(label);
+                document.assembly_labels.push(label.clone());
+                pending_label = Some(label);
                 current_voice_group = None;
                 current_slot = 0;
             }
             Some(ParsedLine::MacroCall(macro_call)) => {
-                let Some(voice_group_index) = current_voice_group else {
-                    document.diagnostics.push(Diagnostic {
-                        range: macro_call.macro_name.range,
-                        severity: DiagnosticSeverity::Error,
-                        code: "macro-outside-voice-group".to_string(),
-                        message: "voice macro appears before a voice_group declaration".to_string(),
-                    });
-                    continue;
+                let voice_group_index = match current_voice_group {
+                    Some(index) => index,
+                    None => {
+                        let Some(label) = pending_label.take() else {
+                            document.diagnostics.push(Diagnostic {
+                                range: macro_call.macro_name.range,
+                                severity: DiagnosticSeverity::Error,
+                                code: "macro-outside-voice-group".to_string(),
+                                message: "voice macro appears before a voice_group declaration"
+                                    .to_string(),
+                            });
+                            continue;
+                        };
+                        document.voice_groups.push(ParsedVoiceGroup {
+                            name: label.name,
+                            start_slot: 0,
+                            declaration_range: label.range,
+                            programs: Vec::new(),
+                        });
+                        let index = document.voice_groups.len() - 1;
+                        current_voice_group = Some(index);
+                        current_slot = 0;
+                        index
+                    }
                 };
 
                 document.voice_groups[voice_group_index]

@@ -1,5 +1,6 @@
 //! ProjectIndex tests for project discovery, symbol indexing, and selected-bank loading.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,6 +32,29 @@ fn diagnostic_codes(diagnostics: &[voicegroup_core::parser::Diagnostic]) -> Vec<
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .collect()
+}
+
+// Builds the minimal symbol index needed to validate a fixture voicegroup structurally.
+fn direct_sound_data_for_voicegroup(source: &str) -> String {
+    let mut symbols = BTreeSet::new();
+    for line in source.lines() {
+        for token in
+            line.split(|character: char| character != '_' && !character.is_ascii_alphanumeric())
+        {
+            if token.starts_with("DirectSoundWaveData_") {
+                symbols.insert(token);
+            }
+        }
+    }
+
+    let mut output = String::new();
+    for symbol in symbols {
+        output.push_str(symbol);
+        output.push_str("::\n\t.incbin \"sound/direct_sound_samples/");
+        output.push_str(symbol.trim_start_matches("DirectSoundWaveData_"));
+        output.push_str(".bin\"\n");
+    }
+    output
 }
 
 #[test]
@@ -311,6 +335,86 @@ broken::
     fs::remove_dir_all(root).expect("remove temp project");
 }
 
+#[test]
+fn loads_included_assembly_labeled_voicegroup_file() {
+    let root = temp_project("assembly-labeled-include");
+    let voicegroup192 = include_str!("fixtures/voicegroup192.inc");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+.include \"sound/voicegroups/main.inc\"
+.include \"sound/voicegroups/voicegroup192.inc\"
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/main.inc",
+        "\
+voice_group main
+\tvoice_keysplit_all voicegroup192
+",
+    );
+    write_file(&root, "sound/voicegroups/voicegroup192.inc", voicegroup192);
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        &direct_sound_data_for_voicegroup(voicegroup192),
+    );
+
+    let index = ProjectIndex::load(&root).expect("load project index");
+    let result = index.load_program_bank("main");
+
+    let bank = result.bank.expect("referencing bank should load");
+    assert_eq!(result.diagnostics, []);
+    assert_eq!(
+        bank.programs[0].as_ref().expect("slot 0").data,
+        ProgramData::KeysplitAll(voicegroup_core::program_bank::KeysplitAllProgram {
+            sub_voicegroup: "voicegroup192".to_string(),
+        })
+    );
+
+    let labeled_result = index.load_program_bank("voicegroup192");
+    let labeled_bank = labeled_result
+        .bank
+        .expect("assembly-labeled bank should load");
+    assert_eq!(labeled_result.diagnostics, []);
+    assert_eq!(labeled_bank.name, "voicegroup192");
+    assert_eq!(
+        labeled_bank.source_relative_path,
+        "sound/voicegroups/voicegroup192.inc"
+    );
+    assert_eq!(
+        labeled_bank.programs[0]
+            .as_ref()
+            .expect("slot 0")
+            .macro_name
+            .as_str(),
+        "voice_directsound_no_resample"
+    );
+    assert_eq!(
+        labeled_bank.programs[42].as_ref().expect("slot 42").data,
+        ProgramData::Noise(voicegroup_core::program_bank::NoiseProgram {
+            key: 86,
+            pan: 0,
+            period: 0,
+            attack: 0,
+            decay: 1,
+            sustain: 0,
+            release: 0,
+        })
+    );
+    assert_eq!(
+        labeled_bank.programs[113]
+            .as_ref()
+            .expect("slot 113")
+            .macro_name
+            .as_str(),
+        "voice_directsound_no_resample"
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
 #[test]
 fn reports_missing_selected_bank_without_fabricating_programs() {
     let root = temp_project("missing");
