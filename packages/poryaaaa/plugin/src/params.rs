@@ -1,4 +1,4 @@
-use crate::voicegroup::VoicegroupLoadStatus;
+use crate::{midi_activity::MidiActivity, voicegroup::VoicegroupLoadStatus};
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use std::sync::{Arc, RwLock};
@@ -14,6 +14,7 @@ pub struct PoryaaaaParams {
     #[persist = "voicegroup"]
     pub voicegroup: Arc<RwLock<String>>,
     pub runtime_voicegroup_status: Arc<RwLock<Option<VoicegroupLoadStatus>>>,
+    pub(crate) midi_activity: Arc<MidiActivity>,
     #[id = "p00"]
     pub program_00: IntParam,
     #[id = "p01"]
@@ -55,6 +56,7 @@ impl Default for PoryaaaaParams {
             project_root: Arc::new(RwLock::new(String::new())),
             voicegroup: Arc::new(RwLock::new(String::new())),
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),
+            midi_activity: Arc::new(MidiActivity::default()),
             program_00: channel_program_param(0),
             program_01: channel_program_param(1),
             program_02: channel_program_param(2),

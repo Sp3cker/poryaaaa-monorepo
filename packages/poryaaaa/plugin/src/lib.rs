@@ -6,25 +6,114 @@
 mod config;
 mod editor;
 mod ffi;
+mod midi_activity;
 mod params;
 mod plugin;
 mod process;
 mod runtime;
+#[cfg(test)]
+mod test_support;
 mod voicegroup;
 
 pub use config::PluginConfig;
 pub use params::{PoryaaaaParams, PROGRAM_COUNT};
 pub use plugin::PoryaaaaPlugin;
 
-nice_plug::nice_export_clap!(PoryaaaaPlugin);
+#[doc(hidden)]
+mod clap {
+    use nice_plug::wrapper::clap::{
+        clap_host, clap_plugin, clap_plugin_descriptor, clap_plugin_entry, clap_plugin_factory,
+        PluginDescriptor, Wrapper, CLAP_PLUGIN_FACTORY_ID, CLAP_VERSION,
+    };
+    use nice_plug::wrapper::setup_logger;
+    use std::ffi::{c_void, CStr};
+    use std::os::raw::c_char;
+    use std::sync::{Arc, LazyLock};
+
+    use super::*;
+
+    static PLUGIN_DESCRIPTOR: LazyLock<PluginDescriptor> =
+        LazyLock::new(PluginDescriptor::for_plugin::<PoryaaaaPlugin>);
+
+    const CLAP_PLUGIN_FACTORY: clap_plugin_factory = clap_plugin_factory {
+        get_plugin_count: Some(get_plugin_count),
+        get_plugin_descriptor: Some(get_plugin_descriptor),
+        create_plugin: Some(create_plugin),
+    };
+
+    unsafe extern "C" fn get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
+        1
+    }
+
+    unsafe extern "C" fn get_plugin_descriptor(
+        _factory: *const clap_plugin_factory,
+        index: u32,
+    ) -> *const clap_plugin_descriptor {
+        if index == 0 {
+            PLUGIN_DESCRIPTOR.clap_plugin_descriptor()
+        } else {
+            std::ptr::null()
+        }
+    }
+
+    unsafe extern "C" fn create_plugin(
+        _factory: *const clap_plugin_factory,
+        host: *const clap_host,
+        plugin_id: *const c_char,
+    ) -> *const clap_plugin {
+        if plugin_id.is_null() {
+            return std::ptr::null();
+        }
+        let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
+        if plugin_id != PLUGIN_DESCRIPTOR.clap_id() {
+            return std::ptr::null();
+        }
+
+        unsafe {
+            (*Arc::into_raw(Wrapper::<PoryaaaaPlugin>::new(host)))
+                .clap_plugin
+                .as_ptr()
+        }
+    }
+
+    pub extern "C" fn init(plugin_path: *const c_char) -> bool {
+        crate::config::set_default_config_dir_from_clap_path(plugin_path);
+        setup_logger();
+        true
+    }
+
+    pub extern "C" fn deinit() {}
+
+    pub extern "C" fn get_factory(factory_id: *const c_char) -> *const c_void {
+        if !factory_id.is_null() && unsafe { CStr::from_ptr(factory_id) } == CLAP_PLUGIN_FACTORY_ID
+        {
+            &CLAP_PLUGIN_FACTORY as *const _ as *const c_void
+        } else {
+            std::ptr::null()
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    #[used]
+    pub static clap_entry: clap_plugin_entry = clap_plugin_entry {
+        clap_version: CLAP_VERSION,
+        init: Some(init),
+        deinit: Some(deinit),
+        get_factory: Some(get_factory),
+    };
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::ProcessRuntime;
+    use crate::test_support::{temp_project, write_file, TestInitContext};
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::PathBuf;
+    use std::sync::{Arc, LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn test_async_executor() -> nice_plug::prelude::AsyncExecutor<PoryaaaaPlugin> {
         nice_plug::prelude::AsyncExecutor::new(Arc::new(|_| {}), Arc::new(|_| {}))
@@ -49,6 +138,21 @@ mod tests {
 
         assert!(editor.set_size(1, 1));
         assert_eq!(editor.size(), (420, 260));
+    }
+
+    #[test]
+    fn midi_activity_light_holds_recent_counter_changes_briefly() {
+        let mut light = crate::editor::MidiActivityLight::default();
+        let now = Instant::now();
+
+        assert!(!light.is_active(0, now));
+        assert!(light.is_active(1, now));
+        assert!(light.is_active(1, now + Duration::from_millis(90)));
+        assert!(!light.is_active(
+            1,
+            now + crate::editor::MIDI_ACTIVITY_HOLD + Duration::from_millis(1)
+        ));
+        assert!(light.is_active(2, now + Duration::from_secs(1)));
     }
 
     #[test]
@@ -178,6 +282,17 @@ volume=255
         assert_eq!(config.volume, 127);
 
         fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clap_entry_path_uses_clap_bundle_parent_for_default_config() {
+        let dir = crate::config::config_dir_from_clap_path_for_test(
+            "/Users/me/Library/Audio/Plug-Ins/CLAP/poryaaaa.clap/Contents/MacOS/poryaaaa",
+        )
+        .expect("config dir");
+
+        assert_eq!(dir, PathBuf::from("/Users/me/Library/Audio/Plug-Ins/CLAP"));
     }
 
     #[test]
@@ -365,6 +480,7 @@ route104::
             ",
         );
         let home = temp_project("initialize-home");
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &home);
         let projects_json_path =
@@ -422,6 +538,7 @@ route104::
             ",
         );
         let home = temp_project("initialize-load-error-home");
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &home);
 
@@ -594,211 +711,6 @@ route104::
     }
 
     #[test]
-    fn process_without_runtime_clears_stereo_and_returns_normal() {
-        use nice_plug::prelude::*;
-
-        let mut plugin = PoryaaaaPlugin::default();
-        let mut output = vec![vec![1.0; 8], vec![-1.0; 8]];
-        let mut context = TestProcessContext::default();
-
-        let status = process_with_output(&mut plugin, &mut output, &mut context);
-
-        assert_eq!(status, ProcessStatus::Normal);
-        assert!(output[0].iter().all(|sample| *sample == 0.0));
-        assert!(output[1].iter().all(|sample| *sample == 0.0));
-    }
-
-    #[test]
-    fn process_without_loaded_voicegroup_clears_stereo_and_returns_normal() {
-        use nice_plug::prelude::*;
-
-        let mut plugin = PoryaaaaPlugin::default();
-        let mut init_context = TestInitContext;
-        assert!(plugin.initialize(
-            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
-            &test_buffer_config(),
-            &mut init_context,
-        ));
-        assert!(!plugin.runtime_has_loaded_voicegroup());
-        let mut output = vec![vec![1.0; 8], vec![-1.0; 8]];
-        let mut context = TestProcessContext::default();
-
-        let status = process_with_output(&mut plugin, &mut output, &mut context);
-
-        assert_eq!(status, ProcessStatus::Normal);
-        assert!(output[0].iter().all(|sample| *sample == 0.0));
-        assert!(output[1].iter().all(|sample| *sample == 0.0));
-    }
-
-    #[test]
-    fn process_with_loaded_voicegroup_renders_audio_and_returns_keepalive() {
-        use nice_plug::prelude::*;
-
-        let root = temp_project("plugin-process-loaded");
-        write_file(
-            &root,
-            "sound/voice_groups.inc",
-            "\
-                \t.align 2
-                voicegroup000::
-                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
-            ",
-        );
-        let mut plugin = PoryaaaaPlugin::default();
-        let mut init_context = TestInitContext;
-        assert!(plugin.initialize(
-            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
-            &test_buffer_config(),
-            &mut init_context,
-        ));
-        let execute = plugin.task_executor();
-        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
-            project_root: root.to_string_lossy().into_owned(),
-            bank: "voicegroup000".to_owned(),
-            projects_json_path: root.join("out/projects.json"),
-        });
-        assert!(plugin.runtime_has_loaded_voicegroup());
-
-        let mut context = TestProcessContext::with_events(vec![
-            NoteEvent::MidiCC {
-                timing: 0,
-                channel: 0,
-                cc: 7,
-                value: 1.0,
-            },
-            NoteEvent::MidiCC {
-                timing: 0,
-                channel: 0,
-                cc: 10,
-                value: 0.5,
-            },
-            NoteEvent::NoteOn {
-                timing: 0,
-                voice_id: None,
-                channel: 0,
-                note: 60,
-                velocity: 1.0,
-            },
-        ]);
-        let mut peak = 0.0f32;
-        for _ in 0..8 {
-            let mut output = vec![vec![0.0; 512], vec![0.0; 512]];
-            let status = process_with_output(&mut plugin, &mut output, &mut context);
-            assert_eq!(status, ProcessStatus::KeepAlive);
-            peak = output
-                .iter()
-                .flatten()
-                .fold(peak, |peak, sample| peak.max(sample.abs()));
-        }
-
-        assert!(peak > 0.0001);
-        fs::remove_dir_all(root).expect("remove temp project");
-    }
-
-    fn test_buffer_config() -> nice_plug::prelude::BufferConfig {
-        nice_plug::prelude::BufferConfig {
-            sample_rate: 48_000.0,
-            min_buffer_size: None,
-            max_buffer_size: 512,
-            process_mode: nice_plug::prelude::ProcessMode::Realtime,
-        }
-    }
-
-    fn process_with_output(
-        plugin: &mut PoryaaaaPlugin,
-        output: &mut Vec<Vec<f32>>,
-        context: &mut TestProcessContext,
-    ) -> nice_plug::prelude::ProcessStatus {
-        use nice_plug::prelude::*;
-
-        let samples = output[0].len();
-        let mut buffer = Buffer::default();
-        unsafe {
-            buffer.set_slices(samples, |output_slices| {
-                let (left, right) = output.split_at_mut(1);
-                *output_slices = vec![&mut left[0], &mut right[0]];
-            });
-        }
-        let mut aux_inputs: Vec<Buffer> = Vec::new();
-        let mut aux_outputs: Vec<Buffer> = Vec::new();
-        let mut aux = AuxiliaryBuffers {
-            inputs: aux_inputs.as_mut_slice(),
-            outputs: aux_outputs.as_mut_slice(),
-        };
-        plugin.process(&mut buffer, &mut aux, context)
-    }
-
-    struct TestProcessContext {
-        transport: nice_plug::prelude::Transport,
-        events: std::vec::IntoIter<nice_plug::prelude::NoteEvent<()>>,
-        sent_events: Vec<nice_plug::prelude::NoteEvent<()>>,
-    }
-
-    impl Default for TestProcessContext {
-        fn default() -> Self {
-            Self::with_events(Vec::new())
-        }
-    }
-
-    impl TestProcessContext {
-        fn with_events(events: Vec<nice_plug::prelude::NoteEvent<()>>) -> Self {
-            Self {
-                transport: nice_plug::prelude::Transport::new(48_000.0),
-                events: events.into_iter(),
-                sent_events: Vec::new(),
-            }
-        }
-    }
-
-    impl nice_plug::prelude::ProcessContext<PoryaaaaPlugin> for TestProcessContext {
-        fn plugin_api(&self) -> nice_plug::prelude::PluginApi {
-            nice_plug::prelude::PluginApi::Clap
-        }
-
-        fn execute_background(
-            &self,
-            _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask,
-        ) {
-        }
-
-        fn execute_gui(
-            &self,
-            _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask,
-        ) {
-        }
-
-        fn transport(&self) -> &nice_plug::prelude::Transport {
-            &self.transport
-        }
-
-        fn next_event(&mut self) -> Option<nice_plug::prelude::PluginNoteEvent<PoryaaaaPlugin>> {
-            self.events.next()
-        }
-
-        fn send_event(&mut self, event: nice_plug::prelude::PluginNoteEvent<PoryaaaaPlugin>) {
-            self.sent_events.push(event);
-        }
-
-        fn set_latency_samples(&self, _samples: u32) {}
-
-        fn set_current_voice_capacity(&self, _capacity: u32) {}
-    }
-
-    struct TestInitContext;
-
-    impl nice_plug::prelude::InitContext<PoryaaaaPlugin> for TestInitContext {
-        fn plugin_api(&self) -> nice_plug::prelude::PluginApi {
-            nice_plug::prelude::PluginApi::Clap
-        }
-
-        fn execute(&self, _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask) {}
-
-        fn set_latency_samples(&self, _samples: u32) {}
-
-        fn set_current_voice_capacity(&self, _capacity: u32) {}
-    }
-
-    #[test]
     fn c_runtime_creates_resets_and_drops_engine() {
         let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
 
@@ -857,23 +769,5 @@ route104::
         assert!(peak > 0.0001);
 
         fs::remove_dir_all(root).expect("remove temp project");
-    }
-
-    fn temp_project(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("poryaaaa-rs-{name}-{nonce}"));
-        fs::create_dir_all(&root).expect("create temp project");
-        root
-    }
-
-    fn write_file(root: &Path, relative_path: &str, contents: &str) {
-        let path = root.join(relative_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create parent directories");
-        }
-        fs::write(path, contents).expect("write fixture file");
     }
 }

@@ -1,21 +1,29 @@
-use crate::{plugin::PoryaaaaBackgroundTask, voicegroup, PoryaaaaParams, PoryaaaaPlugin};
+use crate::{
+    midi_activity::{MidiActivitySnapshot, MIDI_CHANNEL_COUNT},
+    plugin::PoryaaaaBackgroundTask,
+    voicegroup, PoryaaaaParams, PoryaaaaPlugin,
+};
 use egui::{Margin, Vec2};
 use egui_file_dialog::FileDialog;
 use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, EguiSettings};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const MIN_WINDOW_WIDTH: u32 = 420;
 const MIN_WINDOW_HEIGHT: u32 = 260;
 const PROJECT_ROOT_BROWSE_WIDTH: f32 = 72.0;
 const VOICEGROUP_LOAD_WIDTH: f32 = 56.0;
+pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
+const MIDI_ACTIVITY_REPAINT: Duration = Duration::from_millis(33);
 
 pub(crate) struct GuiState {
     pub(crate) draft_project_root: String,
     pub(crate) draft_voicegroup: String,
     project_root_dialog: FileDialog,
     pub(crate) voicegroup_status: Option<voicegroup::VoicegroupLoadStatus>,
+    channel_activity: [MidiActivityLight; MIDI_CHANNEL_COUNT],
 }
 
 impl GuiState {
@@ -33,6 +41,7 @@ impl GuiState {
                 .read()
                 .expect("runtime voicegroup status read")
                 .clone(),
+            channel_activity: std::array::from_fn(|_| MidiActivityLight::default()),
         }
     }
 }
@@ -120,6 +129,51 @@ pub(crate) fn show_editor_frame<R>(
         })
 }
 
+#[derive(Default)]
+pub(crate) struct MidiActivityLight {
+    last_count: u64,
+    active_until: Option<Instant>,
+}
+
+impl MidiActivityLight {
+    pub(crate) fn is_active(&mut self, count: u64, now: Instant) -> bool {
+        if count != self.last_count {
+            self.last_count = count;
+            self.active_until = Some(now + MIDI_ACTIVITY_HOLD);
+        }
+
+        self.active_until.is_some_and(|until| now <= until)
+    }
+}
+
+fn show_midi_activity(ui: &mut egui::Ui, gui_state: &mut GuiState, snapshot: MidiActivitySnapshot) {
+    let now = Instant::now();
+    let mut any_active = false;
+
+    ui.label("MIDI activity by channel");
+    ui.horizontal_wrapped(|ui| {
+        for (index, channel) in snapshot.channels.iter().enumerate() {
+            let count = channel.note_events + channel.other_events;
+            let active = gui_state.channel_activity[index].is_active(count, now);
+            any_active |= active;
+            show_activity_light(ui, &format!("● {:02}", index + 1), active);
+        }
+    });
+
+    if any_active {
+        ui.ctx().request_repaint_after(MIDI_ACTIVITY_REPAINT);
+    }
+}
+
+fn show_activity_light(ui: &mut egui::Ui, label: &str, active: bool) {
+    let color = if active {
+        egui::Color32::from_rgb(80, 220, 120)
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    ui.colored_label(color, label);
+}
+
 /// Builds the egui editor around Rust-owned params.
 pub(crate) fn create_editor(
     params: Arc<PoryaaaaParams>,
@@ -141,6 +195,8 @@ pub(crate) fn create_editor(
                 .show(ui, egui_state.as_ref(), |ui| {
                     show_editor_frame(ui, |ui| {
                         ui.heading("poryaaaa");
+                        ui.separator();
+                        show_midi_activity(ui, gui_state, params.midi_activity.snapshot());
                         ui.separator();
 
                         ui.label("Project root");

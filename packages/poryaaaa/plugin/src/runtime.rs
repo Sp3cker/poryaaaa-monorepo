@@ -123,42 +123,6 @@ impl CPluginRuntime {
         }
     }
 
-    pub(crate) fn set_tempo_bpm(&mut self, bpm: f64) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_set_tempo_bpm(engine.as_ptr(), bpm) }
-        }
-    }
-
-    pub(crate) fn note_on(&mut self, track: i32, key: u8, velocity: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_note_on(engine.as_ptr(), track, key, velocity) }
-        }
-    }
-
-    pub(crate) fn note_off(&mut self, track: i32, key: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_note_off(engine.as_ptr(), track, key) }
-        }
-    }
-
-    pub(crate) fn program_change(&mut self, track: i32, program: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_program_change(engine.as_ptr(), track, program) }
-        }
-    }
-
-    pub(crate) fn cc(&mut self, track: i32, cc: u8, value: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_cc(engine.as_ptr(), track, cc, value) }
-        }
-    }
-
-    pub(crate) fn pitch_bend(&mut self, track: i32, bend: i16) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_pitch_bend(engine.as_ptr(), track, bend) }
-        }
-    }
-
     pub(crate) fn all_notes_off(&mut self, track: i32) {
         if let Some(engine) = self.engine.as_mut() {
             unsafe { ffi::m4a_engine_all_notes_off(engine.as_ptr(), track) }
@@ -168,21 +132,6 @@ impl CPluginRuntime {
     pub(crate) fn all_sound_off(&mut self) {
         if let Some(engine) = self.engine.as_mut() {
             unsafe { ffi::m4a_engine_all_sound_off(engine.as_ptr()) }
-        }
-    }
-
-    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        debug_assert_eq!(left.len(), right.len());
-        let frames = left.len().min(i32::MAX as usize) as i32;
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe {
-                ffi::m4a_engine_process(
-                    engine.as_ptr(),
-                    left.as_mut_ptr(),
-                    right.as_mut_ptr(),
-                    frames,
-                )
-            }
         }
     }
 
@@ -207,31 +156,54 @@ impl CPluginRuntime {
 }
 impl ProcessRuntime for CPluginRuntime {
     fn set_tempo_bpm(&mut self, bpm: f64) {
-        CPluginRuntime::set_tempo_bpm(self, bpm);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_set_tempo_bpm(engine.as_ptr(), bpm) }
+        }
     }
 
     fn note_on(&mut self, track: i32, key: u8, velocity: u8) {
-        CPluginRuntime::note_on(self, track, key, velocity);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_note_on(engine.as_ptr(), track, key, velocity) }
+        }
     }
 
     fn note_off(&mut self, track: i32, key: u8) {
-        CPluginRuntime::note_off(self, track, key);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_note_off(engine.as_ptr(), track, key) }
+        }
     }
 
     fn program_change(&mut self, track: i32, program: u8) {
-        CPluginRuntime::program_change(self, track, program);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_program_change(engine.as_ptr(), track, program) }
+        }
     }
 
     fn cc(&mut self, track: i32, cc: u8, value: u8) {
-        CPluginRuntime::cc(self, track, cc, value);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_cc(engine.as_ptr(), track, cc, value) }
+        }
     }
 
     fn pitch_bend(&mut self, track: i32, bend: i16) {
-        CPluginRuntime::pitch_bend(self, track, bend);
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe { ffi::m4a_engine_pitch_bend(engine.as_ptr(), track, bend) }
+        }
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        CPluginRuntime::process(self, left, right);
+        debug_assert_eq!(left.len(), right.len());
+        let frames = left.len().min(i32::MAX as usize) as i32;
+        if let Some(engine) = self.engine.as_mut() {
+            unsafe {
+                ffi::m4a_engine_process(
+                    engine.as_ptr(),
+                    left.as_mut_ptr(),
+                    right.as_mut_ptr(),
+                    frames,
+                )
+            }
+        }
     }
 }
 

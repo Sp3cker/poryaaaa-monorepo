@@ -144,19 +144,19 @@ packages/poryaaaa/build/poryaaaa_engine_lifecycle 1
 
 ### Task 6: Later Port The Process Adapter
 
-- [ ] Add `packages/poryaaaa/plugin/src/process.rs` for NicePlug event translation and render chunking.
-- [ ] Translate `NoteEvent::NoteOn`, `NoteEvent::NoteOff`, `NoteEvent::Choke`, `NoteEvent::MidiProgramChange`, `NoteEvent::MidiCC`, and `NoteEvent::MidiPitchBend` to existing C engine calls.
+- [x] Add `packages/poryaaaa/plugin/src/process.rs` for NicePlug event translation and render chunking.
+- [x] Translate `NoteEvent::NoteOn`, `NoteEvent::NoteOff`, `NoteEvent::Choke`, `NoteEvent::MidiProgramChange`, `NoteEvent::MidiCC`, and `NoteEvent::MidiPitchBend` to existing C engine calls.
 - [x] Program changes are consumed only as engine input. Do not emit program-change events, do not mirror them into GUI state, and do not preserve the old C plugin's param echo behavior.
 - [x] Treat host program `IntParam`s as restored/default state only. Incoming MIDI Program Change updates the C engine for the current runtime instance only; the plugin does not keep a private runtime program mirror, does not update host params from MIDI PC, and does not replay prior MIDI PC state after reset or voicegroup reload.
 - [x] Add `process.rs` tests proving incoming `MidiProgramChange` calls the safe engine wrapper's `program_change`/`m4a_engine_program_change` path. Verify the non-mutation requirement by code trace: the MIDI PC path must not have access to NicePlug program params, GUI-visible program state, or any private replay mirror/state.
-- [ ] Apply host tempo only for the fast audio slice: when `context.transport().tempo` is finite and positive, call `m4a_engine_set_tempo_bpm()` before consuming timed events or rendering that NicePlug process callback/sub-block. Cache `last_host_tempo_bpm` for reapply after engine reset/reinit. Defer external MIDI clock (`0xF8`/`0xFA`/`0xFB`/`0xFC`) and recorder beat mapping.
+- [x] Apply host tempo only for the fast audio slice: when `context.transport().tempo` is finite and positive, call `m4a_engine_set_tempo_bpm()` before consuming timed events or rendering that NicePlug process callback/sub-block. Cache `last_host_tempo_bpm` for reapply after engine reset/reinit. Defer external MIDI clock (`0xF8`/`0xFA`/`0xFB`/`0xFC`) and recorder beat mapping.
 - [x] Preserve chunking to `M4A_ENGINE_MAX_PROCESS_FRAMES`.
-- [ ] Preserve sample-accurate event/render interleaving from `m4a_plugin.c`: advance an outer `frame_pos`, apply all NicePlug events whose `NoteEvent::timing() <= frame_pos`, render only until the next event time through chunked `m4a_engine_process`, then advance.
-- [ ] Treat NicePlug `Buffer` as a strict stereo planar overwrite target matching the declared stereo output layout: split channel 0/1 into left/right, pass their slice pointers directly to `m4a_engine_process`, and let C overwrite/pad rendered samples. Do not pre-clear before successful render, do not accumulate, and do not add mono/surround policy. Fill silence only on explicit no-runtime/no-loaded-voicegroup fallback paths.
+- [x] Preserve sample-accurate event/render interleaving from `m4a_plugin.c`: advance an outer `frame_pos`, apply all NicePlug events whose `NoteEvent::timing() <= frame_pos`, render only until the next event time through chunked `m4a_engine_process`, then advance.
+- [x] Treat NicePlug `Buffer` as a strict stereo planar overwrite target matching the declared stereo output layout: split channel 0/1 into left/right, pass their slice pointers directly to `m4a_engine_process`, and let C overwrite/pad rendered samples. Do not pre-clear before successful render, do not accumulate, and do not add mono/surround policy. Fill silence only on explicit no-runtime/no-loaded-voicegroup fallback paths.
 - [x] Return `ProcessStatus::Normal` for no-runtime/no-loaded-voicegroup silent fallback paths; return `ProcessStatus::KeepAlive` only after a successful process block with a loaded C runtime/voicegroup. Do not use `ProcessStatus::Tail(_)` until the engine can report a real finite tail length.
 - [x] Add a pure-Rust process-order test with a mock engine that records `(timing, action)` and proves events and renders interleave, for example note at 0, render `N`, note at `N`; do not accept an implementation that drains every event before rendering the whole block.
 - [x] Add a Rust process-path audio proof: drive the process path through a loaded-runtime seam and assert a canned note/program setup produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; assert no-runtime/no-loaded-voicegroup fallback writes silence and returns `ProcessStatus::Normal`. Keep `poryaaaa_engine_lifecycle 1` as the real C backend audibility smoke; do not require a host/CLAP scan or WAV artifact comparison for this fast slice.
-- [ ] Verify:
+- [x] Verify:
 
 ```bash
 (cd packages/poryaaaa/plugin && cargo test process)

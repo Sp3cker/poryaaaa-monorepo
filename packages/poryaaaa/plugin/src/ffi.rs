@@ -4,6 +4,9 @@ pub(crate) enum M4AEngine {}
 pub(crate) enum LoadedVoiceGroup {}
 pub(crate) enum ToneData {}
 
+// Mirrors `M4A_ENGINE_MAX_PROCESS_FRAMES` from `m4a_engine.h`.
+pub(crate) const M4A_ENGINE_MAX_PROCESS_FRAMES: usize = 2048;
+
 unsafe extern "C" {
     pub(crate) fn m4a_engine_create(sample_rate: c_float) -> *mut M4AEngine;
     pub(crate) fn m4a_engine_free(engine: *mut M4AEngine);
