@@ -95,6 +95,10 @@ pub struct M4aEngine {
     last_applied_rate: f32,
 }
 
+// SAFETY: M4aEngine wraps raw C pointers, but is owned by a single host/plugin thread
+// at any given time (serialized via `Arc<Mutex<Option<M4aEngine>>>`). Access to the
+// internal pointers is always serialized, and the underlying heap-allocated C engine
+// is address-stable across moves. It does not implement `Sync`.
 unsafe impl Send for M4aEngine {}
 
 impl M4aEngine {
@@ -139,6 +143,8 @@ impl M4aEngine {
         }
     }
 
+
+    #[allow(dead_code)]
     pub fn reconfigure(&mut self, config: EngineConfig) -> Result<(), EngineError> {
         if self.engine.is_none() || (config.sample_rate - self.last_applied_rate).abs() > 0.001 {
             self.clear_voicegroup();
@@ -170,12 +176,14 @@ impl M4aEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all_notes_off(&mut self, track: i32) {
         if let Some(engine) = self.engine.as_mut() {
             unsafe { ffi::m4a_engine_all_notes_off(engine.as_ptr(), track) }
         }
     }
 
+    #[allow(dead_code)]
     pub fn all_sound_off(&mut self) {
         if let Some(engine) = self.engine.as_mut() {
             unsafe { ffi::m4a_engine_all_sound_off(engine.as_ptr()) }
@@ -281,92 +289,6 @@ fn last_voicegroup_error() -> String {
     }
 }
 
-/// A legacy wrapper for backwards compatibility until everything is migrated to M4aEngine.
-#[allow(dead_code)]
-pub(crate) struct CPluginRuntime {
-    pub(crate) inner: M4aEngine,
-}
-
-#[allow(dead_code)]
-impl CPluginRuntime {
-    pub(crate) fn new(sample_rate: f32) -> Result<Self, String> {
-        let config = EngineConfig {
-            sample_rate,
-            volume: 127,
-            reverb: 0,
-        };
-        let inner = M4aEngine::new(config).map_err(|e| e.to_string())?;
-        Ok(Self { inner })
-    }
-
-    pub(crate) fn reset(&mut self) -> bool {
-        self.inner.reset().is_ok()
-    }
-
-    pub(crate) fn load_voicegroup(&mut self, project_root: &str, bank: &str) -> Result<(), String> {
-        self.inner
-            .load_voicegroup(project_root, bank)
-            .map_err(|e| e.to_string())
-    }
-
-    pub(crate) fn clear_voicegroup(&mut self) {
-        self.inner.clear_voicegroup();
-    }
-
-    pub(crate) fn has_loaded_voicegroup(&self) -> bool {
-        self.inner.is_ready()
-    }
-
-    pub(crate) fn set_volume(&mut self, volume: u8) {
-        self.inner.set_volume(volume);
-    }
-
-    pub(crate) fn set_reverb_amount(&mut self, amount: u8) {
-        self.inner.set_reverb_amount(amount);
-    }
-
-    pub(crate) fn all_notes_off(&mut self, track: i32) {
-        self.inner.all_notes_off(track);
-    }
-
-    pub(crate) fn all_sound_off(&mut self) {
-        self.inner.all_sound_off();
-    }
-
-    pub(crate) fn retire_after_failed_reset(&mut self) {
-        self.inner.retire_after_failed_reset();
-    }
-}
-
-impl ProcessRuntime for CPluginRuntime {
-    fn set_tempo_bpm(&mut self, bpm: f64) {
-        self.inner.set_tempo_bpm(bpm);
-    }
-
-    fn note_on(&mut self, track: i32, key: u8, velocity: u8) {
-        self.inner.note_on(track, key, velocity);
-    }
-
-    fn note_off(&mut self, track: i32, key: u8) {
-        self.inner.note_off(track, key);
-    }
-
-    fn program_change(&mut self, track: i32, program: u8) {
-        self.inner.program_change(track, program);
-    }
-
-    fn cc(&mut self, track: i32, cc: u8, value: u8) {
-        self.inner.cc(track, cc, value);
-    }
-
-    fn pitch_bend(&mut self, track: i32, bend: i16) {
-        self.inner.pitch_bend(track, bend);
-    }
-
-    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        self.inner.process(left, right);
-    }
-}
 
 #[cfg(test)]
 mod tests {
