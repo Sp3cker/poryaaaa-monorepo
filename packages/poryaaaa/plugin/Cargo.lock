@@ -1704,6 +1704,7 @@ dependencies = [
 name = "poryaaaa-clap-plugin"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "egui",
  "egui-file-dialog",
  "nice-plug",

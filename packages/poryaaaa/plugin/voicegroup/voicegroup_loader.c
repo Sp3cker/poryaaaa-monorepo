@@ -484,6 +484,13 @@ LoadedVoiceGroup* voicegroup_load(const char* projectRoot, const char* voicegrou
     return vg;
 }
 
+ToneData* voicegroup_loaded_voices(LoadedVoiceGroup* vg)
+{
+    if (!vg)
+        return NULL;
+    return vg->voices;
+}
+
 void voicegroup_free(LoadedVoiceGroup* vg)
 {
     if (!vg)

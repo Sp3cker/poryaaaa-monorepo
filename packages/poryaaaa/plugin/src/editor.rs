@@ -1,4 +1,4 @@
-use crate::{voicegroup, PoryaaaaParams, PoryaaaaPlugin};
+use crate::{plugin::PoryaaaaBackgroundTask, voicegroup, PoryaaaaParams, PoryaaaaPlugin};
 use egui::{Margin, Vec2};
 use egui_file_dialog::FileDialog;
 use nice_plug::prelude::*;
@@ -15,7 +15,7 @@ pub(crate) struct GuiState {
     pub(crate) draft_project_root: String,
     pub(crate) draft_voicegroup: String,
     project_root_dialog: FileDialog,
-    voicegroup_status: Option<voicegroup::VoicegroupLoadStatus>,
+    pub(crate) voicegroup_status: Option<voicegroup::VoicegroupLoadStatus>,
 }
 
 impl GuiState {
@@ -28,7 +28,11 @@ impl GuiState {
                 .clone(),
             draft_voicegroup: params.voicegroup.read().expect("voicegroup read").clone(),
             project_root_dialog: project_root_dialog(None),
-            voicegroup_status: None,
+            voicegroup_status: params
+                .runtime_voicegroup_status
+                .read()
+                .expect("runtime voicegroup status read")
+                .clone(),
         }
     }
 }
@@ -117,7 +121,10 @@ pub(crate) fn show_editor_frame<R>(
 }
 
 /// Builds the egui editor around Rust-owned params.
-pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Editor>> {
+pub(crate) fn create_editor(
+    params: Arc<PoryaaaaParams>,
+    async_executor: AsyncExecutor<PoryaaaaPlugin>,
+) -> Option<Box<dyn Editor>> {
     let egui_state = params.editor_state.clone();
     let mut settings = EguiSettings::default();
     settings.resize_hint = ResizeHint::resizable();
@@ -128,7 +135,7 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
         GuiState::from_params(params.as_ref()),
         settings,
         |_egui_ctx, _queue, _gui_state| {},
-        move |ui, setter, _queue, gui_state| {
+        move |ui, _setter, _queue, gui_state| {
             ResizableWindow::new("poryaaaa-main")
                 .min_size(Vec2::new(MIN_WINDOW_WIDTH as f32, MIN_WINDOW_HEIGHT as f32))
                 .show(ui, egui_state.as_ref(), |ui| {
@@ -171,26 +178,43 @@ pub(crate) fn create_editor(params: Arc<PoryaaaaParams>) -> Option<Box<dyn Edito
                                 .clicked();
                         });
                         if load_requested {
-                            gui_state.voicegroup_status = Some(
-                                if let Some(path) = voicegroup::default_projects_json_path() {
-                                    let status = PoryaaaaPlugin::load_voicegroup(
-                                        params.as_ref(),
-                                        &gui_state.draft_project_root,
-                                        &gui_state.draft_voicegroup,
-                                        &path,
-                                    );
-                                    if !status.is_error {
-                                        setter.request_restart();
-                                    }
-                                    status
-                                } else {
-                                    voicegroup::VoicegroupLoadStatus {
-                                        text: "Bad project root: HOME is not set".to_string(),
-                                        is_error: true,
-                                    }
-                                },
-                            );
+                            if let Some(path) = voicegroup::default_projects_json_path() {
+                                let status = voicegroup::VoicegroupLoadStatus {
+                                    text: format!("Loading {}", gui_state.draft_voicegroup),
+                                    is_error: false,
+                                };
+                                *params
+                                    .runtime_voicegroup_status
+                                    .write()
+                                    .expect("runtime voicegroup status write") =
+                                    Some(status.clone());
+                                gui_state.voicegroup_status = Some(status);
+                                async_executor.execute_gui(
+                                    PoryaaaaBackgroundTask::LoadVoicegroup {
+                                        project_root: gui_state.draft_project_root.clone(),
+                                        bank: gui_state.draft_voicegroup.clone(),
+                                        projects_json_path: path,
+                                    },
+                                );
+                            } else {
+                                let status = voicegroup::VoicegroupLoadStatus {
+                                    text: "Bad project root: HOME is not set".to_string(),
+                                    is_error: true,
+                                };
+                                *params
+                                    .runtime_voicegroup_status
+                                    .write()
+                                    .expect("runtime voicegroup status write") =
+                                    Some(status.clone());
+                                gui_state.voicegroup_status = Some(status);
+                            }
                         }
+
+                        gui_state.voicegroup_status = params
+                            .runtime_voicegroup_status
+                            .read()
+                            .expect("runtime voicegroup status read")
+                            .clone();
 
                         if let Some(status) = &gui_state.voicegroup_status {
                             if status.is_error {

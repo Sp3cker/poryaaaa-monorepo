@@ -61,6 +61,12 @@ typedef struct
 LoadedVoiceGroup* voicegroup_load(const char* projectRoot, const char* voicegroupName);
 
 /*
+ * Return the inline voice array owned by a loaded voicegroup.
+ * The pointer is borrowed and remains valid only until voicegroup_free(vg).
+ */
+ToneData* voicegroup_loaded_voices(LoadedVoiceGroup* vg);
+
+/*
  * Free all resources associated with a loaded voicegroup.
  */
 void voicegroup_free(LoadedVoiceGroup* vg);

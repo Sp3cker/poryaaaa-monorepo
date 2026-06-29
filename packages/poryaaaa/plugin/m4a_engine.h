@@ -34,6 +34,8 @@ struct M4AEngine
 
 /* Engine lifecycle */
 bool m4a_engine_init(M4AEngine* engine, float sampleRate);
+M4AEngine* m4a_engine_create(float sampleRate);
+void m4a_engine_free(M4AEngine* engine);
 void m4a_engine_destroy(M4AEngine* engine);
 bool m4a_engine_reset(M4AEngine* engine);
 void m4a_engine_set_xcmd_callback(M4AEngine* engine, M4AEngineXcmdFn xcmd_fn, void* xcmd_ctx);

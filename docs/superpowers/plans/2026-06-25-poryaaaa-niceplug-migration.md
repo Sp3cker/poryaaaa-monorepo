@@ -84,86 +84,62 @@ Later C/audio slice:
 
 ### Task 1: Export A Rust CLAP Skeleton
 
-Progress verified: `cargo build` from `packages/poryaaaa/plugin`; `_clap_entry` present in `target/debug/libporyaaaa_clap_plugin.dylib`.
+Done. Rust NicePlug CLAP skeleton builds from `packages/poryaaaa/plugin`; `_clap_entry` exists in `target/debug/libporyaaaa_clap_plugin.dylib`.
 
 ### Task 2: Port New Rust Parameters And State
 
-- [x] Add `packages/poryaaaa/plugin/src/params.rs` with 16 stepped `IntParam`s for channel programs 0..127, defaults 0..15, using new stable NicePlug string ids.
-- [x] Keep committed project root and voicegroup/bank as NicePlug `#[persist]` fields on `PoryaaaaParams`. Do not add `state.rs` just to store these values.
-- [x] Ensure committed root/bank fields are set only after the editor-facing `voicegroup-core` Load interface succeeds. Failed validation must leave committed selection unchanged.
-- [x] Add tests for default params, program range clamping, committed root/bank state round trip, and failed-commit preservation of the previous committed root/bank.
-- [x] Verify:
-
-```bash
-(cd packages/poryaaaa/plugin && cargo test params)
-(cd packages/poryaaaa/plugin && cargo check)
-```
+Done. `params.rs` owns 16 channel program `IntParam`s, committed `project_root` + `voicegroup` `#[persist]` fields, state round-trip/default/clamp tests, and failed-commit preservation. Verified with `cargo test params` and `cargo check`.
 
 ### Task 3: Add The Voicegroup-Core Load Interface And projects.json Emitter
 
-- [x] Add `packages/voicegroup-core/src/projects_json.rs` as the only module that emits the shared `projects.json` file. It must emit the existing ccomidi-compatible top-level shape: `root`, `bank`, and `slots`; each slot has `program`, `name`, `typeCode`, and optional `drumset`.
-- [x] Add one future-facing editor Load interface in `voicegroup-core`, in `packages/voicegroup-core/src/plugin_load.rs`: input draft root/bank plus output `projects.json` path; validate project root, bank source syntax, macro/catalog structure, and loadable bank records; emit `projects.json` only on success; return `Ok(())` or one human-readable error string. The plugin commits the accepted draft root/bank after `Ok(())`.
-- [x] Shape that interface so it can later return the file-path and organization handoff record that the audio engine consumes. The Rust plugin must not build sample-path organization or recursive handoff plans itself.
-- [x] Keep this interface structural. It must not read sample bytes, decode samples, or prove that the audio engine can consume every sample path.
-- [x] Add tests that prove a valid bank emits the ccomidi-compatible JSON shape, including `typeCode` and `drumset` metadata.
-- [x] Add tests that prove validation failure leaves any existing `projects.json` untouched and returns one editor-facing error string.
-- [x] Add a test that proves a structurally valid bank with a known sample symbol is accepted without checking the sample file bytes.
-- [x] Verify:
-
-```bash
-(cd packages/voicegroup-core && cargo test)
-```
+Done. `voicegroup-core` owns `projects_json.rs` and `plugin_load.rs`; Load validates root/bank structure, emits ccomidi-compatible `projects.json` only on success, preserves old JSON on failure, returns one editor-facing error, and does not read/decode sample bytes. Verified with `cargo test` in `packages/voicegroup-core`.
 
 ### Task 4: Wire The Rust Plugin Load Transaction And General Tab
 
-- [x] Add `packages/poryaaaa/plugin/src/config.rs` to load first-pass `poryaaaa.cfg` keys: `project_root`, `voicegroup`, `reverb`, `volume`. Tolerate but do not implement the old `log` key; plugin logging will be refactored later.
-- [x] Remove the current editor probe path that calls `ProjectIndex::load()`/`load_program_bank()` through `packages/poryaaaa/plugin/src/voicegroup.rs`. If any helper remains, it must be renamed and routed through the Load transaction so the editor cannot call `voicegroup-core` before Load is clicked.
-- [ ] If the remaining helper is only the shared `projects.json` default-path policy, rename `packages/poryaaaa/plugin/src/voicegroup.rs` to a path-specific module such as `shared_projects_json.rs`, update `mod` wiring in the same change, and do not leave `VoicegroupLoadStatus` in that path-only module.
-- [x] Add one associated `PoryaaaaPlugin` Load function that takes draft root/bank and committed params, calls the single `voicegroup-core` Load interface, sets committed `#[persist]` root/bank only after success, and returns success/error status to the editor. Do not add a plugin-local transaction struct just for this function.
-- [x] On NicePlug/CLAP initialize, if restored committed `#[persist]` project root and bank are non-empty, call the same voicegroup-core Load interface to validate and publish `projects.json` before processing starts.
-- [x] Store draft project root and draft voicegroup/bank in `GuiState`, initialized from committed `#[persist]` root/bank when the editor opens. Text edits and Browse must not mutate committed params.
-- [x] On Load failure, display the single `voicegroup-core` error string and leave committed root/bank unchanged. On Load success, committed root/bank have been set, `projects.json` has been emitted by `voicegroup-core`, and the editor path calls the NicePlug/CLAP restart request.
-- [x] Do not add Voices, Recorder, C FFI, native C link changes, sample decoding, `voicegroup_load`, `LoadedVoiceGroup`, `ToneData`, or `m4a_engine_set_voicegroup()` in this Rust-only slice.
-- [x] Verify:
+Done except path-helper cleanup if still applicable. Rust plugin Load commits params only after `voicegroup-core` succeeds, editor drafts stay separate from committed params, Load errors display without world-visible changes, Load success emits `projects.json` and requests restart, initialize republishes restored committed state before processing, and this Rust-only slice avoids C FFI/audio runtime work. If `packages/poryaaaa/plugin/src/voicegroup.rs` is now only shared `projects.json` default-path policy, rename it to a path-specific module such as `shared_projects_json.rs` and keep `VoicegroupLoadStatus` out of that path-only module.
 
-```bash
-(cd packages/poryaaaa/plugin && cargo test config && cargo test plugin_load && cargo test default_path_policy)
-(cd packages/poryaaaa/plugin && cargo test editor)
-(cd packages/poryaaaa/plugin && cargo test)
-(cd packages/poryaaaa/plugin && cargo check)
-```
-
-Earlier config/probe progress verified before this revision: `cargo test config`, `cargo test voicegroup`, full `cargo test`, full `cargo build`, `_clap_entry`, `cmake --build packages/poryaaaa/build --target poryaaaa_unit_tests`, and `packages/poryaaaa/build/poryaaaa_unit_tests` after building `packages/voicegroup-core` release staticlib and reconfiguring CMake. The old probe path is now marked for replacement by the Load transaction above.
+Prior verification included plugin config/load/editor/default-path tests, full plugin `cargo test`, `cargo check`, `_clap_entry`, `poryaaaa_unit_tests`, and voicegroup-core release staticlib/CMake reconfigure.
 
 ### Task 5: Later Add A Narrow C Engine FFI
 
-Defer this task until the Rust-only Load path validates draft root/bank, emits `projects.json`, sets committed `#[persist]` root/bank, propagates validation errors to egui, and requests restart without touching C.
+Contract: keep C engine types opaque in Rust. Add `ffi.rs`, C lifecycle helpers `m4a_engine_create/free`, tiny accessor `voicegroup_loaded_voices`, and a safe `CPluginRuntime` cradle owning `M4AEngine*` plus `LoadedVoiceGroup*`. Rust may use existing `voicegroup_load/free` for the fast audio slice; do not duplicate voicegroup parsing/materialization or expose driver/hw/voice-editing internals.
 
-- [ ] Add `packages/poryaaaa/plugin/src/ffi.rs` with C declarations only for lifecycle, settings, MIDI, tempo, voicegroup handle, and render calls already exposed by `m4a_engine.h`.
-- [ ] Add tiny C lifecycle helpers `M4AEngine* m4a_engine_create(float sampleRate)` and `void m4a_engine_free(M4AEngine* engine)` so Rust never mirrors `M4AEngine` layout. Existing C callers may keep by-value `M4AEngine` storage and `m4a_engine_init`/`m4a_engine_destroy`.
-- [ ] Keep `M4AEngine`, `M4ADriver`, and `HwAudio` opaque in Rust. Add a small safe wrapper type that owns `NonNull<M4AEngine>` via `m4a_engine_create`/`m4a_engine_free` and exposes first-pass methods: `reset`, `set_voicegroup`, `set_volume`, `set_reverb_amount`, `set_tempo_bpm`, `note_on`, `note_off`, `program_change`, `cc`, `pitch_bend`, `all_sound_off`, `process`.
-- [ ] Implement `Plugin::initialize`/`Plugin::deactivate` so activate recreates owned engine state and deactivate tears it down like C `plugin_deactivate`/`m4a_engine_destroy`; `stop_processing` is not the engine lifetime boundary.
-- [ ] Implement `Plugin::reset` as `m4a_engine_reset` plus program and voicegroup re-sync when an engine exists.
-- [ ] For the fast audio-producing slice, the Rust plugin may call the existing `voicegroup_load(project_root, bank)` / `voicegroup_free()` materialization path and then pass `loaded->voices` to `m4a_engine_set_voicegroup()`. Keep this as the low-C-editing path to sound; do not duplicate voicegroup parsing or materialization logic in Rust for this slice.
-- [ ] Add a tiny C accessor `ToneData* voicegroup_loaded_voices(LoadedVoiceGroup* vg)` so Rust can keep `LoadedVoiceGroup` and `ToneData` opaque while binding `loaded->voices` into `m4a_engine_set_voicegroup()`. Do not mirror `LoadedVoiceGroup`, `ToneData`, `WaveData`, subgroup arrays, or keysplit tables in Rust.
-- [ ] Model the fast slice as a thin activation-scoped `CPluginRuntime` cradle: Rust owns the host lifecycle and groups `M4AEngine` with the `LoadedVoiceGroup` whose `voices` pointer the engine borrows. `reset` must not allocate or call `voicegroup_load`; `deactivate` destroys the engine before freeing the loaded voicegroup.
-- [ ] On `Plugin::initialize`, return `false` only for essential C runtime/engine initialization failure. If committed `project_root` + `voicegroup` exist but fast `voicegroup_load()` fails, return `true`, preserve the committed params, record/expose the load error, clear the runtime loaded voicegroup/engine voicegroup pointer, and render silence until a loadable bank is provided.
-- [ ] Keep explicit user/state voicegroup replacement transactional while running: validate and load the new bank first, then commit params and swap the runtime voicegroup only on success. A failed replacement must leave the previously loaded working voicegroup intact.
-- [ ] Do not expose `m4a_engine_driver()`, `m4a_engine_hw_audio()`, or voice-editing internals to Rust plugin code.
-- [ ] Add a Cargo-owned `packages/poryaaaa/plugin/build.rs` with `cc` build-dependency for the Rust plugin native runtime. `cargo build` for `poryaaaa-clap-plugin` must not depend on a preconfigured root CMake build tree or stale CMake `.a` artifacts.
-- [ ] In `build.rs`, compile only the native fast-audio closure: `m4a_engine.c`, `m4a_tables.c`, the needed `plugin/m4a/*.c` driver sources, the needed `plugin/hw_audio/*.c` renderer sources, and the `voicegroup_loader`/`vg_*.c` loader sources required by `voicegroup_load()`. Do not compile `m4a_plugin.c`, GUI/Pugl/ImGui, recorder, renderer CLI, or the old CLAP wrapper for the Rust fast slice.
-- [ ] When adding `build.rs` native linking, keep Rust plugin code calling the Rust `voicegroup-core` crate directly for Load/projects.json. The C loader may continue resolving its `voicegroup_core_*` ABI calls through the existing `libvoicegroup_core.a` path; duplicate voicegroup-core linkage is acceptable for this fast slice if the platform linker accepts it. Do not reroute Rust code through the `.a`/C ABI just to share that C linkage.
-- [ ] Verify:
+Lifecycle: `initialize` creates runtime; `deactivate` destroys engine before freeing loaded voicegroup; `reset` calls `m4a_engine_reset` and replays program/voicegroup state only when engine remains valid. If committed root+bank are valid but C materialization fails, initialize returns true, preserves committed params, exposes error, clears runtime voicegroup binding, and renders silence.
+
+Replacement/build: user/state voicegroup replacement while running is transactional: validate/load new bank first, commit/swap only on success, preserve previous loaded voicegroup on failure. Add Cargo-owned `build.rs` using `cc` for only fast-audio native closure; no stale CMake `.a` dependency; keep Rust plugin using Rust `voicegroup-core` directly for Load/projects.json even if C loader links the C ABI/staticlib too.
+
+Task 5 verification baseline:
 
 ```bash
 (cd packages/poryaaaa/plugin && cargo test)
 (cd packages/poryaaaa/plugin && cargo build)
 (cd packages/poryaaaa/plugin && nm -u target/debug/libporyaaaa_clap_plugin.dylib)
-# Also inspect duplicate/defined voicegroup-core symbols on macOS:
 (cd packages/poryaaaa/plugin && nm target/debug/libporyaaaa_clap_plugin.dylib | grep voicegroup_core_project_index_load)
 (cd packages/poryaaaa/plugin && otool -l target/debug/libporyaaaa_clap_plugin.dylib)
 cmake --build packages/poryaaaa/build --target poryaaaa_unit_tests
 packages/poryaaaa/build/poryaaaa_unit_tests
+```
+
+### Task 5.1: Close Runtime Ownership Review Gaps Before Continuing
+
+Run this task after the narrow C engine FFI exists and before treating Task 6, Task 7, or Task 8 as mergeable. This task captures deterministic review fixes that do not need another product/design decision. Agents should implement them directly, using existing repo patterns; ask only if a tool proves an API boundary is impossible.
+
+If the worktree already contains `packages/poryaaaa/plugin/src/process.rs` or a `Plugin::process` path that renders through `CPluginRuntime`, treat the branch as Task 5 + Task 6 in progress. Do not leave a half-ported process adapter in a "Task 5 only" merge. Either remove the process adapter from the Task 5 branch, or, by default for the fast audio slice, finish the Task 6 acceptance items listed below in this task and in Task 6.
+
+- [x] Keep explicit user/state voicegroup replacement transactional while running. The editor does not receive a raw plugin/runtime pointer; it dispatches a `LoadVoicegroup` background task, validates/publishes through `voicegroup-core`, then swaps the active `CPluginRuntime` voicegroup with `CPluginRuntime::load_voicegroup`. Failed replacement leaves the previous loaded runtime voicegroup intact and surfaces the error.
+- [ ] If `process.rs` remains in this branch, complete the Task 6 program-state seam now: process through a plugin-owned adapter or equivalent state owner so incoming MIDI Program Change updates the private runtime program mirror and C engine, never NicePlug host params or GUI-visible draft state. Engine reset and voicegroup reload must replay that mirror.
+- [ ] If `process.rs` remains in this branch, add the Task 6 process proofs now: loaded-runtime process path produces nonzero strict-stereo overwritten output and `ProcessStatus::KeepAlive`; no-runtime and no-loaded-voicegroup paths clear stereo and return `ProcessStatus::Normal`; render chunking is tested above `M4A_ENGINE_MAX_PROCESS_FRAMES`.
+- [ ] Update this plan's checkboxes to match observed implementation and verification. Check only items that are implemented and covered; leave remaining Task 6 proof items unchecked until their tests exist and pass.
+
+Verify:
+
+```bash
+(cd packages/poryaaaa/plugin && cargo test)
+(cd packages/poryaaaa/plugin && cargo build)
+(cd packages/poryaaaa/plugin && cargo test process)
+cmake --build packages/poryaaaa/build --target poryaaaa_unit_tests poryaaaa_engine_lifecycle
+packages/poryaaaa/build/poryaaaa_unit_tests
+packages/poryaaaa/build/poryaaaa_engine_lifecycle 1
 ```
 
 ### Task 6: Later Port The Process Adapter

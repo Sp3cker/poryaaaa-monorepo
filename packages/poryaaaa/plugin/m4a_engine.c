@@ -1,6 +1,7 @@
 #include "m4a_engine.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "hw_audio/hw_audio.h"
 #include "m4a/m4a_driver.h"
@@ -109,6 +110,31 @@ bool m4a_engine_init(M4AEngine* engine, float sampleRate)
     m4a_set_analog_filter(engine->driver, false);
 
     return true;
+}
+
+M4AEngine* m4a_engine_create(float sampleRate)
+{
+    M4AEngine* engine = (M4AEngine*)malloc(sizeof(*engine));
+    if (!engine)
+    {
+        return NULL;
+    }
+    if (!m4a_engine_init(engine, sampleRate))
+    {
+        free(engine);
+        return NULL;
+    }
+    return engine;
+}
+
+void m4a_engine_free(M4AEngine* engine)
+{
+    if (!engine)
+    {
+        return;
+    }
+    m4a_engine_destroy(engine);
+    free(engine);
 }
 
 void m4a_engine_destroy(M4AEngine* engine)

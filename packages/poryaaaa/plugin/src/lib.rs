@@ -5,8 +5,11 @@
 
 mod config;
 mod editor;
+mod ffi;
 mod params;
 mod plugin;
+mod process;
+mod runtime;
 mod voicegroup;
 
 pub use config::PluginConfig;
@@ -23,17 +26,22 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn test_async_executor() -> nice_plug::prelude::AsyncExecutor<PoryaaaaPlugin> {
+        nice_plug::prelude::AsyncExecutor::new(Arc::new(|_| {}), Arc::new(|_| {}))
+    }
+
     #[test]
     fn editor_factory_returns_editor_for_default_params() {
         let params = Arc::new(PoryaaaaParams::default());
 
-        assert!(crate::editor::create_editor(params).is_some());
+        assert!(crate::editor::create_editor(params, test_async_executor()).is_some());
     }
 
     #[test]
     fn editor_advertises_and_applies_host_resize() {
         let params = Arc::new(PoryaaaaParams::default());
-        let editor = crate::editor::create_editor(params.clone()).expect("editor");
+        let editor =
+            crate::editor::create_editor(params.clone(), test_async_executor()).expect("editor");
 
         assert!(editor.resize_hint().can_resize);
         assert!(editor.set_size(800, 600));
@@ -318,6 +326,346 @@ route104::
 
         assert_eq!(gui_state.draft_project_root, "/committed/root");
         assert_eq!(gui_state.draft_voicegroup, "committed_bank");
+    }
+    #[test]
+    fn plugin_initialize_creates_and_deactivate_drops_runtime() {
+        use nice_plug::prelude::*;
+
+        let mut plugin = PoryaaaaPlugin::default();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+        assert!(plugin.has_runtime());
+        assert!(!plugin.runtime_has_loaded_voicegroup());
+
+        plugin.deactivate();
+
+        assert!(!plugin.has_runtime());
+    }
+
+    #[test]
+    fn initialize_with_restored_committed_voicegroup_republishes_projects_json() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("initialize-restored-voicegroup");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                route104::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let home = temp_project("initialize-home");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let projects_json_path =
+            crate::voicegroup::default_projects_json_path().expect("default projects path");
+        let _ = fs::remove_file(&projects_json_path);
+
+        let mut plugin = PoryaaaaPlugin::default();
+        *plugin
+            .params_for_test()
+            .project_root
+            .write()
+            .expect("project root write") = root.to_string_lossy().into();
+        *plugin
+            .params_for_test()
+            .voicegroup
+            .write()
+            .expect("voicegroup write") = "route104".to_string();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+
+        assert!(plugin.runtime_has_loaded_voicegroup());
+        assert!(fs::read_to_string(&projects_json_path)
+            .expect("projects.json emitted during initialize")
+            .contains("\"bank\": \"route104\""));
+
+        plugin.deactivate();
+        if let Some(old_home) = old_home {
+            std::env::set_var("HOME", old_home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        fs::remove_dir_all(root).expect("remove temp project");
+        fs::remove_dir_all(home).expect("remove temp home");
+    }
+
+    #[test]
+    fn initialize_exposes_voicegroup_load_error_to_editor_status() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("initialize-load-error");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                route104::
+                    voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
+            ",
+        );
+        let home = temp_project("initialize-load-error-home");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+
+        let mut plugin = PoryaaaaPlugin::default();
+        *plugin
+            .params_for_test()
+            .project_root
+            .write()
+            .expect("project root write") = root.to_string_lossy().into();
+        *plugin
+            .params_for_test()
+            .voicegroup
+            .write()
+            .expect("voicegroup write") = "route104".to_string();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+
+        assert!(!plugin.runtime_has_loaded_voicegroup());
+        let gui_state = crate::editor::GuiState::from_params(plugin.params_for_test());
+        let status = gui_state
+            .voicegroup_status
+            .expect("runtime load error should be visible to editor");
+        assert!(status.is_error);
+        assert!(!status.text.is_empty());
+
+        plugin.deactivate();
+        if let Some(old_home) = old_home {
+            std::env::set_var("HOME", old_home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        fs::remove_dir_all(root).expect("remove temp project");
+        fs::remove_dir_all(home).expect("remove temp home");
+    }
+    #[test]
+    fn load_voicegroup_task_swaps_active_runtime_without_reinitialize() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("runtime-task-load");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+                route104::
+                \tvoice_square_1 61, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let mut plugin = PoryaaaaPlugin::default();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+
+        let execute = plugin.task_executor();
+        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
+            project_root: root.to_string_lossy().into_owned(),
+            bank: "voicegroup000".to_owned(),
+            projects_json_path: root.join("out/projects.json"),
+        });
+        assert!(plugin.runtime_has_loaded_voicegroup());
+
+        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
+            project_root: root.to_string_lossy().into_owned(),
+            bank: "route104".to_owned(),
+            projects_json_path: root.join("out/projects.json"),
+        });
+
+        assert!(plugin.runtime_has_loaded_voicegroup());
+        assert_eq!(
+            plugin
+                .params_for_test()
+                .voicegroup
+                .read()
+                .expect("voicegroup read")
+                .as_str(),
+            "route104",
+        );
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn load_voicegroup_task_failure_keeps_loaded_runtime_and_committed_params() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("runtime-task-load-failure");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let mut plugin = PoryaaaaPlugin::default();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+
+        let execute = plugin.task_executor();
+        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
+            project_root: root.to_string_lossy().into_owned(),
+            bank: "voicegroup000".to_owned(),
+            projects_json_path: root.join("out/projects.json"),
+        });
+        assert!(plugin.runtime_has_loaded_voicegroup());
+
+        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
+            project_root: "/definitely/not/a/poryaaaa/project".to_owned(),
+            bank: "voicegroup000".to_owned(),
+            projects_json_path: root.join("out/projects.json"),
+        });
+
+        assert!(plugin.runtime_has_loaded_voicegroup());
+        assert_eq!(
+            plugin
+                .params_for_test()
+                .voicegroup
+                .read()
+                .expect("voicegroup read")
+                .as_str(),
+            "voicegroup000",
+        );
+
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
+    fn plugin_reset_keeps_initialized_runtime() {
+        use nice_plug::prelude::*;
+
+        let mut plugin = PoryaaaaPlugin::default();
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+
+        plugin.reset();
+
+        assert!(plugin.has_runtime());
+    }
+
+    struct TestInitContext;
+
+    impl nice_plug::prelude::InitContext<PoryaaaaPlugin> for TestInitContext {
+        fn plugin_api(&self) -> nice_plug::prelude::PluginApi {
+            nice_plug::prelude::PluginApi::Clap
+        }
+
+        fn execute(&self, _task: <PoryaaaaPlugin as nice_plug::prelude::Plugin>::BackgroundTask) {}
+
+        fn set_latency_samples(&self, _samples: u32) {}
+
+        fn set_current_voice_capacity(&self, _capacity: u32) {}
+    }
+
+    #[test]
+    fn c_runtime_creates_resets_and_drops_engine() {
+        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+
+        assert!(runtime.reset());
+        assert!(!runtime.has_loaded_voicegroup());
+    }
+
+    #[test]
+    fn failed_runtime_voicegroup_load_keeps_no_loaded_voicegroup() {
+        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+
+        let result = runtime.load_voicegroup("/definitely/not/a/poryaaaa/project", "voicegroup000");
+
+        assert!(result.is_err());
+        assert!(!runtime.has_loaded_voicegroup());
+    }
+
+    #[test]
+    fn failed_runtime_voicegroup_replacement_keeps_loaded_voicegroup() {
+        let root = temp_project("runtime-replace");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let mut runtime = crate::runtime::CPluginRuntime::new(48_000.0).expect("runtime");
+        runtime
+            .load_voicegroup(&root.to_string_lossy(), "voicegroup000")
+            .expect("initial load");
+
+        let result = runtime.load_voicegroup("/definitely/not/a/poryaaaa/project", "voicegroup000");
+
+        assert!(result.is_err());
+        assert!(runtime.has_loaded_voicegroup());
+        assert!(runtime.reset());
+        assert!(runtime.has_loaded_voicegroup());
+
+        runtime.program_change(0, 0);
+        runtime.cc(0, 7, 127);
+        runtime.cc(0, 10, 64);
+        runtime.note_on(0, 60, 100);
+        let mut peak = 0.0f32;
+        for _ in 0..8 {
+            let mut left = [0.0f32; 512];
+            let mut right = [0.0f32; 512];
+            runtime.process(&mut left, &mut right);
+            peak = left
+                .iter()
+                .chain(right.iter())
+                .fold(peak, |peak, sample| peak.max(sample.abs()));
+        }
+        assert!(peak > 0.0001);
+
+        fs::remove_dir_all(root).expect("remove temp project");
     }
 
     fn temp_project(name: &str) -> PathBuf {
