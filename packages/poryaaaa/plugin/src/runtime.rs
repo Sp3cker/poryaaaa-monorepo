@@ -33,14 +33,15 @@ pub(crate) struct LoadedVoiceGroupHandle {
 
 impl LoadedVoiceGroupHandle {
     fn load(project_root: &str, bank: &str) -> Result<Self, EngineError> {
-        let project_root_c = CString::new(project_root)
-            .map_err(|_| EngineError::InvalidCString { field: "project_root" })?;
-        let bank_c = CString::new(bank)
-            .map_err(|_| EngineError::InvalidCString { field: "bank" })?;
+        let project_root_c =
+            CString::new(project_root).map_err(|_| EngineError::InvalidCString {
+                field: "project_root",
+            })?;
+        let bank_c =
+            CString::new(bank).map_err(|_| EngineError::InvalidCString { field: "bank" })?;
         let ptr = unsafe { ffi::voicegroup_load(project_root_c.as_ptr(), bank_c.as_ptr()) };
-        let ptr = NonNull::new(ptr).ok_or_else(|| {
-            EngineError::VoicegroupLoadFailed(last_voicegroup_error())
-        })?;
+        let ptr = NonNull::new(ptr)
+            .ok_or_else(|| EngineError::VoicegroupLoadFailed(last_voicegroup_error()))?;
         Ok(Self { ptr })
     }
 
@@ -72,7 +73,9 @@ impl std::fmt::Display for EngineError {
             Self::EngineCreateFailed { sample_rate } => {
                 write!(f, "Failed to create engine at sample rate {}", sample_rate)
             }
-            Self::InvalidCString { field } => write!(f, "Field '{}' contains interior NUL byte", field),
+            Self::InvalidCString { field } => {
+                write!(f, "Field '{}' contains interior NUL byte", field)
+            }
             Self::VoicegroupLoadFailed(msg) => write!(f, "Voicegroup load failed: {}", msg),
             Self::VoicegroupHasNoVoices => write!(f, "Loaded voicegroup has no voices"),
             Self::ResetFailed => write!(f, "Engine reset failed"),
@@ -116,9 +119,7 @@ impl M4aEngine {
 
     pub fn load_voicegroup(&mut self, project_root: &str, bank: &str) -> Result<(), EngineError> {
         let mut loaded = LoadedVoiceGroupHandle::load(project_root, bank)?;
-        let voices = loaded
-            .voices()
-            .ok_or(EngineError::VoicegroupHasNoVoices)?;
+        let voices = loaded.voices().ok_or(EngineError::VoicegroupHasNoVoices)?;
         self.bind_voicegroup_ptr(Some(voices));
         self.voicegroup = Some(loaded);
         Ok(())
@@ -142,7 +143,6 @@ impl M4aEngine {
             Err(EngineError::ResetFailed)
         }
     }
-
 
     #[allow(dead_code)]
     pub fn reconfigure(&mut self, config: EngineConfig) -> Result<(), EngineError> {
@@ -289,7 +289,6 @@ fn last_voicegroup_error() -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,7 +301,7 @@ mod tests {
             reverb: 10,
         };
         let mut engine = M4aEngine::new(config).expect("create engine");
-        assert!(engine.is_ready() == false);
+        assert!(!engine.is_ready());
 
         // Reset should succeed when engine exists
         assert!(engine.reset().is_ok());

@@ -2,7 +2,7 @@ use crate::{
     config::PluginConfig,
     editor,
     process::{self, ProcessRuntime},
-    runtime::{M4aEngine, EngineConfig},
+    runtime::{EngineConfig, M4aEngine},
     voicegroup, PoryaaaaParams, PROGRAM_COUNT,
 };
 use nice_plug::prelude::*;
