@@ -294,7 +294,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_engine_reconfigure_and_reset() {
+    fn engine_reconfigure_and_reset() {
         let config = EngineConfig {
             sample_rate: 44100.0,
             volume: 100,
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_reset_retires_engine() {
+    fn failed_reset_retires_engine() {
         let config = EngineConfig {
             sample_rate: 44100.0,
             volume: 100,
