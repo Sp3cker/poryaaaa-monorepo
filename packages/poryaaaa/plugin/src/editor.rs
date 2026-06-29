@@ -215,9 +215,11 @@ pub(crate) fn create_editor(
     async_executor: AsyncExecutor<PoryaaaaPlugin>,
 ) -> Option<Box<dyn Editor>> {
     let egui_state = params.editor_state.clone();
-    let mut settings = EguiSettings::default();
-    settings.resize_hint = ResizeHint::resizable();
-    settings.min_size = (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+    let settings = EguiSettings {
+        resize_hint: ResizeHint::resizable(),
+        min_size: (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+        ..Default::default()
+    };
 
     create_egui_editor(
         egui_state.clone(),

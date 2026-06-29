@@ -211,8 +211,8 @@ impl PoryaaaaPlugin {
         let Some(runtime) = runtime.as_mut() else {
             return;
         };
-        for channel in 0..PROGRAM_COUNT {
-            runtime.program_change(channel as i32, programs[channel]);
+        for (channel, &program) in programs.iter().enumerate() {
+            runtime.program_change(channel as i32, program);
         }
         if let Some(bpm) = self.last_host_tempo_bpm {
             runtime.set_tempo_bpm(bpm);
@@ -641,7 +641,7 @@ volume=127
 
     fn process_with_output(
         plugin: &mut PoryaaaaPlugin,
-        output: &mut Vec<Vec<f32>>,
+        output: &mut [Vec<f32>],
         context: &mut TestProcessContext,
     ) -> nice_plug::prelude::ProcessStatus {
         use nice_plug::prelude::*;

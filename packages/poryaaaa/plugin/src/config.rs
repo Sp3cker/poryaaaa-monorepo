@@ -106,7 +106,7 @@ fn config_dir_from_clap_path(plugin_path: *const c_char) -> Option<PathBuf> {
 }
 
 fn config_dir_from_clap_path_text(plugin_path: &str) -> Option<PathBuf> {
-    let separator = plugin_path.rfind(|ch| ch == '/' || ch == '\\')?;
+    let separator = plugin_path.rfind(['/', '\\'])?;
     let plugin_dir = &plugin_path[..separator];
 
     #[cfg(target_os = "macos")]
