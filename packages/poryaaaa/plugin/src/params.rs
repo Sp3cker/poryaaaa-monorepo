@@ -1,6 +1,6 @@
 use crate::midi_activity::MidiActivity;
 use nice_plug::prelude::*;
-use nice_plug_egui::EguiState;
+use nice_plug_iced::WindowState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -25,8 +25,8 @@ pub struct VoicegroupLoadStatus {
 
 #[derive(Params)]
 pub struct PoryaaaaParams {
-    #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    #[persist = "window-state"]
+    pub window_state: Arc<WindowState>,
     #[persist = "project-root"]
     pub project_root: Arc<RwLock<String>>,
     #[persist = "voicegroup"]
@@ -82,7 +82,7 @@ impl PoryaaaaParams {
     /// Builds params with config-seeded audio defaults before host state restore can override them.
     pub(crate) fn with_audio_defaults(volume: u8, reverb: u8) -> Self {
         Self {
-            editor_state: EguiState::from_size(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT),
+            window_state: WindowState::from_logical_size(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT),
             project_root: Arc::new(RwLock::new(String::new())),
             voicegroup: Arc::new(RwLock::new(String::new())),
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),

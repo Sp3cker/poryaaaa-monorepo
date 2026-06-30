@@ -4,33 +4,37 @@ use crate::{
     plugin::PoryaaaaBackgroundTask,
     shared_projects_json, PoryaaaaParams, PoryaaaaPlugin,
 };
-use egui::{Margin, Vec2};
-use egui_file_dialog::FileDialog;
+use iced_audio::Gesture;
 use nice_plug::prelude::*;
-use nice_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, EguiSettings};
+use nice_plug_iced::iced::{
+    self, Center, Element, Length, PollSubNotifier, Theme,
+    widget::{Column, Row, button, column, row, text, text_input},
+};
+use nice_plug_iced::{
+    EditorSettings, EditorState, NiceGuiContext, WindowState, application, create_iced_editor,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MIN_WINDOW_WIDTH: u32 = 420;
 const MIN_WINDOW_HEIGHT: u32 = 260;
-const PROJECT_ROOT_BROWSE_WIDTH: f32 = 72.0;
-const VOICEGROUP_LOAD_WIDTH: f32 = 56.0;
-const AUDIO_DIAL_SIZE: f32 = 64.0;
-const AUDIO_DIAL_COLUMN_WIDTH: f32 = 96.0;
-const AUDIO_DIAL_COLUMN_HEIGHT: f32 = 112.0;
-const AUDIO_DIAL_VALUE_STEP: f32 = 127.0 / 180.0;
 pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
-pub(crate) const CALAMITY_REGULAR_FONT: &str = "Calamity Regular";
-pub(crate) const CALAMITY_BOLD_FONT: &str = "Calamity Bold";
-pub(crate) const CALAMITY_BOLD_FAMILY: &str = "Calamity Bold";
 
-const MIDI_ACTIVITY_REPAINT: Duration = Duration::from_millis(33);
+#[derive(Debug, Clone)]
+enum Message {
+    Poll,
+    ProjectRootChanged(String),
+    VoicegroupChanged(String),
+    BrowseProjectRoot,
+    LoadVoicegroup,
+    VolumeGestured(Gesture),
+    ReverbGestured(Gesture),
+}
 
 pub(crate) struct GuiState {
     pub(crate) draft_project_root: String,
     pub(crate) draft_voicegroup: String,
-    project_root_dialog: FileDialog,
     pub(crate) voicegroup_status: Option<VoicegroupLoadStatus>,
     channel_activity: [MidiActivityLight; MIDI_CHANNEL_COUNT],
 }
@@ -44,7 +48,6 @@ impl GuiState {
                 .expect("project root read")
                 .clone(),
             draft_voicegroup: params.voicegroup.read().expect("voicegroup read").clone(),
-            project_root_dialog: project_root_dialog(None),
             voicegroup_status: params.voicegroup_status(),
             channel_activity: std::array::from_fn(|_| MidiActivityLight::default()),
         }
@@ -55,89 +58,48 @@ pub(crate) fn apply_project_root_selection(gui_state: &mut GuiState, path: &Path
     gui_state.draft_project_root = path.to_string_lossy().into_owned();
 }
 
-pub(crate) struct ProjectRootSelectorResponse {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub text_rect: egui::Rect,
-    pub browse_clicked: bool,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VoicegroupLoadRequest {
+    pub(crate) project_root: String,
+    pub(crate) bank: String,
+    pub(crate) projects_json_path: PathBuf,
 }
 
-/// Computes the width left for a leading text field before a fixed trailing button.
-pub(crate) fn remaining_width_for_leading_field(
-    available_width: f32,
-    trailing_width: f32,
-    item_spacing: f32,
-) -> f32 {
-    (available_width - trailing_width - item_spacing).max(0.0)
-}
-
-/// Builds the project-root row so the path field consumes all width left by Browse.
-pub(crate) fn show_project_root_selector(
-    ui: &mut egui::Ui,
-    project_root: &mut String,
-) -> ProjectRootSelectorResponse {
-    let mut text_rect = egui::Rect::NOTHING;
-    let mut browse_clicked = false;
-
-    ui.horizontal(|ui| {
-        let field_width = remaining_width_for_leading_field(
-            ui.available_width(),
-            PROJECT_ROOT_BROWSE_WIDTH,
-            ui.spacing().item_spacing.x,
-        );
-        let response = ui.add_sized(
-            [field_width, ui.spacing().interact_size.y],
-            egui::TextEdit::singleline(project_root),
-        );
-        text_rect = response.rect;
-        browse_clicked = ui
-            .add_sized(
-                [PROJECT_ROOT_BROWSE_WIDTH, ui.spacing().interact_size.y],
-                egui::Button::new("Browse"),
-            )
-            .clicked();
-    });
-
-    ProjectRootSelectorResponse {
-        text_rect,
-        browse_clicked,
+pub(crate) fn prepare_voicegroup_load_request(
+    params: &PoryaaaaParams,
+    gui_state: &mut GuiState,
+) -> Option<VoicegroupLoadRequest> {
+    match shared_projects_json::default_projects_json_path() {
+        Some(projects_json_path) => {
+            let status = VoicegroupLoadStatus {
+                text: format!("Loading {}", gui_state.draft_voicegroup),
+                is_error: false,
+            };
+            params.write_voicegroup_status(Some(status.clone()));
+            gui_state.voicegroup_status = Some(status);
+            Some(VoicegroupLoadRequest {
+                project_root: gui_state.draft_project_root.clone(),
+                bank: gui_state.draft_voicegroup.clone(),
+                projects_json_path,
+            })
+        }
+        None => {
+            let status = VoicegroupLoadStatus {
+                text: "Bad project root: HOME is not set".to_string(),
+                is_error: true,
+            };
+            params.write_voicegroup_status(Some(status.clone()));
+            gui_state.voicegroup_status = Some(status);
+            None
+        }
     }
-}
-
-fn project_root_dialog(initial_directory: Option<PathBuf>) -> FileDialog {
-    let dialog = FileDialog::new()
-        .title("Choose Project Root")
-        .default_size(Vec2::new(620.0, 420.0))
-        .min_size(Vec2::new(240.0, 160.0))
-        .show_search(false)
-        .show_new_folder_button(false)
-        .show_all_files_filter(false)
-        .max_selections(1);
-
-    if let Some(initial_directory) = initial_directory {
-        dialog.initial_directory(initial_directory)
-    } else {
-        dialog
-    }
-}
-
-/// Shows the editor frame and makes its background fill the resizable window.
-pub(crate) fn show_editor_frame<R>(
-    ui: &mut egui::Ui,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<R> {
-    egui::Frame::new()
-        .fill(ui.visuals().window_fill())
-        .inner_margin(Margin::same(8))
-        .show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            add_contents(ui)
-        })
 }
 
 #[derive(Default)]
 pub(crate) struct MidiActivityLight {
     last_count: u64,
     active_until: Option<Instant>,
+    active: bool,
 }
 
 impl MidiActivityLight {
@@ -147,271 +109,304 @@ impl MidiActivityLight {
             self.active_until = Some(now + MIDI_ACTIVITY_HOLD);
         }
 
-        self.active_until.is_some_and(|until| now <= until)
+        self.active = self.active_until.is_some_and(|until| now <= until);
+        self.active
+    }
+
+    fn active(&self) -> bool {
+        self.active
     }
 }
 
-fn show_midi_activity(ui: &mut egui::Ui, gui_state: &mut GuiState, snapshot: MidiActivitySnapshot) {
-    let now = Instant::now();
-    let mut any_active = false;
+struct PoryaaaaEditorState {
+    params: Arc<PoryaaaaParams>,
+    async_executor: AsyncExecutor<PoryaaaaPlugin>,
+}
 
-    ui.label("MIDI activity by channel");
-    ui.horizontal_wrapped(|ui| {
-        for (index, channel) in snapshot.channels.iter().enumerate() {
-            let count = channel.note_events + channel.other_events;
-            let active = gui_state.channel_activity[index].is_active(count, now);
-            any_active |= active;
-            show_activity_light(ui, &format!("● {:02}", index + 1), active);
+struct PoryaaaaGui {
+    editor_state: EditorState<PoryaaaaEditorState>,
+    nice_ctx: NiceGuiContext,
+    gui_state: GuiState,
+}
+
+impl PoryaaaaGui {
+    fn new(editor_state: EditorState<PoryaaaaEditorState>, nice_ctx: NiceGuiContext) -> Self {
+        let gui_state = GuiState::from_params(editor_state.params.as_ref());
+        let mut this = Self {
+            editor_state,
+            nice_ctx,
+            gui_state,
+        };
+        this.refresh_midi_activity();
+        this
+    }
+
+    fn theme(&self) -> Option<Theme> {
+        Some(Theme::Dark)
+    }
+
+    fn update(&mut self, message: Message) {
+        let params = self.editor_state.params.clone();
+
+        match message {
+            Message::Poll => {
+                self.gui_state.voicegroup_status = params.voicegroup_status();
+                self.refresh_midi_activity();
+                self.handle_pending_host_restart();
+            }
+            Message::ProjectRootChanged(project_root) => {
+                self.gui_state.draft_project_root = project_root;
+            }
+            Message::VoicegroupChanged(voicegroup) => {
+                self.gui_state.draft_voicegroup = voicegroup;
+            }
+            Message::BrowseProjectRoot => {
+                if let Some(path) = browse_project_root(&self.gui_state.draft_project_root) {
+                    apply_project_root_selection(&mut self.gui_state, &path);
+                }
+            }
+            Message::LoadVoicegroup => {
+                if let Some(request) =
+                    prepare_voicegroup_load_request(params.as_ref(), &mut self.gui_state)
+                {
+                    self.editor_state.async_executor.execute_gui(
+                        PoryaaaaBackgroundTask::LoadVoicegroup {
+                            project_root: request.project_root,
+                            bank: request.bank,
+                            projects_json_path: request.projects_json_path,
+                        },
+                    );
+                }
+            }
+            Message::VolumeGestured(gesture) => {
+                let setter = self.nice_ctx.param_setter();
+                iced_audio::param::set_nice_param(&params.volume, gesture, &setter);
+            }
+            Message::ReverbGestured(gesture) => {
+                let setter = self.nice_ctx.param_setter();
+                iced_audio::param::set_nice_param(&params.reverb, gesture, &setter);
+            }
         }
-    });
+    }
 
-    if any_active {
-        ui.ctx().request_repaint_after(MIDI_ACTIVITY_REPAINT);
+    fn view(&self) -> Element<'_, Message> {
+        column![
+            text("poryaaaa").size(24),
+            self.view_config_section(),
+            self.view_knob_section(),
+            self.view_status_section(),
+            self.view_midi_activity_section(),
+        ]
+        .padding(12)
+        .spacing(10)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_config_section(&self) -> Column<'_, Message> {
+        column![
+            text("Project Root"),
+            row![
+                text_input("Project Root", &self.gui_state.draft_project_root)
+                    .on_input(Message::ProjectRootChanged)
+                    .width(Length::Fill),
+                button("Browse").on_press(Message::BrowseProjectRoot),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+            text("Voicegroup"),
+            row![
+                text_input("Voicegroup", &self.gui_state.draft_voicegroup)
+                    .on_input(Message::VoicegroupChanged)
+                    .width(Length::Fill),
+                button("Load").on_press(Message::LoadVoicegroup),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+    }
+
+    fn view_knob_section(&self) -> Row<'_, Message> {
+        let params = &self.editor_state.params;
+
+        row![
+            audio_knob_column(&params.volume, Message::VolumeGestured),
+            audio_knob_column(&params.reverb, Message::ReverbGestured),
+        ]
+        .spacing(24)
+        .align_y(Center)
+    }
+
+    fn view_status_section(&self) -> Element<'_, Message> {
+        match &self.gui_state.voicegroup_status {
+            Some(status) if status.is_error => text(format!("Error: {}", status.text)).into(),
+            Some(status) => text(status.text.clone()).into(),
+            None => text("Ready").into(),
+        }
+    }
+
+    fn view_midi_activity_section(&self) -> Column<'_, Message> {
+        let mut lights = Row::new().spacing(6);
+        for (index, light) in self.gui_state.channel_activity.iter().enumerate() {
+            let mark = if light.active() { "●" } else { "○" };
+            lights = lights.push(text(format!("{mark} {}", index + 1)).size(14));
+        }
+
+        column![text("MIDI activity"), lights].spacing(4)
+    }
+
+    fn refresh_midi_activity(&mut self) -> bool {
+        let snapshot = self.editor_state.params.midi_activity.snapshot();
+        refresh_midi_activity_lights(&mut self.gui_state.channel_activity, snapshot, Instant::now())
+    }
+
+    fn handle_pending_host_restart(&mut self) {
+        if self.editor_state.params.take_host_restart_request()
+            && !self.nice_ctx.context.request_restart()
+        {
+            let status = VoicegroupLoadStatus {
+                text: "Loaded voicegroup, but host restart is unavailable".to_string(),
+                is_error: true,
+            };
+            self.editor_state
+                .params
+                .write_voicegroup_status(Some(status.clone()));
+            self.gui_state.voicegroup_status = Some(status);
+        }
     }
 }
 
-fn show_activity_light(ui: &mut egui::Ui, label: &str, active: bool) {
-    let color = if active {
-        egui::Color32::from_rgb(80, 220, 120)
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    ui.colored_label(color, label);
+fn browse_project_root(initial_directory: &str) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title("Choose Project Root");
+    if !initial_directory.is_empty() {
+        dialog = dialog.set_directory(initial_directory);
+    }
+    dialog.pick_folder()
 }
 
-/// Shows one automatable 0..127 integer parameter as a rotary dial.
-fn show_audio_dial(ui: &mut egui::Ui, setter: &ParamSetter, param: &IntParam) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(AUDIO_DIAL_COLUMN_WIDTH, AUDIO_DIAL_COLUMN_HEIGHT),
-        egui::Layout::top_down(egui::Align::Center),
-        |ui| {
-            ui.label(param.name());
-            let (rect, mut response) =
-                ui.allocate_exact_size(Vec2::splat(AUDIO_DIAL_SIZE), egui::Sense::click_and_drag());
-            let drag_active_id = response.id.with("audio-dial-drag-active");
+fn audio_knob_column<'a>(
+    param: &'a IntParam,
+    on_gesture: fn(Gesture) -> Message,
+) -> Column<'a, Message> {
+    use iced_audio::param::nice_to_iced;
 
-            if response.drag_started() {
-                setter.begin_set_parameter(param);
-                ui.memory_mut(|mem| {
-                    mem.data.insert_temp(drag_active_id, true);
-                });
-            }
-
-            if response.dragged() {
-                let next = (param.value() as f32 - response.drag_delta().y * AUDIO_DIAL_VALUE_STEP)
-                    .round()
-                    .clamp(0.0, 127.0) as i32;
-                if next != param.value() {
-                    setter.set_parameter(param, next);
-                    response.mark_changed();
-                }
-            }
-
-            if response.drag_stopped() {
-                let was_active = ui
-                    .memory(|mem| mem.data.get_temp(drag_active_id))
-                    .unwrap_or(false);
-                if was_active {
-                    setter.end_set_parameter(param);
-                    ui.memory_mut(|mem| {
-                        mem.data.insert_temp(drag_active_id, false);
-                    });
-                }
-            }
-
-            let center = rect.center();
-            let start_angle = std::f32::consts::TAU * 0.625;
-            let end_angle = start_angle + std::f32::consts::TAU * 0.75;
-            let sweep = end_angle - start_angle;
-
-            if response.double_clicked() {
-                setter.begin_set_parameter(param);
-                setter.set_parameter(param, param.default_plain_value());
-                setter.end_set_parameter(param);
-                response.mark_changed();
-            } else if response.clicked() {
-                if let Some(pointer_pos) = response.interact_pointer_pos() {
-                    let pointer = pointer_pos - center;
-                    if pointer.length_sq() > 0.0 {
-                        let mut angle = pointer.y.atan2(pointer.x);
-                        while angle < start_angle {
-                            angle += std::f32::consts::TAU;
-                        }
-                        let normalized = ((angle - start_angle) / sweep).clamp(0.0, 1.0);
-                        let next = (normalized * 127.0).round() as i32;
-                        if next != param.value() {
-                            setter.begin_set_parameter(param);
-                            setter.set_parameter(param, next);
-                            setter.end_set_parameter(param);
-                            response.mark_changed();
-                        }
-                    }
-                }
-            }
-
-            let painter = ui.painter_at(rect);
-            let radius = rect.width().min(rect.height()) * 0.42;
-            let normalized = param.modulated_normalized_value().clamp(0.0, 1.0);
-            let angle = start_angle + normalized * sweep;
-            let stroke = egui::Stroke::new(2.0, ui.visuals().widgets.inactive.fg_stroke.color);
-            let active_stroke = egui::Stroke::new(3.0, ui.visuals().selection.stroke.color);
-
-            painter.circle_stroke(center, radius, stroke);
-            painter.line_segment(
-                [
-                    center,
-                    center + egui::vec2(angle.cos(), angle.sin()) * (radius * 0.78),
-                ],
-                active_stroke,
-            );
-            painter.circle_filled(center, 3.0, ui.visuals().selection.stroke.color);
-
-            ui.label(param.to_string());
-        },
-    );
+    column![
+        text(param.name()),
+        iced_audio::Knob::new(nice_to_iced(param)).on_gesture(on_gesture),
+        text(param.to_string()),
+    ]
+    .spacing(4)
+    .align_x(Center)
 }
 
-pub(crate) fn calamity_font_definitions() -> egui::FontDefinitions {
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        CALAMITY_REGULAR_FONT.to_owned(),
-        Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../../../shared/assets/fonts/Calamity/Calamity-Regular.ttf"
-        ))),
-    );
-    fonts.font_data.insert(
-        CALAMITY_BOLD_FONT.to_owned(),
-        Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../../../shared/assets/fonts/Calamity/Calamity-Bold.ttf"
-        ))),
-    );
-
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, CALAMITY_REGULAR_FONT.to_owned());
-    fonts.families.insert(
-        egui::FontFamily::Name(CALAMITY_BOLD_FAMILY.into()),
-        vec![CALAMITY_BOLD_FONT.to_owned()],
-    );
-    fonts
+fn refresh_midi_activity_lights(
+    channel_activity: &mut [MidiActivityLight; MIDI_CHANNEL_COUNT],
+    snapshot: MidiActivitySnapshot,
+    now: Instant,
+) -> bool {
+    let mut any_active = false;
+    for (index, channel) in snapshot.channels.iter().enumerate() {
+        let count = channel.note_events + channel.other_events;
+        any_active |= channel_activity[index].is_active(count, now);
+    }
+    any_active
 }
 
-fn apply_calamity_fonts(ctx: &egui::Context) {
-    ctx.set_fonts(calamity_font_definitions());
-}
-
-/// Builds the egui editor around Rust-owned params.
 pub(crate) fn create_editor(
     params: Arc<PoryaaaaParams>,
     async_executor: AsyncExecutor<PoryaaaaPlugin>,
+    notifier: PollSubNotifier,
 ) -> Option<Box<dyn Editor>> {
-    let egui_state = params.editor_state.clone();
-    let settings = EguiSettings {
-        resize_hint: ResizeHint::resizable(),
-        min_size: (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
-        ..Default::default()
-    };
-
-    create_egui_editor(
-        egui_state.clone(),
-        GuiState::from_params(params.as_ref()),
-        settings,
-        |egui_ctx, _queue, _gui_state| {
-            apply_calamity_fonts(egui_ctx);
+    let window_state = params.window_state.clone();
+    let editor = create_iced_editor(
+        window_state.clone(),
+        PoryaaaaEditorState {
+            params,
+            async_executor,
         },
-        move |ui, setter, _queue, gui_state| {
-            ResizableWindow::new("poryaaaa-main").show(ui, egui_state.as_ref(), |ui| {
-                show_editor_frame(ui, |ui| {
-                    ui.heading("poryaaaa");
-                    ui.separator();
-                    show_midi_activity(ui, gui_state, params.midi_activity.snapshot());
-                    ui.separator();
-
-                    ui.horizontal(|ui| {
-                        show_audio_dial(ui, setter, &params.volume);
-                        ui.add_space(16.0);
-                        show_audio_dial(ui, setter, &params.reverb);
-                    });
-                    ui.separator();
-
-                    ui.label("Project root");
-                    let selector =
-                        show_project_root_selector(ui, &mut gui_state.draft_project_root);
-                    if selector.browse_clicked {
-                        let initial_directory = (!gui_state.draft_project_root.is_empty())
-                            .then(|| PathBuf::from(gui_state.draft_project_root.as_str()));
-                        gui_state.project_root_dialog = project_root_dialog(initial_directory);
-                        gui_state.project_root_dialog.pick_directory();
-                    }
-
-                    gui_state.project_root_dialog.update(ui.ctx());
-                    if let Some(path) = gui_state.project_root_dialog.take_picked() {
-                        apply_project_root_selection(gui_state, &path);
-                    }
-
-                    ui.label("Voicegroup");
-                    let mut load_requested = false;
-                    ui.horizontal(|ui| {
-                        let field_width = remaining_width_for_leading_field(
-                            ui.available_width(),
-                            VOICEGROUP_LOAD_WIDTH,
-                            ui.spacing().item_spacing.x,
-                        );
-                        ui.add_sized(
-                            [field_width, ui.spacing().interact_size.y],
-                            egui::TextEdit::singleline(&mut gui_state.draft_voicegroup),
-                        );
-                        load_requested = ui
-                            .add_sized(
-                                [VOICEGROUP_LOAD_WIDTH, ui.spacing().interact_size.y],
-                                egui::Button::new("Load"),
-                            )
-                            .clicked();
-                    });
-                    if load_requested {
-                        if let Some(path) = shared_projects_json::default_projects_json_path() {
-                            let status = VoicegroupLoadStatus {
-                                text: format!("Loading {}", gui_state.draft_voicegroup),
-                                is_error: false,
-                            };
-                            params.write_voicegroup_status(Some(status.clone()));
-                            gui_state.voicegroup_status = Some(status);
-                            async_executor.execute_gui(PoryaaaaBackgroundTask::LoadVoicegroup {
-                                project_root: gui_state.draft_project_root.clone(),
-                                bank: gui_state.draft_voicegroup.clone(),
-                                projects_json_path: path,
-                            });
-                        } else {
-                            let status = VoicegroupLoadStatus {
-                                text: "Bad project root: HOME is not set".to_string(),
-                                is_error: true,
-                            };
-                            params.write_voicegroup_status(Some(status.clone()));
-                            gui_state.voicegroup_status = Some(status);
-                        }
-                    }
-
-                    gui_state.voicegroup_status = params.voicegroup_status();
-                    if params.take_host_restart_request() && !setter.request_restart() {
-                        let status = VoicegroupLoadStatus {
-                            text: "Loaded voicegroup, but host restart is unavailable".to_string(),
-                            is_error: true,
-                        };
-                        params.write_voicegroup_status(Some(status.clone()));
-                        gui_state.voicegroup_status = Some(status);
-                    }
-
-                    if let Some(status) = &gui_state.voicegroup_status {
-                        if status.is_error {
-                            ui.colored_label(egui::Color32::RED, &status.text);
-                        } else {
-                            ui.label(&status.text);
-                        }
-                    }
-                });
-            });
+        notifier,
+        EditorSettings {
+            always_redraw: true,
+            ..Default::default()
         },
-    )
+        |editor_state, nice_ctx| {
+            application(
+                editor_state,
+                nice_ctx,
+                PoryaaaaGui::new,
+                PoryaaaaGui::update,
+                PoryaaaaGui::view,
+            )
+            .theme(PoryaaaaGui::theme)
+            .subscription(|_| iced::poll_events().map(|_| Message::Poll))
+            .run()
+        },
+    )?;
+
+    Some(Box::new(ResizableIcedEditor {
+        inner: editor,
+        window_state,
+    }))
+}
+
+struct ResizableIcedEditor {
+    inner: Box<dyn Editor>,
+    window_state: Arc<WindowState>,
+}
+
+impl Editor for ResizableIcedEditor {
+    fn spawn(
+        &self,
+        parent: ParentWindowHandle,
+        context: Arc<dyn GuiContext>,
+    ) -> Box<dyn std::any::Any + Send> {
+        self.inner.spawn(parent, context)
+    }
+
+    fn size(&self) -> (u32, u32) {
+        self.inner.size()
+    }
+
+    fn set_scale_factor(&self, factor: f32) -> bool {
+        self.inner.set_scale_factor(factor)
+    }
+
+    fn param_value_changed(&self, id: &str, normalized_value: f32) {
+        self.inner.param_value_changed(id, normalized_value);
+    }
+
+    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
+        self.inner.param_modulation_changed(id, modulation_offset);
+    }
+
+    fn param_values_changed(&self) {
+        self.inner.param_values_changed();
+    }
+
+    fn set_size(&self, width: u32, height: u32) -> bool {
+        let (width, height) = self.adjust_size(width, height).expect("resizable editor");
+        self.window_state.set_requested_logical_size((width, height));
+        true
+    }
+
+    fn adjust_size(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        Some((width.max(MIN_WINDOW_WIDTH), height.max(MIN_WINDOW_HEIGHT)))
+    }
+
+    fn resize_hint(&self) -> ResizeHint {
+        ResizeHint::resizable()
+    }
+
+    fn on_virtual_key_from_host(
+        &self,
+        key_code: VirtualKeyCode,
+        is_down: bool,
+        modifiers: Modifiers,
+    ) -> bool {
+        self.inner
+            .on_virtual_key_from_host(key_code, is_down, modifiers)
+    }
 }
