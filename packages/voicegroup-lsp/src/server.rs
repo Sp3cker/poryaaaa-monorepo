@@ -94,10 +94,9 @@ impl Server {
                 self.did_change(params)
             }
             DidChangeWatchedFiles::METHOD => {
-                let _params: DidChangeWatchedFilesParams =
+                let params: DidChangeWatchedFilesParams =
                     notification_params::<DidChangeWatchedFiles>(notification)?;
-                self.project_contexts.clear();
-                Ok(())
+                self.did_change_watched_files(params)
             }
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams =
@@ -137,6 +136,24 @@ impl Server {
         let uri = parse_document_uri(&lsp_uri)?;
         self.documents.close(&uri);
         self.publish_diagnostics(lsp_uri, Vec::new())
+    }
+
+    /// Invalidates cached project symbols and refreshes diagnostics for open buffers.
+    fn did_change_watched_files(&mut self, _params: DidChangeWatchedFilesParams) -> Result<()> {
+        self.project_contexts.clear();
+        let documents = self
+            .documents
+            .iter()
+            .map(|(uri, text)| (uri.clone(), text.to_string()))
+            .collect::<Vec<_>>();
+
+        for (uri, text) in documents {
+            let lsp_uri = url_to_lsp_uri(&uri)?;
+            let diagnostics = self.project_contexts.diagnostics_for_document(&uri, &text);
+            self.publish_diagnostics(lsp_uri, diagnostics)?;
+        }
+
+        Ok(())
     }
 
     /// Sends diagnostics using the standard LSP publishDiagnostics notification.
@@ -185,6 +202,13 @@ where
 /// Converts lsp-types' URI wrapper into url::Url for stable document-store keys.
 fn parse_document_uri(uri: &lsp_types::Uri) -> Result<Url> {
     Url::parse(uri.as_str()).with_context(|| format!("parsing document URI {}", uri.as_str()))
+}
+
+/// Converts stored URL keys back into LSP URI values for diagnostic refreshes.
+fn url_to_lsp_uri(uri: &Url) -> Result<lsp_types::Uri> {
+    uri.as_str()
+        .parse()
+        .with_context(|| format!("converting document URL {} to LSP URI", uri))
 }
 
 struct ProjectContexts {

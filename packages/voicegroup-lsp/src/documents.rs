@@ -29,6 +29,13 @@ impl DocumentStore {
         self.documents.remove(uri).is_some()
     }
 
+    /// Iterates open documents as immutable snapshots for bulk diagnostic refresh.
+    pub fn iter(&self) -> impl Iterator<Item = (&Url, &str)> {
+        self.documents
+            .iter()
+            .map(|(uri, text)| (uri, text.as_str()))
+    }
+
     #[cfg(test)]
     /// Returns the current unsaved text for diagnostics and tests.
     pub fn get(&self, uri: &Url) -> Option<&str> {
@@ -62,5 +69,29 @@ mod tests {
 
         assert_eq!(documents.get(&uri), None);
         assert!(!documents.close(&uri));
+    }
+
+    #[test]
+    fn iterating_documents_exposes_open_document_snapshots() {
+        let first = Url::parse("file:///tmp/first.inc").unwrap();
+        let second = Url::parse("file:///tmp/second.inc").unwrap();
+        let mut documents = DocumentStore::new();
+
+        documents.open(first.clone(), "first text".to_string());
+        documents.open(second.clone(), "second text".to_string());
+
+        let mut snapshots = documents
+            .iter()
+            .map(|(uri, text)| (uri.clone(), text.to_string()))
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
+
+        assert_eq!(
+            snapshots,
+            vec![
+                (first, "first text".to_string()),
+                (second, "second text".to_string())
+            ]
+        );
     }
 }
