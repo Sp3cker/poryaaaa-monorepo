@@ -17,6 +17,8 @@ const MIN_WINDOW_HEIGHT: u32 = 260;
 const PROJECT_ROOT_BROWSE_WIDTH: f32 = 72.0;
 const VOICEGROUP_LOAD_WIDTH: f32 = 56.0;
 const AUDIO_DIAL_SIZE: f32 = 64.0;
+const AUDIO_DIAL_COLUMN_WIDTH: f32 = 96.0;
+const AUDIO_DIAL_COLUMN_HEIGHT: f32 = 112.0;
 const AUDIO_DIAL_VALUE_STEP: f32 = 127.0 / 180.0;
 pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
 pub(crate) const CALAMITY_REGULAR_FONT: &str = "Calamity Regular";
@@ -179,92 +181,94 @@ fn show_activity_light(ui: &mut egui::Ui, label: &str, active: bool) {
 
 /// Shows one automatable 0..127 integer parameter as a rotary dial.
 fn show_audio_dial(ui: &mut egui::Ui, setter: &ParamSetter, param: &IntParam) {
-    ui.vertical_centered(|ui| {
-        ui.label(param.name());
-        let (rect, mut response) = ui.allocate_exact_size(
-            Vec2::splat(AUDIO_DIAL_SIZE),
-            egui::Sense::click_and_drag(),
-        );
-        let drag_active_id = response.id.with("audio-dial-drag-active");
+    ui.allocate_ui_with_layout(
+        Vec2::new(AUDIO_DIAL_COLUMN_WIDTH, AUDIO_DIAL_COLUMN_HEIGHT),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.label(param.name());
+            let (rect, mut response) =
+                ui.allocate_exact_size(Vec2::splat(AUDIO_DIAL_SIZE), egui::Sense::click_and_drag());
+            let drag_active_id = response.id.with("audio-dial-drag-active");
 
-        if response.drag_started() {
-            setter.begin_set_parameter(param);
-            ui.memory_mut(|mem| {
-                mem.data.insert_temp(drag_active_id, true);
-            });
-        }
-
-        if response.dragged() {
-            let next = (param.value() as f32 - response.drag_delta().y * AUDIO_DIAL_VALUE_STEP)
-                .round()
-                .clamp(0.0, 127.0) as i32;
-            if next != param.value() {
-                setter.set_parameter(param, next);
-                response.mark_changed();
-            }
-        }
-
-        if response.drag_stopped() {
-            let was_active = ui
-                .memory(|mem| mem.data.get_temp(drag_active_id))
-                .unwrap_or(false);
-            if was_active {
-                setter.end_set_parameter(param);
+            if response.drag_started() {
+                setter.begin_set_parameter(param);
                 ui.memory_mut(|mem| {
-                    mem.data.insert_temp(drag_active_id, false);
+                    mem.data.insert_temp(drag_active_id, true);
                 });
             }
-        }
 
-        let center = rect.center();
-        let start_angle = std::f32::consts::TAU * 0.625;
-        let end_angle = start_angle + std::f32::consts::TAU * 0.75;
-        let sweep = end_angle - start_angle;
+            if response.dragged() {
+                let next = (param.value() as f32 - response.drag_delta().y * AUDIO_DIAL_VALUE_STEP)
+                    .round()
+                    .clamp(0.0, 127.0) as i32;
+                if next != param.value() {
+                    setter.set_parameter(param, next);
+                    response.mark_changed();
+                }
+            }
 
-        if response.double_clicked() {
-            setter.begin_set_parameter(param);
-            setter.set_parameter(param, param.default_plain_value());
-            setter.end_set_parameter(param);
-            response.mark_changed();
-        } else if response.clicked() {
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
-                let pointer = pointer_pos - center;
-                if pointer.length_sq() > 0.0 {
-                    let mut angle = pointer.y.atan2(pointer.x);
-                    while angle < start_angle {
-                        angle += std::f32::consts::TAU;
-                    }
-                    let normalized = ((angle - start_angle) / sweep).clamp(0.0, 1.0);
-                    let next = (normalized * 127.0).round() as i32;
-                    if next != param.value() {
-                        setter.begin_set_parameter(param);
-                        setter.set_parameter(param, next);
-                        setter.end_set_parameter(param);
-                        response.mark_changed();
+            if response.drag_stopped() {
+                let was_active = ui
+                    .memory(|mem| mem.data.get_temp(drag_active_id))
+                    .unwrap_or(false);
+                if was_active {
+                    setter.end_set_parameter(param);
+                    ui.memory_mut(|mem| {
+                        mem.data.insert_temp(drag_active_id, false);
+                    });
+                }
+            }
+
+            let center = rect.center();
+            let start_angle = std::f32::consts::TAU * 0.625;
+            let end_angle = start_angle + std::f32::consts::TAU * 0.75;
+            let sweep = end_angle - start_angle;
+
+            if response.double_clicked() {
+                setter.begin_set_parameter(param);
+                setter.set_parameter(param, param.default_plain_value());
+                setter.end_set_parameter(param);
+                response.mark_changed();
+            } else if response.clicked() {
+                if let Some(pointer_pos) = response.interact_pointer_pos() {
+                    let pointer = pointer_pos - center;
+                    if pointer.length_sq() > 0.0 {
+                        let mut angle = pointer.y.atan2(pointer.x);
+                        while angle < start_angle {
+                            angle += std::f32::consts::TAU;
+                        }
+                        let normalized = ((angle - start_angle) / sweep).clamp(0.0, 1.0);
+                        let next = (normalized * 127.0).round() as i32;
+                        if next != param.value() {
+                            setter.begin_set_parameter(param);
+                            setter.set_parameter(param, next);
+                            setter.end_set_parameter(param);
+                            response.mark_changed();
+                        }
                     }
                 }
             }
-        }
 
-        let painter = ui.painter_at(rect);
-        let radius = rect.width().min(rect.height()) * 0.42;
-        let normalized = param.modulated_normalized_value().clamp(0.0, 1.0);
-        let angle = start_angle + normalized * sweep;
-        let stroke = egui::Stroke::new(2.0, ui.visuals().widgets.inactive.fg_stroke.color);
-        let active_stroke = egui::Stroke::new(3.0, ui.visuals().selection.stroke.color);
+            let painter = ui.painter_at(rect);
+            let radius = rect.width().min(rect.height()) * 0.42;
+            let normalized = param.modulated_normalized_value().clamp(0.0, 1.0);
+            let angle = start_angle + normalized * sweep;
+            let stroke = egui::Stroke::new(2.0, ui.visuals().widgets.inactive.fg_stroke.color);
+            let active_stroke = egui::Stroke::new(3.0, ui.visuals().selection.stroke.color);
 
-        painter.circle_stroke(center, radius, stroke);
-        painter.line_segment(
-            [
-                center,
-                center + egui::vec2(angle.cos(), angle.sin()) * (radius * 0.78),
-            ],
-            active_stroke,
-        );
-        painter.circle_filled(center, 3.0, ui.visuals().selection.stroke.color);
+            painter.circle_stroke(center, radius, stroke);
+            painter.line_segment(
+                [
+                    center,
+                    center + egui::vec2(angle.cos(), angle.sin()) * (radius * 0.78),
+                ],
+                active_stroke,
+            );
+            painter.circle_filled(center, 3.0, ui.visuals().selection.stroke.color);
 
-        ui.label(param.to_string());
-    });
+            ui.label(param.to_string());
+        },
+    );
 }
 
 pub(crate) fn calamity_font_definitions() -> egui::FontDefinitions {
