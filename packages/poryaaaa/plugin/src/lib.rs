@@ -244,6 +244,17 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_directory_picker_keeps_existing_draft_project_root() {
+        let params = PoryaaaaParams::default();
+        let mut gui_state = crate::editor::GuiState::from_params(&params);
+        gui_state.draft_project_root = "/existing/project".to_string();
+
+        crate::editor::apply_optional_project_root_selection(&mut gui_state, None);
+
+        assert_eq!(gui_state.draft_project_root, "/existing/project");
+    }
+
+    #[test]
     fn voicegroup_load_request_uses_drafts_and_does_not_commit_until_background_success() {
         let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
         let home = temp_project("home");

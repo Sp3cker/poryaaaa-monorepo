@@ -7,7 +7,7 @@ use crate::{
 use iced_audio::Gesture;
 use nice_plug::prelude::*;
 use nice_plug_iced::iced::{
-    self, Center, Element, Length, PollSubNotifier, Theme,
+    self, Center, Element, Length, PollSubNotifier, Task, Theme,
     widget::{Column, Row, button, column, row, text, text_input},
 };
 use nice_plug_iced::{
@@ -27,6 +27,7 @@ enum Message {
     ProjectRootChanged(String),
     VoicegroupChanged(String),
     BrowseProjectRoot,
+    ProjectRootSelected(Option<PathBuf>),
     LoadVoicegroup,
     VolumeGestured(Gesture),
     ReverbGestured(Gesture),
@@ -56,6 +57,15 @@ impl GuiState {
 
 pub(crate) fn apply_project_root_selection(gui_state: &mut GuiState, path: &Path) {
     gui_state.draft_project_root = path.to_string_lossy().into_owned();
+}
+
+pub(crate) fn apply_optional_project_root_selection(
+    gui_state: &mut GuiState,
+    path: Option<PathBuf>,
+) {
+    if let Some(path) = path {
+        apply_project_root_selection(gui_state, &path);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +155,7 @@ impl PoryaaaaGui {
         Some(Theme::Dark)
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         let params = self.editor_state.params.clone();
 
         match message {
@@ -161,9 +171,10 @@ impl PoryaaaaGui {
                 self.gui_state.draft_voicegroup = voicegroup;
             }
             Message::BrowseProjectRoot => {
-                if let Some(path) = browse_project_root(&self.gui_state.draft_project_root) {
-                    apply_project_root_selection(&mut self.gui_state, &path);
-                }
+                return browse_project_root_task(self.gui_state.draft_project_root.clone());
+            }
+            Message::ProjectRootSelected(path) => {
+                apply_optional_project_root_selection(&mut self.gui_state, path);
             }
             Message::LoadVoicegroup => {
                 if let Some(request) =
@@ -187,6 +198,8 @@ impl PoryaaaaGui {
                 iced_audio::param::set_nice_param(&params.reverb, gesture, &setter);
             }
         }
+
+        Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -279,12 +292,25 @@ impl PoryaaaaGui {
     }
 }
 
-fn browse_project_root(initial_directory: &str) -> Option<PathBuf> {
-    let mut dialog = rfd::FileDialog::new().set_title("Choose Project Root");
-    if !initial_directory.is_empty() {
-        dialog = dialog.set_directory(initial_directory);
-    }
-    dialog.pick_folder()
+fn browse_project_root_task(initial_directory: String) -> Task<Message> {
+    Task::perform(
+        async move {
+            let initial_directory = if initial_directory.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(initial_directory))
+            };
+            let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Project Root");
+            if let Some(initial_directory) = initial_directory {
+                dialog = dialog.set_directory(initial_directory);
+            }
+            dialog
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf())
+        },
+        Message::ProjectRootSelected,
+    )
 }
 
 fn audio_knob_column<'a>(
