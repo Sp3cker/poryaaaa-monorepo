@@ -14,7 +14,7 @@ struct ProjectSlot {
     type_code: u8,
     drumset: Vec<DrumPad>,
 }
-
+//todo: Do we need this? A struct specifically for voices in a drumset?
 struct DrumPad {
     note: usize,
     name: String,
