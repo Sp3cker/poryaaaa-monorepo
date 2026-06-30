@@ -1,13 +1,6 @@
 use std::env;
 use std::path::PathBuf;
 
-///TODO: better name. "Status" irkfull
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoicegroupLoadStatus {
-    pub text: String,
-    pub is_error: bool,
-}
-
 /// Returns the shared projects.json path used by poryaaaa and ccomidi.
 /// This is *not read* by poryaaaa. CComidi reads it to get voice name & line numbers
 pub(crate) fn default_projects_json_path() -> Option<PathBuf> {

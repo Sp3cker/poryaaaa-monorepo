@@ -11,9 +11,9 @@ mod params;
 mod plugin;
 mod process;
 mod runtime;
+mod shared_projects_json;
 #[cfg(test)]
 mod test_support;
-mod voicegroup;
 
 pub use config::PluginConfig;
 pub use params::{PoryaaaaParams, PROGRAM_COUNT};
@@ -520,8 +520,8 @@ route104::
         let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &home);
-        let projects_json_path =
-            crate::voicegroup::default_projects_json_path().expect("default projects path");
+        let projects_json_path = crate::shared_projects_json::default_projects_json_path()
+            .expect("default projects path");
         let _ = fs::remove_file(&projects_json_path);
 
         let mut plugin = PoryaaaaPlugin::default();

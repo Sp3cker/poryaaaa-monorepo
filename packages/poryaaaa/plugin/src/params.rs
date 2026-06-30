@@ -1,4 +1,4 @@
-use crate::{midi_activity::MidiActivity, voicegroup::VoicegroupLoadStatus};
+use crate::midi_activity::MidiActivity;
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use std::sync::{Arc, RwLock};
@@ -6,6 +6,13 @@ use std::sync::{Arc, RwLock};
 pub const PROGRAM_COUNT: usize = 16;
 pub(crate) const DEFAULT_EDITOR_WIDTH: u32 = 525;
 pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 325;
+
+/// Carries the latest voicegroup load result shared between the runtime and editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoicegroupLoadStatus {
+    pub text: String,
+    pub is_error: bool,
+}
 
 #[derive(Params)]
 pub struct PoryaaaaParams {

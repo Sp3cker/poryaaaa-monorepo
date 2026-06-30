@@ -1,9 +1,10 @@
 use crate::{
     config::PluginConfig,
     editor,
+    params::VoicegroupLoadStatus,
     process::{self, ProcessRuntime},
     runtime::{EngineConfig, M4aEngine},
-    voicegroup, PoryaaaaParams, PROGRAM_COUNT,
+    shared_projects_json, PoryaaaaParams, PROGRAM_COUNT,
 };
 use nice_plug::prelude::*;
 use std::path::{Path, PathBuf};
@@ -52,13 +53,13 @@ impl PoryaaaaPlugin {
         draft_project_root: &str,
         draft_bank: &str,
         projects_json_path: &Path,
-    ) -> voicegroup::VoicegroupLoadStatus {
+    ) -> VoicegroupLoadStatus {
         match Self::publish_voicegroup(draft_project_root, draft_bank, projects_json_path) {
             Ok(()) => {
                 Self::commit_voicegroup_params(params, draft_project_root, draft_bank);
                 Self::loaded_status(draft_bank)
             }
-            Err(message) => voicegroup::VoicegroupLoadStatus {
+            Err(message) => VoicegroupLoadStatus {
                 text: message,
                 is_error: true,
             },
@@ -69,7 +70,7 @@ impl PoryaaaaPlugin {
     pub(crate) fn load_committed_voicegroup(
         params: &PoryaaaaParams,
         projects_json_path: &Path,
-    ) -> Option<voicegroup::VoicegroupLoadStatus> {
+    ) -> Option<VoicegroupLoadStatus> {
         let project_root = params
             .project_root
             .read()
@@ -130,8 +131,8 @@ impl PoryaaaaPlugin {
     }
 
     /// Builds the editor-facing success status for a loaded runtime bank.
-    fn loaded_status(bank: &str) -> voicegroup::VoicegroupLoadStatus {
-        voicegroup::VoicegroupLoadStatus {
+    fn loaded_status(bank: &str) -> VoicegroupLoadStatus {
+        VoicegroupLoadStatus {
             text: format!("Loaded {bank}"),
             is_error: false,
         }
@@ -140,7 +141,7 @@ impl PoryaaaaPlugin {
     /// Mirrors runtime voicegroup status into shared params for the editor.
     fn write_runtime_voicegroup_status(
         params: &PoryaaaaParams,
-        status: Option<voicegroup::VoicegroupLoadStatus>,
+        status: Option<VoicegroupLoadStatus>,
     ) {
         *params
             .runtime_voicegroup_status
@@ -152,7 +153,7 @@ impl PoryaaaaPlugin {
     fn set_runtime_voicegroup_error(&mut self, message: String) {
         Self::write_runtime_voicegroup_status(
             self.params.as_ref(),
-            Some(voicegroup::VoicegroupLoadStatus {
+            Some(VoicegroupLoadStatus {
                 text: message,
                 is_error: true,
             }),
@@ -176,7 +177,7 @@ impl PoryaaaaPlugin {
                 {
                     Self::write_runtime_voicegroup_status(
                         params,
-                        Some(voicegroup::VoicegroupLoadStatus {
+                        Some(VoicegroupLoadStatus {
                             text: message,
                             is_error: true,
                         }),
@@ -189,7 +190,7 @@ impl PoryaaaaPlugin {
                     if let Err(err) = runtime.load_voicegroup(&project_root, &bank) {
                         Self::write_runtime_voicegroup_status(
                             params,
-                            Some(voicegroup::VoicegroupLoadStatus {
+                            Some(VoicegroupLoadStatus {
                                 text: err.to_string(),
                                 is_error: true,
                             }),
@@ -288,7 +289,7 @@ impl Plugin for PoryaaaaPlugin {
             .expect("voicegroup read")
             .clone();
         if !project_root.is_empty() && !bank.is_empty() {
-            let committed_load = voicegroup::default_projects_json_path()
+            let committed_load = shared_projects_json::default_projects_json_path()
                 .and_then(|path| Self::load_committed_voicegroup(self.params.as_ref(), &path));
             match committed_load {
                 Some(status) if status.is_error => {

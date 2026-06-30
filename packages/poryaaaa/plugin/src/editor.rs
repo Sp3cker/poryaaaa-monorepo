@@ -1,7 +1,8 @@
 use crate::{
     midi_activity::{MidiActivitySnapshot, MIDI_CHANNEL_COUNT},
+    params::VoicegroupLoadStatus,
     plugin::PoryaaaaBackgroundTask,
-    voicegroup, PoryaaaaParams, PoryaaaaPlugin,
+    shared_projects_json, PoryaaaaParams, PoryaaaaPlugin,
 };
 use egui::{Margin, Vec2};
 use egui_file_dialog::FileDialog;
@@ -26,7 +27,7 @@ pub(crate) struct GuiState {
     pub(crate) draft_project_root: String,
     pub(crate) draft_voicegroup: String,
     project_root_dialog: FileDialog,
-    pub(crate) voicegroup_status: Option<voicegroup::VoicegroupLoadStatus>,
+    pub(crate) voicegroup_status: Option<VoicegroupLoadStatus>,
     channel_activity: [MidiActivityLight; MIDI_CHANNEL_COUNT],
 }
 
@@ -271,8 +272,8 @@ pub(crate) fn create_editor(
                             .clicked();
                     });
                     if load_requested {
-                        if let Some(path) = voicegroup::default_projects_json_path() {
-                            let status = voicegroup::VoicegroupLoadStatus {
+                        if let Some(path) = shared_projects_json::default_projects_json_path() {
+                            let status = VoicegroupLoadStatus {
                                 text: format!("Loading {}", gui_state.draft_voicegroup),
                                 is_error: false,
                             };
@@ -287,7 +288,7 @@ pub(crate) fn create_editor(
                                 projects_json_path: path,
                             });
                         } else {
-                            let status = voicegroup::VoicegroupLoadStatus {
+                            let status = VoicegroupLoadStatus {
                                 text: "Bad project root: HOME is not set".to_string(),
                                 is_error: true,
                             };
