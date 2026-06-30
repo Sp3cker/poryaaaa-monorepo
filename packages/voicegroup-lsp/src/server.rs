@@ -2,10 +2,11 @@ use anyhow::{Context, Result};
 use lsp_server::{Connection, ErrorCode, Message, Notification as ServerNotification, Response};
 use lsp_types::{
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
+        DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
+        Notification,
     },
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    PublishDiagnosticsParams,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, PublishDiagnosticsParams,
 };
 use serde::de::DeserializeOwned;
 use std::{
@@ -91,6 +92,12 @@ impl Server {
                 let params: DidChangeTextDocumentParams =
                     notification_params::<DidChangeTextDocument>(notification)?;
                 self.did_change(params)
+            }
+            DidChangeWatchedFiles::METHOD => {
+                let _params: DidChangeWatchedFilesParams =
+                    notification_params::<DidChangeWatchedFiles>(notification)?;
+                self.project_contexts.clear();
+                Ok(())
             }
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams =
@@ -205,6 +212,11 @@ impl ProjectContexts {
             .or_insert_with(|| load_analysis_context(&root));
         diagnostics_for_text(text, analysis_context.as_ref())
     }
+
+    /// Drops cached project symbols so watched asset-file changes take effect.
+    fn clear(&mut self) {
+        self.contexts.clear();
+    }
 }
 
 /// Builds analyzer symbols from the nearest voicegroup project root for a file.
@@ -259,6 +271,44 @@ mod tests {
 
         let _ = fs::remove_dir_all(parent);
         assert_eq!(diagnostics, []);
+    }
+
+    #[test]
+    fn project_context_cache_can_be_cleared_when_symbol_files_change() {
+        let parent = temp_project_root("cache-clear");
+        let project = parent.join("decomp");
+        fs::create_dir_all(project.join("sound/voicegroups")).expect("create voicegroup dir");
+        let symbols_path = project.join("sound/direct_sound_data.inc");
+        fs::write(
+            &symbols_path,
+            "DirectSoundWaveData_kick::\n\t.incbin \"sound/direct_sound_samples/kick.bin\"\n",
+        )
+        .expect("write initial symbols");
+
+        let document_uri = Url::from_file_path(project.join("sound/voicegroups/voicegroup001.inc"))
+            .expect("convert document path to uri");
+        let text =
+            "voicegroup001:: @\n voice_directsound 60, 0, DirectSoundWaveData_kick, 255, 0, 255, 165\n";
+        let mut contexts = ProjectContexts::new();
+        assert_eq!(contexts.diagnostics_for_document(&document_uri, text), []);
+
+        fs::write(
+            &symbols_path,
+            "DirectSoundWaveData_snare::\n\t.incbin \"sound/direct_sound_samples/snare.bin\"\n",
+        )
+        .expect("replace symbols");
+        assert_eq!(contexts.diagnostics_for_document(&document_uri, text), []);
+
+        contexts.clear();
+        let diagnostics = contexts.diagnostics_for_document(&document_uri, text);
+
+        let _ = fs::remove_dir_all(parent);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == Some(lsp_types::NumberOrString::String(
+                    "unknown-directsound-symbol".to_string(),
+                ))
+        }));
     }
 
     #[test]

@@ -29,11 +29,15 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
+      { scheme: 'file', language: 'voicegroup-inc', pattern: '**/sound/voice_groups.inc' },
       { scheme: 'file', language: 'voicegroup-inc', pattern: '**/sound/voicegroups/**/*.inc' }
     ],
     outputChannel: output,
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/sound/{direct_sound_data,programmable_wave_data,keysplit_tables}.inc')
+      fileEvents: [
+        vscode.workspace.createFileSystemWatcher('**/sound/{direct_sound_data,programmable_wave_data,keysplit_tables,voice_groups}.inc'),
+        vscode.workspace.createFileSystemWatcher('**/sound/voicegroups/**/*.inc')
+      ]
     }
   };
 
