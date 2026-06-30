@@ -1,5 +1,4 @@
 use crate::{
-    config::PluginConfig,
     editor,
     params::VoicegroupLoadStatus,
     process::{self, ProcessRuntime},
@@ -23,26 +22,29 @@ pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
     runtime: Arc<Mutex<Option<M4aEngine>>>,
     last_host_tempo_bpm: Option<f64>,
-    config: PluginConfig,
+    last_applied_audio_settings: Option<crate::params::AudioSettings>,
 }
 
 impl Default for PoryaaaaPlugin {
     fn default() -> Self {
         let config = crate::config::load_default_config();
-        let params = PoryaaaaParams::default();
+        let params = PoryaaaaParams::with_audio_defaults(config.volume, config.reverb);
         Self::apply_config_defaults_to_params(&params, &config);
         Self {
             params: Arc::new(params),
             runtime: Arc::new(Mutex::new(None)),
             last_host_tempo_bpm: None,
-            config,
+            last_applied_audio_settings: None,
         }
     }
 }
 
 impl PoryaaaaPlugin {
     /// Seeds persisted params from poryaaaa.cfg defaults before host state restore can override them.
-    fn apply_config_defaults_to_params(params: &PoryaaaaParams, config: &PluginConfig) {
+    fn apply_config_defaults_to_params(
+        params: &PoryaaaaParams,
+        config: &crate::config::PluginConfig,
+    ) {
         *params.project_root.write().expect("project root write") = config.project_root.clone();
         *params.voicegroup.write().expect("voicegroup write") = config.voicegroup.clone();
     }
@@ -175,8 +177,27 @@ impl PoryaaaaPlugin {
         }
     }
 
+    /// Pushes changed global audio controls into the active C runtime.
+    fn apply_audio_settings_to_runtime(&mut self, force: bool) {
+        let settings = self.params.audio_settings();
+        if !force && self.last_applied_audio_settings == Some(settings) {
+            return;
+        }
+
+        let mut runtime = self.runtime.lock().expect("runtime lock");
+        let Some(runtime) = runtime.as_mut() else {
+            self.last_applied_audio_settings = None;
+            return;
+        };
+
+        runtime.set_volume(settings.volume);
+        runtime.set_reverb_amount(settings.reverb);
+        self.last_applied_audio_settings = Some(settings);
+    }
+
     /// Reapplies restored/default host state after engine reinit/reset.
-    fn reapply_host_state_to_runtime(&self) {
+    fn reapply_host_state_to_runtime(&mut self) {
+        self.apply_audio_settings_to_runtime(true);
         let programs = read_program_params(self.params.as_ref());
         let mut runtime = self.runtime.lock().expect("runtime lock");
         let Some(runtime) = runtime.as_mut() else {
@@ -232,10 +253,11 @@ impl Plugin for PoryaaaaPlugin {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        let audio_settings = self.params.audio_settings();
         let config = EngineConfig {
             sample_rate: buffer_config.sample_rate,
-            volume: self.config.volume,
-            reverb: self.config.reverb,
+            volume: audio_settings.volume,
+            reverb: audio_settings.reverb,
         };
         let mut runtime = match M4aEngine::new(config) {
             Ok(runtime) => runtime,
@@ -269,6 +291,7 @@ impl Plugin for PoryaaaaPlugin {
             }
         }
 
+        self.last_applied_audio_settings = Some(audio_settings);
         *self.runtime.lock().expect("runtime lock") = Some(runtime);
         self.reapply_host_state_to_runtime();
         true
@@ -294,6 +317,7 @@ impl Plugin for PoryaaaaPlugin {
 
     fn deactivate(&mut self) {
         *self.runtime.lock().expect("runtime lock") = None;
+        self.last_applied_audio_settings = None;
     }
 
     fn params(&self) -> Arc<dyn Params> {
@@ -323,6 +347,7 @@ impl Plugin for PoryaaaaPlugin {
         let right = &mut remaining_channels[0];
         let tempo = context.transport().tempo;
         self.remember_host_tempo(tempo);
+        self.apply_audio_settings_to_runtime(false);
         let mut runtime = self.runtime.lock().expect("runtime lock");
         let Some(runtime) = runtime.as_mut() else {
             process::clear_stereo(left, right);
@@ -382,6 +407,86 @@ mod tests {
         plugin.remember_host_tempo(Some(-1.0));
         plugin.remember_host_tempo(None);
         assert_eq!(plugin.last_host_tempo_bpm, Some(123.5));
+    }
+
+    #[test]
+    fn audio_param_config_seeds_volume_and_reverb_params() {
+        let config_dir = temp_project("audio-param-config-dir");
+        write_file(
+            &config_dir,
+            "poryaaaa.cfg",
+            "\
+volume=64
+reverb=23
+",
+        );
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        crate::config::set_default_config_dir_for_test(Some(config_dir.clone()));
+
+        let plugin = PoryaaaaPlugin::default();
+
+        crate::config::set_default_config_dir_for_test(None);
+        fs::remove_dir_all(config_dir).expect("remove temp config dir");
+        assert_eq!(plugin.params_for_test().volume.value(), 64);
+        assert_eq!(plugin.params_for_test().reverb.value(), 23);
+    }
+
+    #[test]
+    fn audio_param_changes_are_applied_to_active_runtime() {
+        let root = temp_project("audio-param-runtime-project");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let mut plugin = PoryaaaaPlugin::default();
+        plugin
+            .params_for_test()
+            .commit_voicegroup_selection(&root.to_string_lossy(), "voicegroup000");
+        let mut init_context = TestInitContext;
+        assert!(plugin.initialize(
+            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
+            &test_buffer_config(),
+            &mut init_context,
+        ));
+        assert!(plugin.runtime_has_loaded_voicegroup());
+
+        unsafe {
+            use nice_plug::params::InternalParamMut;
+            plugin.params_for_test().volume._internal_set_plain_value(0);
+            plugin.params_for_test().reverb._internal_set_plain_value(0);
+        }
+        assert_eq!(plugin.params_for_test().volume.value(), 0);
+        assert_eq!(plugin.params_for_test().reverb.value(), 0);
+
+        let mut context = TestProcessContext::with_events(vec![NoteEvent::NoteOn {
+            timing: 0,
+            voice_id: None,
+            channel: 0,
+            note: 60,
+            velocity: 1.0,
+        }]);
+        let mut muted_peak = 0.0f32;
+        for _ in 0..8 {
+            let mut output = vec![vec![0.0; 512], vec![0.0; 512]];
+            assert_eq!(
+                process_with_output(&mut plugin, &mut output, &mut context),
+                ProcessStatus::KeepAlive,
+            );
+            muted_peak = output
+                .iter()
+                .flatten()
+                .fold(muted_peak, |peak, sample| peak.max(sample.abs()));
+        }
+        assert!(muted_peak < 0.0001);
+
+        plugin.deactivate();
+        fs::remove_dir_all(root).expect("remove temp project");
     }
 
     #[test]
