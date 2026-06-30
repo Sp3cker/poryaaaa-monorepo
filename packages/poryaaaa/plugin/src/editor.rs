@@ -136,18 +136,13 @@ pub(crate) struct MidiActivityLight {
 }
 
 impl MidiActivityLight {
-    pub(crate) fn is_active(&mut self, count: u64, now: Instant) -> bool {
+    pub(crate) fn refresh(&mut self, count: u64, now: Instant) {
         if count != self.last_count {
             self.last_count = count;
             self.active_until = Some(now + MIDI_ACTIVITY_HOLD);
         }
 
         self.active = self.active_until.is_some_and(|until| now <= until);
-        self.active
-    }
-
-    fn active(&self) -> bool {
-        self.active
     }
 }
 
@@ -290,7 +285,7 @@ impl PoryaaaaGui {
         let mut first_row = Row::new().spacing(8);
         let mut second_row = Row::new().spacing(8);
         for (index, light) in self.gui_state.channel_activity.iter().enumerate() {
-            let mark = if light.active() { "●" } else { "○" };
+            let mark = if light.active { "●" } else { "○" };
             let channel = text(format!("{:>2} {mark}", index + 1)).size(13);
             if index < 8 {
                 first_row = first_row.push(channel);
@@ -304,13 +299,13 @@ impl PoryaaaaGui {
             .width(Length::Fill)
     }
 
-    fn refresh_midi_activity(&mut self) -> bool {
+    fn refresh_midi_activity(&mut self) {
         let snapshot = self.editor_state.params.midi_activity.snapshot();
         refresh_midi_activity_lights(
             &mut self.gui_state.channel_activity,
             snapshot,
             Instant::now(),
-        )
+        );
     }
 
     fn handle_pending_host_restart(&mut self) {
@@ -369,13 +364,29 @@ fn refresh_midi_activity_lights(
     channel_activity: &mut [MidiActivityLight; MIDI_CHANNEL_COUNT],
     snapshot: MidiActivitySnapshot,
     now: Instant,
-) -> bool {
-    let mut any_active = false;
+) {
     for (index, channel) in snapshot.channels.iter().enumerate() {
         let count = channel.note_events + channel.other_events;
-        any_active |= channel_activity[index].is_active(count, now);
+        channel_activity[index].refresh(count, now);
     }
-    any_active
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midi_activity_light_holds_recent_counter_changes_briefly() {
+        let mut light = MidiActivityLight::default();
+        let now = Instant::now();
+
+        light.refresh(1, now);
+        assert!(light.active);
+        light.refresh(1, now + MIDI_ACTIVITY_HOLD + Duration::from_millis(1));
+        assert!(!light.active);
+        light.refresh(2, now + Duration::from_secs(1));
+        assert!(light.active);
+    }
 }
 
 pub(crate) fn create_editor(

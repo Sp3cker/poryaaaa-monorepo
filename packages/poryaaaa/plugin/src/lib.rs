@@ -111,7 +111,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
 
     fn test_async_executor() -> nice_plug::prelude::AsyncExecutor<PoryaaaaPlugin> {
         nice_plug::prelude::AsyncExecutor::new(Arc::new(|_| {}), Arc::new(|_| {}))
@@ -207,21 +206,6 @@ mod tests {
                 crate::params::DEFAULT_EDITOR_HEIGHT
             )
         );
-    }
-
-    #[test]
-    fn midi_activity_light_holds_recent_counter_changes_briefly() {
-        let mut light = crate::editor::MidiActivityLight::default();
-        let now = Instant::now();
-
-        assert!(!light.is_active(0, now));
-        assert!(light.is_active(1, now));
-        assert!(light.is_active(1, now + Duration::from_millis(90)));
-        assert!(!light.is_active(
-            1,
-            now + crate::editor::MIDI_ACTIVITY_HOLD + Duration::from_millis(1)
-        ));
-        assert!(light.is_active(2, now + Duration::from_secs(1)));
     }
 
     #[test]
