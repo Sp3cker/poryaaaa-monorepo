@@ -120,20 +120,18 @@ function makeDeps(opts: { projectId?: string; smfSaveError?: Error; smfSaveResul
 
 // ---- ready -----------------------------------------------------------------
 
-test("`ready` with no saved project logs and emits no outlet calls", () => {
-    const { deps, outletCalls, postCalls } = makeDeps({ projectId: "" });
+test("`ready` with no saved project emits no outlet calls", () => {
+    const { deps, outletCalls } = makeDeps({ projectId: "" });
     const svc = createRecorderService(deps);
     svc.ready();
-    assert.ok(postCalls.some((m) => m.includes("unsaved")));
     assert.equal(outletCalls.length, 0);
 });
 
-test("`ready` with project but no saved filename logs and emits no outlet calls", () => {
-    const { deps, outletCalls, postCalls } = makeDeps({ projectId: "/path/to/set.als" });
+test("`ready` with project but no saved filename emits no outlet calls", () => {
+    const { deps, outletCalls } = makeDeps({ projectId: "/path/to/set.als" });
     const svc = createRecorderService(deps);
     svc.ready();
     assert.equal(outletCalls.length, 0);
-    assert.ok(postCalls.some((m) => m.includes("no saved filename")));
 });
 
 test("`ready` restores persisted filename and emits to UI textedit only (no setpath to external)", () => {

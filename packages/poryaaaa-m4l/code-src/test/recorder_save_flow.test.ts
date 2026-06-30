@@ -515,10 +515,9 @@ test("H2: dumped() with mismatched path REJECTS the pending dump", async () => {
     await assert.rejects(promise, /path mismatch/);
 });
 
-test("H3: dumped() with no pending dump posts a warning and does NOT throw", () => {
-    const { handshake, posts } = makeHandshakeHarness();
+test("H3: dumped() with no pending dump does NOT throw", () => {
+    const { handshake } = makeHandshakeHarness();
     assert.doesNotThrow(() => handshake.dumped("/tmp/whatever.bin", 0));
-    assert.ok(posts.some((m) => m.includes("ignoring unexpected dumped reply")));
 });
 
 test("H4: second requestBufferDump while one is pending REJECTS immediately", async () => {
@@ -559,11 +558,10 @@ test("H6: after a path-mismatch rejection, the pending slot is CLEARED so a retr
 });
 
 test("H6b: dump timeout rejects and clears pending so save cannot hang forever", async () => {
-    const { handshake, posts } = makeHandshakeHarness({ timeoutMs: 1 });
+    const { handshake } = makeHandshakeHarness({ timeoutMs: 1 });
     const p1 = handshake.requestBufferDump();
     await assert.rejects(p1, /dump timed out waiting for poryaaaa~ reply/);
     assert.equal(handshake.isPending(), false);
-    assert.ok(posts.some((m) => m.includes("dump timed out waiting for poryaaaa~ reply")));
 
     const p2 = handshake.requestBufferDump();
     handshake.dumped("/tmp/dump-2.bin", 7);

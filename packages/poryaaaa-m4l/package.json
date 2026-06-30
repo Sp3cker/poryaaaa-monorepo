@@ -24,7 +24,7 @@
     "check:v8": "tsc -p code-src/tsconfig.v8.json --noEmit",
     "check:node": "tsc -p code-src/tsconfig.node.json --noEmit",
     "check:test": "tsc -p code-src/tsconfig.test.json --noEmit",
-    "test": "node --test-timeout=5000 --import tsx --test code-src/test/scanner.test.ts code-src/test/poryaaaa_node_build_contract.test.ts code-src/test/poryaaaa_node_voicegroup_parser.test.ts code-src/test/poryaaaa_node_project_store.test.ts code-src/test/poryaaaa_node_state.test.ts code-src/test/poryaaaa_node_websocket_state.test.ts code-src/test/poryaaaa_node_cleanup.test.ts code-src/test/ccomidi_voicegroup_client.test.ts code-src/test/ccomidi_voices.test.ts code-src/test/ccomidi_recorder.test.ts code-src/test/midi_writer_probe.test.ts code-src/test/recorder_smf_writer.test.ts"
+    "test": "node --no-deprecation --test-timeout=5000 --import tsx --import ./code-src/test/setup.ts --test code-src/test/*.test.ts"
   },
   "devDependencies": {
     "@types/maxmsp": "^1.0.15",
