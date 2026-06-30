@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+target/
+vscode-extension/node_modules/
+vscode-extension/out/
