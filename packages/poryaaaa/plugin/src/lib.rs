@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn editor_advertises_and_applies_host_resize() {
+    fn editor_uses_fixed_size_large_enough_for_all_sections() {
         let params = Arc::new(PoryaaaaParams::default());
         let editor = crate::editor::create_editor(
             params.clone(),
@@ -186,12 +186,16 @@ mod tests {
                 crate::params::DEFAULT_EDITOR_HEIGHT
             )
         );
-        assert!(editor.resize_hint().can_resize);
-        assert!(editor.set_size(800, 600));
-        assert_eq!(editor.size(), (800, 600));
-
-        assert!(editor.set_size(1, 1));
-        assert_eq!(editor.size(), (420, 260));
+        assert!(crate::params::DEFAULT_EDITOR_HEIGHT >= 420);
+        assert!(!editor.resize_hint().can_resize);
+        assert!(!editor.set_size(800, 600));
+        assert_eq!(
+            editor.size(),
+            (
+                crate::params::DEFAULT_EDITOR_WIDTH,
+                crate::params::DEFAULT_EDITOR_HEIGHT
+            )
+        );
     }
 
     #[test]

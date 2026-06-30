@@ -8,7 +8,7 @@ pub const PROGRAM_COUNT: usize = 16;
 pub const DEFAULT_VOLUME: u8 = 127;
 pub const DEFAULT_REVERB: u8 = 0;
 pub(crate) const DEFAULT_EDITOR_WIDTH: u32 = 525;
-pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 325;
+pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 420;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AudioSettings {
@@ -25,7 +25,7 @@ pub struct VoicegroupLoadStatus {
 
 #[derive(Params)]
 pub struct PoryaaaaParams {
-    #[persist = "window-state"]
+    #[persist = "window-state-v2"]
     pub window_state: Arc<WindowState>,
     #[persist = "project-root"]
     pub project_root: Arc<RwLock<String>>,

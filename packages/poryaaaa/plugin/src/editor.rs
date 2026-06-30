@@ -11,14 +11,12 @@ use nice_plug_iced::iced::{
     widget::{Column, Row, button, column, row, text, text_input},
 };
 use nice_plug_iced::{
-    EditorSettings, EditorState, NiceGuiContext, WindowState, application, create_iced_editor,
+    EditorSettings, EditorState, NiceGuiContext, application, create_iced_editor,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MIN_WINDOW_WIDTH: u32 = 420;
-const MIN_WINDOW_HEIGHT: u32 = 260;
 pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
 
 #[derive(Debug, Clone)]
@@ -204,14 +202,14 @@ impl PoryaaaaGui {
 
     fn view(&self) -> Element<'_, Message> {
         column![
-            text("poryaaaa").size(24),
+            text("poryaaaa").size(22),
             self.view_config_section(),
             self.view_knob_section(),
             self.view_status_section(),
             self.view_midi_activity_section(),
         ]
-        .padding(12)
-        .spacing(10)
+        .padding(10)
+        .spacing(8)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -251,6 +249,7 @@ impl PoryaaaaGui {
         ]
         .spacing(24)
         .align_y(Center)
+        .width(Length::Fill)
     }
 
     fn view_status_section(&self) -> Element<'_, Message> {
@@ -262,13 +261,21 @@ impl PoryaaaaGui {
     }
 
     fn view_midi_activity_section(&self) -> Column<'_, Message> {
-        let mut lights = Row::new().spacing(6);
+        let mut first_row = Row::new().spacing(8);
+        let mut second_row = Row::new().spacing(8);
         for (index, light) in self.gui_state.channel_activity.iter().enumerate() {
             let mark = if light.active() { "●" } else { "○" };
-            lights = lights.push(text(format!("{mark} {}", index + 1)).size(14));
+            let channel = text(format!("{:>2} {mark}", index + 1)).size(13);
+            if index < 8 {
+                first_row = first_row.push(channel);
+            } else {
+                second_row = second_row.push(channel);
+            }
         }
 
-        column![text("MIDI activity"), lights].spacing(4)
+        column![text("MIDI activity"), first_row, second_row]
+            .spacing(3)
+            .width(Length::Fill)
     }
 
     fn refresh_midi_activity(&mut self) -> bool {
@@ -346,9 +353,8 @@ pub(crate) fn create_editor(
     async_executor: AsyncExecutor<PoryaaaaPlugin>,
     notifier: PollSubNotifier,
 ) -> Option<Box<dyn Editor>> {
-    let window_state = params.window_state.clone();
-    let editor = create_iced_editor(
-        window_state.clone(),
+    create_iced_editor(
+        params.window_state.clone(),
         PoryaaaaEditorState {
             params,
             async_executor,
@@ -370,69 +376,6 @@ pub(crate) fn create_editor(
             .subscription(|_| iced::poll_events().map(|_| Message::Poll))
             .run()
         },
-    )?;
-
-    Some(Box::new(ResizableIcedEditor {
-        inner: editor,
-        window_state,
-    }))
+    )
 }
 
-struct ResizableIcedEditor {
-    inner: Box<dyn Editor>,
-    window_state: Arc<WindowState>,
-}
-
-impl Editor for ResizableIcedEditor {
-    fn spawn(
-        &self,
-        parent: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
-    ) -> Box<dyn std::any::Any + Send> {
-        self.inner.spawn(parent, context)
-    }
-
-    fn size(&self) -> (u32, u32) {
-        self.inner.size()
-    }
-
-    fn set_scale_factor(&self, factor: f32) -> bool {
-        self.inner.set_scale_factor(factor)
-    }
-
-    fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        self.inner.param_value_changed(id, normalized_value);
-    }
-
-    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
-        self.inner.param_modulation_changed(id, modulation_offset);
-    }
-
-    fn param_values_changed(&self) {
-        self.inner.param_values_changed();
-    }
-
-    fn set_size(&self, width: u32, height: u32) -> bool {
-        let (width, height) = self.adjust_size(width, height).expect("resizable editor");
-        self.window_state.set_requested_logical_size((width, height));
-        true
-    }
-
-    fn adjust_size(&self, width: u32, height: u32) -> Option<(u32, u32)> {
-        Some((width.max(MIN_WINDOW_WIDTH), height.max(MIN_WINDOW_HEIGHT)))
-    }
-
-    fn resize_hint(&self) -> ResizeHint {
-        ResizeHint::resizable()
-    }
-
-    fn on_virtual_key_from_host(
-        &self,
-        key_code: VirtualKeyCode,
-        is_down: bool,
-        modifiers: Modifiers,
-    ) -> bool {
-        self.inner
-            .on_virtual_key_from_host(key_code, is_down, modifiers)
-    }
-}
