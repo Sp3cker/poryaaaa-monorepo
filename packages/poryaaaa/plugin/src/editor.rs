@@ -7,7 +7,7 @@ use crate::{
 use iced_audio::Gesture;
 use nice_plug::prelude::*;
 use nice_plug_iced::iced::{
-    self, Center, Element, Length, PollSubNotifier, Task, Theme,
+    self, Center, Color, Element, Length, PollSubNotifier, Task, Theme,
     widget::{Column, Row, button, column, row, text, text_input},
 };
 use nice_plug_iced::{
@@ -18,6 +18,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const MIDI_ACTIVITY_HOLD: Duration = Duration::from_millis(180);
+pub(crate) const STATUS_ERROR_COLOR: Color = Color {
+    r: 0.95,
+    g: 0.25,
+    b: 0.25,
+    a: 1.0,
+};
+pub(crate) const STATUS_SUCCESS_COLOR: Color = Color {
+    r: 0.35,
+    g: 0.85,
+    b: 0.45,
+    a: 1.0,
+};
+pub(crate) const STATUS_PENDING_COLOR: Color = Color {
+    r: 0.82,
+    g: 0.82,
+    b: 0.82,
+    a: 1.0,
+};
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -64,6 +82,21 @@ pub(crate) fn apply_optional_project_root_selection(
     if let Some(path) = path {
         apply_project_root_selection(gui_state, &path);
     }
+}
+
+pub(crate) fn voicegroup_status_presentation(
+    status: &Option<VoicegroupLoadStatus>,
+) -> Option<(String, Color)> {
+    status.as_ref().map(|status| {
+        let color = if status.is_error {
+            STATUS_ERROR_COLOR
+        } else if status.text.starts_with("Loaded ") {
+            STATUS_SUCCESS_COLOR
+        } else {
+            STATUS_PENDING_COLOR
+        };
+        (status.text.clone(), color)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,7 +238,6 @@ impl PoryaaaaGui {
             text("poryaaaa").size(22),
             self.view_config_section(),
             self.view_knob_section(),
-            self.view_status_section(),
             self.view_midi_activity_section(),
         ]
         .padding(10)
@@ -235,6 +267,7 @@ impl PoryaaaaGui {
             ]
             .spacing(8)
             .width(Length::Fill),
+            self.view_status_section(),
         ]
         .spacing(6)
         .width(Length::Fill)
@@ -253,10 +286,9 @@ impl PoryaaaaGui {
     }
 
     fn view_status_section(&self) -> Element<'_, Message> {
-        match &self.gui_state.voicegroup_status {
-            Some(status) if status.is_error => text(format!("Error: {}", status.text)).into(),
-            Some(status) => text(status.text.clone()).into(),
-            None => text("Ready").into(),
+        match voicegroup_status_presentation(&self.gui_state.voicegroup_status) {
+            Some((text_value, color)) => text(text_value).size(13).color(color).into(),
+            None => text("").size(13).into(),
         }
     }
 

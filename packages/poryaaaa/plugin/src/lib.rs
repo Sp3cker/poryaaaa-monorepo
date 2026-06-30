@@ -259,6 +259,42 @@ mod tests {
     }
 
     #[test]
+    fn voicegroup_status_presentation_uses_error_and_success_colors() {
+        let error = Some(crate::params::VoicegroupLoadStatus {
+            text: "Bad bank".to_string(),
+            is_error: true,
+        });
+        let success = Some(crate::params::VoicegroupLoadStatus {
+            text: "Loaded petalburg".to_string(),
+            is_error: false,
+        });
+        let loading = Some(crate::params::VoicegroupLoadStatus {
+            text: "Loading petalburg".to_string(),
+            is_error: false,
+        });
+
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&error),
+            Some(("Bad bank".to_string(), crate::editor::STATUS_ERROR_COLOR))
+        );
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&success),
+            Some((
+                "Loaded petalburg".to_string(),
+                crate::editor::STATUS_SUCCESS_COLOR
+            ))
+        );
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&loading),
+            Some((
+                "Loading petalburg".to_string(),
+                crate::editor::STATUS_PENDING_COLOR
+            ))
+        );
+        assert_eq!(crate::editor::voicegroup_status_presentation(&None), None);
+    }
+
+    #[test]
     fn voicegroup_load_request_uses_drafts_and_does_not_commit_until_background_success() {
         let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
         let home = temp_project("home");
