@@ -1,0 +1,54 @@
+{
+  "name": "voicegroup-lsp-vscode",
+  "displayName": "Voicegroup LSP",
+  "description": "Language support for Pokemon GBA sound/voicegroups .inc files.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:voicegroup-inc"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "voicegroup-inc",
+        "aliases": [
+          "Voicegroup INC"
+        ],
+        "extensions": [
+          ".inc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Voicegroup LSP",
+      "properties": {
+        "voicegroupLSP.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the voicegroup-lsp executable. Empty checks ../target/release/voicegroup-lsp, then ../target/debug/voicegroup-lsp relative to the extension folder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "node --test test/*.test.js",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
