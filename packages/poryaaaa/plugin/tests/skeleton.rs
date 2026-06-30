@@ -40,6 +40,23 @@ fn params_default_channel_programs_match_channel_numbers() {
 }
 
 #[test]
+fn params_default_audio_controls_match_cpp_plugin() {
+    let params = PoryaaaaParams::default();
+
+    assert_eq!(params.volume.value(), 127);
+    assert!(matches!(
+        params.volume.range(),
+        IntRange::Linear { min: 0, max: 127 }
+    ));
+
+    assert_eq!(params.reverb.value(), 0);
+    assert!(matches!(
+        params.reverb.range(),
+        IntRange::Linear { min: 0, max: 127 }
+    ));
+}
+
+#[test]
 fn project_inputs_persist_through_plugin_state() {
     let params = PoryaaaaParams::default();
     *params.project_root.write().expect("project root write") = "/tmp/poryaaaa-project".to_string();

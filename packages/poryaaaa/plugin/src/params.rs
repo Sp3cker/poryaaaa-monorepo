@@ -5,8 +5,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub const PROGRAM_COUNT: usize = 16;
+pub const DEFAULT_VOLUME: u8 = 127;
+pub const DEFAULT_REVERB: u8 = 0;
 pub(crate) const DEFAULT_EDITOR_WIDTH: u32 = 525;
 pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 325;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AudioSettings {
+    pub volume: u8,
+    pub reverb: u8,
+}
 
 /// Carries the latest voicegroup load result shared between the runtime and editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +34,10 @@ pub struct PoryaaaaParams {
     pub runtime_voicegroup_status: Arc<RwLock<Option<VoicegroupLoadStatus>>>,
     pub(crate) host_restart_pending: Arc<AtomicBool>,
     pub(crate) midi_activity: Arc<MidiActivity>,
+    #[id = "vol"]
+    pub volume: IntParam,
+    #[id = "rev"]
+    pub reverb: IntParam,
     #[id = "p00"]
     pub program_00: IntParam,
     #[id = "p01"]
@@ -62,6 +74,13 @@ pub struct PoryaaaaParams {
 
 impl Default for PoryaaaaParams {
     fn default() -> Self {
+        Self::with_audio_defaults(DEFAULT_VOLUME, DEFAULT_REVERB)
+    }
+}
+
+impl PoryaaaaParams {
+    /// Builds params with config-seeded audio defaults before host state restore can override them.
+    pub(crate) fn with_audio_defaults(volume: u8, reverb: u8) -> Self {
         Self {
             editor_state: EguiState::from_size(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT),
             project_root: Arc::new(RwLock::new(String::new())),
@@ -69,6 +88,8 @@ impl Default for PoryaaaaParams {
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),
             host_restart_pending: Arc::new(AtomicBool::new(false)),
             midi_activity: Arc::new(MidiActivity::default()),
+            volume: audio_control_param("Volume", volume),
+            reverb: audio_control_param("Reverb", reverb),
             program_00: channel_program_param(0),
             program_01: channel_program_param(1),
             program_02: channel_program_param(2),
@@ -87,9 +108,15 @@ impl Default for PoryaaaaParams {
             program_15: channel_program_param(15),
         }
     }
-}
 
-impl PoryaaaaParams {
+    /// Reads the host-facing global audio settings as m4a byte values.
+    pub(crate) fn audio_settings(&self) -> AudioSettings {
+        AudioSettings {
+            volume: self.volume.value().clamp(0, 127) as u8,
+            reverb: self.reverb.value().clamp(0, 127) as u8,
+        }
+    }
+
     /// Reads the committed voicegroup selection used for the next runtime initialization.
     pub(crate) fn committed_voicegroup_selection(&self) -> Option<(String, String)> {
         let project_root = self.project_root.read().expect("project root read").clone();
@@ -151,6 +178,15 @@ impl PoryaaaaParams {
             _ => None,
         }
     }
+}
+
+/// Builds one automatable global audio-control parameter with m4a's 0..127 range.
+fn audio_control_param(name: &'static str, default: u8) -> IntParam {
+    IntParam::new(
+        name,
+        default.min(127) as i32,
+        IntRange::Linear { min: 0, max: 127 },
+    )
 }
 
 /// Builds one automatable channel program parameter with m4a's 0..127 program range.
