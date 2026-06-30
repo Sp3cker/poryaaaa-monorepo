@@ -1,17 +1,17 @@
 use atomic_refcell::AtomicRefMut;
-use clap_sys::ext::remote_controls::{clap_remote_controls_page, CLAP_REMOTE_CONTROLS_COUNT};
-use clap_sys::id::{clap_id, CLAP_INVALID_ID};
+use clap_sys::ext::remote_controls::{CLAP_REMOTE_CONTROLS_COUNT, clap_remote_controls_page};
+use clap_sys::id::{CLAP_INVALID_ID, clap_id};
 use clap_sys::string_sizes::CLAP_NAME_SIZE;
+use nice_plug_core::context::PluginApi;
 use nice_plug_core::context::gui::GuiContext;
 use nice_plug_core::context::init::InitContext;
 use nice_plug_core::context::process::{ProcessContext, Transport};
 use nice_plug_core::context::remote_controls::{
     RemoteControlsContext, RemoteControlsPage, RemoteControlsSection,
 };
-use nice_plug_core::context::PluginApi;
 use nice_plug_core::midi::PluginNoteEvent;
-use nice_plug_core::params::internals::ParamPtr;
 use nice_plug_core::params::Param;
+use nice_plug_core::params::internals::ParamPtr;
 use nice_plug_core::plugin::PluginState;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};

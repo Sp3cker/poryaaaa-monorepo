@@ -41,11 +41,7 @@ impl GuiState {
                 .clone(),
             draft_voicegroup: params.voicegroup.read().expect("voicegroup read").clone(),
             project_root_dialog: project_root_dialog(None),
-            voicegroup_status: params
-                .runtime_voicegroup_status
-                .read()
-                .expect("runtime voicegroup status read")
-                .clone(),
+            voicegroup_status: params.voicegroup_status(),
             channel_activity: std::array::from_fn(|_| MidiActivityLight::default()),
         }
     }
@@ -229,7 +225,7 @@ pub(crate) fn create_editor(
         |egui_ctx, _queue, _gui_state| {
             apply_calamity_fonts(egui_ctx);
         },
-        move |ui, _setter, _queue, gui_state| {
+        move |ui, setter, _queue, gui_state| {
             ResizableWindow::new("poryaaaa-main").show(ui, egui_state.as_ref(), |ui| {
                 show_editor_frame(ui, |ui| {
                     ui.heading("poryaaaa");
@@ -277,10 +273,7 @@ pub(crate) fn create_editor(
                                 text: format!("Loading {}", gui_state.draft_voicegroup),
                                 is_error: false,
                             };
-                            *params
-                                .runtime_voicegroup_status
-                                .write()
-                                .expect("runtime voicegroup status write") = Some(status.clone());
+                            params.write_voicegroup_status(Some(status.clone()));
                             gui_state.voicegroup_status = Some(status);
                             async_executor.execute_gui(PoryaaaaBackgroundTask::LoadVoicegroup {
                                 project_root: gui_state.draft_project_root.clone(),
@@ -292,19 +285,20 @@ pub(crate) fn create_editor(
                                 text: "Bad project root: HOME is not set".to_string(),
                                 is_error: true,
                             };
-                            *params
-                                .runtime_voicegroup_status
-                                .write()
-                                .expect("runtime voicegroup status write") = Some(status.clone());
+                            params.write_voicegroup_status(Some(status.clone()));
                             gui_state.voicegroup_status = Some(status);
                         }
                     }
 
-                    gui_state.voicegroup_status = params
-                        .runtime_voicegroup_status
-                        .read()
-                        .expect("runtime voicegroup status read")
-                        .clone();
+                    gui_state.voicegroup_status = params.voicegroup_status();
+                    if params.take_host_restart_request() && !setter.request_restart() {
+                        let status = VoicegroupLoadStatus {
+                            text: "Loaded voicegroup, but host restart is unavailable".to_string(),
+                            is_error: true,
+                        };
+                        params.write_voicegroup_status(Some(status.clone()));
+                        gui_state.voicegroup_status = Some(status);
+                    }
 
                     if let Some(status) = &gui_state.voicegroup_status {
                         if status.is_error {

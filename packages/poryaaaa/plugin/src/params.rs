@@ -1,6 +1,7 @@
 use crate::midi_activity::MidiActivity;
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 pub const PROGRAM_COUNT: usize = 16;
@@ -23,6 +24,7 @@ pub struct PoryaaaaParams {
     #[persist = "voicegroup"]
     pub voicegroup: Arc<RwLock<String>>,
     pub runtime_voicegroup_status: Arc<RwLock<Option<VoicegroupLoadStatus>>>,
+    pub(crate) host_restart_pending: Arc<AtomicBool>,
     pub(crate) midi_activity: Arc<MidiActivity>,
     #[id = "p00"]
     pub program_00: IntParam,
@@ -65,6 +67,7 @@ impl Default for PoryaaaaParams {
             project_root: Arc::new(RwLock::new(String::new())),
             voicegroup: Arc::new(RwLock::new(String::new())),
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),
+            host_restart_pending: Arc::new(AtomicBool::new(false)),
             midi_activity: Arc::new(MidiActivity::default()),
             program_00: channel_program_param(0),
             program_01: channel_program_param(1),
@@ -87,6 +90,45 @@ impl Default for PoryaaaaParams {
 }
 
 impl PoryaaaaParams {
+    /// Reads the committed voicegroup selection used for the next runtime initialization.
+    pub(crate) fn committed_voicegroup_selection(&self) -> Option<(String, String)> {
+        let project_root = self.project_root.read().expect("project root read").clone();
+        let bank = self.voicegroup.read().expect("voicegroup read").clone();
+        (!project_root.is_empty() && !bank.is_empty()).then_some((project_root, bank))
+    }
+
+    /// Commits a voicegroup selection after validation succeeds.
+    pub(crate) fn commit_voicegroup_selection(&self, project_root: &str, bank: &str) {
+        *self.project_root.write().expect("project root write") = project_root.to_string();
+        *self.voicegroup.write().expect("voicegroup write") = bank.to_string();
+    }
+
+    /// Mirrors voicegroup load status into editor-visible state.
+    pub(crate) fn write_voicegroup_status(&self, status: Option<VoicegroupLoadStatus>) {
+        *self
+            .runtime_voicegroup_status
+            .write()
+            .expect("runtime voicegroup status write") = status;
+    }
+
+    /// Reads the latest editor-visible voicegroup load status.
+    pub(crate) fn voicegroup_status(&self) -> Option<VoicegroupLoadStatus> {
+        self.runtime_voicegroup_status
+            .read()
+            .expect("runtime voicegroup status read")
+            .clone()
+    }
+
+    /// Requests a host deactivate/reactivate cycle after a successful Load transaction.
+    pub(crate) fn request_host_restart(&self) {
+        self.host_restart_pending.store(true, Ordering::Release);
+    }
+
+    /// Consumes a pending host restart request exactly once.
+    pub(crate) fn take_host_restart_request(&self) -> bool {
+        self.host_restart_pending.swap(false, Ordering::AcqRel)
+    }
+
     /// Provides indexed access for MIDI channel-oriented process and GUI code.
     pub fn program(&self, channel: usize) -> Option<&IntParam> {
         match channel {

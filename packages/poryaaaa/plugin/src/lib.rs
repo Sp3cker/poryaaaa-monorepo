@@ -127,6 +127,44 @@ mod tests {
     }
 
     #[test]
+    fn params_restart_request_is_one_shot() {
+        let params = PoryaaaaParams::default();
+
+        assert!(!params.take_host_restart_request());
+        params.request_host_restart();
+        assert!(params.take_host_restart_request());
+        assert!(!params.take_host_restart_request());
+    }
+
+    #[test]
+    fn params_committed_voicegroup_helpers_read_and_write_state() {
+        let params = PoryaaaaParams::default();
+
+        assert_eq!(params.committed_voicegroup_selection(), None);
+        assert_eq!(params.voicegroup_status(), None);
+
+        params.commit_voicegroup_selection("/tmp/project", "voicegroup000");
+        params.write_voicegroup_status(Some(crate::params::VoicegroupLoadStatus {
+            text: "Loaded voicegroup000".to_string(),
+            is_error: false,
+        }));
+
+        assert_eq!(
+            params.committed_voicegroup_selection(),
+            Some(("/tmp/project".to_string(), "voicegroup000".to_string()))
+        );
+        assert_eq!(
+            params.voicegroup_status(),
+            Some(crate::params::VoicegroupLoadStatus {
+                text: "Loaded voicegroup000".to_string(),
+                is_error: false,
+            })
+        );
+        params.write_voicegroup_status(None);
+        assert_eq!(params.voicegroup_status(), None);
+    }
+
+    #[test]
     fn editor_advertises_and_applies_host_resize() {
         let params = Arc::new(PoryaaaaParams::default());
         let editor =
@@ -562,6 +600,41 @@ route104::
     }
 
     #[test]
+    fn initialize_loads_committed_voicegroup_into_fresh_runtime() {
+        use nice_plug::prelude::*;
+
+        let root = temp_project("initialize-committed-load");
+        write_file(
+            &root,
+            "sound/voice_groups.inc",
+            "\
+                \t.align 2
+                voicegroup000::
+                \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+            ",
+        );
+
+        let mut plugin = PoryaaaaPlugin::default();
+        plugin
+            .params_for_test()
+            .commit_voicegroup_selection(&root.to_string_lossy(), "voicegroup000");
+        let layout = PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0];
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        let mut context = TestInitContext;
+
+        assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+        assert!(plugin.runtime_has_loaded_voicegroup());
+
+        plugin.deactivate();
+        fs::remove_dir_all(root).expect("remove temp project");
+    }
+
+    #[test]
     fn initialize_exposes_voicegroup_load_error_to_editor_status() {
         use nice_plug::prelude::*;
 
@@ -619,10 +692,10 @@ route104::
         fs::remove_dir_all(home).expect("remove temp home");
     }
     #[test]
-    fn load_voicegroup_task_swaps_active_runtime_without_reinitialize() {
+    fn load_voicegroup_task_commits_params_and_requests_restart_without_runtime_swap() {
         use nice_plug::prelude::*;
 
-        let root = temp_project("runtime-task-load");
+        let root = temp_project("runtime-task-restart");
         write_file(
             &root,
             "sound/voice_groups.inc",
@@ -630,8 +703,6 @@ route104::
                 \t.align 2
                 voicegroup000::
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
-                route104::
-                \tvoice_square_1 61, 0, 0, 2, 1, 2, 8, 3
             ",
         );
         let mut plugin = PoryaaaaPlugin::default();
@@ -644,6 +715,7 @@ route104::
         };
         let mut context = TestInitContext;
         assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+        assert!(!plugin.runtime_has_loaded_voicegroup());
 
         let execute = plugin.task_executor();
         execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
@@ -651,15 +723,8 @@ route104::
             bank: "voicegroup000".to_owned(),
             projects_json_path: root.join("out/projects.json"),
         });
-        assert!(plugin.runtime_has_loaded_voicegroup());
 
-        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
-            project_root: root.to_string_lossy().into_owned(),
-            bank: "route104".to_owned(),
-            projects_json_path: root.join("out/projects.json"),
-        });
-
-        assert!(plugin.runtime_has_loaded_voicegroup());
+        assert!(!plugin.runtime_has_loaded_voicegroup());
         assert_eq!(
             plugin
                 .params_for_test()
@@ -667,14 +732,18 @@ route104::
                 .read()
                 .expect("voicegroup read")
                 .as_str(),
-            "route104",
+            "voicegroup000",
         );
+        assert!(plugin.params_for_test().take_host_restart_request());
+        assert!(fs::read_to_string(root.join("out/projects.json"))
+            .expect("projects.json")
+            .contains("\"bank\": \"voicegroup000\""));
 
         fs::remove_dir_all(root).expect("remove temp project");
     }
 
     #[test]
-    fn load_voicegroup_task_failure_keeps_loaded_runtime_and_committed_params() {
+    fn load_voicegroup_task_failure_keeps_committed_params_and_does_not_request_restart() {
         use nice_plug::prelude::*;
 
         let root = temp_project("runtime-task-load-failure");
@@ -697,22 +766,17 @@ route104::
         };
         let mut context = TestInitContext;
         assert!(plugin.initialize(&layout, &buffer_config, &mut context));
+        plugin
+            .params_for_test()
+            .commit_voicegroup_selection(&root.to_string_lossy(), "voicegroup000");
 
         let execute = plugin.task_executor();
-        execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
-            project_root: root.to_string_lossy().into_owned(),
-            bank: "voicegroup000".to_owned(),
-            projects_json_path: root.join("out/projects.json"),
-        });
-        assert!(plugin.runtime_has_loaded_voicegroup());
-
         execute(crate::plugin::PoryaaaaBackgroundTask::LoadVoicegroup {
             project_root: "/definitely/not/a/poryaaaa/project".to_owned(),
             bank: "voicegroup000".to_owned(),
             projects_json_path: root.join("out/projects.json"),
         });
 
-        assert!(plugin.runtime_has_loaded_voicegroup());
         assert_eq!(
             plugin
                 .params_for_test()
@@ -722,6 +786,7 @@ route104::
                 .as_str(),
             "voicegroup000",
         );
+        assert!(!plugin.params_for_test().take_host_restart_request());
 
         fs::remove_dir_all(root).expect("remove temp project");
     }

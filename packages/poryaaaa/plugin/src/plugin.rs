@@ -126,8 +126,7 @@ impl PoryaaaaPlugin {
 
     /// Commits the CLAP-persisted voicegroup selection after all active load steps succeed.
     fn commit_voicegroup_params(params: &PoryaaaaParams, project_root: &str, bank: &str) {
-        *params.project_root.write().expect("project root write") = project_root.to_string();
-        *params.voicegroup.write().expect("voicegroup write") = bank.to_string();
+        params.commit_voicegroup_selection(project_root, bank);
     }
 
     /// Builds the editor-facing success status for a loaded runtime bank.
@@ -143,10 +142,7 @@ impl PoryaaaaPlugin {
         params: &PoryaaaaParams,
         status: Option<VoicegroupLoadStatus>,
     ) {
-        *params
-            .runtime_voicegroup_status
-            .write()
-            .expect("runtime voicegroup status write") = status;
+        params.write_voicegroup_status(status);
     }
 
     /// Records a runtime load error in the shared editor status.
@@ -160,47 +156,21 @@ impl PoryaaaaPlugin {
         );
     }
 
-    /// Runs a GUI-dispatched voicegroup load against the active runtime when present.
-    fn run_background_task(
-        params: &PoryaaaaParams,
-        runtime: &Mutex<Option<M4aEngine>>,
-        task: PoryaaaaBackgroundTask,
-    ) {
+    /// Runs a GUI-dispatched voicegroup Load transaction outside the audio runtime.
+    fn run_background_task(params: &PoryaaaaParams, task: PoryaaaaBackgroundTask) {
         match task {
             PoryaaaaBackgroundTask::LoadVoicegroup {
                 project_root,
                 bank,
                 projects_json_path,
             } => {
-                if let Err(message) =
-                    Self::publish_voicegroup(&project_root, &bank, &projects_json_path)
-                {
-                    Self::write_runtime_voicegroup_status(
-                        params,
-                        Some(VoicegroupLoadStatus {
-                            text: message,
-                            is_error: true,
-                        }),
-                    );
-                    return;
+                let status =
+                    Self::load_voicegroup(params, &project_root, &bank, &projects_json_path);
+                let should_restart = !status.is_error;
+                Self::write_runtime_voicegroup_status(params, Some(status));
+                if should_restart {
+                    params.request_host_restart();
                 }
-
-                let mut runtime = runtime.lock().expect("runtime lock");
-                if let Some(runtime) = runtime.as_mut() {
-                    if let Err(err) = runtime.load_voicegroup(&project_root, &bank) {
-                        Self::write_runtime_voicegroup_status(
-                            params,
-                            Some(VoicegroupLoadStatus {
-                                text: err.to_string(),
-                                is_error: true,
-                            }),
-                        );
-                        return;
-                    }
-                }
-
-                Self::commit_voicegroup_params(params, &project_root, &bank);
-                Self::write_runtime_voicegroup_status(params, Some(Self::loaded_status(&bank)));
             }
         }
     }
@@ -253,8 +223,7 @@ impl Plugin for PoryaaaaPlugin {
 
     fn task_executor(&mut self) -> TaskExecutor<Self> {
         let params = self.params.clone();
-        let runtime = self.runtime.clone();
-        Box::new(move |task| Self::run_background_task(params.as_ref(), runtime.as_ref(), task))
+        Box::new(move |task| Self::run_background_task(params.as_ref(), task))
     }
 
     fn initialize(
@@ -276,19 +245,7 @@ impl Plugin for PoryaaaaPlugin {
                 return false;
             }
         };
-        let project_root = self
-            .params
-            .project_root
-            .read()
-            .expect("project root read")
-            .clone();
-        let bank = self
-            .params
-            .voicegroup
-            .read()
-            .expect("voicegroup read")
-            .clone();
-        if !project_root.is_empty() && !bank.is_empty() {
+        if let Some((project_root, bank)) = self.params.committed_voicegroup_selection() {
             let committed_load = shared_projects_json::default_projects_json_path()
                 .and_then(|path| Self::load_committed_voicegroup(self.params.as_ref(), &path));
             match committed_load {
@@ -482,18 +439,15 @@ mod tests {
             ",
         );
         let mut plugin = PoryaaaaPlugin::default();
+        plugin
+            .params_for_test()
+            .commit_voicegroup_selection(&root.to_string_lossy(), "voicegroup000");
         let mut init_context = TestInitContext;
         assert!(plugin.initialize(
             &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
             &test_buffer_config(),
             &mut init_context,
         ));
-        let execute = plugin.task_executor();
-        execute(PoryaaaaBackgroundTask::LoadVoicegroup {
-            project_root: root.to_string_lossy().into_owned(),
-            bank: "voicegroup000".to_owned(),
-            projects_json_path: root.join("out/projects.json"),
-        });
         assert!(plugin.runtime_has_loaded_voicegroup());
 
         let mut context = TestProcessContext::with_events(vec![

@@ -10,6 +10,17 @@ build target:
         cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/poryaaaa/build --config Release --target poryaaaa
         ;;
+      poryaaaa-rs)
+        cd packages/poryaaaa/plugin
+        cargo build --release
+        clap_dir="$HOME/Library/Audio/Plug-Ins/CLAP"
+        bundle="$clap_dir/poryaaaa-rs.clap"
+        rm -rf "$bundle"
+        mkdir -p "$bundle/Contents/MacOS"
+        cp target/release/libporyaaaa_clap_plugin.dylib "$bundle/Contents/MacOS/poryaaaa-rs"
+        cp Info-rs.plist "$bundle/Contents/Info.plist"
+        chmod 755 "$bundle/Contents/MacOS/poryaaaa-rs"
+        ;;
       ccomidi)
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/ccomidi/build --config Release --target ccomidi
@@ -59,7 +70,7 @@ build target:
         ;;
       *)
         echo "unknown build target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, voicegroup-bridge, swift-dylib, textedit, m4l, vg-core" >&2
+        echo "known targets: poryaaaa, poryaaaa-rs, ccomidi, voicegroup-bridge, swift-dylib, textedit, m4l, vg-core" >&2
         exit 2
         ;;
     esac
