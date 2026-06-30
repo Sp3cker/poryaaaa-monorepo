@@ -1,14 +1,21 @@
 use anyhow::{Context, Result};
 use lsp_server::{Connection, ErrorCode, Message, Notification as ServerNotification, Response};
 use lsp_types::{
-    notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification},
+    notification::{
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
+    },
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     PublishDiagnosticsParams,
 };
 use serde::de::DeserializeOwned;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use url::Url;
 
 use crate::{diagnostics::diagnostics_for_text, documents::DocumentStore};
+use voicegroup_core::{analyzer::AnalysisContext, project_index::ProjectIndex};
 
 /// Runs the language server over stdio so editor clients can launch the binary directly.
 pub fn run_stdio() -> Result<()> {
@@ -38,14 +45,16 @@ fn server_capabilities() -> serde_json::Value {
 struct Server {
     connection: Connection,
     documents: DocumentStore,
+    project_contexts: ProjectContexts,
 }
 
 impl Server {
-    /// Creates a server with empty in-memory document state.
+    /// Creates a server with empty in-memory document state and project-context cache.
     fn new(connection: Connection) -> Self {
         Self {
             connection,
             documents: DocumentStore::new(),
+            project_contexts: ProjectContexts::new(),
         }
     }
 
@@ -97,8 +106,9 @@ impl Server {
         let lsp_uri = params.text_document.uri;
         let uri = parse_document_uri(&lsp_uri)?;
         let text = params.text_document.text;
-        self.documents.open(uri, text.clone());
-        self.publish_diagnostics(lsp_uri, diagnostics_for_text(&text))
+        let diagnostics = self.project_contexts.diagnostics_for_document(&uri, &text);
+        self.documents.open(uri, text);
+        self.publish_diagnostics(lsp_uri, diagnostics)
     }
 
     /// Applies the latest full-content change and republishes diagnostics.
@@ -109,8 +119,9 @@ impl Server {
             return Ok(());
         };
         let text = change.text;
-        self.documents.replace(uri, text.clone());
-        self.publish_diagnostics(lsp_uri, diagnostics_for_text(&text))
+        let diagnostics = self.project_contexts.diagnostics_for_document(&uri, &text);
+        self.documents.replace(uri, text);
+        self.publish_diagnostics(lsp_uri, diagnostics)
     }
 
     /// Drops closed document text and publishes an empty list to clear stale diagnostics.
@@ -160,10 +171,118 @@ where
     N: Notification,
     N::Params: DeserializeOwned,
 {
-    serde_json::from_value(notification.params).with_context(|| format!("decoding {} params", N::METHOD))
+    serde_json::from_value(notification.params)
+        .with_context(|| format!("decoding {} params", N::METHOD))
 }
 
 /// Converts lsp-types' URI wrapper into url::Url for stable document-store keys.
 fn parse_document_uri(uri: &lsp_types::Uri) -> Result<Url> {
     Url::parse(uri.as_str()).with_context(|| format!("parsing document URI {}", uri.as_str()))
+}
+
+struct ProjectContexts {
+    contexts: HashMap<PathBuf, Option<AnalysisContext>>,
+}
+
+impl ProjectContexts {
+    /// Starts with no cached project contexts; roots are loaded on first document use.
+    fn new() -> Self {
+        Self {
+            contexts: HashMap::new(),
+        }
+    }
+
+    /// Loads diagnostics through a project context derived from the document path,
+    /// avoiding false symbol errors when the editor workspace is a parent repo.
+    fn diagnostics_for_document(&mut self, uri: &Url, text: &str) -> Vec<lsp_types::Diagnostic> {
+        let Some(root) = project_root_for_document(uri) else {
+            return diagnostics_for_text(text, None);
+        };
+
+        let analysis_context = self
+            .contexts
+            .entry(root.clone())
+            .or_insert_with(|| load_analysis_context(&root));
+        diagnostics_for_text(text, analysis_context.as_ref())
+    }
+}
+
+/// Builds analyzer symbols from the nearest voicegroup project root for a file.
+fn load_analysis_context(root: &Path) -> Option<AnalysisContext> {
+    ProjectIndex::load(root)
+        .ok()
+        .map(|index| index.analysis_context())
+}
+
+/// Walks upward from a document to find the decomp project root that owns sound/.
+fn project_root_for_document(uri: &Url) -> Option<PathBuf> {
+    let path = uri.to_file_path().ok()?;
+    let start = path.parent()?;
+    start
+        .ancestors()
+        .find(|candidate| has_voicegroup_project_markers(candidate))
+        .map(Path::to_path_buf)
+}
+
+/// Recognizes the two supported source layouts without indexing parent repos.
+fn has_voicegroup_project_markers(root: &Path) -> bool {
+    root.join("sound/voice_groups.inc").is_file() || root.join("sound/voicegroups").is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectContexts;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use url::Url;
+
+    #[test]
+    fn diagnostics_for_document_loads_symbols_from_document_project_root() {
+        let parent = temp_project_root("parent-workspace");
+        let project = parent.join("decomp");
+        fs::create_dir_all(project.join("sound/voicegroups")).expect("create voicegroup dir");
+        fs::write(
+            project.join("sound/direct_sound_data.inc"),
+            "DirectSoundWaveData_kick::\n\t.incbin \"sound/direct_sound_samples/kick.bin\"\n",
+        )
+        .expect("write direct sound symbols");
+
+        let document_uri = Url::from_file_path(project.join("sound/voicegroups/voicegroup001.inc"))
+            .expect("convert document path to uri");
+        let mut contexts = ProjectContexts::new();
+        let diagnostics = contexts.diagnostics_for_document(
+            &document_uri,
+            "voicegroup001:: @\n voice_directsound 60, 0, DirectSoundWaveData_kick, 255, 0, 255, 165\n",
+        );
+
+        let _ = fs::remove_dir_all(parent);
+        assert_eq!(diagnostics, []);
+    }
+
+    #[test]
+    fn diagnostics_for_document_falls_back_to_syntax_only_without_project_root() {
+        let parent = temp_project_root("no-project-root");
+        fs::create_dir_all(parent.join("packages")).expect("create parent dir");
+
+        let document_uri = Url::from_file_path(parent.join("packages/voicegroup001.inc"))
+            .expect("convert document path to uri");
+        let mut contexts = ProjectContexts::new();
+        let diagnostics = contexts.diagnostics_for_document(
+            &document_uri,
+            "voicegroup001:: @\n voice_directsound 60, 0, MissingSample, 255, 0, 255, 165\n",
+        );
+
+        let _ = fs::remove_dir_all(parent);
+        assert_eq!(diagnostics, []);
+    }
+
+    fn temp_project_root(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("voicegroup-lsp-{name}-{nonce}"))
+    }
 }
