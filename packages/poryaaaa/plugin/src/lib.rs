@@ -107,13 +107,11 @@ mod clap {
 mod tests {
     use super::*;
     use crate::process::ProcessRuntime;
-    use crate::test_support::{temp_project, write_file, TestInitContext};
+    use crate::test_support::{temp_project, write_file, TestInitContext, TEST_ENV_LOCK};
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Arc, LazyLock, Mutex};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
-
-    static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn test_async_executor() -> nice_plug::prelude::AsyncExecutor<PoryaaaaPlugin> {
         nice_plug::prelude::AsyncExecutor::new(Arc::new(|_| {}), Arc::new(|_| {}))
@@ -613,6 +611,8 @@ route104::
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
+
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
 
         let mut plugin = PoryaaaaPlugin::default();
         plugin
