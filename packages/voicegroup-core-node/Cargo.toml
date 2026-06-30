@@ -1,0 +1,17 @@
+[package]
+name = "voicegroup-core-node"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "voicegroup_core_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+voicegroup-core = { path = "../voicegroup-core" }
+
+[build-dependencies]
+napi-build = "2"

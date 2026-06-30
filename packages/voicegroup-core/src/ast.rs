@@ -8,12 +8,33 @@ pub struct SourcePosition {
     pub column: usize,
 }
 
+// Rust core ranges are 1-based, start-inclusive, and end-exclusive. The old
+// Swift LSP SourceModel used zero-based editor positions and treated the end
+// character as included; Rust keeps the parser/analyzer contract explicit and
+// leaves LSP coordinate conversion to the adapter layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRange {
     // Inclusive start position for the source construct or diagnostic.
     pub start: SourcePosition,
     // Exclusive end position for the source construct or diagnostic.
     pub end: SourcePosition,
+}
+
+impl SourceRange {
+    /// Returns whether `position` falls within the range's start-inclusive,
+    /// end-exclusive source span.
+    pub fn contains(&self, position: &SourcePosition) -> bool {
+        if position.line < self.start.line || position.line > self.end.line {
+            return false;
+        }
+        if position.line == self.start.line && position.column < self.start.column {
+            return false;
+        }
+        if position.line == self.end.line && position.column >= self.end.column {
+            return false;
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

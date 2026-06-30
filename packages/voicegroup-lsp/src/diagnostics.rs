@@ -9,6 +9,9 @@ use voicegroup_core::{
 
 const DIAGNOSTIC_SOURCE: &str = "voicegroup-core";
 
+
+
+
 /// Parses one in-memory document, then maps either syntax-only or project-aware
 /// semantic findings into LSP diagnostics depending on whether a context exists.
 pub fn diagnostics_for_text(

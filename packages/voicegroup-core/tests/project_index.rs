@@ -261,6 +261,43 @@ voice_group petalburg_drumset, 36
 }
 
 #[test]
+fn lists_project_index_voicegroups_without_directory_scanning() {
+    let root = temp_project("listed-voicegroups");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+.include \"sound/voicegroups/petalburg.inc\"
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/petalburg.inc",
+        "\
+voice_group petalburg
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/unlisted.inc",
+        "\
+voice_group unlisted
+\tvoice_square_2 60, 0, 2, 1, 2, 8, 3
+",
+    );
+
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    assert_eq!(
+        index.voicegroup_names().collect::<Vec<_>>(),
+        vec!["petalburg"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
 fn loads_selected_bank_from_monolithic_voice_groups_file() {
     let root = temp_project("monolithic");
     write_file(

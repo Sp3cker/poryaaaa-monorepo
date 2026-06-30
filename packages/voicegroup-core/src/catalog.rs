@@ -53,10 +53,17 @@ pub struct NumericRange {
     pub max: i32,
 }
 
+impl NumericRange {
+    pub const fn contains(&self, value: i32) -> bool {
+        value >= self.min && value <= self.max
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacroArgument {
     pub name: &'static str,
     pub schema: ArgumentSchema,
+    pub help: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +72,7 @@ pub struct MacroDefinition {
     pub type_code: VoiceType,
     pub kind: MacroKind,
     pub arguments: &'static [MacroArgument],
+    pub summary: &'static str,
 }
 
 const MIDI_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
@@ -72,94 +80,204 @@ const PAN_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const BYTE_RANGE: NumericRange = NumericRange { min: 0, max: 255 };
 
 const DIRECT_SOUND_ARGUMENTS: &[MacroArgument] = &[
-    integer_argument("base_midi_key", MIDI_RANGE),
-    integer_argument("pan", PAN_RANGE),
-    MacroArgument {
-        name: "sample_data_pointer",
-        schema: ArgumentSchema::Symbol {
-            namespace: SymbolNamespace::DirectSound,
-        },
-    },
-    integer_argument("attack", BYTE_RANGE),
-    integer_argument("decay", BYTE_RANGE),
-    integer_argument("sustain", BYTE_RANGE),
-    integer_argument("release", BYTE_RANGE),
+    integer_argument(
+        "base_midi_key",
+        MIDI_RANGE,
+        "Root MIDI note used when pitching the DirectSound sample.",
+    ),
+    integer_argument(
+        "pan",
+        PAN_RANGE,
+        "m4a pan value. Zero means centered/disabled in the emitted macro. Squares accept 0, 64, 127 enumerated.",
+    ),
+    symbol_argument(
+        "sample_data_pointer",
+        SymbolNamespace::DirectSound,
+        "DirectSoundWaveData_* symbol resolved through direct_sound_data.inc.",
+    ),
+    integer_argument("attack", BYTE_RANGE, "Envelope attack byte."),
+    integer_argument("decay", BYTE_RANGE, "Envelope decay byte."),
+    integer_argument("sustain", BYTE_RANGE, "Envelope sustain byte."),
+    integer_argument("release", BYTE_RANGE, "Envelope release byte."),
 ];
 
 const SQUARE_1_ARGUMENTS: &[MacroArgument] = &[
-    integer_argument("base_midi_key", MIDI_RANGE),
-    integer_argument("pan", PAN_RANGE),
-    integer_argument("sweep", BYTE_RANGE),
-    integer_argument("duty_cycle", BYTE_RANGE),
-    integer_argument("attack", BYTE_RANGE),
-    integer_argument("decay", BYTE_RANGE),
-    integer_argument("sustain", BYTE_RANGE),
-    integer_argument("release", BYTE_RANGE),
+    integer_argument(
+        "base_midi_key",
+        MIDI_RANGE,
+        "Root MIDI note used when pitching the DirectSound sample.",
+    ),
+    integer_argument(
+        "pan",
+        PAN_RANGE,
+        "m4a pan value. Zero means centered/disabled in the emitted macro. Squares accept 0, 64, 127 enumerated.",
+    ),
+    integer_argument("sweep", BYTE_RANGE, "Square 1 sweep byte."),
+    integer_argument(
+        "duty_cycle",
+        NumericRange { min: 0, max: 3 },
+        "Hardware duty cycle masked to two bits by the assembler macro.",
+    ),
+    integer_argument(
+        "attack",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope attack.",
+    ),
+    integer_argument(
+        "decay",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope decay.",
+    ),
+    integer_argument(
+        "sustain",
+        NumericRange { min: 0, max: 15 },
+        "4-bit hardware envelope sustain.",
+    ),
+    integer_argument(
+        "release",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope release.",
+    ),
 ];
 
 const SQUARE_2_ARGUMENTS: &[MacroArgument] = &[
-    integer_argument("base_midi_key", MIDI_RANGE),
-    integer_argument("pan", PAN_RANGE),
-    integer_argument("duty_cycle", BYTE_RANGE),
-    integer_argument("attack", BYTE_RANGE),
-    integer_argument("decay", BYTE_RANGE),
-    integer_argument("sustain", BYTE_RANGE),
-    integer_argument("release", BYTE_RANGE),
+    integer_argument(
+        "base_midi_key",
+        MIDI_RANGE,
+        "Root MIDI note used when pitching the DirectSound sample.",
+    ),
+    integer_argument(
+        "pan",
+        PAN_RANGE,
+        "m4a pan value. Zero means centered/disabled in the emitted macro. Squares accept 0, 64, 127 enumerated.",
+    ),
+    integer_argument(
+        "duty_cycle",
+        NumericRange { min: 0, max: 3 },
+        "Hardware duty cycle masked to two bits by the assembler macro.",
+    ),
+    integer_argument(
+        "attack",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope attack.",
+    ),
+    integer_argument(
+        "decay",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope decay.",
+    ),
+    integer_argument(
+        "sustain",
+        NumericRange { min: 0, max: 15 },
+        "4-bit hardware envelope sustain.",
+    ),
+    integer_argument(
+        "release",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope release.",
+    ),
 ];
 
 const PROGRAMMABLE_WAVE_ARGUMENTS: &[MacroArgument] = &[
-    integer_argument("base_midi_key", MIDI_RANGE),
-    integer_argument("pan", PAN_RANGE),
-    MacroArgument {
-        name: "wave_samples_pointer",
-        schema: ArgumentSchema::Symbol {
-            namespace: SymbolNamespace::ProgrammableWave,
-        },
-    },
-    integer_argument("attack", BYTE_RANGE),
-    integer_argument("decay", BYTE_RANGE),
-    integer_argument("sustain", BYTE_RANGE),
-    integer_argument("release", BYTE_RANGE),
+    integer_argument(
+        "base_midi_key",
+        MIDI_RANGE,
+        "Root MIDI note used when pitching the DirectSound sample.",
+    ),
+    integer_argument(
+        "pan",
+        PAN_RANGE,
+        "m4a pan value. Zero means centered/disabled in the emitted macro. Squares accept 0, 64, 127 enumerated.",
+    ),
+    symbol_argument(
+        "wave_samples_pointer",
+        SymbolNamespace::ProgrammableWave,
+        "ProgrammableWaveData_* symbol resolved through programmable_wave_data.inc.",
+    ),
+    integer_argument(
+        "attack",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope attack.",
+    ),
+    integer_argument(
+        "decay",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope decay.",
+    ),
+    integer_argument(
+        "sustain",
+        NumericRange { min: 0, max: 15 },
+        "4-bit hardware envelope sustain.",
+    ),
+    integer_argument(
+        "release",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope release.",
+    ),
 ];
 
 const NOISE_ARGUMENTS: &[MacroArgument] = &[
-    integer_argument("base_midi_key", MIDI_RANGE),
-    integer_argument("pan", PAN_RANGE),
-    integer_argument("period", BYTE_RANGE),
-    integer_argument("attack", BYTE_RANGE),
-    integer_argument("decay", BYTE_RANGE),
-    integer_argument("sustain", BYTE_RANGE),
-    integer_argument("release", BYTE_RANGE),
+    integer_argument(
+        "base_midi_key",
+        MIDI_RANGE,
+        "Root MIDI note for the noise voice.",
+    ),
+    integer_argument(
+        "pan",
+        PAN_RANGE,
+        "Accepted for macro compatibility; poryaaaa runtime ignores it for noise voices.",
+    ),
+    integer_argument(
+        "period",
+        NumericRange { min: 0, max: 1 },
+        "Noise period bit. The assembler macro masks this to one bit.",
+    ),
+    integer_argument(
+        "attack",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope attack.",
+    ),
+    integer_argument(
+        "decay",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope decay.",
+    ),
+    integer_argument(
+        "sustain",
+        NumericRange { min: 0, max: 15 },
+        "4-bit hardware envelope sustain.",
+    ),
+    integer_argument(
+        "release",
+        NumericRange { min: 0, max: 7 },
+        "3-bit hardware envelope release.",
+    ),
 ];
 
-const KEYSPLIT_ALL_ARGUMENTS: &[MacroArgument] = &[MacroArgument {
-    name: "voice_group_pointer",
-    schema: ArgumentSchema::Symbol {
-        namespace: SymbolNamespace::VoiceGroup,
-    },
-}];
+const KEYSPLIT_ALL_ARGUMENTS: &[MacroArgument] = &[symbol_argument(
+    "voice_group_pointer",
+    SymbolNamespace::VoiceGroup,
+    "Sub-voicegroup used for all notes.",
+)];
 
 const KEYSPLIT_ARGUMENTS: &[MacroArgument] = &[
-    MacroArgument {
-        name: "voice_group_pointer",
-        schema: ArgumentSchema::Symbol {
-            namespace: SymbolNamespace::VoiceGroup,
-        },
-    },
-    MacroArgument {
-        name: "keysplit_table_pointer",
-        schema: ArgumentSchema::Symbol {
-            namespace: SymbolNamespace::Keysplit,
-        },
-    },
+    symbol_argument(
+        "voice_group_pointer",
+        SymbolNamespace::VoiceGroup,
+        "Sub-voicegroup selected by the keysplit table.",
+    ),
+    symbol_argument(
+        "keysplit_table_pointer",
+        SymbolNamespace::Keysplit,
+        "Keysplit table that maps notes to sub-voice slots.",
+    ),
 ];
 
-const CRY_ARGUMENTS: &[MacroArgument] = &[MacroArgument {
-    name: "sample",
-    schema: ArgumentSchema::Symbol {
-        namespace: SymbolNamespace::DirectSound,
-    },
-}];
+const CRY_ARGUMENTS: &[MacroArgument] = &[symbol_argument(
+    "sample",
+    SymbolNamespace::DirectSound,
+    "Cry sample symbol from direct sound data.",
+)];
 
 const MACROS: &[MacroDefinition] = &[
     MacroDefinition {
@@ -167,90 +285,105 @@ const MACROS: &[MacroDefinition] = &[
         type_code: VoiceType::DirectSoundNoResample,
         kind: MacroKind::DirectSoundNoResample,
         arguments: DIRECT_SOUND_ARGUMENTS,
+        summary: "DirectSound sample without m4a resampling.",
     },
     MacroDefinition {
         name: "voice_directsound_alt",
         type_code: VoiceType::DirectSoundAlt,
         kind: MacroKind::DirectSoundAlt,
         arguments: DIRECT_SOUND_ARGUMENTS,
+        summary: "DirectSound sample using the alternate fixed voice type.",
     },
     MacroDefinition {
         name: "voice_directsound",
         type_code: VoiceType::DirectSound,
         kind: MacroKind::DirectSound,
         arguments: DIRECT_SOUND_ARGUMENTS,
+        summary: "DirectSound sample voice.",
     },
     MacroDefinition {
         name: "voice_square_1_alt",
         type_code: VoiceType::Square1Alt,
         kind: MacroKind::Square1,
         arguments: SQUARE_1_ARGUMENTS,
+        summary: "Square channel 1 alternate hardware voice.",
     },
     MacroDefinition {
         name: "voice_square_1",
         type_code: VoiceType::Square1,
         kind: MacroKind::Square1,
         arguments: SQUARE_1_ARGUMENTS,
+        summary: "Square channel 1 hardware voice.",
     },
     MacroDefinition {
         name: "voice_square_2_alt",
         type_code: VoiceType::Square2Alt,
         kind: MacroKind::Square2,
         arguments: SQUARE_2_ARGUMENTS,
+        summary: "Square channel 2 alternate hardware voice.",
     },
     MacroDefinition {
         name: "voice_square_2",
         type_code: VoiceType::Square2,
         kind: MacroKind::Square2,
         arguments: SQUARE_2_ARGUMENTS,
+        summary: "Square channel 2 hardware voice.",
     },
     MacroDefinition {
         name: "voice_programmable_wave_alt",
         type_code: VoiceType::ProgrammableWaveAlt,
         kind: MacroKind::ProgrammableWave,
         arguments: PROGRAMMABLE_WAVE_ARGUMENTS,
+        summary: "Programmable wave alternate hardware voice.",
     },
     MacroDefinition {
         name: "voice_programmable_wave",
         type_code: VoiceType::ProgrammableWave,
         kind: MacroKind::ProgrammableWave,
         arguments: PROGRAMMABLE_WAVE_ARGUMENTS,
+        summary: "Programmable wave hardware voice.",
     },
     MacroDefinition {
         name: "voice_noise_alt",
         type_code: VoiceType::NoiseAlt,
         kind: MacroKind::Noise,
         arguments: NOISE_ARGUMENTS,
+        summary: "Noise channel alternate hardware voice.",
     },
     MacroDefinition {
         name: "voice_noise",
         type_code: VoiceType::Noise,
         kind: MacroKind::Noise,
         arguments: NOISE_ARGUMENTS,
+        summary: "Noise channel hardware voice.",
     },
     MacroDefinition {
         name: "voice_keysplit_all",
         type_code: VoiceType::KeysplitAll,
         kind: MacroKind::KeysplitAll,
         arguments: KEYSPLIT_ALL_ARGUMENTS,
+        summary: "Routes all notes into a sub-voicegroup, commonly a drumset.",
     },
     MacroDefinition {
         name: "voice_keysplit",
         type_code: VoiceType::Keysplit,
         kind: MacroKind::Keysplit,
         arguments: KEYSPLIT_ARGUMENTS,
+        summary: "Routes notes to slots in another voicegroup through a keysplit table.",
     },
     MacroDefinition {
         name: "cry_reverse",
         type_code: VoiceType::CryReverse,
         kind: MacroKind::Cry,
         arguments: CRY_ARGUMENTS,
+        summary: "Reverse cry sample voice.",
     },
     MacroDefinition {
         name: "cry",
         type_code: VoiceType::Cry,
         kind: MacroKind::Cry,
         arguments: CRY_ARGUMENTS,
+        summary: "Cry sample voice.",
     },
 ];
 
@@ -262,9 +395,26 @@ pub fn find_macro(name: &str) -> Option<&'static MacroDefinition> {
     MACROS.iter().find(|definition| definition.name == name)
 }
 
-const fn integer_argument(name: &'static str, valid_range: NumericRange) -> MacroArgument {
+const fn integer_argument(
+    name: &'static str,
+    valid_range: NumericRange,
+    help: &'static str,
+) -> MacroArgument {
     MacroArgument {
         name,
         schema: ArgumentSchema::Integer { range: valid_range },
+        help,
+    }
+}
+
+const fn symbol_argument(
+    name: &'static str,
+    namespace: SymbolNamespace,
+    help: &'static str,
+) -> MacroArgument {
+    MacroArgument {
+        name,
+        schema: ArgumentSchema::Symbol { namespace },
+        help,
     }
 }

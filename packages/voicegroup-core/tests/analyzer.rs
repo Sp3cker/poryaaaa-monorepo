@@ -229,7 +229,7 @@ fn analyzer_validates_integer_arguments_and_ranges() {
     let source = "\
 voice_group broken
 \tvoice_directsound nope, 0, DirectSoundWaveData_Brass1, 1, 2, 3, 4
-\tvoice_square_1 128, 0, 0, 9, 1, 2, 8, 3
+\tvoice_square_1 128, 0, 0, 3, 1, 2, 8, 3
 ";
 
     let document = parse_document(source);
@@ -248,6 +248,72 @@ voice_group broken
     assert_eq!(
         diagnostics[1].range,
         document.voice_groups[0].programs[1].arguments[0].range
+    );
+}
+
+#[test]
+fn analyzer_enforces_hardware_bit_width_ranges_from_catalog() {
+    let source = "\
+voice_group hardware_limits
+\tvoice_square_1 60, 0, 0, 4, 8, 8, 16, 8
+\tvoice_noise 60, 0, 2, 8, 8, 16, 8
+";
+
+    let document = parse_document(source);
+    let diagnostics = analyze_document(&document, &AnalysisContext::default());
+
+    assert_eq!(
+        diagnostic_codes(&diagnostics),
+        [
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+            "integer-out-of-range",
+        ]
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.range.clone())
+            .collect::<Vec<_>>(),
+        [
+            document.voice_groups[0].programs[0].arguments[3]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[0].arguments[4]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[0].arguments[5]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[0].arguments[6]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[0].arguments[7]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[1].arguments[2]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[1].arguments[3]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[1].arguments[4]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[1].arguments[5]
+                .range
+                .clone(),
+            document.voice_groups[0].programs[1].arguments[6]
+                .range
+                .clone(),
+        ]
     );
 }
 
@@ -405,6 +471,12 @@ voice_group route104
 const MIDI_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const PAN_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const BYTE_RANGE: NumericRange = NumericRange { min: 0, max: 255 };
+const DUTY_RANGE: NumericRange = NumericRange { min: 0, max: 3 };
+const PERIOD_RANGE: NumericRange = NumericRange { min: 0, max: 1 };
+const ATTACK_RANGE: NumericRange = NumericRange { min: 0, max: 7 };
+const DECAY_RANGE: NumericRange = NumericRange { min: 0, max: 7 };
+const SUSTAIN_RANGE: NumericRange = NumericRange { min: 0, max: 15 };
+const RELEASE_RANGE: NumericRange = NumericRange { min: 0, max: 7 };
 
 const DIRECT_SOUND_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
@@ -422,21 +494,33 @@ const SQUARE_1_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
     ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: DUTY_RANGE },
+    ArgumentSchema::Integer {
+        range: ATTACK_RANGE,
+    },
+    ArgumentSchema::Integer { range: DECAY_RANGE },
+    ArgumentSchema::Integer {
+        range: SUSTAIN_RANGE,
+    },
+    ArgumentSchema::Integer {
+        range: RELEASE_RANGE,
+    },
 ];
 
 const SQUARE_2_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: DUTY_RANGE },
+    ArgumentSchema::Integer {
+        range: ATTACK_RANGE,
+    },
+    ArgumentSchema::Integer { range: DECAY_RANGE },
+    ArgumentSchema::Integer {
+        range: SUSTAIN_RANGE,
+    },
+    ArgumentSchema::Integer {
+        range: RELEASE_RANGE,
+    },
 ];
 
 const PROGRAMMABLE_WAVE_ARGUMENTS: &[ArgumentSchema] = &[
@@ -445,20 +529,34 @@ const PROGRAMMABLE_WAVE_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Symbol {
         namespace: SymbolNamespace::ProgrammableWave,
     },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer {
+        range: ATTACK_RANGE,
+    },
+    ArgumentSchema::Integer { range: DECAY_RANGE },
+    ArgumentSchema::Integer {
+        range: SUSTAIN_RANGE,
+    },
+    ArgumentSchema::Integer {
+        range: RELEASE_RANGE,
+    },
 ];
 
 const NOISE_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer {
+        range: PERIOD_RANGE,
+    },
+    ArgumentSchema::Integer {
+        range: ATTACK_RANGE,
+    },
+    ArgumentSchema::Integer { range: DECAY_RANGE },
+    ArgumentSchema::Integer {
+        range: SUSTAIN_RANGE,
+    },
+    ArgumentSchema::Integer {
+        range: RELEASE_RANGE,
+    },
 ];
 
 const KEYSPLIT_ALL_ARGUMENTS: &[ArgumentSchema] = &[ArgumentSchema::Symbol {

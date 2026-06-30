@@ -84,6 +84,11 @@ impl ProjectIndex {
             )
     }
 
+    /// Iterates voicegroup bank names declared through the project index.
+    pub fn voicegroup_names(&self) -> impl Iterator<Item = &str> {
+        self.voice_groups.keys().map(String::as_str)
+    }
+
     pub fn direct_sound_assets(&self) -> impl Iterator<Item = &ResolvedAsset> {
         self.direct_sound_assets.values()
     }

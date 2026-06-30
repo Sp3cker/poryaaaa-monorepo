@@ -201,7 +201,7 @@ fn analyze_integer_argument(
         return;
     };
 
-    if value < valid_range.min || value > valid_range.max {
+    if !valid_range.contains(value) {
         diagnostics.push(error(
             argument.range.clone(),
             "integer-out-of-range",
