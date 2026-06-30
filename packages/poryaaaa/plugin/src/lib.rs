@@ -110,8 +110,7 @@ mod tests {
     use crate::test_support::{temp_project, write_file, TestInitContext, TEST_ENV_LOCK};
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::sync::Arc;
 
     fn test_async_executor() -> nice_plug::prelude::AsyncExecutor<PoryaaaaPlugin> {
         nice_plug::prelude::AsyncExecutor::new(Arc::new(|_| {}), Arc::new(|_| {}))
@@ -121,7 +120,12 @@ mod tests {
     fn editor_factory_returns_editor_for_default_params() {
         let params = Arc::new(PoryaaaaParams::default());
 
-        assert!(crate::editor::create_editor(params, test_async_executor()).is_some());
+        assert!(crate::editor::create_editor(
+            params,
+            test_async_executor(),
+            nice_plug_iced::iced::PollSubNotifier::new()
+        )
+        .is_some());
     }
 
     #[test]
@@ -163,10 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn editor_advertises_and_applies_host_resize() {
+    fn editor_uses_fixed_size_large_enough_for_all_sections() {
         let params = Arc::new(PoryaaaaParams::default());
-        let editor =
-            crate::editor::create_editor(params.clone(), test_async_executor()).expect("editor");
+        let editor = crate::editor::create_editor(
+            params.clone(),
+            test_async_executor(),
+            nice_plug_iced::iced::PollSubNotifier::new(),
+        )
+        .expect("editor");
 
         assert_eq!(
             editor.size(),
@@ -175,57 +183,29 @@ mod tests {
                 crate::params::DEFAULT_EDITOR_HEIGHT
             )
         );
-        assert!(editor.resize_hint().can_resize);
-        assert!(editor.set_size(800, 600));
-        assert_eq!(editor.size(), (800, 600));
-
-        assert!(editor.set_size(1, 1));
-        assert_eq!(editor.size(), (420, 260));
-    }
-
-    #[test]
-    fn editor_font_definitions_use_calamity_faces() {
-        let fonts = crate::editor::calamity_font_definitions();
-
-        assert!(fonts
-            .font_data
-            .contains_key(crate::editor::CALAMITY_REGULAR_FONT));
-        assert!(fonts
-            .font_data
-            .contains_key(crate::editor::CALAMITY_BOLD_FONT));
+        assert!(crate::params::DEFAULT_EDITOR_HEIGHT >= 420);
+        assert!(!editor.resize_hint().can_resize);
+        assert!(!editor.set_size(800, 600));
         assert_eq!(
-            fonts
-                .families
-                .get(&egui::FontFamily::Proportional)
-                .and_then(|family| family.first())
-                .map(String::as_str),
-            Some(crate::editor::CALAMITY_REGULAR_FONT)
-        );
-
-        let bold_family = egui::FontFamily::Name(crate::editor::CALAMITY_BOLD_FAMILY.into());
-        assert_eq!(
-            fonts
-                .families
-                .get(&bold_family)
-                .and_then(|family| family.first())
-                .map(String::as_str),
-            Some(crate::editor::CALAMITY_BOLD_FONT)
+            editor.size(),
+            (
+                crate::params::DEFAULT_EDITOR_WIDTH,
+                crate::params::DEFAULT_EDITOR_HEIGHT
+            )
         );
     }
 
     #[test]
-    fn midi_activity_light_holds_recent_counter_changes_briefly() {
-        let mut light = crate::editor::MidiActivityLight::default();
-        let now = Instant::now();
+    fn params_window_state_uses_default_editor_size() {
+        let params = PoryaaaaParams::default();
 
-        assert!(!light.is_active(0, now));
-        assert!(light.is_active(1, now));
-        assert!(light.is_active(1, now + Duration::from_millis(90)));
-        assert!(!light.is_active(
-            1,
-            now + crate::editor::MIDI_ACTIVITY_HOLD + Duration::from_millis(1)
-        ));
-        assert!(light.is_active(2, now + Duration::from_secs(1)));
+        assert_eq!(
+            params.window_state.logical_size(),
+            (
+                crate::params::DEFAULT_EDITOR_WIDTH,
+                crate::params::DEFAULT_EDITOR_HEIGHT
+            )
+        );
     }
 
     #[test]
@@ -248,67 +228,71 @@ mod tests {
 
         fs::remove_dir_all(root).expect("remove temp project");
     }
+
     #[test]
-    fn editor_frame_expands_to_resizable_window_area() {
-        let ctx = egui::Context::default();
+    fn voicegroup_status_presentation_uses_error_and_success_colors() {
+        let error = Some(crate::params::VoicegroupLoadStatus {
+            text: "Bad bank".to_string(),
+            is_error: true,
+        });
+        let success = Some(crate::params::VoicegroupLoadStatus {
+            text: "Loaded petalburg".to_string(),
+            is_error: false,
+        });
+        let loading = Some(crate::params::VoicegroupLoadStatus {
+            text: "Loading petalburg".to_string(),
+            is_error: false,
+        });
 
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::Vec2::new(640.0, 480.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                let available = ui.available_rect_before_wrap();
-                let response = crate::editor::show_editor_frame(ui, |ui| {
-                    ui.label("content");
-                })
-                .response;
-
-                assert!((response.rect.width() - available.width()).abs() <= 1.0);
-                assert!((response.rect.height() - available.height()).abs() <= 1.0);
-            },
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&error),
+            Some(("Bad bank".to_string(), crate::editor::STATUS_ERROR_COLOR))
         );
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&success),
+            Some((
+                "Loaded petalburg".to_string(),
+                crate::editor::STATUS_SUCCESS_COLOR
+            ))
+        );
+        assert_eq!(
+            crate::editor::voicegroup_status_presentation(&loading),
+            Some((
+                "Loading petalburg".to_string(),
+                crate::editor::STATUS_PENDING_COLOR
+            ))
+        );
+        assert_eq!(crate::editor::voicegroup_status_presentation(&None), None);
     }
 
     #[test]
-    fn remaining_width_for_leading_field_reserves_trailing_control() {
+    fn voicegroup_load_request_uses_drafts_and_does_not_commit_until_background_success() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let home = temp_project("home");
+        std::env::set_var("HOME", &home);
+
+        let params = PoryaaaaParams::default();
+        let mut gui_state = crate::editor::GuiState::from_params(&params);
+        gui_state.draft_project_root = "/draft/project".to_string();
+        gui_state.draft_voicegroup = "voicegroup123".to_string();
+
+        let request = crate::editor::prepare_voicegroup_load_request(&params, &mut gui_state)
+            .expect("load request");
+
+        assert_eq!(request.project_root, "/draft/project");
+        assert_eq!(request.bank, "voicegroup123");
+        assert!(request.projects_json_path.ends_with("projects.json"));
+        assert_eq!(params.committed_voicegroup_selection(), None);
         assert_eq!(
-            crate::editor::remaining_width_for_leading_field(900.0, 72.0, 8.0),
-            820.0
+            params.voicegroup_status(),
+            Some(crate::params::VoicegroupLoadStatus {
+                text: "Loading voicegroup123".to_string(),
+                is_error: false,
+            })
         );
-        assert_eq!(
-            crate::editor::remaining_width_for_leading_field(40.0, 72.0, 8.0),
-            0.0
-        );
-    }
 
-    #[test]
-    fn project_root_selector_text_field_expands_with_window_width() {
-        let ctx = egui::Context::default();
-        let mut project_root = "/tmp/poryaaaa-project".to_string();
-
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::Vec2::new(900.0, 260.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                let available = ui.available_width();
-                let response = crate::editor::show_project_root_selector(ui, &mut project_root);
-
-                assert!(
-                    response.text_rect.width() > available * 0.75,
-                    "project root text field width {} did not track available width {available}",
-                    response.text_rect.width()
-                );
-            },
-        );
+        std::env::remove_var("HOME");
+        fs::remove_dir_all(home).expect("remove home");
     }
 
     #[test]

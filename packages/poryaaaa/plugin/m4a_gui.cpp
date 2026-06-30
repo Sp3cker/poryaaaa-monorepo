@@ -76,10 +76,6 @@ static void display_project_root_browser(ImGui::FileBrowser& browser)
         browser.Close();
     }
 }
-static bool is_project_root_error(const char* error)
-{
-    return error && strncmp(error, "Bad project root:", strlen("Bad project root:")) == 0;
-}
 
 static bool project_root_button(const char* label, const ImVec2& size)
 {
@@ -379,7 +375,9 @@ static void render_general_tab(M4AGuiState* gui)
         gui->projectRootBrowser.ClearSelected();
     }
 
-    const bool projectRootError = is_project_root_error(gui->settings.voicegroupError);
+    const bool projectRootError =
+        gui->settings.voicegroupError[0] != '\0' &&
+        strncmp(gui->settings.voicegroupError, "Bad project root:", sizeof("Bad project root:") - 1) == 0;
     if (projectRootError)
     {
         ImGui::AlignTextToFramePadding();

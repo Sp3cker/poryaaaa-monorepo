@@ -10,11 +10,14 @@ name = "poryaaaa_clap_plugin"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-egui = { version = "=0.34.1", features = ["default_fonts"] }
-egui-file-dialog = "0.13.0"
 nice-plug = { path = "../../../third_party/nice-plug/crates/nice-plug", default-features = false }
-nice-plug-egui = { path = "../../../third_party/nice-plug/crates/nice-plug-egui" }
+nice-plug-iced = { path = "../../../third_party/nice-plug/crates/nice-plug-iced", features = ["canvas"] }
+iced_audio = { version = "0.14.1", features = ["nice-plug"] }
+rfd = "0.15"
 voicegroup-core = { path = "../../voicegroup-core" }
+
+[patch.crates-io]
+nice-plug-core = { path = "../../../third_party/nice-plug/crates/nice-plug-core" }
 
 [build-dependencies]
 cc = "1"

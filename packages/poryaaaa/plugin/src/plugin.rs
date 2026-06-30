@@ -6,6 +6,7 @@ use crate::{
     shared_projects_json, PoryaaaaParams, PROGRAM_COUNT,
 };
 use nice_plug::prelude::*;
+use nice_plug_iced::iced::PollSubNotifier;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use voicegroup_core::plugin_load;
@@ -21,6 +22,7 @@ pub enum PoryaaaaBackgroundTask {
 pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
     runtime: Arc<Mutex<Option<M4aEngine>>>,
+    gui_notifier: PollSubNotifier,
     last_host_tempo_bpm: Option<f64>,
     last_applied_audio_settings: Option<crate::params::AudioSettings>,
 }
@@ -33,6 +35,7 @@ impl Default for PoryaaaaPlugin {
         Self {
             params: Arc::new(params),
             runtime: Arc::new(Mutex::new(None)),
+            gui_notifier: PollSubNotifier::new(),
             last_host_tempo_bpm: None,
             last_applied_audio_settings: None,
         }
@@ -325,7 +328,11 @@ impl Plugin for PoryaaaaPlugin {
     }
 
     fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create_editor(self.params.clone(), async_executor)
+        editor::create_editor(
+            self.params.clone(),
+            async_executor,
+            self.gui_notifier.clone(),
+        )
     }
 
     fn process(
@@ -354,6 +361,9 @@ impl Plugin for PoryaaaaPlugin {
             process::drain_midi_activity(self.params.midi_activity.as_ref(), || {
                 context.next_event()
             });
+            if self.params.window_state.is_open() {
+                self.gui_notifier.notify();
+            }
             return ProcessStatus::Normal;
         };
         if !runtime.is_ready() {
@@ -361,6 +371,9 @@ impl Plugin for PoryaaaaPlugin {
             process::drain_midi_activity(self.params.midi_activity.as_ref(), || {
                 context.next_event()
             });
+            if self.params.window_state.is_open() {
+                self.gui_notifier.notify();
+            }
             return ProcessStatus::Normal;
         }
         process::process_stereo(
@@ -371,6 +384,10 @@ impl Plugin for PoryaaaaPlugin {
             Some(self.params.midi_activity.as_ref()),
             || context.next_event(),
         );
+
+        if self.params.window_state.is_open() {
+            self.gui_notifier.notify();
+        }
 
         ProcessStatus::KeepAlive
     }
