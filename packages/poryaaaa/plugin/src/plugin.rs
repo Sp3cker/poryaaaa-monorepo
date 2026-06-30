@@ -367,11 +367,8 @@ impl ClapPlugin for PoryaaaaPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{temp_project, write_file, TestInitContext};
+    use crate::test_support::{temp_project, write_file, TestInitContext, TEST_ENV_LOCK};
     use std::fs;
-    use std::sync::{LazyLock, Mutex};
-
-    static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn remember_host_tempo_keeps_only_finite_positive_values() {
@@ -438,6 +435,8 @@ mod tests {
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
+
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let mut plugin = PoryaaaaPlugin::default();
         plugin
             .params_for_test()

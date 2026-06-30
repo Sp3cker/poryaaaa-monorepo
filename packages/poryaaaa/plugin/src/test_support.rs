@@ -1,8 +1,10 @@
 use crate::PoryaaaaPlugin;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 pub(crate) struct TestInitContext;
 
 impl nice_plug::prelude::InitContext<PoryaaaaPlugin> for TestInitContext {
