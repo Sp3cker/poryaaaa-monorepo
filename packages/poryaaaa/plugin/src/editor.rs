@@ -7,11 +7,12 @@ use crate::{
 use iced_audio::Gesture;
 use nice_plug::prelude::*;
 use nice_plug_iced::iced::{
-    self, Center, Color, Element, Length, PollSubNotifier, Task, Theme,
-    widget::{Column, Row, button, column, row, text, text_input},
+    self,
+    widget::{button, column, row, text, text_input, Column, Row},
+    Center, Color, Element, Length, PollSubNotifier, Task, Theme,
 };
 use nice_plug_iced::{
-    EditorSettings, EditorState, NiceGuiContext, application, create_iced_editor,
+    application, create_iced_editor, EditorSettings, EditorState, NiceGuiContext,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,15 +74,6 @@ impl GuiState {
 
 pub(crate) fn apply_project_root_selection(gui_state: &mut GuiState, path: &Path) {
     gui_state.draft_project_root = path.to_string_lossy().into_owned();
-}
-
-pub(crate) fn apply_optional_project_root_selection(
-    gui_state: &mut GuiState,
-    path: Option<PathBuf>,
-) {
-    if let Some(path) = path {
-        apply_project_root_selection(gui_state, &path);
-    }
 }
 
 pub(crate) fn voicegroup_status_presentation(
@@ -205,7 +197,9 @@ impl PoryaaaaGui {
                 return browse_project_root_task(self.gui_state.draft_project_root.clone());
             }
             Message::ProjectRootSelected(path) => {
-                apply_optional_project_root_selection(&mut self.gui_state, path);
+                if let Some(path) = path {
+                    apply_project_root_selection(&mut self.gui_state, &path);
+                }
             }
             Message::LoadVoicegroup => {
                 if let Some(request) =
@@ -312,7 +306,11 @@ impl PoryaaaaGui {
 
     fn refresh_midi_activity(&mut self) -> bool {
         let snapshot = self.editor_state.params.midi_activity.snapshot();
-        refresh_midi_activity_lights(&mut self.gui_state.channel_activity, snapshot, Instant::now())
+        refresh_midi_activity_lights(
+            &mut self.gui_state.channel_activity,
+            snapshot,
+            Instant::now(),
+        )
     }
 
     fn handle_pending_host_restart(&mut self) {
@@ -410,4 +408,3 @@ pub(crate) fn create_editor(
         },
     )
 }
-

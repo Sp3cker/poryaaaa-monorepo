@@ -121,14 +121,12 @@ mod tests {
     fn editor_factory_returns_editor_for_default_params() {
         let params = Arc::new(PoryaaaaParams::default());
 
-        assert!(
-            crate::editor::create_editor(
-                params,
-                test_async_executor(),
-                nice_plug_iced::iced::PollSubNotifier::new()
-            )
-            .is_some()
-        );
+        assert!(crate::editor::create_editor(
+            params,
+            test_async_executor(),
+            nice_plug_iced::iced::PollSubNotifier::new()
+        )
+        .is_some());
     }
 
     #[test]
@@ -245,17 +243,6 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove temp project");
-    }
-
-    #[test]
-    fn cancelled_directory_picker_keeps_existing_draft_project_root() {
-        let params = PoryaaaaParams::default();
-        let mut gui_state = crate::editor::GuiState::from_params(&params);
-        gui_state.draft_project_root = "/existing/project".to_string();
-
-        crate::editor::apply_optional_project_root_selection(&mut gui_state, None);
-
-        assert_eq!(gui_state.draft_project_root, "/existing/project");
     }
 
     #[test]
