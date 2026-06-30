@@ -7,5 +7,10 @@
     "${workspaceFolder}/packages/poryaaaa",
     "${workspaceFolder}/packages/ccomidi"
   ],
-  "cmake.sourceDirectory": "/Users/sallegrezza/dev/cProjects/poryaaaa-monorepo/packages/poryaaaa"
+  "cmake.sourceDirectory": "/Users/sallegrezza/dev/cProjects/poryaaaa-monorepo/packages/poryaaaa",
+  "rust-analyzer.linkedProjects": [
+    "${workspaceFolder}/packages/poryaaaa/plugin/Cargo.toml",
+    "${workspaceFolder}/packages/voicegroup-core/Cargo.toml"
+  ],
+  "lldb-dap.executable-path": "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap"
 }

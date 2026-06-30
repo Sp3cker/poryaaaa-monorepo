@@ -28,12 +28,12 @@ static void clear_catalog(ProjectAssetIndex* idx)
     idx->progWaveCount = 0;
 }
 
-bool project_asset_index_rebuild(ProjectAssetIndex* idx, const char* projectRoot, const VoicegroupLoaderConfig* config)
+bool project_asset_index_rebuild(ProjectAssetIndex* idx, const char* projectRoot)
 {
     clear_catalog(idx);
 
     VoicegroupProjectAssets assets;
-    if (!voicegroup_loader_collect_project_assets(projectRoot, config, &assets))
+    if (!voicegroup_loader_collect_project_assets(projectRoot, &assets))
         return false;
 
     /* Transfer ownership of the arrays */

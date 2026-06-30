@@ -22,7 +22,6 @@ typedef struct
 {
     M4AEngine engine;
     LoadedVoiceGroup* loadedVg;
-    VoicegroupLoaderConfig loaderConfig;
     char projectRoot[512];
     char voicegroupName[256];
     char voicegroupError[512];

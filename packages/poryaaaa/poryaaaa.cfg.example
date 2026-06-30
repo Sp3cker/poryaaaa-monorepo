@@ -13,9 +13,7 @@
 project_root=C:\path\to\pokeemerald
 
 # Voicegroup name to load (without path or extension).
-# The loader auto-discovers the project structure and searches for the
-# voicegroup in individual files (sound/voicegroups/<name>.inc) and
-# monolithic files (sound/voice_groups.inc with <name>:: labels).
+# The loader reads voicegroups from sound/voice_groups.inc with <name>:: labels.
 # Examples: petalburg, littleroot_town, voicegroup000, prologue
 voicegroup=petalburg
 
@@ -31,14 +29,6 @@ song_master_volume=127
 # Maximum number of simultaneous PCM (DirectSound) channels (1-12).
 # Default: 5 (matches Pokemon Emerald's engine configuration).
 #max_channels=5
-
-# Additional .inc files for sample symbol definitions (semicolon-separated, relative to project_root).
-# Normally auto-discovered from sound/direct_sound_data.inc.
-#sound_data_paths=
-
-# Additional voicegroup search directories or files (semicolon-separated, relative to project_root).
-# Normally auto-discovered under sound/. Use this for custom locations outside the standard structure.
-#voicegroup_paths=sound/eventide_music/voice_groups
 
 # Optional: diagnostic log file path. Uncomment to enable GUI debug logging.
 # Useful for diagnosing GUI problems (e.g. why the GUI window doesn't appear).

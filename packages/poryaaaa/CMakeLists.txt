@@ -79,6 +79,22 @@ set(PORYAAAA_MONOREPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(PORYAAAA_THIRD_PARTY_DIR "${PORYAAAA_MONOREPO_ROOT}/third_party")
 set(PORYAAAA_SHARED_GUI_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/gui/pugl")
 set(PORYAAAA_FILEBROWSER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui-filebrowser")
+set(PORYAAAA_VOICEGROUP_CORE_DIR "${PORYAAAA_MONOREPO_ROOT}/packages/voicegroup-core")
+set(PORYAAAA_VOICEGROUP_CORE_STATICLIB "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/release/libvoicegroup_core.a")
+if(APPLE)
+    set(PORYAAAA_VOICEGROUP_CORE_RUST_TARGET "aarch64-apple-darwin")
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+        set(PORYAAAA_VOICEGROUP_CORE_RUST_TARGET "x86_64-apple-darwin")
+    endif()
+    set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
+        "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/${PORYAAAA_VOICEGROUP_CORE_RUST_TARGET}/release/libvoicegroup_core.a")
+endif()
+if(EXISTS "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+    add_library(voicegroup_core_static STATIC IMPORTED GLOBAL)
+    set_target_properties(voicegroup_core_static PROPERTIES
+        IMPORTED_LOCATION "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+endif()
+
 
 # ---- CLAP SDK ----
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -192,6 +208,7 @@ target_include_directories(poryaaaa PRIVATE
     ${IMGUI_DIR}/backends
     ${PUGL_DIR}/include
     ${PUGL_DIR}/src
+    "${PORYAAAA_VOICEGROUP_CORE_DIR}/include"
 )
 target_include_directories(poryaaaa SYSTEM PRIVATE
     ${PORYAAAA_FILEBROWSER_DIR}
@@ -217,6 +234,10 @@ set_target_properties(poryaaaa PROPERTIES
 )
 
 target_link_libraries(poryaaaa PRIVATE clap voicegroup_loader recorder)
+if(TARGET voicegroup_core_static)
+    target_link_libraries(poryaaaa PRIVATE voicegroup_core_static)
+endif()
+
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(poryaaaa PRIVATE m X11 Xcursor Xrandr Xext)
@@ -308,7 +329,7 @@ endif()
 # ---- Node N-API voicegroup parser ----
 find_path(NODE_API_INCLUDE_DIR node_api.h
     HINTS /usr/local/include/node /opt/homebrew/include/node)
-if(NODE_API_INCLUDE_DIR)
+if(NODE_API_INCLUDE_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/napi/poryaaaa_voicegroup_napi.c")
     add_library(poryaaaa_napi MODULE
         napi/poryaaaa_voicegroup_napi.c
     )
@@ -330,12 +351,18 @@ if(NODE_API_INCLUDE_DIR)
 endif()
 
 # ---- Unit Tests ----
+set(PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES)
+if(TARGET voicegroup_core_static)
+    set(PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES test/test_voicegroup_core_parity.c)
+endif()
+
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
+    ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}
     plugin/m4a_engine_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     ${ENGINE_SOURCES}
@@ -352,6 +379,11 @@ target_include_directories(poryaaaa_unit_tests PRIVATE
 )
 
 target_link_libraries(poryaaaa_unit_tests PRIVATE voicegroup_loader recorder)
+if(TARGET voicegroup_core_static)
+    target_compile_definitions(poryaaaa_unit_tests PRIVATE PORYAAAA_HAS_VOICEGROUP_CORE_PARITY=1)
+    target_include_directories(poryaaaa_unit_tests PRIVATE "${PORYAAAA_VOICEGROUP_CORE_DIR}/include")
+    target_link_libraries(poryaaaa_unit_tests PRIVATE voicegroup_core_static)
+endif()
 if(NOT MSVC)
     target_link_libraries(poryaaaa_unit_tests PRIVATE m)
 endif()

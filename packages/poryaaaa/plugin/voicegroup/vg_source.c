@@ -1,83 +1,10 @@
 #include "vg_source.h"
 
-#include "vg_paths.h"
 #include "vg_voice_macro.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
-
-static int dir_last_component_is(const char* dirPath, const char* name)
-{
-    size_t dlen = strlen(dirPath);
-    size_t nlen = strlen(name);
-    if (nlen > dlen)
-        return 0;
-    const char* tail = dirPath + dlen - nlen;
-    if (strcmp(tail, name) != 0)
-        return 0;
-    if (tail == dirPath)
-        return 1;
-    char prev = *(tail - 1);
-    return prev == '/' || prev == '\\';
-}
-
-static int set_if_exists(const char* path, VoicegroupSourceLocation* out)
-{
-    if (!vg_file_exists(path))
-        return 0;
-    strncpy(out->filePath, path, VG_MAX_PATH_LEN - 1);
-    out->found = 1;
-    return 1;
-}
-
-static int try_file_in_dir(const char* dir, const char* name, VoicegroupSourceLocation* out)
-{
-    char path[VG_MAX_PATH_LEN];
-    snprintf(path, sizeof(path), "%s%c%s.inc", dir, VG_PATH_SEP, name);
-    if (set_if_exists(path, out))
-        return 1;
-    snprintf(path, sizeof(path), "%s%c%s.s", dir, VG_PATH_SEP, name);
-    return set_if_exists(path, out);
-}
-
-static int try_file_in_subdir(const char* dir, const char* subdir, const char* name, VoicegroupSourceLocation* out)
-{
-    char path[VG_MAX_PATH_LEN];
-    snprintf(path, sizeof(path), "%s%c%s%c%s.inc", dir, VG_PATH_SEP, subdir, VG_PATH_SEP, name);
-    if (set_if_exists(path, out))
-        return 1;
-    snprintf(path, sizeof(path), "%s%c%s%c%s.s", dir, VG_PATH_SEP, subdir, VG_PATH_SEP, name);
-    return set_if_exists(path, out);
-}
-
-static int try_suffix_convention(const char* vgName,
-                                 const char* suffix,
-                                 const char* subdir,
-                                 const ProjectDiscovery* disc,
-                                 VoicegroupSourceLocation* out)
-{
-    const char* found = strstr(vgName, suffix);
-    if (!found)
-        return 0;
-
-    char baseName[VG_MAX_SYMBOL_LEN];
-    int baseLen = (int)(found - vgName);
-    if (baseLen <= 0 || baseLen >= VG_MAX_SYMBOL_LEN)
-        return 0;
-    memcpy(baseName, vgName, baseLen);
-    baseName[baseLen] = '\0';
-
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_subdir(disc->voicegroupDirs.paths[i], subdir, baseName, out))
-            return 1;
-
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (dir_last_component_is(disc->voicegroupDirs.paths[i], subdir) &&
-            try_file_in_dir(disc->voicegroupDirs.paths[i], baseName, out))
-            return 1;
-    return 0;
-}
 
 static int find_in_combined_files(const char* vgName, const ProjectDiscovery* disc, VoicegroupSourceLocation* out)
 {
@@ -111,20 +38,6 @@ VoicegroupSourceLocation vg_find_voicegroup_source(const char* vgName, const Pro
 {
     VoicegroupSourceLocation loc;
     memset(&loc, 0, sizeof(loc));
-
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_dir(disc->voicegroupDirs.paths[i], vgName, &loc))
-            return loc;
-    if (try_suffix_convention(vgName, "_keysplit", "keysplits", disc, &loc))
-        return loc;
-    if (try_suffix_convention(vgName, "_drumset", "drumsets", disc, &loc))
-        return loc;
-
-    char vgPrefixed[VG_MAX_SYMBOL_LEN];
-    snprintf(vgPrefixed, sizeof(vgPrefixed), "vg_%s", vgName);
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-        if (try_file_in_dir(disc->voicegroupDirs.paths[i], vgPrefixed, &loc))
-            return loc;
 
     find_in_combined_files(vgName, disc, &loc);
     return loc;

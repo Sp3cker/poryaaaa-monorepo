@@ -207,10 +207,7 @@ void voicegroup_project_state_free(VoicegroupProjectState* state)
     memset(state, 0, sizeof(*state));
 }
 
-bool voicegroup_project_state_collect(const char* projectRoot,
-                                      const char* voicegroupName,
-                                      const VoicegroupLoaderConfig* config,
-                                      VoicegroupProjectState* out)
+bool voicegroup_project_state_collect(const char* projectRoot, const char* voicegroupName, VoicegroupProjectState* out)
 {
     if (!projectRoot || !voicegroupName || !out)
         return false;
@@ -219,7 +216,7 @@ bool voicegroup_project_state_collect(const char* projectRoot,
     ProjectDiscovery* disc = calloc(1, sizeof(*disc));
     if (!disc)
         return false;
-    vg_discover_project(projectRoot, config, disc);
+    vg_discover_project(projectRoot, disc);
 
     SymbolMap dsMap, pwMap;
     vg_symbol_map_init(&dsMap);

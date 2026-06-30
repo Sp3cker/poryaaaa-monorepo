@@ -137,16 +137,13 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
 
     const char* root = "poryaaaa_state_project";
     const char* soundDir = "poryaaaa_state_project/sound";
-    const char* voicegroupDir = "poryaaaa_state_project/sound/voicegroups";
     const char* dataPath = "poryaaaa_state_project/sound/direct_sound_data.inc";
-    const char* mainPath = "poryaaaa_state_project/sound/voicegroups/main.inc";
-    const char* drumPath = "poryaaaa_state_project/sound/voicegroups/drumset.inc";
+    const char* voiceGroupsPath = "poryaaaa_state_project/sound/voice_groups.inc";
     const char* statePath = test_state_path();
     char output[8192];
 
     make_dir(root);
     make_dir(soundDir);
-    make_dir(voicegroupDir);
 
     ASSERT(write_text_file(dataPath,
                            "DirectSoundWaveData_Kick::\n"
@@ -154,15 +151,18 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
                            "DirectSoundWaveData_Snare::\n"
                            "\t.incbin \"sound/direct_sound/snare.bin\"\n"),
            "direct sound data source writes");
-    ASSERT(write_text_file(mainPath, "\tvoice_keysplit_all voicegroup_drumset @ Drums\n"), "main voicegroup writes");
-    ASSERT(write_text_file(drumPath,
+    ASSERT(write_text_file(voiceGroupsPath,
+                           "main::\n"
+                           "\tvoice_keysplit_all voicegroup_drumset @ Drums\n"
+                           "\n"
+                           "drumset::\n"
                            "\tvoice_group drumset, 36\n"
                            "\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 1, 2, 3, 4\n"
                            "\tvoice_directsound 62, 0, DirectSoundWaveData_Snare, 1, 2, 3, 4\n"),
-           "drumset voicegroup writes");
+           "voice_groups source writes");
 
     VoicegroupProjectState state;
-    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "project state collection succeeds");
+    ASSERT(voicegroup_project_state_collect(root, "main", &state), "project state collection succeeds");
 
 #ifdef _WIN32
     set_test_env("APPDATA", "poryaaaa_state_test_home");
@@ -184,9 +184,70 @@ static void test_voicegroup_project_state_writes_drumset_without_loading_samples
     voicegroup_project_state_free(&state);
     remove(statePath);
     cleanup_test_state_home();
-    remove(drumPath);
-    remove(mainPath);
+    remove(voiceGroupsPath);
     remove(dataPath);
+    remove_dir(soundDir);
+    remove_dir(root);
+}
+
+static void test_voicegroup_loader_reports_bad_project_root(void)
+{
+    printf("Testing voicegroup loader: missing project root reports path error...\n");
+
+    const char* root = "poryaaaa_missing_project_root";
+    LoadedVoiceGroup* vg = voicegroup_load(root, "petalburg");
+    ASSERT(vg == NULL, "missing project root load fails");
+    ASSERT(strncmp(voicegroup_loader_last_error(), "Bad project root:", strlen("Bad project root:")) == 0,
+           "missing project root error starts with project-root problem");
+    ASSERT(strstr(voicegroup_loader_last_error(), root) != NULL, "missing project root error includes root path");
+}
+
+static void test_voicegroup_loader_loads_included_voicegroup_files(void)
+{
+    printf("Testing voicegroup loader: included voicegroup files load through core...\n");
+
+    const char* root = "poryaaaa_included_voicegroup";
+    const char* soundDir = "poryaaaa_included_voicegroup/sound";
+    const char* voicegroupDir = "poryaaaa_included_voicegroup/sound/voicegroups";
+    const char* drumsetDir = "poryaaaa_included_voicegroup/sound/voicegroups/drumsets";
+    const char* voiceGroupsPath = "poryaaaa_included_voicegroup/sound/voice_groups.inc";
+    const char* mainPath = "poryaaaa_included_voicegroup/sound/voicegroups/petalburg.inc";
+    const char* drumsetPath = "poryaaaa_included_voicegroup/sound/voicegroups/drumsets/petalburg.inc";
+
+    make_dir(root);
+    make_dir(soundDir);
+    make_dir(voicegroupDir);
+    make_dir(drumsetDir);
+
+    ASSERT(write_text_file(voiceGroupsPath,
+                           ".include \"sound/voicegroups/petalburg.inc\"\n"
+                           ".include \"sound/voicegroups/drumsets/petalburg.inc\"\n"),
+           "voicegroup include table writes");
+    ASSERT(write_text_file(mainPath,
+                           "voice_group petalburg\n"
+                           "\tvoice_keysplit_all voicegroup_petalburg_drumset\n"),
+           "included petalburg voicegroup writes");
+    ASSERT(write_text_file(drumsetPath,
+                           "voice_group petalburg_drumset, 36\n"
+                           "\tvoice_square_2 60, 0, 2, 1, 2, 8, 3\n"),
+           "included drumset voicegroup writes");
+
+    LoadedVoiceGroup* vg = voicegroup_load(root, "petalburg");
+    ASSERT(vg != NULL, "included voicegroup loads");
+    if (vg)
+    {
+        ASSERT(vg->voices[0].type == VOICE_KEYSPLIT_ALL, "slot 0 is keysplit_all");
+        ASSERT(vg->voices[0].subGroup != NULL, "slot 0 owns loaded drumset subgroup");
+        ToneData* drumset = (ToneData*)vg->voices[0].subGroup;
+        ASSERT(drumset[35].type == 0, "drumset start slot leaves previous slot empty");
+        ASSERT(drumset[36].type == VOICE_SQUARE_2, "drumset start slot materializes square 2");
+        voicegroup_free(vg);
+    }
+
+    remove(drumsetPath);
+    remove(mainPath);
+    remove(voiceGroupsPath);
+    remove_dir(drumsetDir);
     remove_dir(voicegroupDir);
     remove_dir(soundDir);
     remove_dir(root);
@@ -198,22 +259,22 @@ static void test_voicegroup_loader_rejects_bad_voice_macro(void)
 
     const char* root = "poryaaaa_state_bad_macro";
     const char* soundDir = "poryaaaa_state_bad_macro/sound";
-    const char* voicegroupDir = "poryaaaa_state_bad_macro/sound/voicegroups";
-    const char* mainPath = "poryaaaa_state_bad_macro/sound/voicegroups/main.inc";
+    const char* voiceGroupsPath = "poryaaaa_state_bad_macro/sound/voice_groups.inc";
 
     make_dir(root);
     make_dir(soundDir);
-    make_dir(voicegroupDir);
 
-    ASSERT(write_text_file(mainPath, "\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"), "bad voicegroup writes");
+    ASSERT(write_text_file(voiceGroupsPath, "main::\n\tvoice_directsounnd 60, 0, Typo, 1, 2, 3, 4\n"),
+           "bad voicegroup writes");
 
-    LoadedVoiceGroup* vg = voicegroup_load(root, "main", NULL);
+    LoadedVoiceGroup* vg = voicegroup_load(root, "main");
     ASSERT(vg == NULL, "bad voicegroup load fails");
-    ASSERT(strstr(voicegroup_loader_last_error(), "malformed voice macro") != NULL, "bad voicegroup load stores error");
-    ASSERT(strstr(voicegroup_loader_last_error(), "voice_directsounnd") != NULL, "bad voicegroup load stores bad line");
+    ASSERT(strstr(voicegroup_loader_last_error(), "voice macro is not defined") != NULL,
+           "bad voicegroup load stores core macro diagnostic");
+    ASSERT(strstr(voicegroup_loader_last_error(), "macro catalog") != NULL,
+           "bad voicegroup load reports catalog failure");
 
-    remove(mainPath);
-    remove_dir(voicegroupDir);
+    remove(voiceGroupsPath);
     remove_dir(soundDir);
     remove_dir(root);
 }
@@ -226,9 +287,8 @@ static void test_voicegroup_preserves_directsound_variant_type_codes(void)
     const char* soundDir = "poryaaaa_ds_variant_state/sound";
     const char* sampleDir = "poryaaaa_ds_variant_state/sound/direct_sound";
     const char* samplePath = "poryaaaa_ds_variant_state/sound/direct_sound/shared.bin";
-    const char* voicegroupDir = "poryaaaa_ds_variant_state/sound/voicegroups";
     const char* dataPath = "poryaaaa_ds_variant_state/sound/direct_sound_data.inc";
-    const char* mainPath = "poryaaaa_ds_variant_state/sound/voicegroups/main.inc";
+    const char* voiceGroupsPath = "poryaaaa_ds_variant_state/sound/voice_groups.inc";
     const unsigned char sample[] = {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 16, 32, 48,
     };
@@ -236,20 +296,20 @@ static void test_voicegroup_preserves_directsound_variant_type_codes(void)
     make_dir(root);
     make_dir(soundDir);
     make_dir(sampleDir);
-    make_dir(voicegroupDir);
 
     ASSERT(write_bytes(samplePath, sample, sizeof(sample)), "directsound sample writes");
     ASSERT(write_text_file(dataPath,
                            "SharedSample::\n"
                            "\t.incbin \"sound/direct_sound/shared.bin\"\n"),
            "directsound data source writes");
-    ASSERT(write_text_file(mainPath,
+    ASSERT(write_text_file(voiceGroupsPath,
+                           "main::\n"
                            "\tvoice_directsound 60, 0, SharedSample, 1, 2, 3, 4\n"
                            "\tvoice_directsound_alt 60, 0, SharedSample, 1, 2, 3, 4\n"
                            "\tvoice_directsound_no_resample 60, 0, SharedSample, 1, 2, 3, 4\n"),
            "directsound variant voicegroup writes");
 
-    LoadedVoiceGroup* vg = voicegroup_load(root, "main", NULL);
+    LoadedVoiceGroup* vg = voicegroup_load(root, "main");
     ASSERT(vg != NULL, "directsound variant voicegroup loads");
     if (vg)
     {
@@ -260,7 +320,7 @@ static void test_voicegroup_preserves_directsound_variant_type_codes(void)
     }
 
     VoicegroupProjectState state;
-    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "directsound variant state collects");
+    ASSERT(voicegroup_project_state_collect(root, "main", &state), "directsound variant state collects");
     ASSERT(state.slots[0].typeCode == VOICE_DIRECTSOUND, "state keeps normal directsound type");
     ASSERT(state.slots[1].typeCode == VOICE_DIRECTSOUND_ALT, "state keeps alt directsound type");
     ASSERT(state.slots[2].typeCode == VOICE_DIRECTSOUND_NO_RESAMPLE, "state keeps no-resample directsound type");
@@ -269,10 +329,9 @@ static void test_voicegroup_preserves_directsound_variant_type_codes(void)
     ASSERT(strcmp(state.slots[2].name, "shared.bin") == 0, "no-resample directsound uses shared sample name");
 
     voicegroup_project_state_free(&state);
-    remove(mainPath);
+    remove(voiceGroupsPath);
     remove(dataPath);
     remove(samplePath);
-    remove_dir(voicegroupDir);
     remove_dir(sampleDir);
     remove_dir(soundDir);
     remove_dir(root);
@@ -284,20 +343,18 @@ static void test_voicegroup_project_state_rejects_missing_drumset(void)
 
     const char* root = "poryaaaa_state_missing_drumset";
     const char* soundDir = "poryaaaa_state_missing_drumset/sound";
-    const char* voicegroupDir = "poryaaaa_state_missing_drumset/sound/voicegroups";
-    const char* mainPath = "poryaaaa_state_missing_drumset/sound/voicegroups/main.inc";
+    const char* voiceGroupsPath = "poryaaaa_state_missing_drumset/sound/voice_groups.inc";
 
     make_dir(root);
     make_dir(soundDir);
-    make_dir(voicegroupDir);
 
-    ASSERT(write_text_file(mainPath, "\tvoice_keysplit_all voicegroup_missing @ Missing\n"), "main voicegroup writes");
+    ASSERT(write_text_file(voiceGroupsPath, "main::\n\tvoice_keysplit_all voicegroup_missing @ Missing\n"),
+           "main voicegroup writes");
 
     VoicegroupProjectState state;
-    ASSERT(!voicegroup_project_state_collect(root, "main", NULL, &state), "missing drumset collection fails");
+    ASSERT(!voicegroup_project_state_collect(root, "main", &state), "missing drumset collection fails");
 
-    remove(mainPath);
-    remove_dir(voicegroupDir);
+    remove(voiceGroupsPath);
     remove_dir(soundDir);
     remove_dir(root);
 }
@@ -308,28 +365,26 @@ static void test_voicegroup_project_state_marks_defined_source_slots(void)
 
     const char* root = "poryaaaa_state_defined_slots";
     const char* soundDir = "poryaaaa_state_defined_slots/sound";
-    const char* voicegroupDir = "poryaaaa_state_defined_slots/sound/voicegroups";
-    const char* mainPath = "poryaaaa_state_defined_slots/sound/voicegroups/main.inc";
+    const char* voiceGroupsPath = "poryaaaa_state_defined_slots/sound/voice_groups.inc";
 
     make_dir(root);
     make_dir(soundDir);
-    make_dir(voicegroupDir);
 
-    ASSERT(write_text_file(mainPath,
+    ASSERT(write_text_file(voiceGroupsPath,
+                           "main::\n"
                            "\tvoice_group main, 4\n"
                            "\tvoice_directsound 60, 0, MissingFromMap, 1, 2, 3, 4\n"),
            "offset voicegroup writes");
 
     VoicegroupProjectState state;
-    ASSERT(voicegroup_project_state_collect(root, "main", NULL, &state), "defined slot collection succeeds");
+    ASSERT(voicegroup_project_state_collect(root, "main", &state), "defined slot collection succeeds");
     ASSERT(!state.slots[0].defined, "empty source slot is not defined");
     ASSERT(state.slots[4].defined, "source slot with voice macro is defined");
     ASSERT(state.slots[4].typeCode == VOICE_DIRECTSOUND, "defined slot forwards type code");
     ASSERT(strcmp(state.slots[4].name, "MissingFromMap") == 0, "missing map falls back to raw symbol label");
 
     voicegroup_project_state_free(&state);
-    remove(mainPath);
-    remove_dir(voicegroupDir);
+    remove(voiceGroupsPath);
     remove_dir(soundDir);
     remove_dir(root);
 }
@@ -338,11 +393,20 @@ static void test_voicegroup_symbol_map_growth(void)
 {
     printf("Testing voicegroup loader: symbol map growth...\n");
 
-    const char* path = "poryaaaa_voicegroup_symbols_test.inc";
+    const char* root = "poryaaaa_voicegroup_symbols_project";
+    const char* soundDir = "poryaaaa_voicegroup_symbols_project/sound";
+    const char* path = "poryaaaa_voicegroup_symbols_project/sound/direct_sound_data.inc";
+    make_dir(root);
+    make_dir(soundDir);
+
     FILE* f = fopen(path, "w");
     ASSERT(f != NULL, "temporary symbol file opens for writing");
     if (!f)
+    {
+        remove_dir(soundDir);
+        remove_dir(root);
         return;
+    }
 
     for (int i = 0; i < 70; i++)
     {
@@ -351,15 +415,12 @@ static void test_voicegroup_symbol_map_growth(void)
     }
     fclose(f);
 
-    VoicegroupLoaderConfig cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.soundDataPaths[0], sizeof(cfg.soundDataPaths[0]), "%s", path);
-    cfg.soundDataPathCount = 1;
-
     VoicegroupProjectAssets assets;
     memset(&assets, 0, sizeof(assets));
-    bool ok = voicegroup_loader_collect_project_assets(".", &cfg, &assets);
+    bool ok = voicegroup_loader_collect_project_assets(root, &assets);
     remove(path);
+    remove_dir(soundDir);
+    remove_dir(root);
 
     ASSERT(ok, "project asset collection succeeds");
     ASSERT_EQ(assets.directsoundCount, 70, "all grown symbol-map entries collected");
@@ -420,6 +481,8 @@ void test_voicegroup_loader_run_all(void)
     test_voicegroup_project_state_default_path();
     test_voicegroup_project_state_writes_drumset_without_loading_samples();
     test_voicegroup_loader_rejects_bad_voice_macro();
+    test_voicegroup_loader_reports_bad_project_root();
+    test_voicegroup_loader_loads_included_voicegroup_files();
     test_voicegroup_preserves_directsound_variant_type_codes();
     test_voicegroup_project_state_rejects_missing_drumset();
     test_voicegroup_project_state_marks_defined_source_slots();

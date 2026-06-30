@@ -191,6 +191,33 @@ test("buildSmf replays last PC at loop start when loop is on", () => {
     }
 });
 
+test("buildSmf collapses redundant pitch bend events before writing", () => {
+    const events: MidiEvent[] = [
+        { beats: 0.0, status: 0xE0, d1: 0, d2: 64 },
+        { beats: 0.0, status: 0xE0, d1: 0, d2: 96 }, // same tick: last value wins
+        { beats: 0.5, status: 0xE0, d1: 0, d2: 96 }, // same exported M4A bend value
+        { beats: 1.0, status: 0xE0, d1: 0, d2: 104 },
+        { beats: 1.5, status: 0xE0, d1: 0, d2: 104 }, // same exported M4A bend value
+        { beats: 2.0, status: 0xE0, d1: 0, d2: 96 },
+    ];
+    const bytes = buildSmf({
+        events,
+        tempo: 120,
+        loop: { on: false, start: 0, length: 0 },
+        timeSig: { num: 4, den: 4 },
+        voicemap: new Map(),
+    });
+
+    const parsed = parseSmfEvents(bytes);
+    const bends = filterByStatusNibble(parsed, 0xE0);
+    assert.equal(bends.length, 3);
+    assert.deepEqual(
+        bends.map((p) => Math.round(((p.d2 << 7) | p.d1) / 128)),
+        [96, 104, 96],
+        "same-tick bend values collapse to the last value; later duplicate exported values are skipped",
+    );
+});
+
 test("buildSmf converts beats to ticks at the Live import PPQ", () => {
     assert.equal(PPQ, 96);
     // One beat = 96 ticks, one bar (4/4) = 384.

@@ -229,7 +229,7 @@ fn analyzer_validates_integer_arguments_and_ranges() {
     let source = "\
 voice_group broken
 \tvoice_directsound nope, 0, DirectSoundWaveData_Brass1, 1, 2, 3, 4
-\tvoice_square_1 60, 0, 0, 9, 1, 2, 8, 3
+\tvoice_square_1 128, 0, 0, 9, 1, 2, 8, 3
 ";
 
     let document = parse_document(source);
@@ -247,7 +247,7 @@ voice_group broken
     );
     assert_eq!(
         diagnostics[1].range,
-        document.voice_groups[0].programs[1].arguments[3].range
+        document.voice_groups[0].programs[1].arguments[0].range
     );
 }
 
@@ -405,10 +405,6 @@ voice_group route104
 const MIDI_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const PAN_RANGE: NumericRange = NumericRange { min: 0, max: 127 };
 const BYTE_RANGE: NumericRange = NumericRange { min: 0, max: 255 };
-const DUTY_RANGE: NumericRange = NumericRange { min: 0, max: 3 };
-const ENVELOPE_NIBBLE_RANGE: NumericRange = NumericRange { min: 0, max: 7 };
-const SUSTAIN_RANGE: NumericRange = NumericRange { min: 0, max: 15 };
-const NOISE_PERIOD_RANGE: NumericRange = NumericRange { min: 0, max: 1 };
 
 const DIRECT_SOUND_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
@@ -426,37 +422,21 @@ const SQUARE_1_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
     ArgumentSchema::Integer { range: BYTE_RANGE },
-    ArgumentSchema::Integer { range: DUTY_RANGE },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: SUSTAIN_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
 ];
 
 const SQUARE_2_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
-    ArgumentSchema::Integer { range: DUTY_RANGE },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: SUSTAIN_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
 ];
 
 const PROGRAMMABLE_WAVE_ARGUMENTS: &[ArgumentSchema] = &[
@@ -465,38 +445,20 @@ const PROGRAMMABLE_WAVE_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Symbol {
         namespace: SymbolNamespace::ProgrammableWave,
     },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: SUSTAIN_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
 ];
 
 const NOISE_ARGUMENTS: &[ArgumentSchema] = &[
     ArgumentSchema::Integer { range: MIDI_RANGE },
     ArgumentSchema::Integer { range: PAN_RANGE },
-    ArgumentSchema::Integer {
-        range: NOISE_PERIOD_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: SUSTAIN_RANGE,
-    },
-    ArgumentSchema::Integer {
-        range: ENVELOPE_NIBBLE_RANGE,
-    },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
+    ArgumentSchema::Integer { range: BYTE_RANGE },
 ];
 
 const KEYSPLIT_ALL_ARGUMENTS: &[ArgumentSchema] = &[ArgumentSchema::Symbol {

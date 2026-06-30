@@ -14,6 +14,8 @@ pub struct AnalysisContext {
 }
 
 impl AnalysisContext {
+    /// Builds the project-level symbol table the analyzer needs to validate
+    /// references without making the parser depend on filesystem discovery.
     pub fn with_symbols<I, S>(mut self, namespace: SymbolNamespace, symbols: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -26,6 +28,8 @@ impl AnalysisContext {
         self
     }
 
+    /// Keeps symbol lookup behind the context so callers cannot depend on the
+    /// map shape or accidentally duplicate namespace logic.
     fn has_symbol(&self, namespace: SymbolNamespace, symbol: &str) -> bool {
         self.symbols
             .get(&namespace)
@@ -40,12 +44,16 @@ enum VoiceGroupSymbolStatus {
     Unknown,
 }
 
+/// Preserves parser diagnostics and appends semantic diagnostics, so callers get
+/// one ordered report without re-running either layer themselves.
 pub fn analyze_document(document: &ParsedDocument, context: &AnalysisContext) -> Vec<Diagnostic> {
     let mut diagnostics = document.diagnostics.clone();
     diagnostics.extend(analyze_semantics(document, context));
     diagnostics
 }
 
+/// Checks meaning that requires the parsed document plus project context:
+/// duplicate banks/slots, known macros, argument shapes, and symbol references.
 pub fn analyze_semantics(document: &ParsedDocument, context: &AnalysisContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let local_voice_groups = local_voice_group_symbols(document);
@@ -86,6 +94,8 @@ pub fn analyze_semantics(document: &ParsedDocument, context: &AnalysisContext) -
     diagnostics
 }
 
+/// Counts local voice_group declarations so child references can prefer the
+/// current document while still reporting ambiguous duplicate local names.
 fn local_voice_group_symbols(document: &ParsedDocument) -> BTreeMap<String, usize> {
     let mut symbols = BTreeMap::new();
     for voice_group in &document.voice_groups {
@@ -94,6 +104,8 @@ fn local_voice_group_symbols(document: &ParsedDocument) -> BTreeMap<String, usiz
     symbols
 }
 
+/// Validates bank placement before materialization, catching impossible slots
+/// and duplicate slot writes while the source range is still available.
 fn analyze_voice_group_slots(
     voice_group: &ParsedVoiceGroup,
     group_slots: &mut BTreeMap<String, [bool; 128]>,
@@ -125,6 +137,8 @@ fn analyze_voice_group_slots(
     }
 }
 
+/// Uses the macro catalog as the contract for each parsed program, keeping
+/// grammar parsing separate from poryaaaa-specific macro semantics.
 fn analyze_program_arguments(
     program: &ParsedProgram,
     definition: &MacroDefinition,
@@ -146,6 +160,8 @@ fn analyze_program_arguments(
     }
 }
 
+/// Dispatches one parsed argument to the validator required by its catalog
+/// schema, so integer and symbol rules stay explicit and easy to audit.
 fn analyze_argument(
     argument: &ParsedArgument,
     schema: &MacroArgument,
@@ -169,6 +185,8 @@ fn analyze_argument(
     }
 }
 
+/// Rejects non-numeric values and values outside the macro catalog range before
+/// later layers coerce them into byte-sized poryaaaa program data.
 fn analyze_integer_argument(
     argument: &ParsedArgument,
     valid_range: crate::catalog::NumericRange,
@@ -192,6 +210,8 @@ fn analyze_integer_argument(
     }
 }
 
+/// Validates symbol references against the project context, with a special path
+/// for sub-voicegroups because local duplicates need an ambiguity diagnostic.
 fn analyze_symbol_argument(
     argument: &ParsedArgument,
     namespace: SymbolNamespace,
@@ -225,17 +245,34 @@ fn analyze_symbol_argument(
     }
 }
 
+/// Resolves a sub-voicegroup reference the same way poryaaaa's C loader does:
+/// exact local/context match first, then the `voicegroup_` prefix fallback.
 fn voice_group_symbol_status(
     symbol: &str,
     context: &AnalysisContext,
     local_voice_groups: &BTreeMap<String, usize>,
 ) -> VoiceGroupSymbolStatus {
+    let resolved_symbol = symbol.strip_prefix("voicegroup_").unwrap_or(symbol);
     match local_voice_groups.get(symbol).copied().unwrap_or_default() {
         0 => {
             if context.has_symbol(SymbolNamespace::VoiceGroup, symbol) {
                 VoiceGroupSymbolStatus::Known
             } else {
-                VoiceGroupSymbolStatus::Unknown
+                match local_voice_groups
+                    .get(resolved_symbol)
+                    .copied()
+                    .unwrap_or_default()
+                {
+                    0 => {
+                        if context.has_symbol(SymbolNamespace::VoiceGroup, resolved_symbol) {
+                            VoiceGroupSymbolStatus::Known
+                        } else {
+                            VoiceGroupSymbolStatus::Unknown
+                        }
+                    }
+                    1 => VoiceGroupSymbolStatus::Known,
+                    _ => VoiceGroupSymbolStatus::Ambiguous,
+                }
             }
         }
         1 => VoiceGroupSymbolStatus::Known,
@@ -243,6 +280,8 @@ fn voice_group_symbol_status(
     }
 }
 
+/// Gives each symbol namespace a stable diagnostic code for editor and test
+/// consumers instead of forcing them to parse human-readable messages.
 fn unknown_symbol_code(namespace: SymbolNamespace) -> &'static str {
     match namespace {
         SymbolNamespace::DirectSound => "unknown-directsound-symbol",
@@ -252,6 +291,8 @@ fn unknown_symbol_code(namespace: SymbolNamespace) -> &'static str {
     }
 }
 
+/// Centralizes diagnostic construction so every analyzer error uses the same
+/// severity and string ownership shape.
 fn error(range: SourceRange, code: &str, message: &str) -> Diagnostic {
     Diagnostic {
         range,

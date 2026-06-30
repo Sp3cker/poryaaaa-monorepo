@@ -478,7 +478,7 @@ type PendingDescriptor =
                          synthetic?: boolean }
     | { kind: "pc";      channel: number; program: number;                 tick: number; insOrder: number;
                          synthetic?: boolean; clamped?: boolean }
-    | { kind: "bend";    channel: number; bend: number;                    tick: number; insOrder: number };
+    | { kind: "bend";    channel: number; bend: number; bendMsb: number;   tick: number; insOrder: number };
 
 const XCMD_SELECTOR_CC = 0x1E;
 const XCMD_VALUE_CC = 0x1D;
@@ -595,12 +595,14 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
     const pending = new Map<number, PendingDescriptor[]>();
     const loopStartPcValue = new Map<number, number>();
     const loopStartCcValue = new Map<number, Map<number, number>>();
+    const startupCcValue = new Map<number, Map<number, number>>();
     const firstCapturedPcValue = new Map<number, number>();
     const openNotes = new Map<number, Set<number>>();   // ch -> open pitches
     let insCounter = 0;
     const loopStartTick = markerLoop.on
         ? Math.max(0, Math.round((markerLoop.start - anchor) * PPQ))
         : 0;
+    const loopStartResetWindowTicks = Math.max(1, Math.round(PPQ * timeSig.num * 4 / timeSig.den));
 
     function ensureChan(ch: number): PendingDescriptor[] {
         let arr = pending.get(ch);
@@ -612,6 +614,13 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
         if (cc !== VOLUME_CC && cc !== PAN_CC) return;
         let byCc = loopStartCcValue.get(ch);
         if (!byCc) { byCc = new Map(); loopStartCcValue.set(ch, byCc); }
+        byCc.set(cc, value);
+    }
+
+    function rememberStartupCc(ch: number, cc: number, value: number): void {
+        if (cc !== VOLUME_CC && cc !== PAN_CC) return;
+        let byCc = startupCcValue.get(ch);
+        if (!byCc) { byCc = new Map(); startupCcValue.set(ch, byCc); }
         byCc.set(cc, value);
     }
 
@@ -639,6 +648,7 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
                 kind: "cc", channel: ic.channel, cn: ic.cc, cv: ic.value,
                 tick: 0, insOrder: insCounter++,
             });
+            rememberStartupCc(ic.channel, ic.cc, ic.value);
             if (markerLoop.on) rememberLoopStartCc(ic.channel, ic.cc, ic.value);
         }
     }
@@ -705,6 +715,9 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
                     kind: "cc", channel: ch, cn: d1, cv: d2,
                     tick, insOrder: insCounter++,
                 });
+                if (tick === 0) {
+                    rememberStartupCc(ch, d1, d2);
+                }
                 if (markerLoop.on && tick <= loopStartTick) {
                     rememberLoopStartCc(ch, d1, d2);
                 }
@@ -729,7 +742,7 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
                 // midi-writer-js's PitchBendEvent expects a -1..1 bend.
                 const normalized = (value14 - 8192) / 8192;
                 ensureChan(ch).push({
-                    kind: "bend", channel: ch, bend: normalized,
+                    kind: "bend", channel: ch, bend: normalized, bendMsb: d2,
                     tick, insOrder: insCounter++,
                 });
                 break;
@@ -797,17 +810,22 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
         arr.sort((a, b) =>
             a.tick !== b.tick ? a.tick - b.tick : a.insOrder - b.insOrder);
 
-        // Pre-pass: mark same-tick CC entries that get overwritten by a later
-        // sibling on the same (controller, tick). User-visible symptom this
-        // fixes: ccomidi emits its Volume CC multiple times at clip-launch
-        // boundaries (64 default then 97 configured, repeating), all landing
-        // at the same tick post-rounding. The user wants the LAST emission
-        // (the configured value) to win. XCMD CCs are handled as ordered
-        // pairs first so the individual-CC pass cannot corrupt pair order.
+        // Pre-pass: mark same-tick state entries that get overwritten by a
+        // later sibling on the same logical key. User-visible symptoms this
+        // fixes:
+        //   - ccomidi emits Volume CC multiple times at clip-launch boundaries
+        //     (64 default then 97 configured, repeating), all landing at the
+        //     same tick post-rounding. The user wants the LAST emission.
+        //   - pitch bend automation can collapse thousands of source events
+        //     onto one 96 PPQ tick. Only the final channel bend state at that
+        //     tick can affect the exported SMF/M4A stream.
+        // XCMD CCs are handled as ordered pairs first so the individual-CC pass
+        // cannot corrupt pair order.
         const superseded = new Set<number>();
         markDuplicateXcmdPairs(arr, superseded);
         const lastIdxByCcAtTick = new Map<string, number>();
         const lastIdxByPcAtTick = new Map<number, number>();
+        const lastIdxByBendAtTick = new Map<number, number>();
         for (let i = 0; i < arr.length; i++) {
             const p = arr[i];
             if (superseded.has(i)) continue;
@@ -822,6 +840,11 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
                 const prev = lastIdxByCcAtTick.get(key);
                 if (prev !== undefined) superseded.add(prev);
                 lastIdxByCcAtTick.set(key, i);
+            }
+            if (p.kind === "bend") {
+                const prev = lastIdxByBendAtTick.get(p.tick);
+                if (prev !== undefined) superseded.add(prev);
+                lastIdxByBendAtTick.set(p.tick, i);
             }
         }
 
@@ -842,6 +865,10 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
         // tick-0 initialCcs also seed this map through normal event emission.
         // XCMD CCs are only deduped as ordered pairs in the same-tick pre-pass.
         const lastCcValue = new Map<number, number>();
+        // Per-channel last emitted pitch-bend MSB. mid2agb exports BEND from
+        // the second pitch-bend data byte (`data2 - 64`), so repeated MSBs are
+        // no-ops for the generated .s even when the raw 14-bit LSB jitters.
+        let lastBendMsb = -1;
         for (let i = 0; i < arr.length; i++) {
             const p = arr[i];
             if (superseded.has(i)) continue;
@@ -849,8 +876,19 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
                 continue;
             }
             if (p.kind === "cc" && !p.synthetic
+                && markerLoop.on
+                && (p.cn === VOLUME_CC || p.cn === PAN_CC)
+                && p.tick > loopStartTick
+                && p.tick < loopStartTick + loopStartResetWindowTicks
+                && startupCcValue.get(p.channel)?.get(p.cn) === p.cv) {
+                continue;
+            }
+            if (p.kind === "cc" && !p.synthetic
                 && p.cn !== XCMD_VALUE_CC && p.cn !== XCMD_SELECTOR_CC
                 && lastCcValue.get(p.cn) === p.cv) {
+                continue;
+            }
+            if (p.kind === "bend" && p.bendMsb === lastBendMsb) {
                 continue;
             }
             const delta = Math.max(0, p.tick - prevTick);
@@ -903,6 +941,7 @@ export function buildSmf(input: BuildSmfInput): Uint8Array {
             }
             if (p.kind === "pc" && !p.synthetic) lastCapturedProgram = p.program;
             if (p.kind === "cc") lastCcValue.set(p.cn, p.cv);
+            if (p.kind === "bend") lastBendMsb = p.bendMsb;
             prevTick = p.tick;
         }
         tracks.push(t);

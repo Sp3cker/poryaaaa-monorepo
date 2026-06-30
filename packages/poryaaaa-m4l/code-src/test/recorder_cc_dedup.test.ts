@@ -260,6 +260,31 @@ test("CC dedup — captured CC with DIFFERENT value than initialCcs still emits"
     assert.equal(ccs[1].cv, 80);
 });
 
+test("CC dedup — loop-start replay suppresses wrapped startup volume reset", () => {
+    const bytes = buildSmf({
+        events: [
+            { beats: 0,      status: 0xB3, d1: 0x07, d2: 14 },
+            { beats: 3,      status: 0xB3, d1: 0x07, d2: 62 },
+            { beats: 40.01,  status: 0xB3, d1: 0x07, d2: 14 },
+        ],
+        tempo: 120,
+        loop: { on: true, start: 38, length: 32 },
+        loopMarkers: { startBeats: 38, endBeats: 70 },
+        timeSig: { num: 4, den: 4 },
+        voicemap: new Map(),
+    });
+
+    const ccs = parseCcStream(bytes).filter((c) => c.channel === 3 && c.cn === 0x07);
+    assert.deepEqual(
+        ccs.map((c) => [c.tick, c.cv]),
+        [
+            [0, 14],
+            [3 * PPQ + 1, 62],
+            [38 * PPQ, 62],
+        ],
+    );
+});
+
 test("CC dedup — XCMD pair across ticks NOT collapsed by consecutive-value", () => {
     // Two identical XCMD pairs at different ticks should BOTH survive — the
     // exemption applies to consecutive-value too.

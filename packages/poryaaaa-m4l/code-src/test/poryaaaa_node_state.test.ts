@@ -52,7 +52,7 @@ function outputArgs(outputs: PoryaaaaVoicegroupOutput[]): unknown[][] {
   return outputs.map((out) => [out.tag, ...out.args]);
 }
 
-test("restore loads saved root/bank, validates bank, emits UI, voicegroup, and snapshot", () => {
+test("restore loads saved root/bank, validates bank, emits UI without setting bank symbol, voicegroup, and snapshot", () => {
   const h = harness({
     banks: { "/p": ["alpha", "beta"] },
     parses: { "/p/beta": ok() },
@@ -66,7 +66,6 @@ test("restore loads saved root/bank, validates bank, emits UI, voicegroup, and s
     ["bank", "clear"],
     ["bank", "append", "alpha"],
     ["bank", "append", "beta"],
-    ["bank", "setsymbol", "beta"],
     ["voicegroup", "/p", "beta"],
   ]);
   assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });

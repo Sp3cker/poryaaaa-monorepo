@@ -5,5 +5,7 @@ pub mod ast;
 pub mod c_api;
 pub mod catalog;
 pub mod parser;
+pub mod plugin_load;
 pub mod program_bank;
 pub mod project_index;
+mod projects_json;

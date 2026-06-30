@@ -3,21 +3,23 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
-use std::slice;
 
 use crate::ast::{Diagnostic, DiagnosticSeverity, SourcePosition, SourceRange};
 use crate::program_bank::{
     DirectSoundProgram, NoiseProgram, ProgramBank, ProgramData, ProgramRecord,
     ProgrammableWaveProgram, Square1Program, Square2Program,
 };
-use crate::project_index::{ProgramBankLoadResult, ProjectConfig, ProjectIndex};
+use crate::project_index::{ProgramBankLoadResult, ProjectIndex};
 
 pub struct VoicegroupCoreProjectIndex {
+    /// Owns discovered project symbols and file locations across C ABI calls.
     index: ProjectIndex,
 }
 
 pub struct VoicegroupCoreBankResult {
+    /// Holds the loaded bank when resolution succeeds so C callers can query slots.
     bank: Option<ProgramBank>,
+    /// Stores diagnostics beside the optional bank so failed loads remain inspectable.
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -28,26 +30,6 @@ pub enum VoicegroupCoreStatus {
     NullArgument = 1,
     InvalidUtf8 = 2,
     LoadFailed = 3,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VoicegroupCoreProjectConfig {
-    pub extra_sound_data_paths: *const *const c_char,
-    pub extra_sound_data_path_count: usize,
-    pub extra_voicegroup_paths: *const *const c_char,
-    pub extra_voicegroup_path_count: usize,
-}
-
-impl Default for VoicegroupCoreProjectConfig {
-    fn default() -> Self {
-        Self {
-            extra_sound_data_paths: ptr::null(),
-            extra_sound_data_path_count: 0,
-            extra_voicegroup_paths: ptr::null(),
-            extra_voicegroup_path_count: 0,
-        }
-    }
 }
 
 #[repr(C)]
@@ -74,31 +56,42 @@ pub enum VoicegroupCoreDiagnosticSeverity {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreSourcePosition {
+    /// One-based source line for diagnostics crossing the C ABI.
     pub line: usize,
+    /// One-based source column for diagnostics crossing the C ABI.
     pub column: usize,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreSourceRange {
+    /// First source position covered by a diagnostic.
     pub start: VoicegroupCoreSourcePosition,
+    /// Position immediately after the diagnostic span.
     pub end: VoicegroupCoreSourcePosition,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreDirectSoundProgram {
+    /// Base MIDI key used to pitch the DirectSound sample.
     pub key: u8,
+    /// C-compatible pan value copied from the voice macro.
     pub pan: u8,
+    /// Envelope attack byte used by the poryaaaa engine.
     pub attack: u8,
+    /// Envelope decay byte used by the poryaaaa engine.
     pub decay: u8,
+    /// Envelope sustain byte used by the poryaaaa engine.
     pub sustain: u8,
+    /// Envelope release byte used by the poryaaaa engine.
     pub release: u8,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreProgrammableWaveProgram {
+    /// Base MIDI key used to pitch the programmable-wave sample.
     pub key: u8,
     pub pan: u8,
     pub attack: u8,
@@ -110,43 +103,66 @@ pub struct VoicegroupCoreProgrammableWaveProgram {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreSquare1Program {
+    /// Base MIDI key used to pitch square channel 1.
     pub key: u8,
+    /// C-compatible pan value copied from the voice macro.
     pub pan: u8,
+    /// Sweep byte used by square channel 1.
     pub sweep: u8,
+    /// Masked duty value used by square channel 1.
     pub duty: u8,
+    /// Masked envelope attack value matching C loader materialization.
     pub attack: u8,
+    /// Masked envelope decay value matching C loader materialization.
     pub decay: u8,
+    /// Masked envelope sustain value matching C loader materialization.
     pub sustain: u8,
+    /// Masked envelope release value matching C loader materialization.
     pub release: u8,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreSquare2Program {
+    /// Base MIDI key used to pitch square channel 2.
     pub key: u8,
+    /// C-compatible pan value copied from the voice macro.
     pub pan: u8,
+    /// Masked duty value used by square channel 2.
     pub duty: u8,
+    /// Masked envelope attack value matching C loader materialization.
     pub attack: u8,
+    /// Masked envelope decay value matching C loader materialization.
     pub decay: u8,
+    /// Masked envelope sustain value matching C loader materialization.
     pub sustain: u8,
+    /// Masked envelope release value matching C loader materialization.
     pub release: u8,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoicegroupCoreNoiseProgram {
+    /// Base MIDI key retained for parity with the source macro.
     pub key: u8,
+    /// C-compatible pan value copied from the voice macro.
     pub pan: u8,
+    /// Masked noise period value used by the poryaaaa engine.
     pub period: u8,
+    /// Masked envelope attack value matching C loader materialization.
     pub attack: u8,
+    /// Masked envelope decay value matching C loader materialization.
     pub decay: u8,
+    /// Masked envelope sustain value matching C loader materialization.
     pub sustain: u8,
+    /// Masked envelope release value matching C loader materialization.
     pub release: u8,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoicegroupCoreKeysplitProgram {
+    /// Fully expanded 128-entry note-to-sub-voicegroup slot table.
     pub table: [u8; 128],
 }
 
@@ -160,11 +176,10 @@ impl Default for VoicegroupCoreKeysplitProgram {
 /// Loads a project index and writes an opaque handle to `out_index`.
 ///
 /// # Safety
-/// `project_root` must be a valid NUL-terminated UTF-8 string. `config` may be
-/// null or must point to a valid config. `out_index` must be writable.
+/// `project_root` must be a valid NUL-terminated UTF-8 string. `out_index` must
+/// be writable.
 pub unsafe extern "C" fn voicegroup_core_project_index_load(
     project_root: *const c_char,
-    config: *const VoicegroupCoreProjectConfig,
     out_index: *mut *mut VoicegroupCoreProjectIndex,
 ) -> VoicegroupCoreStatus {
     if out_index.is_null() {
@@ -179,11 +194,8 @@ pub unsafe extern "C" fn voicegroup_core_project_index_load(
     let Some(root) = read_c_string(project_root) else {
         return VoicegroupCoreStatus::InvalidUtf8;
     };
-    let Some(config) = read_project_config(config) else {
-        return VoicegroupCoreStatus::InvalidUtf8;
-    };
 
-    match ProjectIndex::load(root, config) {
+    match ProjectIndex::load(root) {
         Ok(index) => {
             *out_index = Box::into_raw(Box::new(VoicegroupCoreProjectIndex { index }));
             VoicegroupCoreStatus::Ok
@@ -412,12 +424,12 @@ pub unsafe extern "C" fn voicegroup_core_bank_result_program_relative_path(
 }
 
 #[no_mangle]
-/// Copies the child bank symbol for keysplit slots.
+/// Copies the sub-voicegroup symbol for keysplit slots.
 ///
 /// # Safety
 /// `result` must be a valid bank result handle. `buffer` may be null only when
 /// `buffer_len` is zero; otherwise it must be writable for `buffer_len` bytes.
-pub unsafe extern "C" fn voicegroup_core_bank_result_program_child_bank(
+pub unsafe extern "C" fn voicegroup_core_bank_result_program_sub_voicegroup(
     result: *const VoicegroupCoreBankResult,
     slot: usize,
     buffer: *mut c_char,
@@ -425,10 +437,10 @@ pub unsafe extern "C" fn voicegroup_core_bank_result_program_child_bank(
 ) -> usize {
     with_program_data(result, slot, |data| match data {
         ProgramData::Keysplit(program) => {
-            copy_string_to_buffer(&program.child_bank, buffer, buffer_len)
+            copy_string_to_buffer(&program.sub_voicegroup, buffer, buffer_len)
         }
         ProgramData::KeysplitAll(program) => {
-            copy_string_to_buffer(&program.child_bank, buffer, buffer_len)
+            copy_string_to_buffer(&program.sub_voicegroup, buffer, buffer_len)
         }
         _ => 0,
     })
@@ -570,44 +582,6 @@ fn read_c_string(pointer: *const c_char) -> Option<String> {
         .to_str()
         .ok()
         .map(ToOwned::to_owned)
-}
-
-fn read_project_config(config: *const VoicegroupCoreProjectConfig) -> Option<ProjectConfig> {
-    if config.is_null() {
-        return Some(ProjectConfig::default());
-    }
-
-    let config = unsafe { &*config };
-    Some(ProjectConfig {
-        extra_sound_data_paths: read_string_array(
-            config.extra_sound_data_paths,
-            config.extra_sound_data_path_count,
-        )?,
-        extra_voicegroup_paths: read_string_array(
-            config.extra_voicegroup_paths,
-            config.extra_voicegroup_path_count,
-        )?,
-    })
-}
-
-fn read_string_array(pointer: *const *const c_char, count: usize) -> Option<Vec<String>> {
-    if count == 0 {
-        return Some(Vec::new());
-    }
-    if pointer.is_null() {
-        return None;
-    }
-
-    unsafe { slice::from_raw_parts(pointer, count) }
-        .iter()
-        .map(|entry| {
-            if entry.is_null() {
-                None
-            } else {
-                read_c_string(*entry)
-            }
-        })
-        .collect()
 }
 
 fn copy_string_to_buffer(value: &str, buffer: *mut c_char, buffer_len: usize) -> usize {

@@ -15,22 +15,12 @@ typedef struct
     PathList directSoundDataFiles; /* direct_sound_data.inc */
     PathList progWaveDataFiles;    /* programmable_wave_data.inc */
     PathList keySplitTableFiles;   /* keysplit_tables.inc */
-    PathList voicegroupDirs;       /* dirs containing per-voicegroup .inc/.s */
-    PathList combinedVGFiles;      /* .inc files packing many voicegroups with <label>:: */
+    PathList combinedVGFiles;      /* sound/voice_groups.inc */
 } ProjectDiscovery;
 
 /*
- * Walk the project tree rooted at projectRoot and populate *out.
- *
- * Discovery order (later entries append to, don't overwrite, earlier ones):
- *   1. Paths named in cfg->{soundData,voicegroup}Paths (if any)
- *   2. Standard sound/direct_sound_data.inc etc.
- *   3. Standard sound/voicegroups/ (plus keysplits/ and drumsets/ subdirs)
- *   4. Recursive scan under sound/ (depth 3) for voicegroup dirs
- *   5. Standard sound/voice_groups.inc (combined)
- *
- * Zeros *out before populating. cfg may be NULL for pure auto-discovery.
+ * Populate standard project source files. Zeros *out before populating.
  */
-void vg_discover_project(const char* projectRoot, const VoicegroupLoaderConfig* cfg, ProjectDiscovery* out);
+void vg_discover_project(const char* projectRoot, ProjectDiscovery* out);
 
 #endif /* VG_DISCOVERY_H */

@@ -145,41 +145,6 @@ static void load_config_file(M4APluginData* data)
                 v = MAX_SONG_VOLUME;
             data->volume = (uint8_t)v;
         }
-        else if (strcmp(key, "sound_data_paths") == 0)
-        {
-            /* Semicolon-separated list of extra .inc files, relative to project_root */
-            char tmp[600];
-            strncpy(tmp, value, sizeof(tmp) - 1);
-            tmp[sizeof(tmp) - 1] = '\0';
-            char* tok = strtok(tmp, ";");
-            while (tok && data->loaderConfig.soundDataPathCount < 8)
-            {
-                while (*tok == ' ')
-                    tok++;
-                int idx = data->loaderConfig.soundDataPathCount++;
-                snprintf(
-                    data->loaderConfig.soundDataPaths[idx], sizeof(data->loaderConfig.soundDataPaths[idx]), "%s", tok);
-                tok = strtok(NULL, ";");
-            }
-        }
-        else if (strcmp(key, "voicegroup_paths") == 0)
-        {
-            char tmp[600];
-            strncpy(tmp, value, sizeof(tmp) - 1);
-            tmp[sizeof(tmp) - 1] = '\0';
-            char* tok = strtok(tmp, ";");
-            while (tok && data->loaderConfig.voicegroupPathCount < 8)
-            {
-                while (*tok == ' ')
-                    tok++;
-                int idx = data->loaderConfig.voicegroupPathCount++;
-                snprintf(data->loaderConfig.voicegroupPaths[idx],
-                         sizeof(data->loaderConfig.voicegroupPaths[idx]),
-                         "%s",
-                         tok);
-                tok = strtok(NULL, ";");
-            }
-        }
     }
 
     fclose(f);
@@ -215,7 +180,7 @@ static void plugin_clear_voicegroup(M4APluginData* data)
 
 static LoadedVoiceGroup* plugin_load_voicegroup(M4APluginData* data, const char* root, const char* name)
 {
-    LoadedVoiceGroup* vg = voicegroup_load(root, name, &data->loaderConfig);
+    LoadedVoiceGroup* vg = voicegroup_load(root, name);
     if (vg)
     {
         data->voicegroupError[0] = '\0';
@@ -233,7 +198,7 @@ static void plugin_write_voicegroup_project_state(M4APluginData* data)
 {
     VoicegroupProjectState state;
     memset(&state, 0, sizeof(state));
-    if (!voicegroup_project_state_collect(data->projectRoot, data->voicegroupName, &data->loaderConfig, &state))
+    if (!voicegroup_project_state_collect(data->projectRoot, data->voicegroupName, &state))
     {
         plugin_log("voicegroup project state collect failed: root=%s name=%s", data->projectRoot, data->voicegroupName);
     }
@@ -286,7 +251,7 @@ static bool plugin_init(const clap_plugin_t* plugin)
     {
         data->assetIndex = project_asset_index_create();
         if (data->assetIndex)
-            project_asset_index_rebuild(data->assetIndex, data->projectRoot, &data->loaderConfig);
+            project_asset_index_rebuild(data->assetIndex, data->projectRoot);
     }
     return true;
 }
@@ -326,7 +291,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
     {
         data->assetIndex = project_asset_index_create();
         if (data->assetIndex)
-            project_asset_index_rebuild(data->assetIndex, data->projectRoot, &data->loaderConfig);
+            project_asset_index_rebuild(data->assetIndex, data->projectRoot);
     }
 
     /* If voicegroup is configured, load it */

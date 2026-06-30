@@ -20,5 +20,18 @@
             "configuration": "release",
             "preLaunchTask": "swift: Build Release voicegroup-lsp (packages/voicegroup-lsp)"
         }
+        ,
+        {
+            "type": "lldb-dap",
+            "request": "launch",
+            "name": "Debug poryaaaa-rs in clap-host",
+            "program": "${workspaceFolder:poryaaaa-monorepo}/../clap-host/builds/ninja-system/host/Debug/clap-host",
+            "args": [
+                "-p",
+                "${workspaceFolder:poryaaaa-monorepo}/packages/poryaaaa/plugin/target/debug/poryaaaa-rs.clap"
+            ],
+            "cwd": "${workspaceFolder:poryaaaa-monorepo}/../clap-host/builds/ninja-system/host/Debug",
+            "preLaunchTask": "Build poryaaaa-rs CLAP debug bundle"
+        }
     ]
 }

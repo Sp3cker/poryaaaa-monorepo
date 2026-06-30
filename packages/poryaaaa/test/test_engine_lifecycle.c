@@ -157,6 +157,44 @@ static bool run_engine_cycle(ToneData* voices, int program)
     return peak > 0.0001f;
 }
 
+static bool run_heap_engine_cycle(ToneData* voices, int program)
+{
+    M4AEngine* engine = m4a_engine_create(SAMPLE_RATE);
+    float left[CHUNK_FRAMES];
+    float right[CHUNK_FRAMES];
+    float peak = 0.0f;
+
+    if (!engine)
+    {
+        return false;
+    }
+
+    m4a_engine_set_voicegroup(engine, voices);
+    m4a_engine_program_change(engine, 0, (uint8_t)program);
+    m4a_engine_cc(engine, 0, 7, 127);
+    m4a_engine_cc(engine, 0, 10, 64);
+    m4a_engine_note_on(engine, 0, 60, 100);
+
+    for (int done = 0; done < RENDER_FRAMES; done += CHUNK_FRAMES)
+    {
+        memset(left, 0, sizeof(left));
+        memset(right, 0, sizeof(right));
+        m4a_engine_process(engine, left, right, CHUNK_FRAMES);
+        float chunk_peak = peak_abs(left, right, CHUNK_FRAMES);
+        if (chunk_peak > peak)
+        {
+            peak = chunk_peak;
+        }
+    }
+
+    m4a_engine_note_off(engine, 0, 60);
+    m4a_engine_all_sound_off(engine);
+    m4a_engine_free(engine);
+    m4a_engine_free(NULL);
+
+    return peak > 0.0001f;
+}
+
 static bool run_driver_hw_cycle(ToneData* voices, int program)
 {
     M4ADriver* drv = m4a_driver_create(SAMPLE_RATE);
@@ -219,6 +257,7 @@ static void run_synthetic_cycles(int loops)
         }
         make_test_voicegroup(voices, wd);
 
+        CHECK(run_heap_engine_cycle(voices, 0), "heap M4AEngine cycle produces audio");
         CHECK(run_engine_cycle(voices, 0), "M4AEngine cycle produces audio");
         CHECK(run_driver_hw_cycle(voices, 0), "M4ADriver/HwAudio cycle produces audio");
 
@@ -230,14 +269,17 @@ static void run_loaded_voicegroup_cycles(const char* project_root, const char* v
 {
     for (int i = 0; i < loops; i++)
     {
-        LoadedVoiceGroup* vg = voicegroup_load(project_root, voicegroup_name, NULL);
+        LoadedVoiceGroup* vg = voicegroup_load(project_root, voicegroup_name);
         CHECK(vg != NULL, "voicegroup_load succeeds");
         if (!vg)
         {
             return;
         }
 
-        int program = first_playable_program(vg->voices);
+        ToneData* voices = voicegroup_loaded_voices(vg);
+        CHECK(voices == vg->voices, "voicegroup_loaded_voices returns loaded voice array");
+
+        int program = first_playable_program(voices);
         CHECK(program >= 0, "loaded voicegroup contains a playable voice");
         if (program < 0)
         {
@@ -245,8 +287,9 @@ static void run_loaded_voicegroup_cycles(const char* project_root, const char* v
             return;
         }
 
-        CHECK(run_engine_cycle(vg->voices, program), "loaded voicegroup engine cycle produces audio");
-        CHECK(run_driver_hw_cycle(vg->voices, program), "loaded voicegroup driver/hw cycle produces audio");
+        CHECK(run_heap_engine_cycle(voices, program), "loaded voicegroup heap engine cycle produces audio");
+        CHECK(run_engine_cycle(voices, program), "loaded voicegroup engine cycle produces audio");
+        CHECK(run_driver_hw_cycle(voices, program), "loaded voicegroup driver/hw cycle produces audio");
 
         voicegroup_free(vg);
     }

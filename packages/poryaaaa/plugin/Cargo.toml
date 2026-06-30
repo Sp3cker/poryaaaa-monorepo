@@ -1,0 +1,20 @@
+# Rust shell for the poryaaaa CLAP plugin.
+[package]
+name = "poryaaaa-clap-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "poryaaaa_clap_plugin"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+egui = { version = "=0.34.1", features = ["default_fonts"] }
+egui-file-dialog = "0.13.0"
+nice-plug = { path = "../../../third_party/nice-plug/crates/nice-plug", default-features = false }
+nice-plug-egui = { path = "../../../third_party/nice-plug/crates/nice-plug-egui" }
+voicegroup-core = { path = "../../voicegroup-core" }
+
+[build-dependencies]
+cc = "1"

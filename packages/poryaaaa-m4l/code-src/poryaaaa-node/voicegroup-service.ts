@@ -229,7 +229,6 @@ export class PoryaaaaVoicegroupService {
       this.deps.post(`voicegroups: saved bank "${state.bank}" not found in current root\n`);
       return;
     }
-    this.emit("bank", "setsymbol", state.bank);
     this.applyValidBank(state.bank, true);
   }
 
