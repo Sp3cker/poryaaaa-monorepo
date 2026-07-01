@@ -670,34 +670,9 @@ static void porya_dumpfailed(t_porya* x, t_symbol* path, const char* reason)
 
 static void porya_exportvoicegroup(t_porya* x, t_symbol* path)
 {
-    if (!x->loadedVg || !x->vgRoot || !x->vgRoot->s_name[0] || !x->vgName || !x->vgName->s_name[0])
-    {
-        object_error((t_object*)x, "poryaaaa~: exportvoicegroup requires a loaded voicegroup");
-        porya_voicegroupexportfailed(x, "no_voicegroup");
-        return;
-    }
-    if (!path || !path->s_name || !path->s_name[0])
-    {
-        object_error((t_object*)x, "poryaaaa~: exportvoicegroup requires a path");
-        porya_voicegroupexportfailed(x, "bad_path");
-        return;
-    }
-
-    uint8_t programs[12];
-    for (int ch = 0; ch < 12; ch++)
-        programs[ch] = (uint8_t)clamp_long(x->progSlot[ch], 0, 127);
-
-    bool ok = voicegroup_export_channel_remap(x->vgRoot->s_name, x->vgName->s_name, NULL, programs, path->s_name);
-    if (!ok)
-    {
-        object_error((t_object*)x, "poryaaaa~: exportvoicegroup failed to write %s", path->s_name);
-        porya_voicegroupexportfailed(x, "write_failed");
-        return;
-    }
-
-    t_atom av[1];
-    atom_setsym(&av[0], path);
-    outlet_anything(x->statusOutlet, gensym("voicegroupexported"), 1, av);
+    (void)path;
+    object_error((t_object*)x, "poryaaaa~: exportvoicegroup is unsupported by the current voicegroup loader");
+    porya_voicegroupexportfailed(x, "unsupported");
 }
 
 static void porya_voicegroupexportfailed(t_porya* x, const char* reason)
@@ -793,7 +768,7 @@ static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
     if (!root || !name || !root->s_name[0] || !name->s_name[0])
         return;
 
-    LoadedVoiceGroup* vg = voicegroup_load(root->s_name, name->s_name, NULL);
+    LoadedVoiceGroup* vg = voicegroup_load(root->s_name, name->s_name);
     if (!vg)
     {
         char msg[512];
