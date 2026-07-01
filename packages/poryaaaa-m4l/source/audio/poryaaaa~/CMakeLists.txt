@@ -9,6 +9,32 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-pretarget.cmak
 set(PORYA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../packages/poryaaaa"
     CACHE PATH "Path to poryaaaa engine repo root (the dir containing plugin/m4a_engine.c)")
 
+get_filename_component(PORYAAAA_M4L_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+set(PORYAAAA_VOICEGROUP_CORE_DIR "${PORYAAAA_M4L_ROOT}/../voicegroup-core"
+    CACHE PATH "Path to the voicegroup-core package root")
+set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
+    "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/release/libvoicegroup_core.a")
+if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64" AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+        set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
+            "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/universal-apple-darwin/release/libvoicegroup_core.a")
+    elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+        set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
+            "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/x86_64-apple-darwin/release/libvoicegroup_core.a")
+    else()
+        set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
+            "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/aarch64-apple-darwin/release/libvoicegroup_core.a")
+    endif()
+endif()
+if(NOT EXISTS "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+    message(FATAL_ERROR
+        "voicegroup-core static library not found at ${PORYAAAA_VOICEGROUP_CORE_STATICLIB}; "
+        "run npm run build:voicegroup-core-static from packages/poryaaaa-m4l")
+endif()
+add_library(voicegroup_core_static STATIC IMPORTED GLOBAL)
+set_target_properties(voicegroup_core_static PROPERTIES
+    IMPORTED_LOCATION "${PORYAAAA_VOICEGROUP_CORE_STATICLIB}")
+
 include_directories(
     "${MAX_SDK_INCLUDES}"
     "${MAX_SDK_MSP_INCLUDES}"
@@ -18,6 +44,7 @@ include_directories(
     "${PORYA_ROOT}/plugin"
     "${PORYA_ROOT}/plugin/voicegroup"
     "${PORYA_ROOT}/../../shared"
+    "${PORYAAAA_VOICEGROUP_CORE_DIR}/include"
 )
 
 add_subdirectory("${PORYA_ROOT}/plugin/m4a" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_m4a_driver")
@@ -55,7 +82,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE m4a_driver hw_audio)
+target_link_libraries(${PROJECT_NAME} PRIVATE m4a_driver hw_audio voicegroup_core_static)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-posttarget.cmake)
 

@@ -1,5 +1,8 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  parseVoicegroup as parseCoreVoicegroup,
+  scanVoicegroupBanks as scanCoreVoicegroupBanks,
+  type VoicegroupParseResult as CoreVoicegroupParseResult,
+} from "@poryaaaa/voicegroup-core-node";
 
 import type { VoiceSlot } from "../voice-slot-contract";
 export type { VoiceSlot } from "../voice-slot-contract";
@@ -8,38 +11,42 @@ export type VoicegroupParseResult =
   | { ok: true; slots: Array<VoiceSlot | null> }
   | { ok: false; diagnostics: string[] };
 
-interface NativeVoicegroupParser {
-  parseVoicegroup: (root: string, bank: string) => VoicegroupParseResult;
-}
-
+// Lists project-indexed voicegroup banks for the poryaaaa Max device menu.
 export function scanVoicegroupBanks(root: string): string[] {
-  const dir = join(root, "sound", "voicegroups");
-  let filenames: string[];
   try {
-    filenames = readdirSync(dir);
-  } catch (_) {
+    return scanCoreVoicegroupBanks(root);
+  } catch {
     return [];
   }
-  return filenames
-    .filter((name) => name.endsWith(".inc"))
-    .filter((name) => !name.startsWith("se_"))
-    .map((name) => name.slice(0, -".inc".length))
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
-
+// Loads a bank through voicegroup-core-node and returns the small M4L slot contract.
 export function parseVoicegroup(root: string, bank: string): VoicegroupParseResult {
-  const res = native().parseVoicegroup(root, bank.endsWith(".inc") ? bank.slice(0, -4) : bank);
+  const bankName = bank.endsWith(".inc") ? bank.slice(0, -".inc".length) : bank;
+  let result: CoreVoicegroupParseResult;
+  try {
+    result = parseCoreVoicegroup(root, bankName);
+  } catch (err) {
+    return { ok: false, diagnostics: [String(err)] };
+  }
 
-  return res
-}
+  if (!result.ok) {
+    return {
+      ok: false,
+      diagnostics:
+        result.diagnostics.length === 0
+          ? ["voicegroup-core returned no loadable bank"]
+          : result.diagnostics.map((diagnostic) => {
+              const location = `${diagnostic.startLine}:${diagnostic.startColumn}`;
+              return `${diagnostic.code} at ${location}: ${diagnostic.message}`;
+            }),
+    };
+  }
 
-function native(): NativeVoicegroupParser {
-  const bundled = join(__dirname, "poryaaaa_voicegroup.node");
-  if (existsSync(bundled)) return require(bundled) as NativeVoicegroupParser;
-
-  const testPath = join(__dirname, "..", "..", "javascript", "poryaaaa_voicegroup.node");
-  if (existsSync(testPath)) return require(testPath) as NativeVoicegroupParser;
-
-  return require(bundled) as NativeVoicegroupParser;
+  return {
+    ok: true,
+    slots: result.slots.map((slot) =>
+      slot ? { name: slot.name, typeCode: slot.typeCode } : null,
+    ),
+  };
 }

@@ -1,0 +1,187 @@
+# Review package: Task 1 uncommitted diff
+
+## Files changed
+ justfile                                                    |  3 +--
+ .../code-src/test/poryaaaa_node_build_contract.test.ts      | 13 ++++++++-----
+ packages/poryaaaa-m4l/package-lock.json                     | 12 ++++++++++++
+ packages/poryaaaa-m4l/package.json                          |  5 +++--
+ 4 files changed, 24 insertions(+), 9 deletions(-)
+
+## Diff
+diff --git a/justfile b/justfile
+index d82a183..c70bdbb 100644
+--- a/justfile
++++ b/justfile
+@@ -38,22 +38,21 @@ build target:
+ 
+         # textedit is a standalone VST3 plugin. The packaged bundle (.vst3 directory
+         # containing the executable, PkgInfo, moduleinfo.json, etc.) is produced by
+         # the textedit_VST3 target (per packages/textedit/AGENTS.md and README).
+         # We explicitly request the documented primary artefact target so that
+         # `just build textedit` (and `just install textedit`) produce a usable VST3.
+         cmake -S packages/{{target}} -B packages/{{target}}/build -DCMAKE_BUILD_TYPE=Release
+         cmake --build packages/{{target}}/build --config Release --target textedit_VST3
+         ;;
+       m4l)
+-        cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
+-        cmake --build packages/poryaaaa/build --config Release --target poryaaaa_napi
++        npm --prefix packages/voicegroup-core-node run build
+         cd packages/poryaaaa-m4l
+         npm run build
+         ;;
+       vg-core|voicegroup-core)
+         rust_target=""
+         if [[ "$(uname -s)" == "Darwin" ]]; then
+           case "$(uname -m)" in
+             arm64) rust_target="aarch64-apple-darwin" ;;
+             x86_64) rust_target="x86_64-apple-darwin" ;;
+           esac
+diff --git a/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_build_contract.test.ts b/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_build_contract.test.ts
+index d9e6377..b11a223 100644
+--- a/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_build_contract.test.ts
++++ b/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_build_contract.test.ts
+@@ -1,16 +1,19 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
+ import { readFileSync } from "node:fs";
+ 
+-type PackageJson = {
++interface PackageJson {
+   scripts?: Record<string, string>;
+-};
++  dependencies?: Record<string, string>;
++}
+ 
+-test("build:node builds the native voicegroup addon before bundling Node scripts", () => {
++test("build:node builds voicegroup-core-node before bundling Node scripts", () => {
+   const pkg = JSON.parse(readFileSync("package.json", "utf8")) as PackageJson;
+   const scripts = pkg.scripts ?? {};
+ 
+-  assert.match(scripts["build:napi"] ?? "", /--target poryaaaa_napi/);
+-  assert.match(scripts["build:napi"] ?? "", /\.\.\/poryaaaa/);
++  assert.equal(pkg.dependencies?.["@poryaaaa/voicegroup-core-node"], "file:../voicegroup-core-node");
++  assert.equal(scripts["build:napi"], "npm --prefix ../voicegroup-core-node run build");
+   assert.equal(scripts["build:node"], "run-s build:napi check:node bundle:node");
++  assert.match(scripts["bundle:node"] ?? "", /--external:@poryaaaa\/voicegroup-core-node/);
++  assert.doesNotMatch(scripts["build:napi"] ?? "", /poryaaaa_napi/);
+ });
+diff --git a/packages/poryaaaa-m4l/package-lock.json b/packages/poryaaaa-m4l/package-lock.json
+index a1ef609..ffbc57e 100644
+--- a/packages/poryaaaa-m4l/package-lock.json
++++ b/packages/poryaaaa-m4l/package-lock.json
+@@ -1,36 +1,44 @@
+ {
+   "name": "poryaaaa-m4l",
+   "version": "0.0.0",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "poryaaaa-m4l",
+       "version": "0.0.0",
+       "dependencies": {
++        "@poryaaaa/voicegroup-core-node": "file:../voicegroup-core-node",
+         "midi-writer-js": "^3.2.1",
+         "ws": "^8.21.0"
+       },
+       "devDependencies": {
+         "@types/maxmsp": "^1.0.15",
+         "@types/node": "^22.0.0",
+         "@types/ws": "^8.18.1",
+         "esbuild": "^0.24.0",
+         "npm-run-all": "^4.1.5",
+         "tsx": "^4.19.0",
+         "typescript": "^5.5.0"
+       },
+       "engines": {
+         "node": ">=24.6.0"
+       }
+     },
++    "../voicegroup-core-node": {
++      "name": "@poryaaaa/voicegroup-core-node",
++      "version": "0.1.0",
++      "engines": {
++        "node": ">=18.17.0"
++      }
++    },
+     "node_modules/@esbuild/aix-ppc64": {
+       "version": "0.24.2",
+       "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.24.2.tgz",
+       "integrity": "sha512-thpVCb/rhxE/BnMLQ7GReQLLN8q9qbHmI55F4489/ByVg2aQaQ6kbcLb6FHkocZzQhxc4gx0sCk0tJkKBFzDhA==",
+       "cpu": [
+         "ppc64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+@@ -459,20 +467,24 @@
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+         "win32"
+       ],
+       "engines": {
+         "node": ">=18"
+       }
+     },
++    "node_modules/@poryaaaa/voicegroup-core-node": {
++      "resolved": "../voicegroup-core-node",
++      "link": true
++    },
+     "node_modules/@tonaljs/midi": {
+       "version": "4.10.2",
+       "resolved": "https://registry.npmjs.org/@tonaljs/midi/-/midi-4.10.2.tgz",
+       "integrity": "sha512-MPamXhEwPL7L1udLfYMm3Ft8mLYtHr62Zi2w5zYHM2P7YwIvNoiX0+dvAN5is1Wvq4iVRa8AjFHerjOW/SZhGg==",
+       "license": "MIT",
+       "dependencies": {
+         "@tonaljs/pitch-note": "6.1.0"
+       }
+     },
+     "node_modules/@tonaljs/pitch": {
+diff --git a/packages/poryaaaa-m4l/package.json b/packages/poryaaaa-m4l/package.json
+index e397dce..377970b 100644
+--- a/packages/poryaaaa-m4l/package.json
++++ b/packages/poryaaaa-m4l/package.json
+@@ -4,23 +4,23 @@
+   "private": true,
+   "description": "TypeScript sources live in code-src/; esbuild bundles them to javascript/ for Max [v8] and [node.script].",
+   "engines": {
+     "node": ">=24.6.0"
+   },
+   "scripts": {
+     "build": "run-s build:js build:externals install:max-package",
+     "build:js": "run-s build:v8 build:node",
+     "build:v8": "run-s check:v8 bundle:v8",
+     "build:node": "run-s build:napi check:node bundle:node",
+-    "build:napi": "cmake -S ../poryaaaa -B ../poryaaaa/build && cmake --build ../poryaaaa/build --config Release --target poryaaaa_napi",
++    "build:napi": "npm --prefix ../voicegroup-core-node run build",
+     "bundle:v8": "esbuild code-src/ccomidi_voices.ts code-src/recorder/ccomidi_recorder.ts --bundle --outdir=javascript --entry-names=[name] --format=iife --platform=neutral --target=es2020 --log-level=warning",
+-    "bundle:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --log-level=warning",
++    "bundle:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --external:@poryaaaa/voicegroup-core-node --log-level=warning",
+     "build:externals": "cmake -G Xcode -B build -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON && cmake --build build --config  Release",
+     "install:max-package": "scripts/install_max_package.sh",
+     "probe:recorder-size": "tsx code-src/tools/recorder-midi-size-probe.ts",
+     "watch": "run-p watch:v8 watch:node",
+     "watch:v8": "esbuild code-src/ccomidi_voices.ts code-src/recorder/ccomidi_recorder.ts --bundle --outdir=javascript --entry-names=[name] --format=iife --platform=neutral --target=es2020 --watch",
+     "watch:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --watch",
+     "check": "run-s check:v8 check:node check:test",
+     "check:v8": "tsc -p code-src/tsconfig.v8.json --noEmit",
+     "check:node": "tsc -p code-src/tsconfig.node.json --noEmit",
+     "check:test": "tsc -p code-src/tsconfig.test.json --noEmit",
+@@ -29,14 +29,15 @@
+   "devDependencies": {
+     "@types/maxmsp": "^1.0.15",
+     "@types/node": "^22.0.0",
+     "@types/ws": "^8.18.1",
+     "esbuild": "^0.24.0",
+     "npm-run-all": "^4.1.5",
+     "tsx": "^4.19.0",
+     "typescript": "^5.5.0"
+   },
+   "dependencies": {
++    "@poryaaaa/voicegroup-core-node": "file:../voicegroup-core-node",
+     "midi-writer-js": "^3.2.1",
+     "ws": "^8.21.0"
+   }
+ }
