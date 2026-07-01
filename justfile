@@ -45,8 +45,7 @@ build target:
         cmake --build packages/{{target}}/build --config Release --target textedit_VST3
         ;;
       m4l)
-        cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
-        cmake --build packages/poryaaaa/build --config Release --target poryaaaa_napi
+        npm --prefix packages/voicegroup-core-node run build
         cd packages/poryaaaa-m4l
         npm run build
         ;;

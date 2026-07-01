@@ -11,19 +11,22 @@
     "build:js": "run-s build:v8 build:node",
     "build:v8": "run-s check:v8 bundle:v8",
     "build:node": "run-s build:napi check:node bundle:node",
-    "build:napi": "cmake -S ../poryaaaa -B ../poryaaaa/build && cmake --build ../poryaaaa/build --config Release --target poryaaaa_napi",
+    "build:napi": "npm --prefix ../voicegroup-core-node run build",
     "bundle:v8": "esbuild code-src/ccomidi_voices.ts code-src/recorder/ccomidi_recorder.ts --bundle --outdir=javascript --entry-names=[name] --format=iife --platform=neutral --target=es2020 --log-level=warning",
-    "bundle:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --log-level=warning",
-    "build:externals": "cmake -G Xcode -B build -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON && cmake --build build --config  Release",
+    "bundle:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --external:@poryaaaa/voicegroup-core-node --log-level=warning",
+    "build:voicegroup-core-static": "bash scripts/build_voicegroup_core_static.sh",
+    "build:externals": "run-s build:voicegroup-core-static build:externals:cmake",
+    "build:externals:cmake": "cmake -G Xcode -B build -DM4A_DRIVER_V2=ON -DHW_AUDIO_V2=ON && cmake --build build --config  Release",
     "install:max-package": "scripts/install_max_package.sh",
     "probe:recorder-size": "tsx code-src/tools/recorder-midi-size-probe.ts",
     "watch": "run-p watch:v8 watch:node",
     "watch:v8": "esbuild code-src/ccomidi_voices.ts code-src/recorder/ccomidi_recorder.ts --bundle --outdir=javascript --entry-names=[name] --format=iife --platform=neutral --target=es2020 --watch",
-    "watch:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --watch",
+    "watch:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --external:@poryaaaa/voicegroup-core-node --watch",
     "check": "run-s check:v8 check:node check:test",
     "check:v8": "tsc -p code-src/tsconfig.v8.json --noEmit",
     "check:node": "tsc -p code-src/tsconfig.node.json --noEmit",
     "check:test": "tsc -p code-src/tsconfig.test.json --noEmit",
+    "pretest": "npm run build:napi",
     "test": "node --no-deprecation --test-timeout=5000 --import tsx --import ./code-src/test/setup.ts --test code-src/test/*.test.ts"
   },
   "devDependencies": {
@@ -36,6 +39,7 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
+    "@poryaaaa/voicegroup-core-node": "file:../voicegroup-core-node",
     "midi-writer-js": "^3.2.1",
     "ws": "^8.21.0"
   }

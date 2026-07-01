@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,74 +15,80 @@ function tempProject(): string {
   return root;
 }
 
-function writeVoicegroup(root: string, bank: string, body: string): void {
-  writeFileSync(join(root, "sound", "voicegroups", `${bank}.inc`), body);
+function writeProjectFile(root: string, relativePath: string, body: string): void {
+  writeFileSync(join(root, relativePath), body);
 }
 
-test("scanVoicegroupBanks lists non-se .inc banks only, preserving display case and sorting case-insensitively", () => {
+test("scanVoicegroupBanks lists banks declared by sound/voice_groups.inc", () => {
   const root = tempProject();
-  const dir = join(root, "sound", "voicegroups");
-  writeFileSync(join(dir, "Beta.inc"), "");
-  writeFileSync(join(dir, "alpha.inc"), "");
-  writeFileSync(join(dir, "voicegroup.s"), "");
-  writeFileSync(join(dir, "se_hidden.inc"), "");
-  writeFileSync(join(dir, "notes.txt"), "");
+  try {
+    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
+    writeProjectFile(root, "sound/voicegroups/alpha.inc", "voice_group alpha\n  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n");
+    writeProjectFile(root, "sound/voicegroups/unlisted.inc", "voice_group unlisted\n  voice_square_2 60, 0, 2, 1, 2, 8, 3\n");
 
-  assert.deepEqual(scanVoicegroupBanks(root), ["alpha", "Beta"]);
+    assert.deepEqual(scanVoicegroupBanks(root), ["alpha"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test("parseVoicegroup forwards native labels and type codes in a 128-slot array", () => {
-  const result = parseVoicegroup(
-    join(process.cwd(), "tests", "fixtures", "decomp_sample"),
-    "voicegroup001",
-  );
+test("parseVoicegroup returns M4L-compatible names and type codes in a 128-slot array", () => {
+  const root = tempProject();
+  try {
+    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
+    writeProjectFile(
+      root,
+      "sound/voicegroups/alpha.inc",
+      "voice_group alpha\n" +
+        "  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n" +
+        "  voice_square_2 60, 0, 2, 1, 2, 8, 3\n" +
+        "  voice_noise 61, 0, 1, 1, 2, 8, 3\n",
+    );
 
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.slots.length, 128);
-  assert.deepEqual(result.slots.slice(0, 7), [
-    { name: "DirectSoundWaveData_PianoC4", typeCode: 0x00 },
-    { name: "Square 1", typeCode: 0x01 },
-    { name: "Square 2", typeCode: 0x02 },
-    { name: "Noise", typeCode: 0x04 },
-    { name: "ProgWave", typeCode: 0x03 },
-    { name: "voicegroup_drumkit", typeCode: 0x40 },
-    { name: "voicegroup002", typeCode: 0x80 },
-  ]);
-  assert.equal(result.slots[7], null);
+    const result = parseVoicegroup(root, "alpha");
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.slots.length, 128);
+    assert.deepEqual(result.slots.slice(0, 4), [
+      { name: "Square 1", typeCode: 0x01 },
+      { name: "Square 2", typeCode: 0x02 },
+      { name: "Noise", typeCode: 0x04 },
+      null,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test("parseVoicegroup preserves source slot indexes as null holes", () => {
+test("parseVoicegroup strips a .inc suffix before asking voicegroup-core for the bank", () => {
   const root = tempProject();
-  writeVoicegroup(root, "offset", `
-offset::
-  voice_group voicegroup001, 24
-  voice_directsound 60, 0, DirectSoundWaveData_PianoC4, 255, 165, 245, 165
-`);
+  try {
+    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
+    writeProjectFile(root, "sound/voicegroups/alpha.inc", "voice_group alpha\n  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n");
 
-  const result = parseVoicegroup(root, "offset");
+    const result = parseVoicegroup(root, "alpha.inc");
 
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.slots.length, 128);
-  assert.equal(result.slots[0], null);
-  assert.deepEqual(result.slots[24], {
-    name: "DirectSoundWaveData_PianoC4",
-    typeCode: 0x00,
-  });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.slots[0]?.name, "Square 1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test("parseVoicegroup returns diagnostics for malformed voice macros", () => {
+test("parseVoicegroup returns diagnostic strings for missing project-index banks", () => {
   const root = tempProject();
-  writeVoicegroup(root, "bad", `
-bad::
-  voice_directsound 60, 0, MissingEnvelopeArgs
-  voice_directsounnd 60, 0, Typo, 1, 2, 3, 4
-`);
+  try {
+    writeProjectFile(root, "sound/voice_groups.inc", "");
 
-  const result = parseVoicegroup(root, "bad");
+    const result = parseVoicegroup(root, "missing");
 
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.ok(result.diagnostics.length > 0);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.ok(result.diagnostics.length > 0);
+    assert.match(result.diagnostics[0], /missing|project index/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

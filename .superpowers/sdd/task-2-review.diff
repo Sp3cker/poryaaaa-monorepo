@@ -1,0 +1,245 @@
+# Review package: Task 2 uncommitted diff
+
+## Files changed
+ .../code-src/poryaaaa-node/voicegroup-parser.ts    |  61 ++++++-----
+ .../test/poryaaaa_node_voicegroup_parser.test.ts   | 114 +++++++++++----------
+ 2 files changed, 94 insertions(+), 81 deletions(-)
+
+## Diff
+diff --git a/packages/poryaaaa-m4l/code-src/poryaaaa-node/voicegroup-parser.ts b/packages/poryaaaa-m4l/code-src/poryaaaa-node/voicegroup-parser.ts
+index a491c03..354adba 100644
+--- a/packages/poryaaaa-m4l/code-src/poryaaaa-node/voicegroup-parser.ts
++++ b/packages/poryaaaa-m4l/code-src/poryaaaa-node/voicegroup-parser.ts
+@@ -1,45 +1,52 @@
+-import { existsSync, readdirSync } from "node:fs";
+-import { join } from "node:path";
++import {
++  parseVoicegroup as parseCoreVoicegroup,
++  scanVoicegroupBanks as scanCoreVoicegroupBanks,
++  type VoicegroupParseResult as CoreVoicegroupParseResult,
++} from "@poryaaaa/voicegroup-core-node";
+ 
+ import type { VoiceSlot } from "../voice-slot-contract";
+ export type { VoiceSlot } from "../voice-slot-contract";
+ 
+ export type VoicegroupParseResult =
+   | { ok: true; slots: Array<VoiceSlot | null> }
+   | { ok: false; diagnostics: string[] };
+ 
+-interface NativeVoicegroupParser {
+-  parseVoicegroup: (root: string, bank: string) => VoicegroupParseResult;
+-}
+-
++// Lists project-indexed voicegroup banks for the poryaaaa Max device menu.
+ export function scanVoicegroupBanks(root: string): string[] {
+-  const dir = join(root, "sound", "voicegroups");
+-  let filenames: string[];
+   try {
+-    filenames = readdirSync(dir);
+-  } catch (_) {
++    return scanCoreVoicegroupBanks(root);
++  } catch {
+     return [];
+   }
+-  return filenames
+-    .filter((name) => name.endsWith(".inc"))
+-    .filter((name) => !name.startsWith("se_"))
+-    .map((name) => name.slice(0, -".inc".length))
+-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+ }
+ 
+-
++// Loads a bank through voicegroup-core-node and returns the small M4L slot contract.
+ export function parseVoicegroup(root: string, bank: string): VoicegroupParseResult {
+-  const res = native().parseVoicegroup(root, bank.endsWith(".inc") ? bank.slice(0, -4) : bank);
+-
+-  return res
+-}
+-
+-function native(): NativeVoicegroupParser {
+-  const bundled = join(__dirname, "poryaaaa_voicegroup.node");
+-  if (existsSync(bundled)) return require(bundled) as NativeVoicegroupParser;
++  const bankName = bank.endsWith(".inc") ? bank.slice(0, -".inc".length) : bank;
++  let result: CoreVoicegroupParseResult;
++  try {
++    result = parseCoreVoicegroup(root, bankName);
++  } catch (err) {
++    return { ok: false, diagnostics: [String(err)] };
++  }
+ 
+-  const testPath = join(__dirname, "..", "..", "javascript", "poryaaaa_voicegroup.node");
+-  if (existsSync(testPath)) return require(testPath) as NativeVoicegroupParser;
++  if (!result.ok) {
++    return {
++      ok: false,
++      diagnostics:
++        result.diagnostics.length === 0
++          ? ["voicegroup-core returned no loadable bank"]
++          : result.diagnostics.map((diagnostic) => {
++              const location = `${diagnostic.startLine}:${diagnostic.startColumn}`;
++              return `${diagnostic.code} at ${location}: ${diagnostic.message}`;
++            }),
++    };
++  }
+ 
+-  return require(bundled) as NativeVoicegroupParser;
++  return {
++    ok: true,
++    slots: result.slots.map((slot) =>
++      slot ? { name: slot.name, typeCode: slot.typeCode } : null,
++    ),
++  };
+ }
+diff --git a/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_voicegroup_parser.test.ts b/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_voicegroup_parser.test.ts
+index 558ab83..eeb1f98 100644
+--- a/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_voicegroup_parser.test.ts
++++ b/packages/poryaaaa-m4l/code-src/test/poryaaaa_node_voicegroup_parser.test.ts
+@@ -1,88 +1,94 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
+-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
++import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ 
+ import {
+   parseVoicegroup,
+   scanVoicegroupBanks,
+ } from "../poryaaaa-node/voicegroup-parser";
+ 
+ function tempProject(): string {
+   const root = mkdtempSync(join(tmpdir(), "poryaaaa-vg-"));
+   mkdirSync(join(root, "sound", "voicegroups"), { recursive: true });
+   return root;
+ }
+ 
+-function writeVoicegroup(root: string, bank: string, body: string): void {
+-  writeFileSync(join(root, "sound", "voicegroups", `${bank}.inc`), body);
++function writeProjectFile(root: string, relativePath: string, body: string): void {
++  writeFileSync(join(root, relativePath), body);
+ }
+ 
+-test("scanVoicegroupBanks lists non-se .inc banks only, preserving display case and sorting case-insensitively", () => {
++test("scanVoicegroupBanks lists banks declared by sound/voice_groups.inc", () => {
+   const root = tempProject();
+-  const dir = join(root, "sound", "voicegroups");
+-  writeFileSync(join(dir, "Beta.inc"), "");
+-  writeFileSync(join(dir, "alpha.inc"), "");
+-  writeFileSync(join(dir, "voicegroup.s"), "");
+-  writeFileSync(join(dir, "se_hidden.inc"), "");
+-  writeFileSync(join(dir, "notes.txt"), "");
++  try {
++    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
++    writeProjectFile(root, "sound/voicegroups/alpha.inc", "voice_group alpha\n  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n");
++    writeProjectFile(root, "sound/voicegroups/unlisted.inc", "voice_group unlisted\n  voice_square_2 60, 0, 2, 1, 2, 8, 3\n");
+ 
+-  assert.deepEqual(scanVoicegroupBanks(root), ["alpha", "Beta"]);
++    assert.deepEqual(scanVoicegroupBanks(root), ["alpha"]);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
+ });
+ 
+-test("parseVoicegroup forwards native labels and type codes in a 128-slot array", () => {
+-  const result = parseVoicegroup(
+-    join(process.cwd(), "tests", "fixtures", "decomp_sample"),
+-    "voicegroup001",
+-  );
++test("parseVoicegroup returns M4L-compatible names and type codes in a 128-slot array", () => {
++  const root = tempProject();
++  try {
++    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
++    writeProjectFile(
++      root,
++      "sound/voicegroups/alpha.inc",
++      "voice_group alpha\n" +
++        "  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n" +
++        "  voice_square_2 60, 0, 2, 1, 2, 8, 3\n" +
++        "  voice_noise 61, 0, 1, 1, 2, 8, 3\n",
++    );
++
++    const result = parseVoicegroup(root, "alpha");
+ 
+-  assert.equal(result.ok, true);
+-  if (!result.ok) return;
+-  assert.equal(result.slots.length, 128);
+-  assert.deepEqual(result.slots.slice(0, 7), [
+-    { name: "DirectSoundWaveData_PianoC4", typeCode: 0x00 },
+-    { name: "Square 1", typeCode: 0x01 },
+-    { name: "Square 2", typeCode: 0x02 },
+-    { name: "Noise", typeCode: 0x04 },
+-    { name: "ProgWave", typeCode: 0x03 },
+-    { name: "voicegroup_drumkit", typeCode: 0x40 },
+-    { name: "voicegroup002", typeCode: 0x80 },
+-  ]);
+-  assert.equal(result.slots[7], null);
++    assert.equal(result.ok, true);
++    if (!result.ok) return;
++    assert.equal(result.slots.length, 128);
++    assert.deepEqual(result.slots.slice(0, 4), [
++      { name: "Square 1", typeCode: 0x01 },
++      { name: "Square 2", typeCode: 0x02 },
++      { name: "Noise", typeCode: 0x04 },
++      null,
++    ]);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
+ });
+ 
+-test("parseVoicegroup preserves source slot indexes as null holes", () => {
++test("parseVoicegroup strips a .inc suffix before asking voicegroup-core for the bank", () => {
+   const root = tempProject();
+-  writeVoicegroup(root, "offset", `
+-offset::
+-  voice_group voicegroup001, 24
+-  voice_directsound 60, 0, DirectSoundWaveData_PianoC4, 255, 165, 245, 165
+-`);
++  try {
++    writeProjectFile(root, "sound/voice_groups.inc", '.include "sound/voicegroups/alpha.inc"\n');
++    writeProjectFile(root, "sound/voicegroups/alpha.inc", "voice_group alpha\n  voice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n");
+ 
+-  const result = parseVoicegroup(root, "offset");
++    const result = parseVoicegroup(root, "alpha.inc");
+ 
+-  assert.equal(result.ok, true);
+-  if (!result.ok) return;
+-  assert.equal(result.slots.length, 128);
+-  assert.equal(result.slots[0], null);
+-  assert.deepEqual(result.slots[24], {
+-    name: "DirectSoundWaveData_PianoC4",
+-    typeCode: 0x00,
+-  });
++    assert.equal(result.ok, true);
++    if (!result.ok) return;
++    assert.equal(result.slots[0]?.name, "Square 1");
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
+ });
+ 
+-test("parseVoicegroup returns diagnostics for malformed voice macros", () => {
++test("parseVoicegroup returns diagnostic strings for missing project-index banks", () => {
+   const root = tempProject();
+-  writeVoicegroup(root, "bad", `
+-bad::
+-  voice_directsound 60, 0, MissingEnvelopeArgs
+-  voice_directsounnd 60, 0, Typo, 1, 2, 3, 4
+-`);
++  try {
++    writeProjectFile(root, "sound/voice_groups.inc", "");
+ 
+-  const result = parseVoicegroup(root, "bad");
++    const result = parseVoicegroup(root, "missing");
+ 
+-  assert.equal(result.ok, false);
+-  if (result.ok) return;
+-  assert.ok(result.diagnostics.length > 0);
++    assert.equal(result.ok, false);
++    if (result.ok) return;
++    assert.ok(result.diagnostics.length > 0);
++    assert.match(result.diagnostics[0], /missing|project index/i);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
+ });
