@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::ast::{Diagnostic, DiagnosticSeverity};
+use crate::diagnostic_format::diagnostic_message;
 use crate::program_bank::{ProgramBank, ProgramData};
 use crate::project_index::ProjectIndex;
 
@@ -59,14 +60,14 @@ fn collect_slots(index: &ProjectIndex, bank: &ProgramBank) -> Result<Vec<Project
 fn collect_drumset(index: &ProjectIndex, bank_name: &str) -> Result<Vec<DrumPad>, String> {
     let result = index.load_program_bank(bank_name);
     if let Some(diagnostic) = first_error(&result.diagnostics) {
-        return Err(format_diagnostic(diagnostic));
+        return Err(diagnostic_message(diagnostic));
     }
 
     let bank = result.bank.ok_or_else(|| {
         result
             .diagnostics
             .first()
-            .map(format_diagnostic)
+            .map(diagnostic_message)
             .unwrap_or_else(|| "drumset voicegroup bank could not be loaded".to_string())
     })?;
 
@@ -184,8 +185,4 @@ fn first_error(diagnostics: &[Diagnostic]) -> Option<&Diagnostic> {
     diagnostics
         .iter()
         .find(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-}
-
-fn format_diagnostic(diagnostic: &Diagnostic) -> String {
-    format!("{}: {}", diagnostic.code, diagnostic.message)
 }

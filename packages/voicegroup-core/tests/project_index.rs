@@ -475,3 +475,67 @@ existing::
 
     fs::remove_dir_all(root).expect("remove temp project");
 }
+
+#[test]
+fn test_monolithic_line_remapping() {
+    let root = temp_project("remapping");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+@ comment line 1
+@ comment line 2
+route104::
+\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242
+\tvoice_square_2 61, 0, 0, 0, 10, 10, 1
+",
+    );
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "DirectSoundWaveData_Kick::\n\t.incbin \"sound/direct_sound_samples/kick.bin\"\n",
+    );
+
+    let index = ProjectIndex::load(&root).unwrap();
+    let result = index.load_program_bank("route104");
+
+    // Assert voice_square_2 decay=10 is checked. It sits at line 5 of sound/voice_groups.inc
+    let diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "integer-out-of-range")
+        .unwrap();
+    assert_eq!(diag.range.start.line, 5);
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn test_included_file_line_remapping() {
+    let root = temp_project("included_remapping");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\t.include \"sound/voicegroups/hanabi.inc\"\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/hanabi.inc",
+        "\
+voice_group hanabi
+\tvoice_square_2 60, 0, 0, 0, 10, 10, 1
+",
+    );
+
+    let index = ProjectIndex::load(&root).unwrap();
+    let result = index.load_program_bank("hanabi");
+
+    let diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "integer-out-of-range")
+        .unwrap();
+    assert_eq!(diag.range.start.line, 2);
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}

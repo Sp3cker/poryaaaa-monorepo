@@ -19,6 +19,36 @@ pub struct ProgramBankLoadResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+// Keeps sparse parsed snippets tied to their source file lines for diagnostics.
+struct BankSourceText {
+    relative_path: String,
+    text: String,
+    line_map: Vec<usize>, // 1-based parsed line -> 1-based original file line
+}
+
+impl BankSourceText {
+    // Rewrites parser/analyzer ranges back onto the original source file.
+    fn remap_range(&self, range: &SourceRange) -> SourceRange {
+        SourceRange {
+            start: SourcePosition {
+                line: self.file_line(range.start.line),
+                column: range.start.column,
+            },
+            end: SourcePosition {
+                line: self.file_line(range.end.line),
+                column: range.end.column,
+            },
+        }
+    }
+
+    fn file_line(&self, parsed_line: usize) -> usize {
+        self.line_map
+            .get(parsed_line.saturating_sub(1))
+            .copied()
+            .unwrap_or(parsed_line)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectIndex {
     root: PathBuf,
@@ -113,7 +143,7 @@ impl ProjectIndex {
             };
         };
 
-        let Ok((source_relative_path, source_text)) = self.read_bank_source(source) else {
+        let Ok(source_text) = self.read_bank_source(source) else {
             return ProgramBankLoadResult {
                 bank: None,
                 diagnostics: vec![diagnostic(
@@ -124,7 +154,7 @@ impl ProjectIndex {
             };
         };
 
-        let document = parse_document(&source_text);
+        let document = parse_document(&source_text.text);
         let mut diagnostics = analyze_document(&document, &self.analysis_context());
         let Some(voice_group) = document
             .voice_groups
@@ -136,6 +166,9 @@ impl ProjectIndex {
                 "missing-voicegroup",
                 "voicegroup bank is not declared in the selected source",
             ));
+            for diagnostic in &mut diagnostics {
+                diagnostic.range = source_text.remap_range(&diagnostic.range);
+            }
             return ProgramBankLoadResult {
                 bank: None,
                 diagnostics,
@@ -143,14 +176,23 @@ impl ProjectIndex {
         };
 
         let ProgramBankBuildResult {
-            bank,
+            mut bank,
             diagnostics: build_diagnostics,
         } = build_program_bank(
             voice_group,
-            source_relative_path,
+            source_text.relative_path.clone(),
             &self.program_bank_context(),
         );
         append_unique_diagnostics(&mut diagnostics, build_diagnostics);
+
+        for diagnostic in &mut diagnostics {
+            diagnostic.range = source_text.remap_range(&diagnostic.range);
+        }
+        for program in &mut bank.programs {
+            if let Some(record) = program {
+                record.source_range = source_text.remap_range(&record.source_range);
+            }
+        }
 
         ProgramBankLoadResult {
             bank: Some(bank),
@@ -287,25 +329,34 @@ impl ProjectIndex {
         Ok(())
     }
 
-    fn read_bank_source(&self, source: &VoiceGroupSource) -> io::Result<(String, String)> {
+    fn read_bank_source(&self, source: &VoiceGroupSource) -> io::Result<BankSourceText> {
         match source {
             VoiceGroupSource::Combined {
                 relative_path,
                 label,
             } => {
                 let text = fs::read_to_string(self.root.join(relative_path))?;
-                extract_combined_section(&text, label)
-                    .map(|section| (relative_path.clone(), section))
+                let (section, line_map) = extract_combined_section_with_map(&text, label)
                     .ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
                             "combined voicegroup section is no longer present",
                         )
-                    })
+                    })?;
+                Ok(BankSourceText {
+                    relative_path: relative_path.clone(),
+                    text: section,
+                    line_map,
+                })
             }
             VoiceGroupSource::File { relative_path } => {
                 let text = fs::read_to_string(self.root.join(relative_path))?;
-                Ok((relative_path.clone(), text))
+                let line_map = (1..=text.lines().count()).collect();
+                Ok(BankSourceText {
+                    relative_path: relative_path.clone(),
+                    text,
+                    line_map,
+                })
             }
         }
     }
@@ -329,21 +380,26 @@ impl ProjectIndex {
 }
 
 fn combined_section_has_voice_macro(text: &str, label: &str) -> bool {
-    extract_combined_section(text, label).is_some()
+    extract_combined_section_with_map(text, label).is_some()
 }
 
-fn extract_combined_section(text: &str, label: &str) -> Option<String> {
+// Extracts one combined-bank section while retaining sparse snippet line origins.
+fn extract_combined_section_with_map(text: &str, label: &str) -> Option<(String, Vec<usize>)> {
     let search_label = format!("{label}::");
     let mut in_section = false;
     let mut voices_seen = false;
     let mut has_voice_group_declaration = false;
     let mut output = String::new();
+    let mut line_map = Vec::new();
+    let mut label_line = 1;
 
-    for line in text.lines() {
+    for (i, line) in text.lines().enumerate() {
+        let original_line_number = i + 1;
         let trimmed = strip_comment(line).trim();
         if !in_section {
             if trimmed == search_label {
                 in_section = true;
+                label_line = original_line_number;
             }
             continue;
         }
@@ -360,20 +416,27 @@ fn extract_combined_section(text: &str, label: &str) -> Option<String> {
             has_voice_group_declaration = true;
             output.push_str(line);
             output.push('\n');
+            line_map.push(original_line_number);
         } else if trimmed.starts_with("voice_") || trimmed.starts_with("cry") {
             voices_seen = true;
             output.push_str(line);
             output.push('\n');
+            line_map.push(original_line_number);
         }
     }
 
     if !in_section || !voices_seen {
         return None;
     }
+
     if has_voice_group_declaration {
-        Some(output)
+        Some((output, line_map))
     } else {
-        Some(format!("voice_group {label}\n{output}"))
+        let mut final_text = format!("voice_group {label}\n");
+        final_text.push_str(&output);
+        let mut final_map = vec![label_line]; // Map synthetic line to label declaration
+        final_map.extend(line_map);
+        Some((final_text, final_map))
     }
 }
 

@@ -209,7 +209,10 @@ main_drumset::
     let error =
         load_for_plugin(&root, "main", &projects_json_path).expect_err("nested bank is rejected");
 
-    assert!(error.contains("unknown-directsound-symbol"));
+    assert_eq!(
+        error,
+        "line 6: unknown-directsound-symbol: symbol is not declared in the analysis context"
+    );
     assert_eq!(
         fs::read_to_string(&projects_json_path).expect("existing projects.json remains"),
         "{\"root\":\"old\",\"bank\":\"old\",\"slots\":[]}"
@@ -304,4 +307,28 @@ main::
 fn read_projects_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("projects.json emitted"))
         .expect("projects.json is valid json")
+}
+
+#[test]
+fn diagnostic_formatting_prepends_line_numbers() {
+    let root = temp_project("formatting-lines");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+broken::
+	voice_directsounnd 60, 0, DirectSoundWaveData_Missing, 255, 0, 255, 242
+",
+    );
+    let projects_json_path = root.join("out/projects.json");
+
+    let error = load_for_plugin(&root, "broken", &projects_json_path)
+        .expect_err("invalid bank is rejected");
+
+    assert_eq!(
+        error,
+        "line 2: unknown-macro: voice macro is not defined in the macro catalog"
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
 }

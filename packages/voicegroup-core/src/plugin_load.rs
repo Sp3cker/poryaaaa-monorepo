@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::ast::{Diagnostic, DiagnosticSeverity};
+use crate::diagnostic_format::diagnostic_message;
 use crate::project_index::ProjectIndex;
 use crate::projects_json;
 
@@ -29,7 +30,7 @@ pub fn load_for_plugin(
         .ok_or_else(|| first_error_message(&load_result.diagnostics))?;
 
     if let Some(diagnostic) = first_error(&load_result.diagnostics) {
-        return Err(format_diagnostic(diagnostic));
+        return Err(diagnostic_message(diagnostic));
     }
 
     projects_json::emit(projects_json_path, project_root, bank_name, &index, bank)
@@ -44,10 +45,6 @@ fn first_error(diagnostics: &[Diagnostic]) -> Option<&Diagnostic> {
 fn first_error_message(diagnostics: &[Diagnostic]) -> String {
     diagnostics
         .first()
-        .map(format_diagnostic)
+        .map(diagnostic_message)
         .unwrap_or_else(|| "voicegroup bank could not be loaded".to_string())
-}
-
-fn format_diagnostic(diagnostic: &Diagnostic) -> String {
-    format!("{}: {}", diagnostic.code, diagnostic.message)
 }
