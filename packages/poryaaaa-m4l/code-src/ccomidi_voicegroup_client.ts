@@ -77,16 +77,22 @@ export class CcomidiVoicegroupClient {
   }
 
   private handleMessage(raw: unknown): void {
+    const rawText = String(raw);
     let parsed: unknown;
     try {
-      parsed = JSON.parse(String(raw));
+      parsed = JSON.parse(rawText);
     } catch (_) {
       this.opts.post(
-        `ccomidi voicegroup websocket: received invalid JSON: ${String(raw)}\n`,
+        `ccomidi voicegroup websocket: received invalid JSON: ${rawText}\n`,
       );
       return;
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      this.opts.post(
+        `ccomidi voicegroup websocket: received malformed frame: ${rawText}\n`,
+      );
+      return;
+    }
     const frame = parsed as { type?: unknown; slots?: unknown };
     // Preserve an explicit loaded-but-empty state so ccomidi does not keep
     // showing the startup placeholder after poryaaaa reports no usable bank.
@@ -95,8 +101,18 @@ export class CcomidiVoicegroupClient {
       this.opts.outlet("state", encoded);
       return;
     }
-    if (frame.type !== "snapshot") return;
-    if (!Array.isArray(frame.slots)) return;
+    if (frame.type !== "snapshot") {
+      this.opts.post(
+        `ccomidi voicegroup websocket: received unsupported frame: ${rawText}\n`,
+      );
+      return;
+    }
+    if (!Array.isArray(frame.slots)) {
+      this.opts.post(
+        `ccomidi voicegroup websocket: received malformed snapshot: ${rawText}\n`,
+      );
+      return;
+    }
     const slots = frame.slots;
     const encoded = encodeURIComponent(JSON.stringify({ slots }));
     this.opts.outlet("state", encoded);

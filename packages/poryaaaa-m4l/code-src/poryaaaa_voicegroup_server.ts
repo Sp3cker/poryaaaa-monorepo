@@ -1,5 +1,5 @@
 import { ProjectStore } from "./poryaaaa-node/project-store";
-import { PoryaaaaVoicegroupService } from "./poryaaaa-node/voicegroup-service";
+import { PoryaaaaVoicegroupService, type CcomidiVoicegroupFrame } from "./poryaaaa-node/voicegroup-service";
 import {
   parseVoicegroup,
   scanVoicegroupBanks,
@@ -16,13 +16,16 @@ const maxApi = require("max-api") as MaxApi;
 
 
 const store = new ProjectStore();
-const service = new PoryaaaaVoicegroupService({
+let service: PoryaaaaVoicegroupService;
+const postFrame = (frame: CcomidiVoicegroupFrame) => service.post(frame);
+service = new PoryaaaaVoicegroupService({
   scanBanks: scanVoicegroupBanks,
   parseVoicegroup,
   readVoicegroupState: () => store.readVoicegroupState(),
   writeVoicegroupState: (state) => store.writeVoicegroupState(state),
   output: (out) => maxApi.outlet(out.tag, ...out.args),
-  post: (msg) => maxApi.post(msg),
+  post: postFrame,
+  log: (msg) => maxApi.post(msg),
 });
 
 service.startWebSocket().catch((err: unknown) => {

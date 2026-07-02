@@ -7,6 +7,7 @@ import {
 } from "../ccomidi_voicegroup_client";
 import {
   PoryaaaaVoicegroupService,
+  type CcomidiVoicegroupFrame,
 } from "../poryaaaa-node/voicegroup-service";
 
 const SLOT = {
@@ -66,13 +67,16 @@ function harness() {
 }
 
 function poryaaaaServerHarness() {
-  const service = new PoryaaaaVoicegroupService({
+  let service: PoryaaaaVoicegroupService;
+  const postFrame = (frame: CcomidiVoicegroupFrame) => service.post(frame);
+  service = new PoryaaaaVoicegroupService({
     scanBanks: () => ["alpha"],
     parseVoicegroup: () => ({ ok: true, slots: [SLOT] }),
     readVoicegroupState: () => null,
     writeVoicegroupState: () => {},
     output: () => {},
-    post: () => {},
+    post: postFrame,
+    log: () => {},
     websocketHost: "127.0.0.1",
     websocketPort: 0,
   });
@@ -111,6 +115,19 @@ test("client forwards only snapshot frames as encoded { slots } state messages",
   assert.deepEqual(JSON.parse(decodeURIComponent(stateMessages[2][1] as string)), {
     slots: [SLOT],
   });
+});
+
+test("client logs malformed snapshot frames", () => {
+  const h = harness();
+  h.client.start();
+
+  h.sockets[0].emitMessage(JSON.stringify({ type: "snapshot", slots: "not slots" }));
+
+  assert.deepEqual(h.posts, [
+    "ccomidi voicegroup service: started\n",
+    "ccomidi voicegroup websocket: connecting to ws://127.0.0.1:17777/\n",
+    'ccomidi voicegroup websocket: received malformed snapshot: {"type":"snapshot","slots":"not slots"}\n',
+  ]);
 });
 
 test("client reconnects forever with the configured fixed delay", () => {

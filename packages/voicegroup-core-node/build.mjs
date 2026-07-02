@@ -4,7 +4,21 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
+
+const cargoTarget = (() => {
+  if (process.platform !== "darwin") return null;
+  switch (process.arch) {
+    case "arm64":
+      return "aarch64-apple-darwin";
+    case "x64":
+      return "x86_64-apple-darwin";
+    default:
+      return null;
+  }
+})();
+
 const cargoArgs = ["build", "--release"];
+if (cargoTarget) cargoArgs.push("--target", cargoTarget);
 const cargo = spawnSync("cargo", cargoArgs, {
   cwd: packageRoot,
   stdio: "inherit",
@@ -15,8 +29,8 @@ if (cargo.status !== 0) {
 }
 
 const targetDir = process.env.CARGO_TARGET_DIR
-  ? join(process.env.CARGO_TARGET_DIR, "release")
-  : join(packageRoot, "target", "release");
+  ? join(process.env.CARGO_TARGET_DIR, ...(cargoTarget ? [cargoTarget] : []), "release")
+  : join(packageRoot, "target", ...(cargoTarget ? [cargoTarget] : []), "release");
 
 const platformLibrary = (() => {
   switch (process.platform) {

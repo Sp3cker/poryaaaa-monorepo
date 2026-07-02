@@ -1,3 +1,4 @@
+// todo: No way this needs to be it's own file.
 export interface VoiceSlot {
   name: string;
   typeCode: number;

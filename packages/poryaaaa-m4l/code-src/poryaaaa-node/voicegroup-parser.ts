@@ -19,7 +19,7 @@ export function scanVoicegroupBanks(root: string): string[] {
     return [];
   }
 }
-
+//todo: Slot contract is a bad term and I dont know what that means
 // Loads a bank through voicegroup-core-node and returns the small M4L slot contract.
 export function parseVoicegroup(root: string, bank: string): VoicegroupParseResult {
   const bankName = bank.endsWith(".inc") ? bank.slice(0, -".inc".length) : bank;

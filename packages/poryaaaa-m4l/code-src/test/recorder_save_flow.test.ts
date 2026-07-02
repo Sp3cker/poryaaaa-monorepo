@@ -201,6 +201,17 @@ test("G1: golden path — save() writes the SMF and unlinks the temp file once",
     assert.equal(harness.unlinks[0], "/tmp/probe.bin");
 });
 
+test("G1b: successful save does not post debug logging", async () => {
+    const events: MidiEvent[] = [
+        { beats: 0,   status: 0x90, d1: 60, d2: 100 },
+        { beats: 1.0, status: 0x80, d1: 60, d2: 0   },
+    ];
+    const { harness, writer } = makeHarness({ events, ...requiredState() });
+    await writer.save();
+
+    assert.deepEqual(harness.posts, []);
+});
+
 test("G2: bytes passed to writeSmf equal buildSmf(events, livestate) byte-for-byte", async () => {
     const events: MidiEvent[] = [
         { beats: 0,   status: 0x90, d1: 64, d2: 100 },
@@ -258,10 +269,6 @@ test("G2b: blank Start or Beats means save the whole buffer with no range trim",
             initialCcs: state.initialCcs,
         });
         assert.deepEqual(harness.writes[0].bytes, [...expected]);
-        assert.ok(
-            !harness.posts.some((m) => m.includes("export range start=")),
-            "no explicit range was applied",
-        );
     }
 });
 
@@ -291,10 +298,6 @@ test("G2c: nonblank Start and Beats still trim to the requested range", async ()
         loopMarkers: null,
     });
     assert.deepEqual(harness.writes[0].bytes, [...expected]);
-    assert.ok(
-        harness.posts.some((m) => m.includes("export range start=4 length=4 end=8")),
-        "explicit range was applied",
-    );
 });
 
 test("G2d: explicit BBS Loop Start and Loop End fields insert loop markers", async () => {
@@ -317,10 +320,6 @@ test("G2d: explicit BBS Loop Start and Loop End fields insert loop markers", asy
     assert.ok(open && close);
     assert.equal(open!.tick,  0);
     assert.equal(close!.tick, 4 * PPQ);
-    assert.ok(
-        harness.posts.some((m) => m.includes("loop markers start=16 end=20")),
-        "BBS marker fields were parsed to absolute beats",
-    );
 });
 
 test("G2e: blank marker fields ignore Live loop markers", async () => {

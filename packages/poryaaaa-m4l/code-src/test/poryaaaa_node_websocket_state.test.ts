@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import {
   PoryaaaaVoicegroupService,
   type CcomidiSnapshot,
+  type CcomidiVoicegroupFrame,
   type PoryaaaaVoicegroupOutput,
 } from "../poryaaaa-node/voicegroup-service";
 import type { VoicegroupState } from "../poryaaaa-node/project-store";
@@ -66,7 +67,9 @@ function closeClient(ws: WebSocket): Promise<void> {
 function serviceHarness() {
   const outputs: PoryaaaaVoicegroupOutput[] = [];
   let state: VoicegroupState | null = null;
-  const service = new PoryaaaaVoicegroupService({
+  let service: PoryaaaaVoicegroupService;
+  const postFrame = (frame: CcomidiVoicegroupFrame) => service.post(frame);
+  service = new PoryaaaaVoicegroupService({
     scanBanks: () => ["alpha"],
     parseVoicegroup: () => ({ ok: true, slots: SNAPSHOT.slots }),
     readVoicegroupState: () => state,
@@ -74,7 +77,8 @@ function serviceHarness() {
       state = nextState;
     },
     output: (out) => outputs.push(out),
-    post: () => {},
+    post: postFrame,
+    log: () => {},
     websocketHost: "127.0.0.1",
     websocketPort: 0,
   });
@@ -124,13 +128,16 @@ test("server sends unavailable to a newly connected client when no voicegroup is
 
 test("parse failure with no previous snapshot broadcasts unavailable", async () => {
   const outputs: PoryaaaaVoicegroupOutput[] = [];
-  const service = new PoryaaaaVoicegroupService({
+  let service: PoryaaaaVoicegroupService;
+  const postFrame = (frame: CcomidiVoicegroupFrame) => service.post(frame);
+  service = new PoryaaaaVoicegroupService({
     scanBanks: () => ["bad"],
     parseVoicegroup: () => ({ ok: false, diagnostics: ["bad voice macro"] }),
     readVoicegroupState: () => null,
     writeVoicegroupState: () => {},
     output: (out) => outputs.push(out),
-    post: () => {},
+    post: postFrame,
+    log: () => {},
     websocketHost: "127.0.0.1",
     websocketPort: 0,
   });

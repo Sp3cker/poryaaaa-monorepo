@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   PoryaaaaVoicegroupService,
+  type CcomidiVoicegroupFrame,
   type PoryaaaaVoicegroupOutput,
 } from "../poryaaaa-node/voicegroup-service";
 import type {
@@ -30,7 +31,8 @@ function harness(args: {
   state?: VoicegroupState | null;
 } = {}) {
   const outputs: PoryaaaaVoicegroupOutput[] = [];
-  const posts: string[] = [];
+  const posts: CcomidiVoicegroupFrame[] = [];
+  const logs: string[] = [];
   let state = args.state ?? null;
   const writes: VoicegroupState[] = [];
   const service = new PoryaaaaVoicegroupService({
@@ -43,9 +45,10 @@ function harness(args: {
       state = nextState;
     },
     output: (out) => outputs.push(out),
-    post: (msg) => posts.push(msg),
+    post: (frame: CcomidiVoicegroupFrame) => posts.push(frame),
+    log: (msg: string) => logs.push(msg),
   });
-  return { service, outputs, posts, get state() { return state; }, writes };
+  return { service, outputs, posts, logs, get state() { return state; }, writes };
 }
 
 function outputArgs(outputs: PoryaaaaVoicegroupOutput[]): unknown[][] {
@@ -102,7 +105,55 @@ test("bankselect validates before persisting, emitting voicegroup, and broadcast
   assert.deepEqual(h.writes.at(-1), { root: "/p", bank: "alpha" });
 });
 
-test("parse failure keeps previous snapshot and does not emit voicegroup or broadcast", () => {
+test("bankselect posts the ccomidi snapshot frame instead of websocket JSON text", () => {
+  const h = harness({
+    banks: { "/p": ["alpha"] },
+    parses: { "/p/alpha": ok() },
+  });
+  h.service.rawroot("/p");
+  h.posts.length = 0;
+
+  h.service.bankselect("alpha");
+
+  assert.deepEqual(h.posts, [{ type: "snapshot", slots: [SLOT] }]);
+  assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });
+});
+
+test("bankselect posts unavailable frame when parsing fails with no previous snapshot", () => {
+  const h = harness({
+    banks: { "/p": ["bad"] },
+    parses: { "/p/bad": bad("bad voice macro") },
+  });
+  h.service.rawroot("/p");
+  h.posts.length = 0;
+  h.logs.length = 0;
+  h.outputs.length = 0;
+
+  h.service.bankselect("bad");
+
+  assert.deepEqual(h.posts, [{ type: "unavailable" }]);
+  assert.deepEqual(h.outputs, []);
+  assert.equal(h.service.latestSnapshot(), null);
+  assert.match(h.logs.join("\n"), /bad voice macro/);
+});
+
+test("bankselect ignores a duplicate selection for the already-loaded bank", () => {
+  const h = harness({
+    banks: { "/p": ["alpha"] },
+    parses: { "/p/alpha": ok() },
+  });
+  h.service.rawroot("/p");
+  h.service.bankselect("alpha");
+  h.outputs.length = 0;
+  h.posts.length = 0;
+
+  h.service.bankselect("alpha");
+
+  assert.deepEqual(h.outputs, []);
+  assert.deepEqual(h.posts, []);
+});
+
+test("parse failure keeps previous snapshot and does not emit voicegroup or replacement frame", () => {
   const h = harness({
     banks: { "/p": ["alpha", "bad"] },
     parses: {
@@ -114,12 +165,15 @@ test("parse failure keeps previous snapshot and does not emit voicegroup or broa
   h.service.bankselect("alpha");
   const previous = h.service.latestSnapshot();
   h.outputs.length = 0;
+  h.posts.length = 0;
+  h.logs.length = 0;
 
   h.service.bankselect("bad");
 
   assert.deepEqual(h.outputs, []);
+  assert.deepEqual(h.posts, []);
   assert.deepEqual(h.service.latestSnapshot(), previous);
-  assert.match(h.posts.join("\n"), /malformed voice_directsound/);
+  assert.match(h.logs.join("\n"), /malformed voice_directsound/);
 });
 
 test("reload reparses and broadcasts even when root and bank are unchanged", () => {
@@ -137,7 +191,7 @@ test("reload reparses and broadcasts even when root and bank are unchanged", () 
   assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });
 });
 
-test("invalid saved bank posts a diagnostic and does not emit or broadcast", () => {
+test("invalid saved bank logs a diagnostic and does not emit voicegroup", () => {
   const h = harness({
     banks: { "/p": ["alpha", "beta"] },
     parses: { "/p/beta": bad("bad saved bank") },
@@ -151,7 +205,7 @@ test("invalid saved bank posts a diagnostic and does not emit or broadcast", () 
     [],
   );
   assert.equal(h.service.latestSnapshot(), null);
-  assert.match(h.posts.join("\n"), /bad saved bank/);
+  assert.match(h.logs.join("\n"), /bad saved bank/);
 });
 
 test("stale saved bank restores root menu but does not emit voicegroup", () => {
@@ -168,7 +222,7 @@ test("stale saved bank restores root menu but does not emit voicegroup", () => {
     ["bank", "append", "alpha"],
   ]);
   assert.equal(h.service.latestSnapshot(), null);
-  assert.match(h.posts.join("\n"), /not found/);
+  assert.match(h.logs.join("\n"), /not found/);
 });
 
 test("restore with no saved state emits the empty project UI", () => {

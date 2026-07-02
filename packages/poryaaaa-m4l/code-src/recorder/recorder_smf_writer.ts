@@ -301,28 +301,13 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                 tempPath = dump.path;
 
                 const events = deps.readBufferFile(tempPath);
-                deps.post(`recorder: dump path=${tempPath} count=${dump.count} parsed=${events.length}\n`);
 
                 const tempo   = deps.liveApi.getTempo();
                 const loop    = deps.liveApi.getLoop();
                 const timeSig = deps.liveApi.getTimeSig();
                 const voicemap = deps.voicemap();
-                if (voicemap.size === 0) {
-                    deps.post(`recorder: no synthetic voicemap PCs configured; relying on captured MIDI for PC state\n`);
-                } else {
-                    const entries: string[] = [];
-                    for (const [ch, prog] of voicemap) {
-                        entries.push(`ch${ch + 1}=prog${prog}`);
-                    }
-                    deps.post(`recorder: voicemap has ${voicemap.size} entries: ${entries.join(", ")}\n`);
-                }
 
                 const initialCcs = deps.readInitialCcs?.() ?? [];
-                if (initialCcs.length > 0) {
-                    deps.post(`recorder: injecting ${initialCcs.length} legacy initial CCs at tick 0\n`);
-                } else {
-                    deps.post(`recorder: no legacy initial CCs configured; relying on captured MIDI for CC state\n`);
-                }
 
                 // Parse the optional Start/Length fields as beat counts. Both
                 // must be present and valid to trim; an empty or malformed
@@ -345,9 +330,6 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                         startBeats,
                         endBeats:   startBeats + lb,
                     };
-                    deps.post(`recorder: export range start=${parsedRange.startBeats} length=${lb} end=${parsedRange.endBeats}\n`);
-                } else if (startStr || lenStr) {
-                    deps.post("recorder: incomplete export range - saving whole buffer\n");
                 }
 
                 // Loop markers are Ableton bar.beat.sixteenth positions.
@@ -365,12 +347,7 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                 }
                 if (mb !== null && me !== null) {
                     parsedMarkers = { startBeats: mb, endBeats: me };
-                    deps.post(`recorder: loop markers start=${mb} end=${me}\n`);
-                } else if (markerStartStr || markerEndStr) {
-                    deps.post("recorder: incomplete loop markers - no loop markers\n");
                 }
-                deps.post(`recorder: Live loop ignored for SMF markers on=${loop.on ? 1 : 0} start=${loop.start} length=${loop.length}\n`);
-
                 const smfBytes = buildSmf({
                     events,
                     tempo,
@@ -382,7 +359,6 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                     anchorMode: "firstNote",
                     initialCcs,
                 });
-                deps.post(`recorder: smf bytes=${smfBytes.length}\n`);
 
                 const initialState = validateSmfInitialChannelState(smfBytes);
                 if (!initialState.ok) {
@@ -400,7 +376,6 @@ export function createSmfWriter(deps: SmfWriterDeps): SmfWriter {
                     status("FAILED: write error");
                     return false;
                 }
-                deps.post(`recorder: wrote ${outPath} (${events.length} events)\n`);
                 // Extract basename for the status message (user sees "test2.mid" not full path).
                 const i = outPath.lastIndexOf("/");
                 const base = i >= 0 ? outPath.slice(i + 1) : outPath;
