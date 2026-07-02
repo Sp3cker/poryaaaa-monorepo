@@ -30,8 +30,13 @@ for project rules; it has been replaced by this Codex skill.
 - Treat V8-controller TypeScript and Node-for-Max transport TypeScript as
   separate domains unless the task explicitly crosses their message contract.
 - Devices in `devices/*.amxd` are hand-maintained. After editing a device in Max,
-  run `python3 scripts/amxd_inspect.py devices/<name>.amxd validate` and commit the
+  a subagent must validate it with
+  `python3 scripts/amxd_inspect.py devices/<name>.amxd validate`; commit the
   resulting binary.
+  The main agent must never invoke `scripts/amxd_inspect.py` directly. For any
+  device inspection or validation, spawn a subagent with an explicit request
+  specifying what to inspect (boxes, cords, attributes, or validation result)
+  and what to report back.
 - Before recommending or wiring a Max/M4L object, check `docs/max-ref/` or
   explicitly state when no local reference exists.
 - Serialize non-UI Live API objects as `newobj` with `text`, not native

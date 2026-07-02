@@ -61,9 +61,11 @@
   no longer do). Open the .amxd from the repo in Max, edit the patcher (patching
   rects, cords, bpatchers, live.* widgets, etc.), and Save in place over the file
   in `devices/`.
-- After any structural change (especially cords or object counts), run
+- After any structural change (especially cords or object counts), delegate
   `python3 scripts/amxd_inspect.py devices/<device>.amxd validate` (plus boxes/
-  cords queries as needed) and commit the updated binary .amxd.
+  cords queries as needed) to a subagent and commit the updated binary .amxd.
+  The main agent must specify the device path, what to inspect, and what to
+  report back; it must not invoke `scripts/amxd_inspect.py` directly.
 - The `.amxd` files use the factory-style `ampf + meta + ptch + JSON` layout
   produced by Max on save.
 - Non-UI Live API objects serialize as `maxclass: "newobj"` with the object name

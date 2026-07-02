@@ -3,8 +3,7 @@ import WebSocket, { WebSocketServer } from "ws";
 
 import { normalizeRoot } from "../scanner";
 import type { VoiceSlot } from "../voice-slot-contract";
-import type { VoicegroupState } from "./project-store";
-import type { VoicegroupParseResult } from "./voicegroup-parser";
+import { parseVoicegroup, VoicegroupParseResult } from "./voicegroup-parser";
 
 export interface CcomidiSnapshot {
   slots: Array<VoiceSlot | null>;
@@ -15,15 +14,15 @@ export type CcomidiVoicegroupFrame =
   | { type: "unavailable" };
 
 export type PoryaaaaVoicegroupOutput =
-  | { tag: "bank"; args: unknown[] }
-  | { tag: "path"; args: unknown[] }
+  | { tag: "bank"; args: string[] }
+  | { tag: "path"; args: string[] }
+  | { tag: "diag", args: string[] }
   | { tag: "voicegroup"; args: [string, string] };
 
 export interface PoryaaaaVoicegroupServiceDeps {
   scanBanks: (root: string) => string[];
   parseVoicegroup: (root: string, bank: string) => VoicegroupParseResult;
-  readVoicegroupState: () => VoicegroupState | null;
-  writeVoicegroupState: (state: VoicegroupState) => void;
+  /* Sends out Max device outlet. Prepend with string so [route] do its thing */
   output: (out: PoryaaaaVoicegroupOutput) => void;
   post: (frame: CcomidiVoicegroupFrame) => void;
   log: (msg: string) => void;
@@ -52,6 +51,7 @@ export class PoryaaaaVoicegroupService {
       });
       if (this.latest) {
         this.sendFrame(ws, { type: "snapshot", slots: this.latest.slots });
+        this.deps.output({ tag: "diag", args: ["Sent Voices"] })
       } else {
         // New clients must learn that startup completed with no valid
         // voicegroup; silence leaves ccomidi stuck on "waiting for poryaaaa".
@@ -60,7 +60,7 @@ export class PoryaaaaVoicegroupService {
     });
 
     wss.on("error", (err) => {
-      this.deps.log(`voicegroups websocket: ${String(err)}\n`);
+      this.deps.log(`websocket: ${String(err)}\n`);
     });
 
     wss.on("close", () => {
@@ -132,16 +132,12 @@ export class PoryaaaaVoicegroupService {
     this.broadcastFrame(frame);
   }
 
-  private emit(tag: PoryaaaaVoicegroupOutput["tag"], ...args: unknown[]): void {
+  private emit(tag: PoryaaaaVoicegroupOutput["tag"], ...args: string[]): void {
     if (tag === "voicegroup") {
       this.deps.output({ tag, args: args as [string, string] });
       return;
     }
     this.deps.output({ tag, args });
-  }
-
-  private isAbsoluteRoot(root: string): boolean {
-    return root.startsWith("/");
   }
 
   private emitNoProject(): void {
@@ -167,8 +163,8 @@ export class PoryaaaaVoicegroupService {
     }
   }
 
-  private updateLatestSnapshot(snapshot: CcomidiSnapshot, frame: CcomidiVoicegroupFrame): void {
-    this.latest = snapshot;
+  private updateLatestSnapshot(snapshot: CcomidiSnapshot): void {
+    const frame: CcomidiVoicegroupFrame = { type: "snapshot", slots: snapshot.slots };
     this.deps.post(frame);
   }
 
@@ -176,18 +172,11 @@ export class PoryaaaaVoicegroupService {
     this.latest = null;
   }
 
-  private writeStateToDisk(): void {
-    if (!this.currentRoot) return;
-    this.deps.writeVoicegroupState({
-      root: this.currentRoot,
-      bank: this.currentBank,
-    });
-  }
 
-  private emitBanks(root: string, persist: boolean): string[] {
+  private emitBanks(root: string): string[] {
     this.currentRoot = root;
     this.currentBank = "";
-    if (!this.isAbsoluteRoot(root)) {
+    if (root.startsWith("/") === false) { // Needs 2 b root dir
       this.emitNoProject();
       return [];
     }
@@ -198,23 +187,22 @@ export class PoryaaaaVoicegroupService {
     this.emit("bank", "clear");
     if (banks.length === 0) {
       this.emit("bank", "append", "(no .inc files in sound/voicegroups)");
-      this.deps.log(`voicegroups: no voicegroup banks found under ${root}\n`);
+      this.deps.log(`no voicegroup banks found under ${root}\n`);
     } else {
       for (const bank of banks) this.emit("bank", "append", bank);
     }
-    if (persist) this.writeStateToDisk();
     return banks;
   }
 
-  private applyValidBank(bank: string, persist: boolean, forceReload = false): boolean {
-    if (!this.isAbsoluteRoot(this.currentRoot)) return false;
+  private applyValidBank(bank: string, forceReload = false): boolean {
+    if (this.currentRoot.startsWith("/") === false) return false;
     if (!bank || bank.startsWith("(")) return false;
-    if (!forceReload && bank === this.currentBank) return false;
+    if (forceReload === false && bank === this.currentBank) return false;
 
-    const parsed = this.deps.parseVoicegroup(this.currentRoot, bank);
+    const parsed = parseVoicegroup(this.currentRoot, bank);
     if (!parsed.ok) {
       for (const diagnostic of parsed.diagnostics) {
-        this.deps.log(`voicegroups: ${diagnostic}\n`);
+        this.deps.output({ tag: "diag", args: [`voicegroups: ${diagnostic}\n`] });
       }
       // With no previous snapshot to keep showing, tell clients the bank is
       // unavailable instead of leaving their last connection state pending.
@@ -223,43 +211,23 @@ export class PoryaaaaVoicegroupService {
     }
 
     this.currentBank = bank;
-    if (persist) this.writeStateToDisk();
     this.emit("voicegroup", this.currentRoot, this.currentBank);
     const snapshot = { slots: parsed.slots };
-    const frame: CcomidiVoicegroupFrame = { type: "snapshot", slots: snapshot.slots };
-    this.updateLatestSnapshot(snapshot, frame);
-    return true;
-  }
-// Last saved bank is stored in Live. Likely dont need this function. Wrong model of deps.
-  private restoreSavedState(state: VoicegroupState): void {
-    const banks = this.emitBanks(state.root, false);
-    if (!state.bank) return;
-    if (!banks.includes(state.bank)) {
-      this.deps.log(`voicegroups: saved bank "${state.bank}" not found in current root\n`);
-      return;
-    }
-    this.applyValidBank(state.bank, true);
-  }
+    this.latest = snapshot;
 
-  // No-op compatibility path: poryaaaa.amxd no longer sends restore because
-  // Live owns the saved project/bank state. Remove this method and the
-  // projects.json read dependency once the old restore contract is deleted.
-  restore(): void {
-    const saved = this.deps.readVoicegroupState();
-    if (!saved) {
-      this.deps.log("voicegroups: no saved state\n");
-      this.emitNoProject();
-      return;
-    }
-    this.restoreSavedState(saved);
+    this.updateLatestSnapshot(snapshot);
+    return true;
   }
 
   rawroot(rootPath: string): void {
-    this.emitBanks(normalizeRoot(rootPath), true);
+    this.emitBanks(normalizeRoot(rootPath));
   }
 
   bankselect(bankName: string): void {
-    this.applyValidBank(String(bankName ?? "").trim(), true);
+    const ok = this.applyValidBank(String(bankName ?? "").trim());
+    if (!ok) {
+      this.deps.output({ tag: "diag", args: ["Bank not applied"] })
+    }
   }
 
   reload(): void {
@@ -267,7 +235,7 @@ export class PoryaaaaVoicegroupService {
       this.deps.log("voicegroups: reload ignored; no voicegroup is selected\n");
       return;
     }
-    this.applyValidBank(this.currentBank, false, true);
+    this.applyValidBank(this.currentBank, true);
   }
 
   dumpstate(): void {

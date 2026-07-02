@@ -409,7 +409,9 @@ impl ClapPlugin for PoryaaaaPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{temp_project, write_file, TestInitContext, TEST_ENV_LOCK};
+    use crate::test_support::{
+        temp_project, write_file, IsolatedHome, TestInitContext, TEST_ENV_LOCK,
+    };
     use std::fs;
 
     #[test]
@@ -460,7 +462,7 @@ reverb=23
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _home = IsolatedHome::new("audio-param-runtime-home");
         let mut plugin = PoryaaaaPlugin::default();
         plugin
             .params_for_test()
@@ -558,7 +560,7 @@ reverb=23
             ",
         );
 
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _home = IsolatedHome::new("plugin-process-loaded-home");
         let mut plugin = PoryaaaaPlugin::default();
         plugin
             .params_for_test()
@@ -642,10 +644,7 @@ volume=127
                 project.to_string_lossy()
             ),
         );
-        let home = temp_project("default-config-home");
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
+        let _home = IsolatedHome::new("default-config-home");
         crate::config::set_default_config_dir_for_test(Some(config_dir.clone()));
 
         let mut plugin = PoryaaaaPlugin::default();
@@ -696,14 +695,8 @@ volume=127
 
         plugin.deactivate();
         crate::config::set_default_config_dir_for_test(None);
-        if let Some(old_home) = old_home {
-            std::env::set_var("HOME", old_home);
-        } else {
-            std::env::remove_var("HOME");
-        }
         fs::remove_dir_all(project).expect("remove temp project");
         fs::remove_dir_all(config_dir).expect("remove temp config dir");
-        fs::remove_dir_all(home).expect("remove temp home");
     }
 
     fn test_buffer_config() -> nice_plug::prelude::BufferConfig {

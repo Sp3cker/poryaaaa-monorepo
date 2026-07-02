@@ -107,7 +107,7 @@ mod clap {
 mod tests {
     use super::*;
     use crate::process::ProcessRuntime;
-    use crate::test_support::{temp_project, write_file, TestInitContext, TEST_ENV_LOCK};
+    use crate::test_support::{temp_project, write_file, IsolatedHome, TestInitContext};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -267,9 +267,7 @@ mod tests {
 
     #[test]
     fn voicegroup_load_request_uses_drafts_and_does_not_commit_until_background_success() {
-        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
-        let home = temp_project("home");
-        std::env::set_var("HOME", &home);
+        let _home = IsolatedHome::new("home");
 
         let params = PoryaaaaParams::default();
         let mut gui_state = crate::editor::GuiState::from_params(&params);
@@ -290,9 +288,6 @@ mod tests {
                 is_error: false,
             })
         );
-
-        std::env::remove_var("HOME");
-        fs::remove_dir_all(home).expect("remove home");
     }
 
     #[test]
@@ -536,13 +531,8 @@ route104::
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
-        let home = temp_project("initialize-home");
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
-        let projects_json_path = crate::shared_projects_json::default_projects_json_path()
-            .expect("default projects path");
-        let _ = fs::remove_file(&projects_json_path);
+        let home = IsolatedHome::new("initialize-home");
+        let projects_json_path = home.projects_json_path();
 
         let mut plugin = PoryaaaaPlugin::default();
         *plugin
@@ -567,18 +557,12 @@ route104::
         assert!(plugin.initialize(&layout, &buffer_config, &mut context));
 
         assert!(plugin.runtime_has_loaded_voicegroup());
-        assert!(fs::read_to_string(&projects_json_path)
+        assert!(fs::read_to_string(projects_json_path)
             .expect("projects.json emitted during initialize")
             .contains("\"bank\": \"route104\""));
 
         plugin.deactivate();
-        if let Some(old_home) = old_home {
-            std::env::set_var("HOME", old_home);
-        } else {
-            std::env::remove_var("HOME");
-        }
         fs::remove_dir_all(root).expect("remove temp project");
-        fs::remove_dir_all(home).expect("remove temp home");
     }
 
     #[test]
@@ -596,7 +580,8 @@ route104::
             ",
         );
 
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let home = IsolatedHome::new("initialize-committed-load-home");
+        let projects_json_path = home.projects_json_path();
 
         let mut plugin = PoryaaaaPlugin::default();
         plugin
@@ -613,6 +598,9 @@ route104::
 
         assert!(plugin.initialize(&layout, &buffer_config, &mut context));
         assert!(plugin.runtime_has_loaded_voicegroup());
+        assert!(fs::read_to_string(projects_json_path)
+            .expect("projects.json emitted during initialize")
+            .contains("\"bank\": \"voicegroup000\""));
 
         plugin.deactivate();
         fs::remove_dir_all(root).expect("remove temp project");
@@ -631,10 +619,7 @@ route104::
                     voice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242 @ Kick
             ",
         );
-        let home = temp_project("initialize-load-error-home");
-        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
+        let _home = IsolatedHome::new("initialize-load-error-home");
 
         let mut plugin = PoryaaaaPlugin::default();
         *plugin
@@ -667,13 +652,7 @@ route104::
         assert!(!status.text.is_empty());
 
         plugin.deactivate();
-        if let Some(old_home) = old_home {
-            std::env::set_var("HOME", old_home);
-        } else {
-            std::env::remove_var("HOME");
-        }
         fs::remove_dir_all(root).expect("remove temp project");
-        fs::remove_dir_all(home).expect("remove temp home");
     }
     #[test]
     fn load_voicegroup_task_commits_params_and_requests_restart_without_runtime_swap() {

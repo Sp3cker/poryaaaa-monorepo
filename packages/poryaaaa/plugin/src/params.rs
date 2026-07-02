@@ -82,7 +82,10 @@ impl PoryaaaaParams {
     /// Builds params with config-seeded audio defaults before host state restore can override them.
     pub(crate) fn with_audio_defaults(volume: u8, reverb: u8) -> Self {
         Self {
-            window_state: WindowState::from_logical_size(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT),
+            window_state: WindowState::from_logical_size(
+                DEFAULT_EDITOR_WIDTH,
+                DEFAULT_EDITOR_HEIGHT,
+            ),
             project_root: Arc::new(RwLock::new(String::new())),
             voicegroup: Arc::new(RwLock::new(String::new())),
             runtime_voicegroup_status: Arc::new(RwLock::new(None)),

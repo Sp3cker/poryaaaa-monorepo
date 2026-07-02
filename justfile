@@ -45,9 +45,7 @@ build target:
         cmake --build packages/{{target}}/build --config Release --target textedit_VST3
         ;;
       m4l)
-        npm --prefix packages/voicegroup-core-node run build
-        cd packages/poryaaaa-m4l
-        npm run build
+        npm --prefix packages/poryaaaa-m4l run build --silent
         ;;
       vg-core|voicegroup-core)
         rust_target=""

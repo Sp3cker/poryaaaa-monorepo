@@ -17,7 +17,6 @@ export type VoicegroupParseResult =
   | {
       ok: true;
       slots: Array<VoiceSlot | null>;
-      diagnostics: VoicegroupDiagnostic[];
       sourcePath: string;
     }
   | {

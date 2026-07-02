@@ -72,8 +72,6 @@ function poryaaaaServerHarness() {
   service = new PoryaaaaVoicegroupService({
     scanBanks: () => ["alpha"],
     parseVoicegroup: () => ({ ok: true, slots: [SLOT] }),
-    readVoicegroupState: () => null,
-    writeVoicegroupState: () => {},
     output: () => {},
     post: postFrame,
     log: () => {},

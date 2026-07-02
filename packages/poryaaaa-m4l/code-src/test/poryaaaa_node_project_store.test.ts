@@ -73,7 +73,7 @@ test("writeVoicegroupState preserves project-keyed recorder entries", () => {
   });
 });
 
-test("readVoicegroupState falls back to latest matching legacy project bank when global bank is blank", () => {
+test("readVoicegroupState keeps blank global bank instead of inferring legacy project entries", () => {
   const statePath = tempFile();
   const store = new ProjectStore({ statePath });
   seedStateFile(statePath, JSON.stringify({
@@ -85,11 +85,11 @@ test("readVoicegroupState falls back to latest matching legacy project bank when
 
   assert.deepEqual(store.readVoicegroupState(), {
     root: "/p",
-    bank: "currentbank",
+    bank: "",
   });
 });
 
-test("readVoicegroupState falls back to latest legacy project when no global state exists", () => {
+test("readVoicegroupState ignores legacy project entries when no global state exists", () => {
   const statePath = tempFile();
   const store = new ProjectStore({ statePath });
   seedStateFile(statePath, JSON.stringify({
@@ -97,10 +97,7 @@ test("readVoicegroupState falls back to latest legacy project when no global sta
     "/sets/Current.als": { root: "/current", bank: "currentbank" },
   }));
 
-  assert.deepEqual(store.readVoicegroupState(), {
-    root: "/current",
-    bank: "currentbank",
-  });
+  assert.equal(store.readVoicegroupState(), null);
 });
 
 test("malformed projects.json is preserved and backed up instead of reset on read", () => {

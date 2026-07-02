@@ -10,7 +10,6 @@ import type {
   VoiceSlot,
   VoicegroupParseResult,
 } from "../poryaaaa-node/voicegroup-parser";
-import type { VoicegroupState } from "../poryaaaa-node/project-store";
 
 const SLOT: VoiceSlot = {
   name: "Lead",
@@ -28,54 +27,27 @@ function bad(message: string): VoicegroupParseResult {
 function harness(args: {
   banks?: Record<string, string[]>;
   parses?: Record<string, VoicegroupParseResult>;
-  state?: VoicegroupState | null;
 } = {}) {
   const outputs: PoryaaaaVoicegroupOutput[] = [];
   const posts: CcomidiVoicegroupFrame[] = [];
   const logs: string[] = [];
-  let state = args.state ?? null;
-  const writes: VoicegroupState[] = [];
   const service = new PoryaaaaVoicegroupService({
     scanBanks: (root) => args.banks?.[root] ?? [],
     parseVoicegroup: (root, bank) =>
       args.parses?.[`${root}/${bank}`] ?? bad(`missing parse fixture ${root}/${bank}`),
-    readVoicegroupState: () => state,
-    writeVoicegroupState: (nextState) => {
-      writes.push(nextState);
-      state = nextState;
-    },
     output: (out) => outputs.push(out),
     post: (frame: CcomidiVoicegroupFrame) => posts.push(frame),
     log: (msg: string) => logs.push(msg),
   });
-  return { service, outputs, posts, logs, get state() { return state; }, writes };
+  return { service, outputs, posts, logs };
 }
 
 function outputArgs(outputs: PoryaaaaVoicegroupOutput[]): unknown[][] {
   return outputs.map((out) => [out.tag, ...out.args]);
 }
 
-test("restore loads saved root/bank, validates bank, emits UI without setting bank symbol, voicegroup, and snapshot", () => {
-  const h = harness({
-    banks: { "/p": ["alpha", "beta"] },
-    parses: { "/p/beta": ok() },
-    state: { root: "/p", bank: "beta" },
-  });
 
-  h.service.restore();
-
-  assert.deepEqual(outputArgs(h.outputs), [
-    ["path", "set", "/p"],
-    ["bank", "clear"],
-    ["bank", "append", "alpha"],
-    ["bank", "append", "beta"],
-    ["voicegroup", "/p", "beta"],
-  ]);
-  assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });
-  assert.deepEqual(h.writes.at(-1), { root: "/p", bank: "beta" });
-});
-
-test("rawroot scans and persists the root without validating every bank", () => {
+test("rawroot scans the root without validating every bank", () => {
   const h = harness({ banks: { "/p": ["alpha", "beta"] } });
 
   h.service.rawroot("Macintosh HD:/p/");
@@ -86,11 +58,10 @@ test("rawroot scans and persists the root without validating every bank", () => 
     ["bank", "append", "alpha"],
     ["bank", "append", "beta"],
   ]);
-  assert.deepEqual(h.writes.at(-1), { root: "/p", bank: "" });
   assert.equal(h.service.latestSnapshot(), null);
 });
 
-test("bankselect validates before persisting, emitting voicegroup, and broadcasting", () => {
+test("bankselect validates before emitting voicegroup and broadcasting", () => {
   const h = harness({
     banks: { "/p": ["alpha"] },
     parses: { "/p/alpha": ok() },
@@ -102,7 +73,6 @@ test("bankselect validates before persisting, emitting voicegroup, and broadcast
 
   assert.deepEqual(outputArgs(h.outputs), [["voicegroup", "/p", "alpha"]]);
   assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });
-  assert.deepEqual(h.writes.at(-1), { root: "/p", bank: "alpha" });
 });
 
 test("bankselect posts the ccomidi snapshot frame instead of websocket JSON text", () => {
@@ -191,51 +161,6 @@ test("reload reparses and broadcasts even when root and bank are unchanged", () 
   assert.deepEqual(h.service.latestSnapshot(), { slots: [SLOT] });
 });
 
-test("invalid saved bank logs a diagnostic and does not emit voicegroup", () => {
-  const h = harness({
-    banks: { "/p": ["alpha", "beta"] },
-    parses: { "/p/beta": bad("bad saved bank") },
-    state: { root: "/p", bank: "beta" },
-  });
-
-  h.service.restore();
-
-  assert.deepEqual(
-    outputArgs(h.outputs).filter((row) => row[0] === "voicegroup"),
-    [],
-  );
-  assert.equal(h.service.latestSnapshot(), null);
-  assert.match(h.logs.join("\n"), /bad saved bank/);
-});
-
-test("stale saved bank restores root menu but does not emit voicegroup", () => {
-  const h = harness({
-    banks: { "/p": ["alpha"] },
-    state: { root: "/p", bank: "missing" },
-  });
-
-  h.service.restore();
-
-  assert.deepEqual(outputArgs(h.outputs), [
-    ["path", "set", "/p"],
-    ["bank", "clear"],
-    ["bank", "append", "alpha"],
-  ]);
-  assert.equal(h.service.latestSnapshot(), null);
-  assert.match(h.logs.join("\n"), /not found/);
-});
-
-test("restore with no saved state emits the empty project UI", () => {
-  const h = harness();
-  h.service.restore();
-
-  assert.equal(h.service.latestSnapshot(), null);
-  assert.deepEqual(outputArgs(h.outputs), [
-    ["path", "set", "(no project)"],
-    ["bank", "clear"],
-    ["bank", "append", "(no project loaded)"],
-  ]);
-});
 
 test("changing roots clears the retained ccomidi snapshot before bank selection", () => {
   const h = harness({
