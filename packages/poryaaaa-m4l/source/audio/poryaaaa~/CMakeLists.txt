@@ -12,6 +12,7 @@ set(PORYA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../packages/poryaaaa"
 get_filename_component(PORYAAAA_M4L_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(PORYAAAA_VOICEGROUP_CORE_DIR "${PORYAAAA_M4L_ROOT}/../voicegroup-core"
     CACHE PATH "Path to the voicegroup-core package root")
+set(PORYAAAA_SANE_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SaneCppLibraries")
 set(PORYAAAA_VOICEGROUP_CORE_STATICLIB
     "${PORYAAAA_VOICEGROUP_CORE_DIR}/target/release/libvoicegroup_core.a")
 if(APPLE)
@@ -45,6 +46,7 @@ include_directories(
     "${PORYA_ROOT}/plugin/voicegroup"
     "${PORYA_ROOT}/../../shared"
     "${PORYAAAA_VOICEGROUP_CORE_DIR}/include"
+    "${PORYAAAA_SANE_CPP_DIR}/Libraries"
 )
 
 add_subdirectory("${PORYA_ROOT}/plugin/m4a" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_m4a_driver")
@@ -66,6 +68,10 @@ set(RECORDER_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/recorder/export_capture.cpp"
 )
 
+set(FILE_WATCHER_SRC
+    "${PORYAAAA_SANE_CPP_DIR}/Libraries/FileSystemWatcher/FileSystemWatcher.cpp"
+)
+
 add_library(
     ${PROJECT_NAME}
     MODULE
@@ -73,6 +79,7 @@ add_library(
     ${ENGINE_SRC}
     ${VG_SRC}
     ${RECORDER_SRC}
+    ${FILE_WATCHER_SRC}
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -83,6 +90,9 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE m4a_driver hw_audio voicegroup_core_static)
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreServices")
+endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-posttarget.cmake)
 
@@ -101,4 +111,20 @@ if(BUILD_TESTING)
     )
     target_compile_features(porya_recorder_tests PRIVATE cxx_std_17)
     add_test(NAME porya_recorder_tests COMMAND porya_recorder_tests)
+    if(APPLE)
+        add_executable(
+            porya_voicegroup_reload_watcher_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/voicegroup_reload_watcher.cpp"
+            ${FILE_WATCHER_SRC}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/voicegroup_reload_watcher_tests.cpp"
+        )
+        target_include_directories(
+            porya_voicegroup_reload_watcher_tests
+            PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        target_compile_features(porya_voicegroup_reload_watcher_tests PRIVATE cxx_std_17)
+        target_link_libraries(porya_voicegroup_reload_watcher_tests PRIVATE "-framework CoreServices")
+        add_test(NAME porya_voicegroup_reload_watcher_tests COMMAND porya_voicegroup_reload_watcher_tests)
+    endif()
 endif()
