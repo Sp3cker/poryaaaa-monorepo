@@ -3,7 +3,7 @@ import WebSocket, { WebSocketServer } from "ws";
 
 import { normalizeRoot } from "../scanner";
 import type { VoiceSlot } from "../voice-slot-contract";
-import { parseVoicegroup, VoicegroupParseResult } from "./voicegroup-parser";
+import type { VoicegroupParseResult } from "./voicegroup-parser";
 
 export interface CcomidiSnapshot {
   slots: Array<VoiceSlot | null>;
@@ -199,7 +199,7 @@ export class PoryaaaaVoicegroupService {
     if (!bank || bank.startsWith("(")) return false;
     if (forceReload === false && bank === this.currentBank) return false;
 
-    const parsed = parseVoicegroup(this.currentRoot, bank);
+    const parsed = this.deps.parseVoicegroup(this.currentRoot, bank);
     if (!parsed.ok) {
       for (const diagnostic of parsed.diagnostics) {
         this.deps.output({ tag: "diag", args: [`voicegroups: ${diagnostic}\n`] });
@@ -239,7 +239,7 @@ export class PoryaaaaVoicegroupService {
   }
 
   dumpstate(): void {
-    this.deps.log(
+    this.emit("diag",
       `dumpstate: currentRoot="${this.currentRoot}" currentBank="${this.currentBank}" latestSlots=${this.latest?.slots.length ?? 0}\n`,
     );
   }

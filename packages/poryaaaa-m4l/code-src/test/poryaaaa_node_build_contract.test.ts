@@ -33,7 +33,9 @@ test("build:externals builds voicegroup-core static C ABI before CMake", () => {
   assert.equal(scripts["build:voicegroup-core-static"], "bash scripts/build_voicegroup_core_static.sh");
   assert.equal(scripts["build:externals"], "run-s --silent build:voicegroup-core-static build:externals:cmake");
   assert.match(scripts["build:externals:cmake"] ?? "", /--log-level=warning/i);
-  assert.match(scripts["build:externals:cmake"] ?? "", /-quiet\b/);
+  assert.match(scripts["build:externals:cmake"] ?? "", /-G Ninja\b/);
+  assert.match(scripts["build:externals:cmake"] ?? "", /\bbuild-ninja\b/);
+  assert.doesNotMatch(scripts["build:externals:cmake"] ?? "", /\bXcode\b/);
 });
 
 test("aggregate M4L scripts use run-s --silent", () => {

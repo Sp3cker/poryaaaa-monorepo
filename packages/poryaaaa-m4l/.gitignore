@@ -1,4 +1,5 @@
 build/
+build-ninja/
 build-compdb/
 compile_commands.json
 externals/

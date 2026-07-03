@@ -102,9 +102,11 @@ test("bankselect posts unavailable frame when parsing fails with no previous sna
   h.service.bankselect("bad");
 
   assert.deepEqual(h.posts, [{ type: "unavailable" }]);
-  assert.deepEqual(h.outputs, []);
+  assert.deepEqual(outputArgs(h.outputs), [
+    ["diag", "voicegroups: bad voice macro\n"],
+    ["diag", "Bank not applied"],
+  ]);
   assert.equal(h.service.latestSnapshot(), null);
-  assert.match(h.logs.join("\n"), /bad voice macro/);
 });
 
 test("bankselect ignores a duplicate selection for the already-loaded bank", () => {
@@ -119,7 +121,7 @@ test("bankselect ignores a duplicate selection for the already-loaded bank", () 
 
   h.service.bankselect("alpha");
 
-  assert.deepEqual(h.outputs, []);
+  assert.deepEqual(outputArgs(h.outputs), [["diag", "Bank not applied"]]);
   assert.deepEqual(h.posts, []);
 });
 
@@ -140,10 +142,12 @@ test("parse failure keeps previous snapshot and does not emit voicegroup or repl
 
   h.service.bankselect("bad");
 
-  assert.deepEqual(h.outputs, []);
+  assert.deepEqual(outputArgs(h.outputs), [
+    ["diag", "voicegroups: line 2: malformed voice_directsound\n"],
+    ["diag", "Bank not applied"],
+  ]);
   assert.deepEqual(h.posts, []);
   assert.deepEqual(h.service.latestSnapshot(), previous);
-  assert.match(h.logs.join("\n"), /malformed voice_directsound/);
 });
 
 test("reload reparses and broadcasts even when root and bank are unchanged", () => {

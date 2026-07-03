@@ -22,8 +22,12 @@ service = new PoryaaaaVoicegroupService({
   log: (msg) => maxApi.outlet("diag", msg),
 });
 
-service.startWebSocket().catch((err: unknown) => {
-  maxApi.outlet({ type: "diag", message: `websocket: failed to bind 127.0.0.1:17777: ${String(err)}\n` });
+service.startWebSocket().then(() => {
+  maxApi.outlet("ready");
+  maxApi.post("voicegroups: ready\n");
+}).catch((err: unknown) => {
+  maxApi.outlet("diag", `websocket: failed to bind 127.0.0.1:17777: ${String(err)}\n`);
+  maxApi.outlet("wsstatus", "set", "off");
 });
 // Handles Open Project dialog output.
 maxApi.addHandler("rawroot", (...args) => {
@@ -46,6 +50,3 @@ maxApi.addHandler("dumpstate", () => {
 maxApi.addHandler("wsstatus", () => {
   maxApi.outlet("wsstatus", "set", service.isWebSocketListening() ? "on" : "off");
 });
-
-maxApi.outlet("ready");
-maxApi.post("voicegroups: ready\n");

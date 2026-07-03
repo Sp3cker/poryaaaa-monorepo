@@ -54,10 +54,10 @@ typedef struct _porya
     void* statusOutlet;
 
     /* Runtime-selected by the Node-owned voicegroup loader path. */
-    t_symbol* vgRoot;
-    t_symbol* vgName;
-    VoicegroupReloadWatcher* reloadWatcher;
-    t_qelem* reloadQelem;
+    const char* voicegroupRootPath;
+    const char* voicegroupBankName;
+    VoicegroupReloadWatcher* voicegroupReloadWatcher;
+    t_qelem* voicegroupReloadQueue;
     long progSlot[16];
     long songVolume;
     long reverbAmount;
@@ -103,7 +103,7 @@ static void porya_midievent(t_porya* x, t_symbol* s, long argc, t_atom* argv);
 static void porya_dispatch_event(t_porya* x, uint8_t status, uint8_t d1, uint8_t d2);
 static void porya_program(t_porya* x, long track, long program);
 static void porya_voicegroup(t_porya* x, t_symbol* root, t_symbol* name);
-static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av);
+static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* bankName);
 static void porya_voicegroup_reload_requested(void* userData);
 static void porya_voicegroup_reload_do(t_porya* x);
 static void porya_tempo(t_porya* x, double bpm);
@@ -220,10 +220,10 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     if (x->samplerate <= 0.0)
         x->samplerate = 48000.0;
 
-    x->vgRoot = gensym("");
-    x->vgName = gensym("");
-    x->reloadWatcher = new VoicegroupReloadWatcher();
-    x->reloadQelem = (t_qelem*)qelem_new(x, (method)porya_voicegroup_reload_do);
+    x->voicegroupRootPath = "";
+    x->voicegroupBankName = "";
+    x->voicegroupReloadWatcher = new VoicegroupReloadWatcher();
+    x->voicegroupReloadQueue = (t_qelem*)qelem_new(x, (method)porya_voicegroup_reload_do);
     for (int i = 0; i < 16; i++)
         x->progSlot[i] = 0;
     x->songVolume = MAX_SONG_VOLUME;
@@ -255,18 +255,18 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
 
 static void porya_free(t_porya* x)
 {
-    if (x->reloadWatcher)
+    if (x->voicegroupReloadWatcher)
     {
-        x->reloadWatcher->stop();
+        x->voicegroupReloadWatcher->stop();
     }
-    if (x->reloadQelem)
+    if (x->voicegroupReloadQueue)
     {
-        qelem_unset(x->reloadQelem);
-        qelem_free(x->reloadQelem);
-        x->reloadQelem = NULL;
+        qelem_unset(x->voicegroupReloadQueue);
+        qelem_free(x->voicegroupReloadQueue);
+        x->voicegroupReloadQueue = NULL;
     }
-    delete x->reloadWatcher;
-    x->reloadWatcher = nullptr;
+    delete x->voicegroupReloadWatcher;
+    x->voicegroupReloadWatcher = nullptr;
     dsp_free((t_pxobject*)x);
     m4a_engine_destroy(&x->engine);
     if (x->m4a_v2)
@@ -722,30 +722,25 @@ static void porya_anything(t_porya* x, t_symbol* s, long argc, t_atom* argv)
     object_error((t_object*)x, "poryaaaa~: unknown selector %s", s->s_name);
 }
 
-/* ---- voicegroup load (deferred to low-priority thread) ---- */
+/* ---- voicegroup load ---- */
 
 static void porya_voicegroup(t_porya* x, t_symbol* root, t_symbol* name)
 {
-    t_atom av[2];
-    atom_setsym(&av[0], root);
-    atom_setsym(&av[1], name);
-    defer_low((t_object*)x, (method)porya_voicegroup_do, NULL, 2, av);
+    const char* rootPath = root && root->s_name ? root->s_name : "";
+    const char* bankName = name && name->s_name ? name->s_name : "";
+    porya_voicegroup_do(x, rootPath, bankName);
 }
 
-static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
+static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* bankName)
 {
-    if (ac < 2)
-        return;
-    t_symbol* root = atom_getsym(av + 0);
-    t_symbol* name = atom_getsym(av + 1);
-    if (!root || !name || !root->s_name[0] || !name->s_name[0])
+    if (!rootPath || !bankName || !rootPath[0] || !bankName[0])
         return;
 
-    LoadedVoiceGroup* vg = voicegroup_load(root->s_name, name->s_name);
+    LoadedVoiceGroup* vg = voicegroup_load(rootPath, bankName);
     if (!vg)
     {
         char msg[512];
-        snprintf(msg, sizeof(msg), "voicegroup load failed: root=%s name=%s", root->s_name, name->s_name);
+        snprintf(msg, sizeof(msg), "voicegroup load failed: root=%s name=%s", rootPath, bankName);
         object_error((t_object*)x, "%s", msg);
         m4a_engine_set_voicegroup(&x->engine, NULL);
         m4a_driver_set_voicegroup(x->m4a_v2, NULL);
@@ -754,10 +749,10 @@ static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
             voicegroup_free(x->loadedVg);
             x->loadedVg = NULL;
         }
-        x->vgRoot = gensym("");
-        x->vgName = gensym("");
-        if (x->reloadWatcher)
-            x->reloadWatcher->stop();
+        x->voicegroupRootPath = "";
+        x->voicegroupBankName = "";
+        if (x->voicegroupReloadWatcher)
+            x->voicegroupReloadWatcher->stop();
         return;
     }
 
@@ -770,11 +765,13 @@ static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
     if (old)
         voicegroup_free(old);
 
-    x->vgRoot = root;
-    x->vgName = name;
-    if (x->reloadWatcher && !x->reloadWatcher->start(root->s_name, porya_voicegroup_reload_requested, x))
+    x->voicegroupRootPath = gensym(rootPath)->s_name;
+    x->voicegroupBankName = gensym(bankName)->s_name;
+    if (x->voicegroupReloadWatcher &&
+        !x->voicegroupReloadWatcher->start(rootPath, porya_voicegroup_reload_requested, x))
     {
-        object_error((t_object*)x, "poryaaaa~: voicegroup watcher failed: %s", x->reloadWatcher->last_error());
+        object_error(
+            (t_object*)x, "poryaaaa~: voicegroup watcher failed: %s", x->voicegroupReloadWatcher->last_error());
     }
 
     /* re-apply persisted program slots so each track has the right instrument
@@ -785,24 +782,22 @@ static void porya_voicegroup_do(t_porya* x, t_symbol* s, short ac, t_atom* av)
         m4a_program_change(x->m4a_v2, i, (uint8_t)x->progSlot[i]);
     }
 
-    object_post((t_object*)x, "voicegroup loaded: root=%s name=%s", root->s_name, name->s_name);
+    object_post((t_object*)x, "voicegroup loaded: root=%s name=%s", rootPath, bankName);
 }
 
 static void porya_voicegroup_reload_requested(void* userData)
 {
     t_porya* x = (t_porya*)userData;
-    if (x && x->reloadQelem)
-        qelem_set(x->reloadQelem);
+    if (x && x->voicegroupReloadQueue)
+        qelem_set(x->voicegroupReloadQueue);
 }
 
 static void porya_voicegroup_reload_do(t_porya* x)
 {
-    if (!x || !x->vgRoot || !x->vgName || !x->vgRoot->s_name[0] || !x->vgName->s_name[0])
+    if (!x || !x->voicegroupRootPath || !x->voicegroupBankName || !x->voicegroupRootPath[0] ||
+        !x->voicegroupBankName[0])
         return;
-    t_atom av[2];
-    atom_setsym(&av[0], x->vgRoot);
-    atom_setsym(&av[1], x->vgName);
-    porya_voicegroup_do(x, NULL, 2, av);
+    porya_voicegroup_do(x, x->voicegroupRootPath, x->voicegroupBankName);
 }
 
 /* ---- attribute getters/setters ---- */
