@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+
 export interface MaxApi {
   outlet: (...args: unknown[]) => void;
   post: (msg: string) => void;
@@ -49,10 +51,8 @@ export class CcomidiVoicegroupClient {
         const WebSocketCtor = globalThis.WebSocket as
           | (new (url: string) => ClientWebSocket)
           | undefined;
-        if (typeof WebSocketCtor !== "function") {
-          throw new Error("native WebSocket is unavailable");
-        }
-        return new WebSocketCtor(socketUrl);
+        if (typeof WebSocketCtor === "function") return new WebSocketCtor(socketUrl);
+        return new WebSocket(socketUrl) as unknown as ClientWebSocket;
       });
     this.setTimer =
       opts.setTimeout ??

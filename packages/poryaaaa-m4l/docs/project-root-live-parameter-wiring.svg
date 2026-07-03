@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">poryaaaa project root persistence wiring</title>
+  <desc id="desc">Max for Live wiring plan where a hidden Live-saved parameter stores the project root and sends it to node.script as rawroot on startup and after choosing a project.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#23324d"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .section { fill: #ffffff; stroke: #b8c2d6; stroke-width: 2; rx: 14; }
+      .box { fill: #eef4ff; stroke: #46699f; stroke-width: 2; rx: 10; }
+      .msg { fill: #fff8e8; stroke: #a66f15; stroke-width: 2; rx: 10; }
+      .param { fill: #edf9f0; stroke: #2f7d46; stroke-width: 2; rx: 10; }
+      .node { fill: #f1ecff; stroke: #6950a3; stroke-width: 2; rx: 10; }
+      .bad { fill: #ffecec; stroke: #b34444; stroke-width: 2; rx: 10; }
+      .text { fill: #1d2638; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { font-size: 18px; }
+      .label { font-size: 20px; font-weight: 600; }
+      .title { font-size: 30px; font-weight: 700; }
+      .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 18px; }
+      .arrow { stroke: #23324d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 8 8; }
+      .x { stroke: #b34444; stroke-width: 5; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="760"/>
+  <text class="text title" x="48" y="58">Persist project root in Live, not projects.json</text>
+
+  <rect class="section" x="40" y="92" width="560" height="590"/>
+  <text class="text label" x="70" y="132">poryaaaa.amxd patcher</text>
+
+  <rect class="msg" x="76" y="170" width="210" height="78"/>
+  <text class="text label" x="102" y="204">Choose Project</text>
+  <text class="text small" x="102" y="230">opendialog / folder</text>
+
+  <rect class="box" x="342" y="170" width="220" height="78"/>
+  <text class="text label" x="384" y="204">normalize path</text>
+  <text class="text mono" x="378" y="230">Mac HD: -&gt; /</text>
+
+  <rect class="param" x="76" y="312" width="486" height="96"/>
+  <text class="text label" x="112" y="348">Hidden Live parameter</text>
+  <text class="text mono" x="112" y="376">project_root</text>
+  <text class="text small" x="112" y="400">Live set owns persistence across close/reopen</text>
+
+  <rect class="msg" x="76" y="474" width="210" height="82"/>
+  <text class="text label" x="122" y="508">Startup</text>
+  <text class="text small" x="110" y="534">live.thisdevice</text>
+
+  <rect class="box" x="342" y="474" width="220" height="82"/>
+  <text class="text label" x="372" y="508">read parameter</text>
+  <text class="text mono" x="386" y="534">get project_root</text>
+
+  <rect class="msg" x="188" y="602" width="260" height="58"/>
+  <text class="text mono" x="228" y="638">rawroot &lt;path&gt;</text>
+
+  <rect class="section" x="680" y="92" width="560" height="590"/>
+  <text class="text label" x="710" y="132">Node + audio external</text>
+
+  <rect class="node" x="730" y="188" width="460" height="104"/>
+  <text class="text label" x="780" y="226">node.script poryaaaa_voicegroup_server</text>
+  <text class="text small" x="780" y="254">Receives explicit patcher messages only</text>
+  <text class="text mono" x="780" y="278">rawroot, bankselect, reload</text>
+
+  <rect class="box" x="730" y="354" width="460" height="82"/>
+  <text class="text label" x="812" y="388">scan voicegroup banks</text>
+  <text class="text small" x="812" y="414">fills menu from selected root</text>
+
+  <rect class="box" x="730" y="496" width="460" height="82"/>
+  <text class="text label" x="804" y="530">selected bank loads poryaaaa~</text>
+  <text class="text mono" x="804" y="556">voicegroup &lt;root&gt; &lt;bank&gt;</text>
+
+  <rect class="bad" x="720" y="620" width="486" height="46"/>
+  <text class="text mono" x="780" y="650">NO restore from projects.json</text>
+  <line class="x" x1="736" y1="626" x2="766" y2="660"/>
+  <line class="x" x1="766" y1="626" x2="736" y2="660"/>
+
+  <path class="arrow" d="M286 209 L342 209"/>
+  <path class="arrow" d="M452 248 L452 286 L320 286 L320 312"/>
+  <path class="arrow" d="M320 408 L320 578 L318 602"/>
+  <path class="arrow" d="M286 515 L342 515"/>
+  <path class="arrow" d="M452 556 L452 578 L448 602"/>
+  <path class="arrow" d="M448 631 L708 631 L708 240 L730 240"/>
+  <path class="arrow" d="M960 292 L960 354"/>
+  <path class="arrow" d="M960 436 L960 496"/>
+
+  <text class="text small" x="76" y="712">Rule: choosing a root writes the hidden Live parameter and immediately sends rawroot.</text>
+  <text class="text small" x="76" y="738">Rule: reopening the Live set reads the hidden Live parameter and sends the same rawroot. Node never reads projects.json for poryaaaa voicegroups.</text>
+</svg>

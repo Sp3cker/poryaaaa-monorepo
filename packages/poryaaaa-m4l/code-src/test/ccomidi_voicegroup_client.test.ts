@@ -286,3 +286,45 @@ test("client default native WebSocket receives a poryaaaa server snapshot", asyn
     await service.closeWebSocket();
   }
 });
+
+test("client falls back to ws package when native WebSocket is unavailable", async () => {
+  const previousWebSocket = globalThis.WebSocket;
+  const service = poryaaaaServerHarness();
+  const outlets: unknown[][] = [];
+  const posts: string[] = [];
+
+  await service.startWebSocket();
+  try {
+    service.rawroot("/p");
+    service.bankselect("alpha");
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: undefined,
+    });
+    const liveClient = new CcomidiVoicegroupClient({
+      url: service.websocketUrl(),
+      reconnectDelayMs: 25,
+      outlet: (...args) => outlets.push(args),
+      post: (msg) => posts.push(msg),
+    });
+    liveClient.start();
+    try {
+      const state = await waitForStateOutlet(outlets);
+      assert.deepEqual(JSON.parse(decodeURIComponent(state[1] as string)), {
+        slots: [SLOT],
+      });
+      assert.deepEqual(outlets.slice(0, 2), [
+        ["connstatus", "set", "trying"],
+        ["connstatus", "set", "connected"],
+      ]);
+    } finally {
+      liveClient.stop();
+    }
+  } finally {
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: previousWebSocket,
+    });
+    await service.closeWebSocket();
+  }
+});

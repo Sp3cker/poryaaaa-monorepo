@@ -18,10 +18,10 @@ function seedStateFile(statePath: string, contents: string): void {
   writeFileSync(statePath, contents);
 }
 
-test("missing projects.json returns no voicegroup state", () => {
+test("project store exposes no voicegroup restore reader", () => {
   const store = new ProjectStore({ statePath: tempFile() });
 
-  assert.equal(store.readVoicegroupState(), null);
+  assert.equal("readVoicegroupState" in store, false);
 });
 
 test("writeVoicegroupState creates parent directory and writes global root/bank", () => {
@@ -32,10 +32,6 @@ test("writeVoicegroupState creates parent directory and writes global root/bank"
 
   assert.equal(existsSync(dirname(statePath)), true);
   assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), {
-    root: "/p",
-    bank: "alpha",
-  });
-  assert.deepEqual(store.readVoicegroupState(), {
     root: "/p",
     bank: "alpha",
   });
@@ -71,43 +67,6 @@ test("writeVoicegroupState preserves project-keyed recorder entries", () => {
       recorderLoopEnd: "3.1.1",
     },
   });
-});
-
-test("readVoicegroupState keeps blank global bank instead of inferring legacy project entries", () => {
-  const statePath = tempFile();
-  const store = new ProjectStore({ statePath });
-  seedStateFile(statePath, JSON.stringify({
-    "/sets/Old.als": { root: "/p", bank: "oldbank" },
-    "/sets/Current.als": { root: "/p", bank: "currentbank" },
-    root: "/p",
-    bank: "",
-  }));
-
-  assert.deepEqual(store.readVoicegroupState(), {
-    root: "/p",
-    bank: "",
-  });
-});
-
-test("readVoicegroupState ignores legacy project entries when no global state exists", () => {
-  const statePath = tempFile();
-  const store = new ProjectStore({ statePath });
-  seedStateFile(statePath, JSON.stringify({
-    "/sets/Old.als": { root: "/old", bank: "oldbank" },
-    "/sets/Current.als": { root: "/current", bank: "currentbank" },
-  }));
-
-  assert.equal(store.readVoicegroupState(), null);
-});
-
-test("malformed projects.json is preserved and backed up instead of reset on read", () => {
-  const statePath = tempFile();
-  const store = new ProjectStore({ statePath });
-  seedStateFile(statePath, "{ not json");
-
-  assert.equal(store.readVoicegroupState(), null);
-  assert.equal(readFileSync(statePath, "utf8"), "{ not json");
-  assert.equal(readFileSync(`${statePath}.bad`, "utf8"), "{ not json");
 });
 
 test("writeVoicegroupState can recover from malformed projects.json without losing the backup", () => {

@@ -38,16 +38,6 @@ export class ProjectStore {
     this.statePath = opts.statePath ?? resolveProjectsJsonPath(opts);
   }
 
-  readVoicegroupState(): Record<string, string> | null {
-    const all = this.readAllStates();
-    const root = typeof all.root === "string" ? all.root : "";
-    const bank = typeof all.bank === "string" ? all.bank : "";
-    if (root && bank) return { root, bank };
-
-    if (!root && !bank) return null;
-    return { root, bank };
-  }
-
   writeVoicegroupState(state: { root: string, bank: string }): void {
     const all = this.readAllStates();
     all.root = state.root;

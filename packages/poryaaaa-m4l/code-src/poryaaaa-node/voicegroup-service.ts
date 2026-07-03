@@ -26,8 +26,11 @@ export interface PoryaaaaVoicegroupServiceDeps {
   output: (out: PoryaaaaVoicegroupOutput) => void;
   post: (frame: CcomidiVoicegroupFrame) => void;
   log: (msg: string) => void;
+  onWebSocketReady?: () => void;
+  onWebSocketUnavailable?: (err: Error) => void;
   websocketHost?: string;
   websocketPort?: number;
+  websocketRestartDelayMs?: number;
 }
 
 export class PoryaaaaVoicegroupService {
@@ -36,12 +39,16 @@ export class PoryaaaaVoicegroupService {
   private latest: CcomidiSnapshot | null = null;
   private readonly websocketHost: string;
   private readonly websocketPort: number;
+  private readonly websocketRestartDelayMs: number;
   private wss: WebSocketServer | null = null;
   private websocketListening = false;
+  private websocketRestartEnabled = false;
+  private websocketRestartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: PoryaaaaVoicegroupServiceDeps) {
     this.websocketHost = deps.websocketHost ?? "127.0.0.1";
     this.websocketPort = deps.websocketPort ?? 17777;
+    this.websocketRestartDelayMs = deps.websocketRestartDelayMs ?? 1000;
   }
 
   private attachWebSocketHandlers(wss: WebSocketServer): void {
@@ -67,6 +74,7 @@ export class PoryaaaaVoicegroupService {
       if (this.wss === wss) {
         this.websocketListening = false;
         this.wss = null;
+        this.scheduleWebSocketRestart();
       }
     });
   }
@@ -96,7 +104,36 @@ export class PoryaaaaVoicegroupService {
     });
   }
 
+  startWebSocketWithRestart(): void {
+    if (this.websocketRestartEnabled && (this.wss || this.websocketRestartTimer)) return;
+    this.websocketRestartEnabled = true;
+    this.startWebSocket()
+      .then(() => {
+        this.deps.onWebSocketReady?.();
+      })
+      .catch((err: Error) => {
+        this.deps.onWebSocketUnavailable?.(err);
+        this.scheduleWebSocketRestart();
+      });
+  }
+
+  private scheduleWebSocketRestart(): void {
+    if (!this.websocketRestartEnabled || this.websocketRestartTimer) return;
+    this.websocketRestartTimer = setTimeout(() => {
+      this.websocketRestartTimer = null;
+      this.startWebSocketWithRestart();
+    }, this.websocketRestartDelayMs);
+  }
+
+  private clearWebSocketRestartTimer(): void {
+    if (!this.websocketRestartTimer) return;
+    clearTimeout(this.websocketRestartTimer);
+    this.websocketRestartTimer = null;
+  }
+
   closeWebSocket(): Promise<void> {
+    this.websocketRestartEnabled = false;
+    this.clearWebSocketRestartTimer();
     const wss = this.wss;
     if (!wss) return Promise.resolve();
     return new Promise((resolve, reject) => {
@@ -140,7 +177,7 @@ export class PoryaaaaVoicegroupService {
     this.deps.output({ tag, args });
   }
 
-  private emitNoProject(): void {
+private emitNoProject(): void {
     this.currentRoot = "";
     this.currentBank = "";
     this.clearLatestSnapshot();
@@ -177,6 +214,7 @@ export class PoryaaaaVoicegroupService {
     this.currentRoot = root;
     this.currentBank = "";
     if (root.startsWith("/") === false) { // Needs 2 b root dir
+      this.deps.output({ tag: "diag", args: ["bad root", this.currentRoot] });
       this.emitNoProject();
       return [];
     }
@@ -195,7 +233,10 @@ export class PoryaaaaVoicegroupService {
   }
 
   private applyValidBank(bank: string, forceReload = false): boolean {
-    if (this.currentRoot.startsWith("/") === false) return false;
+    if (this.currentRoot.startsWith("/") === false){
+      this.deps.output({ tag: "diag", args: ["project root not abs path;", this.currentRoot] });
+      return false;
+    }
     if (!bank || bank.startsWith("(")) return false;
     if (forceReload === false && bank === this.currentBank) return false;
 
@@ -227,6 +268,8 @@ export class PoryaaaaVoicegroupService {
     const ok = this.applyValidBank(String(bankName ?? "").trim());
     if (!ok) {
       this.deps.output({ tag: "diag", args: ["Bank not applied"] })
+    } else {
+      this.deps.output({ tag: "diag", args: ["Bank applied"] })
     }
   }
 

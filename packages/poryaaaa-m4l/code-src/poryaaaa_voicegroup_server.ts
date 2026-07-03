@@ -20,15 +20,16 @@ service = new PoryaaaaVoicegroupService({
   output: (out) => maxApi.outlet(out.tag, ...out.args),
   post: postFrame,
   log: (msg) => maxApi.outlet("diag", msg),
+  onWebSocketReady: () => {
+    maxApi.outlet("ready");
+    maxApi.post("voicegroups: ready\n");
+  },
+  onWebSocketUnavailable: (err) => {
+    maxApi.outlet("diag", `websocket: failed to bind 127.0.0.1:17777: ${String(err)}\n`);
+    maxApi.outlet("wsstatus", "set", "off");
+  },
 });
-
-service.startWebSocket().then(() => {
-  maxApi.outlet("ready");
-  maxApi.post("voicegroups: ready\n");
-}).catch((err: unknown) => {
-  maxApi.outlet("diag", `websocket: failed to bind 127.0.0.1:17777: ${String(err)}\n`);
-  maxApi.outlet("wsstatus", "set", "off");
-});
+service.startWebSocketWithRestart();
 // Handles Open Project dialog output.
 maxApi.addHandler("rawroot", (...args) => {
   // Convert raw Max args to a single trimmed string for the service (common pattern for string messages).

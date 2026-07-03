@@ -63,7 +63,27 @@ function closeClient(ws: WebSocket): Promise<void> {
   });
 }
 
-function serviceHarness() {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(10);
+  }
+  assert.equal(predicate(), true);
+}
+
+function serviceHarness(opts: {
+  websocketPort?: number;
+  websocketRestartDelayMs?: number;
+  onWebSocketReady?: () => void;
+  onWebSocketUnavailable?: (err: Error) => void;
+} = {}) {
   const outputs: PoryaaaaVoicegroupOutput[] = [];
   let service: PoryaaaaVoicegroupService;
   const postFrame = (frame: CcomidiVoicegroupFrame) => service.post(frame);
@@ -73,8 +93,11 @@ function serviceHarness() {
     output: (out) => outputs.push(out),
     post: postFrame,
     log: () => {},
+    onWebSocketReady: opts.onWebSocketReady,
+    onWebSocketUnavailable: opts.onWebSocketUnavailable,
     websocketHost: "127.0.0.1",
-    websocketPort: 0,
+    websocketPort: opts.websocketPort ?? 0,
+    websocketRestartDelayMs: opts.websocketRestartDelayMs,
   });
   return { service, outputs };
 }
@@ -207,6 +230,56 @@ test("clearSnapshot removes retained snapshot for late joiners", async () => {
     service.rawroot("/other");
 
     assert.equal(service.latestSnapshot(), null);
+  } finally {
+    await service.closeWebSocket();
+  }
+});
+
+test("websocket auto restart retries after the port becomes available", async () => {
+  const blocker = serviceHarness();
+  await blocker.service.startWebSocket();
+  const blockedPort = Number(new URL(blocker.service.websocketUrl()).port);
+  const readyEvents: string[] = [];
+  const unavailableEvents: string[] = [];
+  const { service } = serviceHarness({
+    websocketPort: blockedPort,
+    websocketRestartDelayMs: 10,
+    onWebSocketReady: () => readyEvents.push("ready"),
+    onWebSocketUnavailable: (err) => unavailableEvents.push(String(err)),
+  });
+
+  try {
+    service.startWebSocketWithRestart();
+    await waitFor(() => unavailableEvents.length > 0);
+    assert.equal(service.isWebSocketListening(), false);
+
+    await blocker.service.closeWebSocket();
+    await waitFor(() => service.isWebSocketListening());
+    assert.deepEqual(readyEvents, ["ready"]);
+  } finally {
+    await blocker.service.closeWebSocket();
+    await service.closeWebSocket();
+  }
+});
+
+test("websocket auto restart rebinds after an unexpected close", async () => {
+  const readyEvents: string[] = [];
+  const { service } = serviceHarness({
+    websocketRestartDelayMs: 10,
+    onWebSocketReady: () => readyEvents.push(service.websocketUrl()),
+  });
+  service.startWebSocketWithRestart();
+  await waitFor(() => service.isWebSocketListening());
+  const firstUrl = service.websocketUrl();
+
+  const activeServer = (service as unknown as { wss: { close: (cb?: () => void) => void } }).wss;
+  await new Promise<void>((resolve) => {
+    activeServer.close(() => resolve());
+  });
+  await waitFor(() => service.isWebSocketListening() && service.websocketUrl() !== firstUrl);
+
+  try {
+    assert.equal(readyEvents.length, 2);
   } finally {
     await service.closeWebSocket();
   }

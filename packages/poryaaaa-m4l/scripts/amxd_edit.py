@@ -75,14 +75,12 @@ def defer_poryaaaa_wsstatus(document: dict[str, Any]) -> None:
     - obj-25 outlet 0: [route ready ...] ready outlet from node.script
     - obj-14: [1] starts [metro 5000]
     - obj-16: [t b b] sends [set off] and [wsstatus]
-    - obj-7: [restore]
     """
     lines = patcher_lines(document)
     remove_line(lines, "obj-13", 0, "obj-14", 0)
     remove_line(lines, "obj-13", 0, "obj-16", 0)
     add_line(lines, "obj-25", 0, "obj-14", 0, 0)
     add_line(lines, "obj-25", 0, "obj-16", 0, 1)
-    set_line_order(lines, "obj-25", 0, "obj-7", 0, 2)
 
 
 def main() -> None:
