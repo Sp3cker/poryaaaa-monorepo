@@ -1,14 +1,32 @@
 use std::path::Path;
 
-use lsp_types::{Location, Position};
+use lsp_types::{Location, Position, SemanticToken, SemanticTokens};
 use url::Url;
 use voicegroup_core::{
     catalog::{find_macro, ArgumentSchema, SymbolNamespace},
-    parser::{parse_document, SourcePosition},
+    parser::{parse_document, SourcePosition, SourceRange},
     project_index::ProjectIndex,
 };
 
 use crate::diagnostics::to_lsp_range;
+
+pub const SEMANTIC_TOKEN_TYPES: [&str; 2] = ["subVoiceGroup", "keysplitReference"];
+const SUB_VOICEGROUP_TOKEN_INDEX: u32 = 0;
+const KEYSPLIT_REFERENCE_TOKEN_INDEX: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceKind {
+    VoiceGroupDeclaration,
+    SubVoiceGroup,
+    Keysplit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferenceToken {
+    symbol: String,
+    range: SourceRange,
+    kind: ReferenceKind,
+}
 
 /// Resolves a voicegroup declaration or reference under the cursor to its project index entry.
 pub fn goto_definition(
@@ -17,12 +35,27 @@ pub fn goto_definition(
     text: &str,
     position: Position,
 ) -> Option<Location> {
-    let symbol = voicegroup_symbol_at_position(text, position)?;
-    let definition = index.voicegroup_definition_location(&symbol).or_else(|| {
-        symbol
-            .strip_prefix("voicegroup_")
-            .and_then(|stripped| index.voicegroup_definition_location(stripped))
+    let position = lsp_to_source_position(position);
+    let token = reference_tokens(text).into_iter().find(|token| {
+        token.range.contains(&position)
+            && matches!(
+                token.kind,
+                ReferenceKind::VoiceGroupDeclaration
+                    | ReferenceKind::SubVoiceGroup
+                    | ReferenceKind::Keysplit
+            )
     })?;
+    let definition = match token.kind {
+        ReferenceKind::VoiceGroupDeclaration | ReferenceKind::SubVoiceGroup => index
+            .voicegroup_definition_location(&token.symbol)
+            .or_else(|| {
+                token
+                    .symbol
+                    .strip_prefix("voicegroup_")
+                    .and_then(|stripped| index.voicegroup_definition_location(stripped))
+            }),
+        ReferenceKind::Keysplit => index.keysplit_definition_location(&token.symbol),
+    }?;
     let uri = Url::from_file_path(project_root.join(definition.relative_path)).ok()?;
     Some(Location {
         uri: uri.as_str().parse().ok()?,
@@ -30,34 +63,88 @@ pub fn goto_definition(
     })
 }
 
-/// Returns the voicegroup declaration or voicegroup-reference argument under an LSP cursor.
-fn voicegroup_symbol_at_position(text: &str, position: Position) -> Option<String> {
-    let position = lsp_to_source_position(position);
+/// Builds full-document semantic tokens for voicegroup-domain references.
+pub fn semantic_tokens_for_text(text: &str) -> SemanticTokens {
+    let mut tokens: Vec<_> = reference_tokens(text)
+        .into_iter()
+        .filter_map(|reference| {
+            semantic_token_type(reference.kind).map(|token_type| (reference.range, token_type))
+        })
+        .collect();
+    tokens.sort_by_key(|(range, _)| (range.start.line, range.start.column));
+
+    let mut previous_line = 0;
+    let mut previous_start = 0;
+    let data = tokens
+        .into_iter()
+        .map(|(range, token_type)| {
+            let line = range.start.line - 1;
+            let start = range.start.column - 1;
+            let delta_line = line - previous_line;
+            let delta_start = if delta_line == 0 {
+                start - previous_start
+            } else {
+                start
+            };
+            previous_line = line;
+            previous_start = start;
+            SemanticToken {
+                delta_line: delta_line as u32,
+                delta_start: delta_start as u32,
+                length: (range.end.column - range.start.column) as u32,
+                token_type,
+                token_modifiers_bitset: 0,
+            }
+        })
+        .collect();
+
+    SemanticTokens {
+        result_id: None,
+        data,
+    }
+}
+
+/// Returns source tokens that editor features treat as voicegroup-domain references.
+fn reference_tokens(text: &str) -> Vec<ReferenceToken> {
     let document = parse_document(text);
+    let mut tokens = Vec::new();
     for voice_group in &document.voice_groups {
-        if voice_group.name.range.contains(&position) {
-            return Some(voice_group.name.text.clone());
-        }
+        tokens.push(ReferenceToken {
+            symbol: voice_group.name.text.clone(),
+            range: voice_group.name.range.clone(),
+            kind: ReferenceKind::VoiceGroupDeclaration,
+        });
         for program in &voice_group.programs {
             let Some(definition) = find_macro(&program.macro_name.text) else {
                 continue;
             };
-            for (argument, schema) in program.arguments.iter().zip(definition.arguments) {
-                if argument.range.contains(&position)
-                    && schema.schema
-                        == (ArgumentSchema::Symbol {
-                            namespace: SymbolNamespace::VoiceGroup,
-                        })
-                {
-                    return Some(argument.text.clone());
-                }
+            for (argument, schema) in program.arguments.iter().zip(definition.arguments.iter()) {
+                let ArgumentSchema::Symbol { namespace } = schema.schema else {
+                    continue;
+                };
+                let kind = match namespace {
+                    SymbolNamespace::VoiceGroup => ReferenceKind::SubVoiceGroup,
+                    SymbolNamespace::Keysplit => ReferenceKind::Keysplit,
+                    SymbolNamespace::DirectSound | SymbolNamespace::ProgrammableWave => continue,
+                };
+                tokens.push(ReferenceToken {
+                    symbol: argument.text.clone(),
+                    range: argument.range.clone(),
+                    kind,
+                });
             }
         }
     }
-    None
+    tokens
 }
 
-/// Converts LSP's zero-based cursor into core's one-based source position.
+fn semantic_token_type(kind: ReferenceKind) -> Option<u32> {
+    match kind {
+        ReferenceKind::SubVoiceGroup => Some(SUB_VOICEGROUP_TOKEN_INDEX),
+        ReferenceKind::Keysplit => Some(KEYSPLIT_REFERENCE_TOKEN_INDEX),
+        ReferenceKind::VoiceGroupDeclaration => None,
+    }
+}
 fn lsp_to_source_position(position: Position) -> SourcePosition {
     SourcePosition {
         line: position.line as usize + 1,
@@ -67,8 +154,8 @@ fn lsp_to_source_position(position: Position) -> SourcePosition {
 
 #[cfg(test)]
 mod tests {
-    use super::goto_definition;
-    use lsp_types::{Location, Position, Range};
+    use super::{goto_definition, reference_tokens, semantic_tokens_for_text, ReferenceKind};
+    use lsp_types::{Location, Position, Range, SemanticToken};
     use std::{
         fs,
         path::Path,
@@ -108,6 +195,89 @@ voice_group route_one
 
         assert_village_bridge_include_location(location, &project);
         let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn goto_definition_resolves_keysplit_argument_to_table_header() {
+        let project = project_with_included_village_bridge("keysplit-definition");
+        fs::write(
+            project.join("sound/keysplit_tables.inc"),
+            "\
+keysplit strings, 0
+split 1, 64
+",
+        )
+        .expect("write keysplit table");
+        let index = ProjectIndex::load(&project).expect("load project index");
+        let text = "\
+voice_group route_one
+\tvoice_keysplit voicegroup_village_bridge, keysplit_strings
+";
+
+        let location = goto_definition(&index, &project, text, Position::new(1, 48))
+            .expect("definition location");
+
+        let expected_uri = Url::from_file_path(project.join("sound/keysplit_tables.inc"))
+            .expect("convert definition path to url")
+            .as_str()
+            .parse()
+            .expect("convert definition url to lsp uri");
+        let _ = fs::remove_dir_all(project);
+        assert_eq!(
+            location,
+            Location {
+                uri: expected_uri,
+                range: Range::new(Position::new(0, 9), Position::new(0, 16)),
+            }
+        );
+    }
+
+    #[test]
+    fn reference_tokens_extract_subvoicegroup_and_keysplit_arguments() {
+        let text = "\
+voice_group route_one
+\tvoice_keysplit voicegroup_village_bridge, KeySplitTable_route_one
+";
+
+        let tokens = reference_tokens(text);
+
+        assert!(tokens.iter().any(|token| {
+            token.kind == ReferenceKind::SubVoiceGroup
+                && token.symbol == "voicegroup_village_bridge"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == ReferenceKind::Keysplit && token.symbol == "KeySplitTable_route_one"
+        }));
+    }
+
+    #[test]
+    fn semantic_tokens_encode_subvoicegroup_and_keysplit_arguments() {
+        let text = "\
+voice_group route_one
+\tvoice_keysplit voicegroup_village_bridge, KeySplitTable_route_one
+";
+
+        let tokens = semantic_tokens_for_text(text);
+
+        assert_eq!(
+            tokens.data,
+            vec![
+                SemanticToken {
+                    delta_line: 1,
+                    delta_start: 16,
+                    length: 25,
+                    token_type: 0,
+                    token_modifiers_bitset: 0,
+                },
+                SemanticToken {
+                    delta_line: 0,
+                    delta_start: 27,
+                    length: 23,
+                    token_type: 1,
+                    token_modifiers_bitset: 0,
+                },
+            ]
+        );
     }
 
     fn project_with_included_village_bridge(name: &str) -> std::path::PathBuf {

@@ -332,6 +332,40 @@ village_bridge::
 }
 
 #[test]
+fn keysplit_definition_location_points_to_emerald_header_name() {
+    let root = temp_project("keysplit-definition");
+    write_file(
+        &root,
+        "sound/keysplit_tables.inc",
+        "\
+keysplit strings, 0
+split 1, 64
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .keysplit_definition_location("keysplit_strings")
+        .expect("definition location for keysplit table");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/keysplit_tables.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition {
+                line: 1,
+                column: 10
+            },
+            end: SourcePosition {
+                line: 1,
+                column: 17
+            },
+        }
+    );
+}
+
+#[test]
 fn lists_project_index_voicegroups_without_directory_scanning() {
     let root = temp_project("listed-voicegroups");
     write_file(

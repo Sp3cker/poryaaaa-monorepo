@@ -65,6 +65,7 @@ pub struct ProjectIndex {
     direct_sound_assets: BTreeMap<String, ResolvedAsset>,
     programmable_wave_assets: BTreeMap<String, ResolvedAsset>,
     keysplit_tables: BTreeMap<String, [u8; 128]>,
+    keysplit_definitions: BTreeMap<String, DefinitionLocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,7 @@ impl ProjectIndex {
             direct_sound_assets: BTreeMap::new(),
             programmable_wave_assets: BTreeMap::new(),
             keysplit_tables: BTreeMap::new(),
+            keysplit_definitions: BTreeMap::new(),
         };
 
         // Discover files before declarations so editor features can see un-included
@@ -140,6 +142,11 @@ impl ProjectIndex {
             VoiceGroupSource::Combined { definition, .. }
             | VoiceGroupSource::File { definition, .. } => Some(definition.clone()),
         }
+    }
+
+    /// Locates the source header for a keysplit table symbol.
+    pub fn keysplit_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
+        self.keysplit_definitions.get(name).cloned()
     }
 
     /// Iterates physical voicegroup source files available for include completions.
@@ -400,7 +407,9 @@ impl ProjectIndex {
         }
 
         let text = fs::read_to_string(path)?;
-        self.keysplit_tables.extend(parse_keysplit_tables(&text));
+        let parsed = parse_keysplit_tables(relative_path, &text);
+        self.keysplit_tables.extend(parsed.tables);
+        self.keysplit_definitions.extend(parsed.definitions);
         Ok(())
     }
 
@@ -572,15 +581,34 @@ fn is_voicegroup_include_path(path: &str) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-fn parse_keysplit_tables(text: &str) -> BTreeMap<String, [u8; 128]> {
+struct ParsedKeysplitTables {
+    tables: BTreeMap<String, [u8; 128]>,
+    definitions: BTreeMap<String, DefinitionLocation>,
+}
+
+fn parse_keysplit_tables(relative_path: &str, text: &str) -> ParsedKeysplitTables {
     let mut tables = BTreeMap::new();
+    let mut definitions = BTreeMap::new();
     let mut current_name: Option<String> = None;
     let mut last_note = 0usize;
 
-    for line in text.lines() {
-        let trimmed = strip_comment(line).trim();
+    for (line_index, line) in text.lines().enumerate() {
+        let source = strip_comment(line);
+        let trimmed = source.trim();
         if let Some((name, start_note)) = emerald_keysplit_header(trimmed) {
             tables.entry(name.clone()).or_insert([0; 128]);
+            if let Some(range) = keysplit_name_range(
+                source,
+                name.strip_prefix("keysplit_").unwrap_or(&name),
+                line_index + 1,
+            ) {
+                definitions
+                    .entry(name.clone())
+                    .or_insert_with(|| DefinitionLocation {
+                        relative_path: relative_path.to_string(),
+                        range,
+                    });
+            }
             current_name = Some(name);
             last_note = start_note;
             continue;
@@ -596,6 +624,14 @@ fn parse_keysplit_tables(text: &str) -> BTreeMap<String, [u8; 128]> {
 
         if let Some((name, start_note)) = firered_keysplit_header(trimmed) {
             tables.entry(name.clone()).or_insert([0; 128]);
+            if let Some(range) = keysplit_name_range(source, &name, line_index + 1) {
+                definitions
+                    .entry(name.clone())
+                    .or_insert_with(|| DefinitionLocation {
+                        relative_path: relative_path.to_string(),
+                        range,
+                    });
+            }
             current_name = Some(name);
             last_note = start_note;
             continue;
@@ -613,7 +649,24 @@ fn parse_keysplit_tables(text: &str) -> BTreeMap<String, [u8; 128]> {
         }
     }
 
-    tables
+    ParsedKeysplitTables {
+        tables,
+        definitions,
+    }
+}
+
+fn keysplit_name_range(line: &str, name: &str, line_number: usize) -> Option<SourceRange> {
+    let start = line.find(name)? + 1;
+    Some(SourceRange {
+        start: SourcePosition {
+            line: line_number,
+            column: start,
+        },
+        end: SourcePosition {
+            line: line_number,
+            column: start + name.len(),
+        },
+    })
 }
 
 fn emerald_keysplit_header(line: &str) -> Option<(String, usize)> {

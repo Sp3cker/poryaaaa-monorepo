@@ -25,6 +25,11 @@ build target:
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release
         cmake --build packages/ccomidi/build --config Release --target ccomidi
         ;;
+      voicegroup-lsp)
+        cd packages/voicegroup-lsp
+        cargo build --release
+        npm --prefix vscode-extension run compile --silent
+        ;;
       voicegroup-bridge|swift-dylib)
         (cd packages/voicegroup-lsp && swift build -c release --product VoicegroupBridge)
         ;;
@@ -67,7 +72,7 @@ build target:
         ;;
       *)
         echo "unknown build target: {{target}}" >&2
-        echo "known targets: poryaaaa, poryaaaa-rs, ccomidi, voicegroup-bridge, swift-dylib, textedit, m4l, vg-core" >&2
+        echo "known targets: poryaaaa, poryaaaa-rs, ccomidi, voicegroup-lsp, voicegroup-bridge, swift-dylib, textedit, m4l, vg-core" >&2
         exit 2
         ;;
     esac

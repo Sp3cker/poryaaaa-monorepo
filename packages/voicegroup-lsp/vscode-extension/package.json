@@ -34,6 +34,31 @@
         "path": "./syntaxes/voicegroup-inc.tmLanguage.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "subVoiceGroup",
+        "superType": "variable",
+        "description": "A sub-voicegroup reference."
+      },
+      {
+        "id": "keysplitReference",
+        "superType": "variable",
+        "description": "A keysplit table reference."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "voicegroup-inc",
+        "scopes": {
+          "subVoiceGroup": [
+            "entity.name.function.voicegroup-inc"
+          ],
+          "keysplitReference": [
+            "entity.name.type.voicegroup-inc"
+          ]
+        }
+      }
+    ],
     "configuration": {
       "title": "Voicegroup LSP",
       "properties": {

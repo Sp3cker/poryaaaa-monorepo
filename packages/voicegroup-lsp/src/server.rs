@@ -5,11 +5,11 @@ use lsp_types::{
         DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
         Notification,
     },
-    request::{Completion, GotoDefinition, Request as LspRequest},
+    request::{Completion, GotoDefinition, Request as LspRequest, SemanticTokensFullRequest},
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Location, Position,
-    PublishDiagnosticsParams, Range, TextEdit,
+    PublishDiagnosticsParams, Range, SemanticTokensParams, SemanticTokensResult, TextEdit,
 };
 use serde::de::DeserializeOwned;
 use std::{
@@ -20,7 +20,9 @@ use std::{
 use url::Url;
 
 use crate::{
-    definition::goto_definition, diagnostics::diagnostics_for_text, documents::DocumentStore,
+    definition::{goto_definition, semantic_tokens_for_text, SEMANTIC_TOKEN_TYPES},
+    diagnostics::diagnostics_for_text,
+    documents::DocumentStore,
 };
 use voicegroup_core::project_index::ProjectIndex;
 
@@ -42,7 +44,7 @@ fn run(connection: Connection) -> Result<()> {
     server.run()
 }
 
-/// Advertises document synchronization and include-path completions.
+/// Advertises document synchronization and editor language features.
 fn server_capabilities() -> serde_json::Value {
     serde_json::json!({
         "textDocumentSync": 1,
@@ -50,6 +52,13 @@ fn server_capabilities() -> serde_json::Value {
         "completionProvider": {
             "resolveProvider": false,
             "triggerCharacters": ["\"", "/"]
+        },
+        "semanticTokensProvider": {
+            "legend": {
+                "tokenTypes": SEMANTIC_TOKEN_TYPES,
+                "tokenModifiers": []
+            },
+            "full": true
         }
     })
 }
@@ -82,11 +91,7 @@ impl Server {
                     {
                         return Ok(());
                     }
-                    if request.method == Completion::METHOD {
-                        self.respond_completion(request)?;
-                    } else {
-                        self.handle_request(request)?;
-                    }
+                    self.handle_request(request)?;
                 }
                 Message::Notification(notification) => self.handle_notification(notification)?,
                 Message::Response(_) => {}
@@ -99,6 +104,7 @@ impl Server {
     fn handle_request(&mut self, request: lsp_server::Request) -> Result<()> {
         let id = request.id.clone();
         match request.method.as_str() {
+            Completion::METHOD => self.respond_completion(request),
             GotoDefinition::METHOD => {
                 let params: GotoDefinitionParams =
                     serde_json::from_value(request.params).context("decoding definition params")?;
@@ -111,6 +117,19 @@ impl Server {
                             .context("serializing definition response")?,
                     )))
                     .context("sending definition response")
+            }
+            SemanticTokensFullRequest::METHOD => {
+                let params: SemanticTokensParams = serde_json::from_value(request.params)
+                    .context("decoding semantic tokens params")?;
+                let response = self.semantic_tokens_response(params)?;
+                self.connection
+                    .sender
+                    .send(Message::Response(Response::new_ok(
+                        id,
+                        serde_json::to_value(response)
+                            .context("serializing semantic tokens response")?,
+                    )))
+                    .context("sending semantic tokens response")
             }
             _ => self.respond_method_not_found(request),
         }
@@ -130,6 +149,20 @@ impl Server {
             .project_contexts
             .definition_for_document(&uri, &text, params.position)
             .map(GotoDefinitionResponse::Scalar))
+    }
+
+    /// Resolves semantic tokens from the latest open buffer text.
+    fn semantic_tokens_response(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = parse_document_uri(&params.text_document.uri)?;
+        let Some(text) = self.document_text(&uri) else {
+            return Ok(None);
+        };
+        Ok(Some(SemanticTokensResult::Tokens(
+            semantic_tokens_for_text(&text),
+        )))
     }
 
     /// Reads unsaved document text first, falling back to disk for unopened files.
@@ -406,9 +439,7 @@ fn included_voicegroup_paths(text: &str) -> BTreeSet<String> {
     text.lines()
         .filter_map(include_path_from_line)
         .filter(|path| {
-            path.starts_with("sound/voicegroups/")
-                && path.ends_with(".inc")
-                && !path.contains('\\')
+            path.starts_with("sound/voicegroups/") && path.ends_with(".inc") && !path.contains('\\')
         })
         .collect()
 }
@@ -458,22 +489,23 @@ fn has_voicegroup_project_markers(root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{run, server_capabilities, ProjectContexts};
+    use crate::definition::SEMANTIC_TOKEN_TYPES;
     use lsp_server::{Connection, Message, Notification as ServerNotification, RequestId};
     use lsp_types::{
         notification::{DidOpenTextDocument, Exit, Initialized, Notification},
         request::{Completion, Initialize, Request, Shutdown},
-        CompletionContext, CompletionItem, CompletionParams, CompletionResponse, CompletionTextEdit,
-        CompletionTriggerKind, DidOpenTextDocumentParams, InitializeParams, InitializedParams,
-        Position, TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+        CompletionContext, CompletionItem, CompletionParams, CompletionResponse,
+        CompletionTextEdit, CompletionTriggerKind, DidOpenTextDocumentParams, InitializeParams,
+        InitializedParams, Position, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentPositionParams,
     };
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::Path,
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use url::Url;
-
 
     #[test]
     fn completion_suggests_physical_voicegroup_files_not_already_included() {
@@ -510,11 +542,7 @@ mod tests {
             lsp_uri,
             Position {
                 line: 1,
-                character: document_text
-                    .lines()
-                    .last()
-                    .expect("completion line")
-                    .len() as u32,
+                character: document_text.lines().last().expect("completion line").len() as u32,
             },
         );
         shutdown(client_connection);
@@ -529,21 +557,40 @@ mod tests {
         );
         let items = completion_items(response);
         assert!(
-            items.iter().any(|item| completion_text(item).contains("sound/voicegroups/unused.inc")),
+            items
+                .iter()
+                .any(|item| completion_text(item).contains("sound/voicegroups/unused.inc")),
             "expected an include completion for sound/voicegroups/unused.inc, got {items:#?}"
         );
         assert!(
-            items.iter().all(|item| !completion_text(item).contains("sound/voicegroups/declared.inc")),
+            items
+                .iter()
+                .all(|item| !completion_text(item).contains("sound/voicegroups/declared.inc")),
             "already-declared voicegroup include should not be suggested: {items:#?}"
         );
     }
     #[test]
-    fn server_capabilities_advertise_definition_provider() {
+    fn server_capabilities_advertise_navigation_features() {
         let capabilities = server_capabilities();
 
         assert_eq!(
             capabilities.get("definitionProvider"),
             Some(&serde_json::Value::Bool(true))
+        );
+
+        let semantic_tokens = capabilities
+            .get("semanticTokensProvider")
+            .expect("semantic tokens provider");
+        assert_eq!(
+            semantic_tokens
+                .get("legend")
+                .and_then(|legend| legend.get("tokenTypes"))
+                .and_then(serde_json::Value::as_array)
+                .expect("semantic token types"),
+            &SEMANTIC_TOKEN_TYPES
+                .iter()
+                .map(|token_type| serde_json::Value::String((*token_type).to_string()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -767,19 +814,26 @@ voice_group village_bridge
             .expect("send exit notification");
     }
 
-    fn response_for_request(connection: &Connection, request_id: RequestId) -> lsp_server::Response {
+    fn response_for_request(
+        connection: &Connection,
+        request_id: RequestId,
+    ) -> lsp_server::Response {
         loop {
             match connection.receiver.recv_timeout(Duration::from_secs(1)) {
                 Ok(Message::Response(response)) if response.id == request_id => return response,
                 Ok(Message::Notification(_)) => {}
-                Ok(message) => panic!("unexpected message while waiting for {request_id}: {message:?}"),
+                Ok(message) => {
+                    panic!("unexpected message while waiting for {request_id}: {message:?}")
+                }
                 Err(error) => panic!("timed out waiting for {request_id}: {error}"),
             }
         }
     }
 
     fn completion_items(response: lsp_server::Response) -> Vec<CompletionItem> {
-        let result = response.result.expect("completion response should have a result");
+        let result = response
+            .result
+            .expect("completion response should have a result");
         let response: Option<CompletionResponse> =
             serde_json::from_value(result).expect("decode completion response");
         match response.expect("completion response should not be null") {

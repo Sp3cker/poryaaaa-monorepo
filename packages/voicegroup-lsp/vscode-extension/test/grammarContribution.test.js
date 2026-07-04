@@ -80,3 +80,29 @@ test('voicegroup-inc TextMate grammar exposes theme-compatible token scopes', ()
   assert.ok(hasScope('constant.numeric'), `expected a numeric literal scope; found: ${scopes.join(', ')}`);
   assert.ok(hasScope('variable.other.symbol'), `expected a symbol reference scope; found: ${scopes.join(', ')}`);
 });
+
+test('contributes semantic tokens for voicegroup references', () => {
+  const packageJson = readPackageJson('package.json');
+
+  assert.deepEqual(packageJson.contributes?.semanticTokenTypes, [
+    {
+      id: 'subVoiceGroup',
+      superType: 'variable',
+      description: 'A sub-voicegroup reference.'
+    },
+    {
+      id: 'keysplitReference',
+      superType: 'variable',
+      description: 'A keysplit table reference.'
+    }
+  ]);
+  assert.deepEqual(packageJson.contributes?.semanticTokenScopes, [
+    {
+      language: 'voicegroup-inc',
+      scopes: {
+        subVoiceGroup: ['entity.name.function.voicegroup-inc'],
+        keysplitReference: ['entity.name.type.voicegroup-inc']
+      }
+    }
+  ]);
+});
