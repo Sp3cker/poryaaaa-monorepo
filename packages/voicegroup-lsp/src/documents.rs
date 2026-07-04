@@ -36,7 +36,7 @@ impl DocumentStore {
             .map(|(uri, text)| (uri, text.as_str()))
     }
 
-    /// Returns the current unsaved text for diagnostics and tests.
+    /// Returns the current unsaved text for request handlers and tests.
     pub fn get(&self, uri: &Url) -> Option<&str> {
         self.documents.get(uri).map(String::as_str)
     }

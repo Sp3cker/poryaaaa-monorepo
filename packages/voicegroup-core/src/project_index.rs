@@ -1,6 +1,6 @@
 //! Project-level discovery and selected-bank loading for voicegroup source trees.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -59,6 +59,9 @@ impl BankSourceText {
 pub struct ProjectIndex {
     root: PathBuf,
     voice_groups: BTreeMap<String, VoiceGroupSource>,
+    // Physical source files under sound/voicegroups/. These feed include completion only;
+    // they deliberately do not make a voicegroup symbol valid for analysis.
+    voicegroup_files: BTreeSet<String>,
     direct_sound_assets: BTreeMap<String, ResolvedAsset>,
     programmable_wave_assets: BTreeMap<String, ResolvedAsset>,
     keysplit_tables: BTreeMap<String, [u8; 128]>,
@@ -89,11 +92,15 @@ impl ProjectIndex {
         let mut index = ProjectIndex {
             root,
             voice_groups: BTreeMap::new(),
+            voicegroup_files: BTreeSet::new(),
             direct_sound_assets: BTreeMap::new(),
             programmable_wave_assets: BTreeMap::new(),
             keysplit_tables: BTreeMap::new(),
         };
 
+        // Discover files before declarations so editor features can see un-included
+        // source files without changing what counts as a declared voicegroup.
+        index.discover_voicegroup_files()?;
         index.discover_monolithic_voicegroups()?;
         index.discover_included_voicegroup_files("sound/voice_groups.inc")?;
         index.index_standard_symbol_files()?;
@@ -133,6 +140,11 @@ impl ProjectIndex {
             VoiceGroupSource::Combined { definition, .. }
             | VoiceGroupSource::File { definition, .. } => Some(definition.clone()),
         }
+    }
+
+    /// Iterates physical voicegroup source files available for include completions.
+    pub fn voicegroup_files(&self) -> impl Iterator<Item = &str> {
+        self.voicegroup_files.iter().map(String::as_str)
     }
 
     pub fn direct_sound_assets(&self) -> impl Iterator<Item = &ResolvedAsset> {
@@ -214,6 +226,38 @@ impl ProjectIndex {
             bank: Some(bank),
             diagnostics,
         }
+    }
+
+    /// Finds physical `.inc` files under sound/voicegroups without declaring them as banks.
+    fn discover_voicegroup_files(&mut self) -> io::Result<()> {
+        self.discover_voicegroup_files_in("sound/voicegroups")
+    }
+
+    /// Recurses over a project-relative directory and records voicegroup source file paths.
+    fn discover_voicegroup_files_in(&mut self, relative_dir: &str) -> io::Result<()> {
+        let dir = self.root.join(relative_dir);
+        if !dir.is_dir() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_name = match entry.file_name().into_string() {
+                Ok(file_name) => file_name,
+                Err(_) => continue,
+            };
+            let relative_path = format!("{relative_dir}/{file_name}");
+            let file_type = entry.file_type()?;
+            // Keep this as file inventory only. Declared banks are still discovered
+            // through sound/voice_groups.inc below.
+            if file_type.is_dir() {
+                self.discover_voicegroup_files_in(&relative_path)?;
+            } else if file_type.is_file() && is_voicegroup_include_path(&relative_path) {
+                self.voicegroup_files.insert(relative_path);
+            }
+        }
+
+        Ok(())
     }
 
     fn discover_monolithic_voicegroups(&mut self) -> io::Result<()> {

@@ -99,9 +99,32 @@ install target:
         cd packages/poryaaaa-m4l
         npm run install:max-package
         ;;
+      voicegroup-lsp)
+        repo_root="$(pwd)"
+        server_path="$repo_root/packages/voicegroup-lsp/target/release/voicegroup-lsp"
+        extension_dir="$repo_root/packages/voicegroup-lsp/vscode-extension"
+        settings_path="${VSCODE_USER_SETTINGS:-$HOME/Library/Application Support/Code/User/settings.json}"
+
+        command -v code >/dev/null
+
+        (cd packages/voicegroup-lsp && cargo build --release)
+        cd "$extension_dir"
+        npm ci
+        npm run compile
+        version="$(node -p 'require("./package.json").version')"
+        vsix_path="$extension_dir/voicegroup-lsp-vscode-$version.vsix"
+        rm -f "$vsix_path"
+        npx --yes @vscode/vsce package --no-yarn --out "$vsix_path"
+        code --install-extension "$vsix_path" --force
+
+        node -e 'const fs = require("fs"); const path = require("path"); const [serverPath, settingsPath] = process.argv.slice(-2); fs.mkdirSync(path.dirname(settingsPath), { recursive: true }); let text = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, "utf8") : "{\n}\n"; const escaped = JSON.stringify(serverPath); const line = `  "voicegroupLSP.serverPath": ${escaped}`; const existing = /^(\s*)"voicegroupLSP\.serverPath"\s*:\s*"([^"\\]|\\.)*"\s*,?/m; if (existing.test(text)) { text = text.replace(existing, `$1"voicegroupLSP.serverPath": ${escaped},`); } else { const close = text.lastIndexOf("}"); if (close < 0) throw new Error(`settings file has no closing brace: ${settingsPath}`); const before = text.slice(0, close).replace(/\s*$/, ""); const after = text.slice(close); const comma = /[{,]\s*$/.test(before) ? "" : ","; text = `${before}${comma}\n${line},\n${after}`; } fs.writeFileSync(settingsPath, text);' "$server_path" "$settings_path"
+        echo "Installed voicegroup-lsp VS Code extension from $vsix_path"
+        echo "Wrote voicegroupLSP.serverPath=$server_path"
+        echo "VS Code user settings: $settings_path"
+        ;;
       *)
         echo "unknown install target: {{target}}" >&2
-        echo "known targets: poryaaaa, ccomidi, textedit, m4l" >&2
+        echo "known targets: poryaaaa, ccomidi, textedit, m4l, voicegroup-lsp" >&2
         exit 2
         ;;
     esac

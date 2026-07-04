@@ -369,6 +369,72 @@ voice_group unlisted
 }
 
 #[test]
+fn lists_voicegroup_files_without_declaring_unincluded_banks() {
+    let root = temp_project("voicegroup-files");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+.include \"sound/voicegroups/main.inc\"
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/main.inc",
+        "\
+voice_group main
+\tvoice_keysplit_all voicegroup_unincluded
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/nested/drumset.inc",
+        "\
+voice_group drumset
+\tvoice_noise 60, 0, 0, 1, 2, 8, 3
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/unincluded.inc",
+        "\
+voice_group unincluded
+\tvoice_square_2 60, 0, 2, 1, 2, 8, 3
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/readme.txt",
+        "not a voicegroup source\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/generated.s",
+        "voice_group generated\n",
+    );
+
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    assert_eq!(
+        index.voicegroup_files().collect::<Vec<_>>(),
+        vec![
+            "sound/voicegroups/main.inc",
+            "sound/voicegroups/nested/drumset.inc",
+            "sound/voicegroups/unincluded.inc",
+        ]
+    );
+
+    let result = index.load_program_bank("main");
+    assert!(result.bank.is_some());
+    assert_eq!(
+        diagnostic_codes(&result.diagnostics),
+        ["unknown-voicegroup-symbol"]
+    );
+
+    fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
 fn loads_selected_bank_from_monolithic_voice_groups_file() {
     let root = temp_project("monolithic");
     write_file(
