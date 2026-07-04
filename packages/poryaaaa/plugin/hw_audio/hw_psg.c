@@ -33,6 +33,14 @@ static void hw_psg_reset_frame_sequencer(HwPsgSynth* psg, uint8_t step)
 static void hw_psg_frame_length(HwPsgSynth* psg)
 {
     psg->frame_seq_length_ticks++;
+    if (psg->sq1_length_enabled && psg->sq1_length_counter > 0 && --psg->sq1_length_counter == 0)
+        psg->sq1_enabled = false;
+    if (psg->sq2_length_enabled && psg->sq2_length_counter > 0 && --psg->sq2_length_counter == 0)
+        psg->sq2_enabled = false;
+    if (psg->wave_length_enabled && psg->wave_length_counter > 0 && --psg->wave_length_counter == 0)
+        psg->wave_enabled = false;
+    if (psg->noise_length_enabled && psg->noise_length_counter > 0 && --psg->noise_length_counter == 0)
+        psg->noise_enabled = false;
 }
 
 static bool hw_psg_update_sq1_sweep(HwPsgSynth* psg, bool initial)
@@ -152,6 +160,10 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
 
     psg->sq1_duty = 0;
     psg->sq2_duty = 0;
+    psg->sq1_length_counter = 0;
+    psg->sq2_length_counter = 0;
+    psg->sq1_length_enabled = false;
+    psg->sq2_length_enabled = false;
 
     psg->sq1_env_vol = 0;
     psg->sq2_env_vol = 0;
@@ -162,6 +174,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
     psg->sq2_enabled = false;
     psg->wave_enabled = false;
     psg->wave_dac_on = false;
+    psg->wave_length_counter = 0;
+    psg->wave_length_enabled = false;
 
     psg->noise_lfsr = 0;
     psg->noise_phase = 0;
@@ -171,6 +185,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
     psg->noise_width_7bit = false;
     psg->noise_env_vol = 0;
     psg->noise_enabled = false;
+    psg->noise_length_counter = 0;
+    psg->noise_length_enabled = false;
 }
 
 /* Convert the 11-bit GB freq word + audio-rate constant + render_rate
@@ -277,6 +293,7 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
     }
     case M4A_REG_NR11:
         psg->sq1_duty = (uint8_t)((v >> 6) & 0x03);
+        psg->sq1_length_counter = (uint16_t)(64u - (v & 0x3Fu));
         break;
     case M4A_REG_NR12:
         psg->sq1_env_vol = (uint8_t)((v >> 4) & 0x0F);
@@ -289,10 +306,13 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
         break;
     case M4A_REG_NR14:
         psg->sq1_freq = (uint16_t)((psg->sq1_freq & 0x00FF) | ((v & 0x07) << 8));
+        psg->sq1_length_enabled = (v & 0x40) != 0;
         if (v & 0x80)
         {
             /* NRx4 trigger: re-arm (envelope already loaded by NR12; phase
              * is preserved per real GB hardware). */
+            if (psg->sq1_length_counter == 0)
+                psg->sq1_length_counter = 64;
             if (psg->sq1_dac_enabled)
                 psg->sq1_enabled = true;
             psg->sq1_sweep_shadow_freq = psg->sq1_freq;
@@ -312,6 +332,7 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
     /* ---- Square 2 (NR21..NR24) ---- */
     case M4A_REG_NR21:
         psg->sq2_duty = (uint8_t)((v >> 6) & 0x03);
+        psg->sq2_length_counter = (uint16_t)(64u - (v & 0x3Fu));
         break;
     case M4A_REG_NR22:
         psg->sq2_env_vol = (uint8_t)((v >> 4) & 0x0F);
@@ -324,8 +345,11 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
         break;
     case M4A_REG_NR24:
         psg->sq2_freq = (uint16_t)((psg->sq2_freq & 0x00FF) | ((v & 0x07) << 8));
+        psg->sq2_length_enabled = (v & 0x40) != 0;
         if (v & 0x80)
         {
+            if (psg->sq2_length_counter == 0)
+                psg->sq2_length_counter = 64;
             if (psg->sq2_env_vol != 0)
                 psg->sq2_enabled = true;
         }
@@ -338,9 +362,7 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
             psg->wave_enabled = false;
         break;
     case M4A_REG_NR31:
-        /* Length-load — not implemented yet (length-counter is its own
-         * subsystem, deferred). */
-        (void)v;
+        psg->wave_length_counter = (uint16_t)(256u - (v & 0xFFu));
         break;
     case M4A_REG_NR32:
         psg->wave_vol_code = (uint8_t)v;
@@ -350,10 +372,13 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
         break;
     case M4A_REG_NR34:
         psg->wave_freq = (uint16_t)((psg->wave_freq & 0x00FF) | ((v & 0x07) << 8));
+        psg->wave_length_enabled = (v & 0x40) != 0;
         if (v & 0x80)
         {
             /* Wave channel trigger: real GB resets wave position to 0. */
             psg->wave_phase = 0;
+            if (psg->wave_length_counter == 0)
+                psg->wave_length_counter = 256;
             if (psg->wave_dac_on)
                 psg->wave_enabled = true;
         }
@@ -368,10 +393,7 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
 
     /* ---- Noise (NR41..NR44) ---- */
     case M4A_REG_NR41:
-        /* Length-load (bits 5-0).  Length-counter not implemented yet
-         * (deferred subsystem); m4a always writes pace=0 and never
-         * relies on the chip's hardware length counter. */
-        (void)v;
+        psg->noise_length_counter = (uint16_t)(64u - (v & 0x3Fu));
         break;
     case M4A_REG_NR42:
         psg->noise_env_vol = (uint8_t)((v >> 4) & 0x0F);
@@ -386,6 +408,7 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
         psg->noise_divisor_code = (uint8_t)(v & 0x07);
         break;
     case M4A_REG_NR44:
+        psg->noise_length_enabled = (v & 0x40) != 0;
         if (v & 0x80)
         {
             /* NR44 trigger: reset LFSR to 0 (mirrors mGBA gb_audio.c:374
@@ -396,6 +419,8 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
              * for v2 we mirror mGBA's GBA-mode path verbatim. */
             psg->noise_lfsr = 0;
             psg->noise_last_sample = 0;
+            if (psg->noise_length_counter == 0)
+                psg->noise_length_counter = 64;
             if (psg->noise_env_vol != 0)
                 psg->noise_enabled = true;
         }

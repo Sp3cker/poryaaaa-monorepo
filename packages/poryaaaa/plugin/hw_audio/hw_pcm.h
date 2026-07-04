@@ -69,14 +69,15 @@ extern "C"
          * pcm_pos shared between A and B (single pcm-rate clock; the two
          * FIFOs differ only in which ring side they track).
          *
-         * pcm_last_int caches the integer index for which held_pcm was
-         * most recently populated.  Initialized to a negative sentinel
-         * so the first render sample (pcm_pos = 0) triggers a fresh read
-         * of ring[0] — without the sentinel, an "advance-then-compare"
-         * model would skip ring[0] entirely (the first integer crossing
-         * would be 0→1, missing index 0). */
+         * pcm_last_int_a/b cache the integer index for which each FIFO's
+         * held_pcm byte was most recently populated.  Initialized to a
+         * negative sentinel so the first render sample (pcm_pos = 0)
+         * triggers a fresh read of ring[0] — without the sentinel, an
+         * "advance-then-compare" model would skip ring[0] entirely (the
+         * first integer crossing would be 0→1, missing index 0). */
         double pcm_pos;
-        int64_t pcm_last_int;
+        int64_t pcm_last_int_a;
+        int64_t pcm_last_int_b;
         int8_t held_pcm_a; /* most recent byte read from ring_a at pcm_rate */
         int8_t held_pcm_b; /* most recent byte read from ring_b at pcm_rate */
 
@@ -90,11 +91,12 @@ extern "C"
          * S&H low-pass-filters the PCM at quirk Nyquist — matching real
          * hardware's DAC cadence.
          *
-         * quirk_last_int has the same negative-sentinel semantics as
-         * pcm_last_int, so the first render sample (quirk_pos = 0)
+         * quirk_last_int_a/b have the same negative-sentinel semantics
+         * as pcm_last_int_a/b, so the first render sample (quirk_pos = 0)
          * triggers a snapshot at quirk index 0. */
         double quirk_pos;
-        int64_t quirk_last_int;
+        int64_t quirk_last_int_a;
+        int64_t quirk_last_int_b;
         int8_t held_quirk_a;
         int8_t held_quirk_b;
 
@@ -104,8 +106,8 @@ extern "C"
         float render_rate;
 
         /* SOUNDBIAS-derived quirk rate (32k/65k/131k/262k Hz) at which
-         * HwFifoDrain samples the FIFO head.  Driven by HwAudio when
-         * sampling_cycle changes between render calls. */
+         * HwFifoDrain samples the FIFO head.  Driven by HwAudio after
+         * SOUNDBIAS events update sampling_cycle. */
         int quirk_rate;
 
         /* Publish gate — cumulative PCM samples the driver has stamped
@@ -135,11 +137,9 @@ extern "C"
     void hw_pcm_set_render_rate(HwPcm* pcm, float render_rate);
     void hw_pcm_set_quirk_rate(HwPcm* pcm, int quirk_rate);
 
-    /* Apply the relevant subset of M4ARegWrite events.  PCM presently
-     * needs no event subscriptions — SOUNDCNT_H DMA routing + volume
-     * codes belong to HwMixBus (see hw_mix.h).  Retained as a no-op
-     * for symmetry with hw_psg_apply_event, in case future PCM-side
-     * registers (e.g. FIFO_A/B writes from CPU) need to land here. */
+    /* Apply the relevant subset of M4ARegWrite events.  PCM consumes
+     * PCM_PUBLISH and SOUNDCNT_H FIFO reset bits.  SOUNDCNT_H DMA routing
+     * + volume codes belong to HwMixBus (see hw_mix.h). */
     void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev);
 
     /* Render `frames` chip-internal-rate per-FIFO mono samples through

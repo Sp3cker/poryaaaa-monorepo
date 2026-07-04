@@ -312,7 +312,9 @@ static void cco_int(t_cco* x, long b)
     /* Ableton offline export can deliver MIDI bytes before the M4L scheduler
      * observer sends transport/sendall setup.  Emit the saved program/volume/
      * pan snapshot before the first complete channel event so poryaaaa~ sees
-     * the selected PSG program before the exported note starts. */
+     * the selected PSG program before the exported note starts.
+     * This is in addition to the recorder walking the LOM post-record.
+     * That will only affect the saved SMF. This affects the audio export */
     if (should_emit_startup_snapshot(x->startupSnapshot, out))
         emit_transport_snapshot(x);
     for (std::uint8_t i = 0; i < out.length; ++i)

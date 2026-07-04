@@ -83,6 +83,11 @@ extern "C"
         uint8_t sq1_duty; /* 0..3 */
         uint8_t sq2_duty;
 
+        uint16_t sq1_length_counter;
+        uint16_t sq2_length_counter;
+        bool sq1_length_enabled;
+        bool sq2_length_enabled;
+
         uint8_t sq1_env_vol; /* 0..15 */
         uint8_t sq2_env_vol;
         uint8_t wave_vol_code; /* NR32 byte */
@@ -92,6 +97,8 @@ extern "C"
         bool sq2_enabled;
         bool wave_enabled;
         bool wave_dac_on; /* NR30 bit 7 */
+        uint16_t wave_length_counter;
+        bool wave_length_enabled;
 
         uint8_t wave_ram[16];
 
@@ -104,6 +111,8 @@ extern "C"
         bool noise_width_7bit;      /* NR43 bit 3 */
         uint8_t noise_env_vol;      /* 0..15 */
         bool noise_enabled;
+        uint16_t noise_length_counter;
+        bool noise_length_enabled;
 
         /* NR52 bit 7 — master enable.  When false all PSG channels silent.
          * Owned here (not by mix bus) because it gates the synth itself in

@@ -126,10 +126,11 @@ sample offsets are intentional canonical-rate regressions, not generic
 timing-property tests.  If they fail, treat that as a driver timing
 contract break unless the reference plan is explicitly revised.
 
-**Boot-time-only SOUNDBIAS target restriction** (mid-call
-sampling_cycle changes are deferred to next render boundary; this
-matches Pokemon Emerald and ROMhacks that set SOUNDBIAS at boot)
-is documented as a chosen scope reduction, not a closed parity gate.
+**Mid-call SOUNDBIAS sampling_cycle changes** are now handled at the event
+offset inside `hw_audio_render_events()`. A `SOUNDBIAS` event updates
+`HwMixBus`, then `HwAudio` syncs `internal_rate`, `HwPcm` quirk rate, and
+the resampler epoch before rendering the next host span. Regression:
+`test_chip_canned_soundbias_mid_call_matches_split_call`.
 
 Historical scaffold verification observed during the rewrite (2026-04-30):
 
@@ -180,12 +181,11 @@ Closed during the rewrite (highlights):
   New chip-only tests confirm attenuation above host Nyquist + block-
   size invariance + DC preservation across many small calls.
 - §12.10a per-SOUNDBIAS-cadence tests landed: chip-only canned-event
-  tests sweep all four sampling_cycle values via the setup-then-play
-  pattern (one short render call applies SOUNDBIAS, the next runs
-  audio at the new rate).  Verifies audibility and comparable peak
-  amplitudes across cadences.  Mid-call SOUNDBIAS sampling_cycle
-  changes deferred to next render boundary by design (snapshot at
-  start-of-call).
+  tests sweep all four sampling_cycle values and verify audibility +
+  comparable peak amplitudes across cadences.  Same-call SOUNDBIAS
+  rate changes now sync at the event offset and are guarded by
+  `test_chip_canned_soundbias_internal_rate_switches` and
+  `test_chip_canned_soundbias_mid_call_matches_split_call`.
 - §12.1 LFO advancement landed: `m4a_internal_lfo_tick` (m4a_track.c)
   fires from m4a_main.c's tempoC overflow loop; vibrato/tremolo/
   autopan now move `modM` per-tick, refresh active CGB + PCM volume
@@ -579,7 +579,7 @@ plugin/
                              (step 8 closed; runs at internal rate)
     hw_resample.c/.h         windowed-sinc polyphase resampler internal
                              → host (step 9 closed; rebuilds when
-                             sampling_cycle changes between render calls)
+                             SOUNDBIAS events update sampling_cycle)
   m4a_engine.{c,h}           UNCHANGED (v1)
   m4a_channel.{c,h}          UNCHANGED (v1)
   m4a_reverb.{c,h}           UNCHANGED (v1)
@@ -1314,7 +1314,7 @@ Historical scaffold items to continue watching:
    - **HwFifoDrain**: snapshots the FIFO head byte at the SOUNDBIAS-
      derived quirk_rate (32k/65k/131k/262k Hz) into `held_quirk_a` /
      `held_quirk_b`.  Quirk_rate is pushed by HwAudio when SOUNDBIAS
-     sampling_cycle changes between render calls.
+     events update sampling_cycle.
    - Output at internal_rate is `held_quirk` sign-extended to ±~1.0,
      held across render samples within the same quirk-rate interval.
    For Pokemon Emerald defaults (pcm=13379, quirk=32768) the two
@@ -1383,11 +1383,10 @@ Historical scaffold items to continue watching:
    73-frame chunks within 5e-5), and per-cadence sweep (audibility
    + comparable peaks across all four sampling_cycle values).
    Historical scaffold configurations were green: 86 / 161 / 126 / 212.
-   ⚠ **Known limitation**: mid-call SOUNDBIAS sampling_cycle changes
-   are deferred to the next render boundary (snapshot at start-of-
-   call).  In practice SOUNDBIAS is set at boot and not changed
-   mid-stream, so this rarely matters; tests follow the setup-then-
-   play pattern.
+   Same-call SOUNDBIAS sampling_cycle changes now split the render at
+   the event offset, sync `internal_rate` / PCM quirk rate, and rebuild
+   the resampler epoch before the next host span.  Regression:
+   `test_chip_canned_soundbias_mid_call_matches_split_call`.
 10. **Edge-case parity tests** (chip-only, before song A/B) —
     split into two sub-gates:
     
@@ -1452,22 +1451,32 @@ Historical scaffold items to continue watching:
     event AND the current batch has none — keeps chip-only canned
     tests working without forcing them through the driver.
     
-    Out-of-scope for the v2 chip-side stack as currently delivered:
-    - Mid-call SOUNDBIAS sampling_cycle change handling — see
-      "boot-time-only target restriction" below.
-    
-    **Boot-time-only SOUNDBIAS target restriction.**  The chip syncs
-    sampling_cycle at the START of each render call (snapshot).
-    Mid-call sampling_cycle changes are deferred to the next render
-    boundary by design — Pokemon Emerald and ROMhacks both configure
-    SOUNDBIAS at boot and never change it during playback, so this
-    restriction has no observable effect for the target catalogue.
-    A behavioural test (`test_chip_canned_soundbias_internal_rate_
-    switches`) explicitly asserts this: an in-call SOUNDBIAS event
-    does NOT change `internal_rate` until the next call.  This is a
-    chosen scope reduction, not a closed parity gate — if future ROM
-    hacks demand mid-call SOUNDBIAS, the resampler + cumulative
-    trackers will need a flush-and-rebuild path mid-call.
+    **Mid-call SOUNDBIAS sampling_cycle changes.**
+    `hw_audio_render_events()` renders event-to-event host spans at the
+    current chip rate.  After a `M4A_REG_SOUNDBIAS` event, `HwMixBus`
+    consumes the write, then `HwAudio` syncs `internal_rate`, `HwPcm`
+    quirk rate, and the resampler epoch before the next span renders.
+    Regressions: `test_chip_canned_soundbias_internal_rate_switches`
+    and `test_chip_canned_soundbias_mid_call_matches_split_call`.
+
+    **DirectSound SOUNDCNT_H FIFO reset bits.**
+    `HwPcm` consumes reset bit 11 (`0x0800`) for FIFO A and bit 15
+    (`0x8000`) for FIFO B.  Reset clears only the selected held FIFO
+    state and cache sentinel; it does not rewind the shared PCM or
+    quirk clocks.  Regression: `test_hw_pcm_soundcnt_h_fifo_reset_bits`.
+
+    **PSG length counters.**  `HwPsgSynth` loads length counters from
+    NR11/NR21/NR31/NR41, records bit 6 length-enable from
+    NR14/NR24/NR34/NR44, reloads zero counters on trigger, and
+    decrements enabled counters on the existing frame-sequencer length
+    ticks.  Regressions: `test_hw_psg_length_counters_one_step_expiry`
+    and `test_v2_event_stream`.
+
+    Source references checked against local mGBA:
+    `GBAAudioWriteSOUNDBIAS`, `GBAAudioWriteSOUNDCNT_HI`,
+    `GBAudioWriteNR11/21/31/41`, and `GBAudioWriteNR14/24/34/44` under
+    `/Users/spencer/dev/poryaaaa/poryaaaa/tools/captures/mgba-headless-channel-mute/mgba`.
+    No direct capture-comparison test exists yet for these edge cases.
 11. **Comparison test infrastructure** — ⚠ **NEXT.**
     Build the harness before further parity tuning.  It should:
     - Render stable v2 captures through `poryaaaa_render` / full-v2

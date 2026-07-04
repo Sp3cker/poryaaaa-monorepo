@@ -14,8 +14,8 @@ extern "C"
      *
      * Status (2026-04-29):
      *   - PSG square / wave / noise: synthesised at the chip-internal
-     *     render rate (`max(131072, 32768 << sampling_cycle)`).  Sampling_cycle synced from HwMixBus at
-     *     start-of-render-call (boot-time-only target — see hw_audio.c).
+     *     render rate (`max(131072, 32768 << sampling_cycle)`), updated at
+     *     SOUNDBIAS event offsets.
      *   - PCM DirectSound: two-stage drain (§12 step 5 closed).
      *     HwDmaToFifo reads M4APcmRing at pcm_rate_hz; HwFifoDrain
      *     snapshots the FIFO head at the SOUNDBIAS-derived quirk rate
@@ -25,7 +25,7 @@ extern "C"
      *     bias-add / clip pipeline at internal rate (§12 step 8 + 9).
      *   - Output resampler: windowed-sinc polyphase from internal rate
      *     to host rate (§12 step 9, hw_resample.c).  Kernel rebuilds
-     *     when sampling_cycle changes between render calls.  Cumulative
+     *     when sampling_cycle changes at a SOUNDBIAS event.  Cumulative
      *     sample-clock accounting in hw_audio.c gives block-size
      *     invariance regardless of how the caller chunks render windows.
      *
@@ -56,10 +56,8 @@ extern "C"
      * should not depend on this; the rate may change with future
      * SOUNDBIAS work or scope refinements.
      *
-     * Snapshot at start-of-call: this reflects whatever sampling_cycle
-     * was set by SOUNDBIAS events on prior render calls.  Mid-call
-     * SOUNDBIAS changes don't affect this until the next render call
-     * (boot-time-only target — see hw_audio.c). */
+     * Reflects SOUNDBIAS sampling_cycle after prior writes and same-call
+     * SOUNDBIAS events. */
     int hw_audio_internal_rate(const HwAudio* hw);
 
     /* Per-channel solo / mute mask for parity capture work.  Each bit

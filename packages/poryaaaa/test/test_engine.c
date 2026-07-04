@@ -8,6 +8,7 @@
 
 #include "m4a/m4a_driver.h"
 #include "hw_audio/hw_audio.h"
+#include "hw_audio/hw_pcm.h"
 #include "hw_audio/hw_psg.h"
 /* Tests access internal track / channel state to verify XCMD field
  * mutations and propagation into newly-started notes (xcmd.md).  The
@@ -1886,6 +1887,7 @@ static void test_v2_event_stream(void)
     /* NR24 carries the NRx4-with-trigger encoding: bit 7 = 1. */
     uint32_t nr24 = b->events[seenN24].value;
     ASSERT((nr24 & 0x80) != 0, "NR24 has trigger bit (0x80) set");
+    ASSERT((nr24 & 0x40) == 0, "NR24 keeps hardware length disabled");
 
     /* All vblank-emitted events share the same sample_offset (that
      * vblank's firing position within the render span). */
@@ -2894,6 +2896,88 @@ static void test_v2_psg_wave_audible(void)
     hw_audio_destroy(hw);
 }
 
+static void test_v2_psg_export_shape_audible_across_sample_rates(void)
+{
+    printf("Testing v2 PSG audible with export-shaped host buffers and sample rates...\n");
+
+    /* This test documents the export investigation: the shared engine/chip
+     * path can render every PSG family under large host buffers and common
+     * offline-export sample rates, so the M4L fix belongs in ccomidi setup
+     * delivery rather than in PSG synthesis. */
+    static uint32_t waveRam[4];
+    for (int i = 0; i < 16; i++)
+        ((uint8_t*)waveRam)[i] = (uint8_t)(((i * 17) & 0xF0) | ((i * 23) & 0x0F));
+
+    typedef struct
+    {
+        uint8_t type;
+        uint32_t* wavePointer;
+    } ExportPsgCase;
+
+    ExportPsgCase cases[] = {
+        {VOICE_SQUARE_2, (uint32_t*)(uintptr_t)2},
+        {VOICE_PROGRAMMABLE_WAVE, waveRam},
+        {VOICE_NOISE, (uint32_t*)(uintptr_t)2},
+    };
+    float rates[] = {44100.0f, 48000.0f, 96000.0f};
+
+    enum
+    {
+        HOST_BLOCK = 8192,
+        BLOCKS = 4,
+        N = HOST_BLOCK * BLOCKS,
+        SKIP = 256
+    };
+
+    for (int r = 0; r < 3; r++)
+    {
+        for (int c = 0; c < 3; c++)
+        {
+            ToneData voices[128];
+            memset(voices, 0, sizeof(voices));
+            voices[0].type = cases[c].type;
+            voices[0].key = 60;
+            voices[0].attack = 0;
+            voices[0].decay = 0;
+            voices[0].sustain = 16;
+            voices[0].release = 16;
+            voices[0].wavePointer = cases[c].wavePointer;
+
+            M4ADriver* drv = m4a_driver_create(rates[r]);
+            HwAudio* hw = hw_audio_create(rates[r]);
+            m4a_driver_set_voicegroup(drv, voices);
+            m4a_program_change(drv, 0, 0);
+            m4a_cc(drv, 0, 7, 127);
+            m4a_cc(drv, 0, 10, 64);
+            m4a_note_on(drv, 0, 60, 127);
+
+            float L[N], R[N];
+            for (int off = 0; off < N; off += HOST_BLOCK)
+                v2_render_chunked(drv, hw, L + off, R + off, HOST_BLOCK);
+
+            float peak = 0.0f;
+            int nonzero = 0;
+            for (int i = SKIP; i < N; i++)
+            {
+                float a = L[i];
+                if (a < 0)
+                    a = -a;
+                if (a > peak)
+                    peak = a;
+                if (L[i] != 0.0f || R[i] != 0.0f)
+                    nonzero++;
+            }
+
+            ASSERT(peak > 0.001f, "export-shaped PSG render is audible");
+            ASSERT(nonzero > (N - SKIP) / 4, "export-shaped PSG render persists across host blocks");
+            ASSERT_EQ((int)m4a_get_events_dropped(drv), 0, "export-shaped PSG render drops no events");
+
+            m4a_driver_destroy(drv);
+            hw_audio_destroy(hw);
+        }
+    }
+}
+
 /* CGB retrigger semantics: NRx4 trigger bit must fire on note start only,
  * NEVER on subsequent envelope-update vblanks.  Real GB hardware resets
  * the wave RAM position (NR34 trigger) and noise LFSR (NR44 trigger) on
@@ -3824,6 +3908,77 @@ static void test_hw_psg_frame_sequencer_nr52_disabled_write_stable(void)
     ASSERT_EQ(after.length_ticks, before.length_ticks, "disabled NR52 write preserves length counter");
     ASSERT_EQ(after.sweep_ticks, before.sweep_ticks, "disabled NR52 write preserves sweep counter");
     ASSERT_EQ(after.envelope_ticks, before.envelope_ticks, "disabled NR52 write preserves envelope counter");
+}
+
+static void test_hw_psg_length_counters_one_step_expiry(void)
+{
+    printf("Testing hw_psg length counters expire on one length clock...\n");
+
+    {
+        HwPsgSynth psg;
+        M4ARegWrite ev[] = {
+            {0, M4A_REG_NR52, 0x80},
+            {0, M4A_REG_NR21, 0x80 | 63u},
+            {0, M4A_REG_NR22, 0xF0},
+            {0, M4A_REG_NR23, 2040 & 0xFF},
+            {0, M4A_REG_NR24, 0x80 | 0x40 | ((2040 >> 8) & 7)},
+        };
+
+        hw_psg_init(&psg, 131072.0f);
+        for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
+            hw_psg_apply_event(&psg, &ev[i]);
+
+        ASSERT(psg.sq2_enabled, "precondition: SQ2 trigger enables channel");
+        ASSERT_EQ(psg.sq2_length_counter, 1, "NR21 length load 63 gives one length tick");
+        hw_psg_render(&psg, NULL, NULL, NULL, NULL, 512);
+        ASSERT(!psg.sq2_enabled, "SQ2 length counter disables channel at zero");
+    }
+
+    {
+        HwPsgSynth psg;
+        M4ARegWrite ev[] = {
+            {0, M4A_REG_NR52, 0x80},
+            {0, M4A_REG_NR30, 0x80},
+            {0, M4A_REG_NR31, 255},
+            {0, M4A_REG_NR32, 0x20},
+            {0, M4A_REG_NR33, 2040 & 0xFF},
+            {0, M4A_REG_NR34, 0x80 | 0x40 | ((2040 >> 8) & 7)},
+        };
+
+        hw_psg_init(&psg, 131072.0f);
+        for (uint32_t i = 0; i < 16; i++)
+        {
+            M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | 0xFFu};
+            hw_psg_apply_event(&psg, &wr);
+        }
+        for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
+            hw_psg_apply_event(&psg, &ev[i]);
+
+        ASSERT(psg.wave_enabled, "precondition: wave trigger enables channel");
+        ASSERT_EQ(psg.wave_length_counter, 1, "NR31 length load 255 gives one length tick");
+        hw_psg_render(&psg, NULL, NULL, NULL, NULL, 512);
+        ASSERT(!psg.wave_enabled, "wave length counter disables channel at zero");
+    }
+
+    {
+        HwPsgSynth psg;
+        M4ARegWrite ev[] = {
+            {0, M4A_REG_NR52, 0x80},
+            {0, M4A_REG_NR41, 63},
+            {0, M4A_REG_NR42, 0xF0},
+            {0, M4A_REG_NR43, 0x00},
+            {0, M4A_REG_NR44, 0x80 | 0x40},
+        };
+
+        hw_psg_init(&psg, 131072.0f);
+        for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
+            hw_psg_apply_event(&psg, &ev[i]);
+
+        ASSERT(psg.noise_enabled, "precondition: noise trigger enables channel");
+        ASSERT_EQ(psg.noise_length_counter, 1, "NR41 length load 63 gives one length tick");
+        hw_psg_render(&psg, NULL, NULL, NULL, NULL, 512);
+        ASSERT(!psg.noise_enabled, "noise length counter disables channel at zero");
+    }
 }
 
 static void test_hw_psg_sq1_sweep_nr10_decode(void)
@@ -5044,10 +5199,8 @@ static void test_chip_canned_dc_streaming(void)
  * on the downsampling path.
  *
  * These tests exercise all four cadences via the setup-then-play
- * pattern: one short render call applies SOUNDBIAS, the next call
- * runs real audio at the new rate.  Mid-call SOUNDBIAS sampling_cycle
- * changes are deferred to next render boundary by design — see
- * hw_audio.c's snapshot-at-start-of-call logic. */
+ * pattern, and the mid-call regression below proves an event-offset
+ * SOUNDBIAS switch matches the equivalent split render. */
 
 /* Render an SQ2 trigger for `frames` host samples after applying the
  * given SOUNDBIAS value via a setup call.  Returns the post-warmup
@@ -5118,12 +5271,9 @@ static void test_chip_canned_soundbias_cycle_audible_sweep(void)
  * HwPcm's FIFO drain quirk rate, not by lowering the whole render/
  * resampler pipeline below common host rates.
  *
- * Test pattern matches the documented boot-time-only target: a
- * SOUNDBIAS event applied in one render call takes effect at the
- * START of the NEXT render call (snapshot-at-start-of-call sync).
- * So each transition is a setup call (apply SOUNDBIAS) plus a play
- * call (any subsequent render), and we read internal_rate AFTER the
- * play call. */
+ * The transition checks use setup calls so each sampling_cycle is the
+ * starting state for the next assertion; the final block asserts that
+ * an offset-0 event also updates the rate before the same call returns. */
 static void test_chip_canned_soundbias_internal_rate_switches(void)
 {
     printf("Testing chip-only: hw_audio_internal_rate() tracks SOUNDBIAS sampling_cycle...\n");
@@ -5162,10 +5312,9 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 
 #undef SOUNDBIAS_TRANSITION
 
-    /* Single-call boundary check: applying SOUNDBIAS doesn't change
-     * internal_rate within the same call.  This is the documented
-     * boot-time-only restriction — make sure tests don't accidentally
-     * rely on mid-call rate change. */
+    /* A SOUNDBIAS event at offset 0 is a same-call rate change: the event
+     * stream has reached that hardware write, so the chip's rate state must
+     * be updated before the call returns. */
     {
         M4ARegWrite ev[] = {{0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)}};
         M4ARegWriteBatch batch = {.events = ev, .count = 1};
@@ -5175,10 +5324,108 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
         hw = hw_audio_create(44100.0f);
         ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "fresh chip starts at 131072");
         hw_audio_render_events(hw, &batch, NULL, scratch, scratch, 1);
-        ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "mid-call SOUNDBIAS doesn't switch rate (boot-time-only target)");
+        ASSERT_EQ(hw_audio_internal_rate(hw), 262144, "mid-call SOUNDBIAS switches rate before return");
     }
 
     hw_audio_destroy(hw);
+}
+
+static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
+{
+    printf("Testing chip-only: mid-call SOUNDBIAS switch matches split-call switch...\n");
+
+    enum
+    {
+        N = 2048,
+        SWITCH_AT = 768,
+    };
+
+    float one_L[N] = {0}, one_R[N] = {0};
+    float split_L[N] = {0}, split_R[N] = {0};
+
+    M4ARegWrite ev[] = {
+        {0, M4A_REG_NR52, 0x80},
+        {0, M4A_REG_NR50, 0x77},
+        {0, M4A_REG_NR51, 0x22},
+        {0, M4A_REG_NR21, 0x80},
+        {0, M4A_REG_NR22, 0xF0},
+        {0, M4A_REG_NR23, 0x00},
+        {0, M4A_REG_NR24, 0x80 | 0x02},
+        {SWITCH_AT, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)},
+    };
+    M4ARegWriteBatch one_batch = {ev, sizeof(ev) / sizeof(ev[0])};
+    M4ARegWriteBatch start_batch = {ev, (sizeof(ev) / sizeof(ev[0])) - 1};
+    M4ARegWrite switch_ev[] = {{0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)}};
+    M4ARegWriteBatch switch_batch = {switch_ev, 1};
+
+    HwAudio* one = hw_audio_create(44100.0f);
+    ASSERT(one != NULL, "one-call HwAudio allocation succeeds");
+    hw_audio_render_events(one, &one_batch, NULL, one_L, one_R, N);
+    ASSERT_EQ(hw_audio_internal_rate(one), 262144, "one-call render ends at sampling_cycle 3 rate");
+    hw_audio_destroy(one);
+
+    HwAudio* split = hw_audio_create(44100.0f);
+    ASSERT(split != NULL, "split-call HwAudio allocation succeeds");
+    hw_audio_render_events(split, &start_batch, NULL, split_L, split_R, SWITCH_AT);
+    hw_audio_render_events(split, &switch_batch, NULL, split_L + SWITCH_AT, split_R + SWITCH_AT, N - SWITCH_AT);
+    ASSERT_EQ(hw_audio_internal_rate(split), 262144, "split-call render ends at sampling_cycle 3 rate");
+    hw_audio_destroy(split);
+
+    float max_diff = 0.0f;
+    for (int i = 0; i < N; i++)
+    {
+        float dl = fabsf(one_L[i] - split_L[i]);
+        float dr = fabsf(one_R[i] - split_R[i]);
+        if (dl > max_diff)
+            max_diff = dl;
+        if (dr > max_diff)
+            max_diff = dr;
+    }
+    ASSERT(max_diff < 1e-4f, "mid-call SOUNDBIAS output matches split-call equivalent");
+}
+
+static void test_hw_pcm_soundcnt_h_fifo_reset_bits(void)
+{
+    printf("Testing hw_pcm: SOUNDCNT_H FIFO reset bits clear only the selected FIFO...\n");
+
+    M4APcmRing ring;
+    memset(&ring, 0, sizeof(ring));
+    ring.pcm_rate_hz = 32768.0f;
+    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
+    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
+    {
+        ring.ring_a[i] = 64;
+        ring.ring_b[i] = -64;
+    }
+
+    for (int pass = 0; pass < 2; pass++)
+    {
+        const bool reset_b = pass != 0;
+        HwPcm pcm;
+        float out_a[1] = {0}, out_b[1] = {0};
+        M4ARegWrite publish = {0, M4A_REG_PCM_PUBLISH, 0};
+        M4ARegWrite reset = {0, M4A_REG_SOUNDCNT_H, reset_b ? 0x8000u : 0x0800u};
+
+        hw_pcm_init(&pcm, 32768.0f);
+        hw_pcm_set_quirk_rate(&pcm, 32768);
+        hw_pcm_apply_event(&pcm, &publish);
+        hw_pcm_render(&pcm, &ring, out_a, out_b, 1);
+        ASSERT(out_a[0] != 0.0f, "precondition: FIFO A renders non-zero");
+        ASSERT(out_b[0] != 0.0f, "precondition: FIFO B renders non-zero");
+
+        hw_pcm_apply_event(&pcm, &reset);
+        hw_pcm_render(&pcm, &ring, out_a, out_b, 1);
+        if (reset_b)
+        {
+            ASSERT(out_a[0] != 0.0f, "SOUNDCNT_H bit 15 does not disturb FIFO A");
+            ASSERT_EQ(out_b[0], 0.0f, "SOUNDCNT_H bit 15 clears FIFO B held output");
+        }
+        else
+        {
+            ASSERT_EQ(out_a[0], 0.0f, "SOUNDCNT_H bit 11 clears FIFO A held output");
+            ASSERT(out_b[0] != 0.0f, "SOUNDCNT_H bit 11 does not disturb FIFO B");
+        }
+    }
 }
 
 /* §12 step 5 — two-stage drain regression test.
@@ -5618,6 +5865,7 @@ int main(void)
     test_v2_psg_square_audible();
     test_v2_psg_pan_routing();
     test_v2_psg_wave_audible();
+    test_v2_psg_export_shape_audible_across_sample_rates();
     test_v2_directsound_audible();
     test_v2_pcm_chunk_size_invariance();
     test_v2_pcm_publish_timing();
@@ -5632,6 +5880,7 @@ int main(void)
     test_hw_psg_frame_sequencer_disabled_does_not_advance();
     test_hw_psg_frame_sequencer_nr52_enabled_write_no_reset();
     test_hw_psg_frame_sequencer_nr52_disabled_write_stable();
+    test_hw_psg_length_counters_one_step_expiry();
     test_hw_psg_sq1_sweep_nr10_decode();
     test_hw_psg_sq1_sweep_trigger_initializes_shadow();
     test_hw_psg_sq1_negative_sweep_commits_on_frame_step();
@@ -5660,6 +5909,8 @@ int main(void)
     test_chip_canned_dc_streaming();
     test_chip_canned_soundbias_cycle_audible_sweep();
     test_chip_canned_soundbias_internal_rate_switches();
+    test_chip_canned_soundbias_mid_call_matches_split_call();
+    test_hw_pcm_soundcnt_h_fifo_reset_bits();
     test_chip_canned_pcm_two_stage_drain();
     test_chip_canned_pcm_constant_byte();
     test_chip_canned_pcm_first_byte_consumed();

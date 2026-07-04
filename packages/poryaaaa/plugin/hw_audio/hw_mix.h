@@ -49,8 +49,11 @@ extern "C"
      *     bit   9    dma_a_enable_left
      *     bit  12    dma_b_enable_right
      *     bit  13    dma_b_enable_left
-     *     (bit 11 = DMA A timer select, bit 15 = DMA B timer; not relevant
-     *      to mix.  bits 4-7 = unused.  bit 14 reset FIFOs — TBD.)
+     *     bit  10   DMA A timer select (not relevant to mix)
+     *     bit  11   DMA A FIFO reset (handled by HwPcm)
+     *     bit  14   DMA B timer select (not relevant to mix)
+     *     bit  15   DMA B FIFO reset (handled by HwPcm)
+     *     bits 4-7 = unused.
      *
      *   SOUNDBIAS (0x4000088):
      *     bits  1-9  bias_level         0..0x3FF (default 0x200 = mid-DAC)

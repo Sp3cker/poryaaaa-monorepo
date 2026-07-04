@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+enum
+{
+    HW_PCM_SOUND_A_FIFO_RESET = 0x0800,
+    HW_PCM_SOUND_B_FIFO_RESET = 0x8000,
+};
+
 void hw_pcm_init(HwPcm* pcm, float render_rate)
 {
     memset(pcm, 0, sizeof(*pcm));
@@ -14,8 +20,10 @@ void hw_pcm_init(HwPcm* pcm, float render_rate)
      * held_pcm/held_quirk from ring[0] / pcm head before any output
      * is produced.  Without this, the read-on-integer-crossing model
      * would skip index 0 entirely. */
-    pcm->pcm_last_int = -1;
-    pcm->quirk_last_int = -1;
+    pcm->pcm_last_int_a = -1;
+    pcm->pcm_last_int_b = -1;
+    pcm->quirk_last_int_a = -1;
+    pcm->quirk_last_int_b = -1;
 }
 
 void hw_pcm_set_render_rate(HwPcm* pcm, float render_rate)
@@ -43,6 +51,23 @@ void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev)
     {
         pcm->pcm_published_through += (uint64_t)M4A_PCM_SAMPLES_PER_VBLANK;
         pcm->publish_seen = true;
+    }
+    if (ev->reg == M4A_REG_SOUNDCNT_H)
+    {
+        if (ev->value & HW_PCM_SOUND_A_FIFO_RESET)
+        {
+            pcm->held_pcm_a = 0;
+            pcm->held_quirk_a = 0;
+            pcm->pcm_last_int_a = (int64_t)pcm->pcm_pos;
+            pcm->quirk_last_int_a = (int64_t)pcm->quirk_pos;
+        }
+        if (ev->value & HW_PCM_SOUND_B_FIFO_RESET)
+        {
+            pcm->held_pcm_b = 0;
+            pcm->held_quirk_b = 0;
+            pcm->pcm_last_int_b = (int64_t)pcm->pcm_pos;
+            pcm->quirk_last_int_b = (int64_t)pcm->quirk_pos;
+        }
     }
     /* SOUNDCNT_H DMA routing/vol bits land on HwMixBus, not here. */
 }
@@ -116,22 +141,33 @@ void hw_pcm_render(HwPcm* pcm, const M4APcmRing* ring, float* out_a, float* out_
          * the held byte — same as real hardware. */
         int64_t pcm_int = (int64_t)pcm->pcm_pos;
         bool pcm_published = (uint64_t)pcm_int < pcm->pcm_published_through;
-        if (pcm_published && pcm_int != pcm->pcm_last_int)
+        if (pcm_published)
         {
             size_t idx = (size_t)pcm_int % M4A_PCM_DMA_BUF_SIZE;
-            pcm->held_pcm_a = ring->ring_a[idx];
-            pcm->held_pcm_b = ring->ring_b[idx];
-            pcm->pcm_last_int = pcm_int;
+            if (pcm_int != pcm->pcm_last_int_a)
+            {
+                pcm->held_pcm_a = ring->ring_a[idx];
+                pcm->pcm_last_int_a = pcm_int;
+            }
+            if (pcm_int != pcm->pcm_last_int_b)
+            {
+                pcm->held_pcm_b = ring->ring_b[idx];
+                pcm->pcm_last_int_b = pcm_int;
+            }
         }
 
         /* HwFifoDrain: snapshot held_pcm into held_quirk at quirk
          * cadence (whenever the quirk-rate clock's integer advances). */
         int64_t quirk_int = (int64_t)pcm->quirk_pos;
-        if (quirk_int != pcm->quirk_last_int)
+        if (quirk_int != pcm->quirk_last_int_a)
         {
             pcm->held_quirk_a = pcm->held_pcm_a;
+            pcm->quirk_last_int_a = quirk_int;
+        }
+        if (quirk_int != pcm->quirk_last_int_b)
+        {
             pcm->held_quirk_b = pcm->held_pcm_b;
-            pcm->quirk_last_int = quirk_int;
+            pcm->quirk_last_int_b = quirk_int;
         }
 
         /* Output: sign-extend s8 → float.  ±127 → ±~1.0.  Routing +
