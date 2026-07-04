@@ -1,10 +1,9 @@
 /*
  * poryaaaa~ — GameBoy Advance m4a sound engine MSP external for Max for Live.
  *
- * Wraps the standalone m4a engine from /Users/.../poryaaaa/plugin/m4a_engine.*
- * (the same DSP core the CLAP plugin uses) into a Max audio object. The .amxd
- * device patch provides UI via live.dial and friends — no GUI lives inside the
- * external itself.
+ * Wraps the shared m4a driver and GBA chip emulation into a Max audio object.
+ * The .amxd device patch provides UI via live.dial and friends — no GUI lives
+ * inside the external itself.
  *
  * MIDI capture: this external now keeps only a thin byte buffer (MidiBuffer).
  * Each event arriving on the right-side `int` inlet (from [midiin]) gets
@@ -21,7 +20,6 @@ extern "C"
 #include "ext_obex.h"
 #include "z_dsp.h"
 
-#include "m4a_engine.h"
 #include "hw_audio/hw_audio.h"
 #include "m4a/m4a_driver.h"
 #include "voicegroup/voicegroup_loader.h"
@@ -36,12 +34,18 @@ extern "C"
 
 using namespace ccomidi;
 
+enum
+{
+    PORYA_TRACK_COUNT = 16,
+    PORYA_MAX_SONG_VOLUME = 127,
+    PORYA_DEFAULT_MAX_PCM_CHANNELS = 12,
+};
+
 typedef struct _porya
 {
     t_pxobject ob; /* MUST be first */
-    M4AEngine engine;
-    M4ADriver* m4a_v2;
-    HwAudio* hw_v2;
+    M4ADriver* m4a;
+    HwAudio* hw;
     LoadedVoiceGroup* loadedVg;
 
     float* scratchL;
@@ -58,7 +62,7 @@ typedef struct _porya
     const char* voicegroupBankName;
     VoicegroupReloadWatcher* voicegroupReloadWatcher;
     t_qelem* voicegroupReloadQueue;
-    long progSlot[16];
+    long progSlot[PORYA_TRACK_COUNT];
     long songVolume;
     long reverbAmount;
     long analogFilter;
@@ -163,7 +167,7 @@ extern "C" void ext_main(void* r)
     /* 16 program-slot attrs: prog0..prog15 — automatable from Live */
     {
         char name[8];
-        for (int i = 0; i < 16; i++)
+        for (int i = 0; i < PORYA_TRACK_COUNT; i++)
         {
             snprintf(name, sizeof name, "prog%d", i);
             CLASS_ATTR_LONG(c, name, 0, t_porya, progSlot);
@@ -224,12 +228,12 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     x->voicegroupBankName = "";
     x->voicegroupReloadWatcher = new VoicegroupReloadWatcher();
     x->voicegroupReloadQueue = (t_qelem*)qelem_new(x, (method)porya_voicegroup_reload_do);
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < PORYA_TRACK_COUNT; i++)
         x->progSlot[i] = 0;
-    x->songVolume = MAX_SONG_VOLUME;
+    x->songVolume = PORYA_MAX_SONG_VOLUME;
     x->reverbAmount = 0;
     x->analogFilter = 0;
-    x->maxPcmChannels = 12;
+    x->maxPcmChannels = PORYA_DEFAULT_MAX_PCM_CHANNELS;
     x->midiStatus = 0;
     x->midiData1 = 0;
     x->midiBytesNeeded = 0;
@@ -239,13 +243,12 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     /* recorder */
     x->capture = new ExportCapture();
 
-    m4a_engine_init(&x->engine, (float)x->samplerate);
-    x->m4a_v2 = m4a_driver_create((float)x->samplerate);
-    m4a_set_song_volume(x->m4a_v2, (uint8_t)x->songVolume);
-    m4a_set_reverb_amount(x->m4a_v2, (uint8_t)x->reverbAmount);
-    m4a_set_analog_filter(x->m4a_v2, x->analogFilter ? true : false);
-    m4a_set_max_pcm_channels(x->m4a_v2, (uint8_t)x->maxPcmChannels);
-    x->hw_v2 = hw_audio_create((float)x->samplerate);
+    x->m4a = m4a_driver_create((float)x->samplerate);
+    m4a_set_song_volume(x->m4a, (uint8_t)x->songVolume);
+    m4a_set_reverb_amount(x->m4a, (uint8_t)x->reverbAmount);
+    m4a_set_analog_filter(x->m4a, x->analogFilter ? true : false);
+    m4a_set_max_pcm_channels(x->m4a, (uint8_t)x->maxPcmChannels);
+    x->hw = hw_audio_create((float)x->samplerate);
 
     /* attributes (including ATTR_SAVE restored values) are set by attr_args_process */
     attr_args_process(x, (short)argc, argv);
@@ -268,16 +271,15 @@ static void porya_free(t_porya* x)
     delete x->voicegroupReloadWatcher;
     x->voicegroupReloadWatcher = nullptr;
     dsp_free((t_pxobject*)x);
-    m4a_engine_destroy(&x->engine);
-    if (x->m4a_v2)
+    if (x->m4a)
     {
-        m4a_driver_destroy(x->m4a_v2);
-        x->m4a_v2 = NULL;
+        m4a_driver_destroy(x->m4a);
+        x->m4a = NULL;
     }
-    if (x->hw_v2)
+    if (x->hw)
     {
-        hw_audio_destroy(x->hw_v2);
-        x->hw_v2 = NULL;
+        hw_audio_destroy(x->hw);
+        x->hw = NULL;
     }
     if (x->loadedVg)
     {
@@ -329,33 +331,25 @@ static void porya_dsp64(t_porya* x, t_object* dsp64, short* count, double sample
 {
     if (samplerate != x->samplerate)
     {
-        m4a_engine_destroy(&x->engine);
-        m4a_engine_init(&x->engine, (float)samplerate);
-        if (x->m4a_v2)
-            m4a_driver_destroy(x->m4a_v2);
-        x->m4a_v2 = m4a_driver_create((float)samplerate);
-        if (x->hw_v2)
-            hw_audio_destroy(x->hw_v2);
-        x->hw_v2 = hw_audio_create((float)samplerate);
+        if (x->m4a)
+            m4a_driver_destroy(x->m4a);
+        x->m4a = m4a_driver_create((float)samplerate);
+        if (x->hw)
+            hw_audio_destroy(x->hw);
+        x->hw = hw_audio_create((float)samplerate);
         x->samplerate = samplerate;
-        /* re-apply persisted state — engine got memset */
-        m4a_engine_set_song_volume(&x->engine, (uint8_t)x->songVolume);
-        m4a_engine_set_reverb_amount(&x->engine, (uint8_t)x->reverbAmount);
-        m4a_engine_set_analog_filter(&x->engine, x->analogFilter ? true : false);
-        m4a_engine_set_max_pcm_channels(&x->engine, (uint8_t)x->maxPcmChannels);
-        m4a_set_song_volume(x->m4a_v2, (uint8_t)x->songVolume);
-        m4a_set_reverb_amount(x->m4a_v2, (uint8_t)x->reverbAmount);
-        m4a_set_analog_filter(x->m4a_v2, x->analogFilter ? true : false);
-        m4a_set_max_pcm_channels(x->m4a_v2, (uint8_t)x->maxPcmChannels);
-        for (int i = 0; i < 16; i++)
-        {
-            m4a_engine_program_change(&x->engine, i, (uint8_t)x->progSlot[i]);
-            m4a_program_change(x->m4a_v2, i, (uint8_t)x->progSlot[i]);
-        }
+        /* re-apply persisted state — the driver was recreated for the new rate */
+        m4a_set_song_volume(x->m4a, (uint8_t)x->songVolume);
+        m4a_set_reverb_amount(x->m4a, (uint8_t)x->reverbAmount);
+        m4a_set_analog_filter(x->m4a, x->analogFilter ? true : false);
+        m4a_set_max_pcm_channels(x->m4a, (uint8_t)x->maxPcmChannels);
         if (x->loadedVg)
         {
-            m4a_engine_set_voicegroup(&x->engine, x->loadedVg->voices);
-            m4a_driver_set_voicegroup(x->m4a_v2, x->loadedVg->voices);
+            m4a_driver_set_voicegroup(x->m4a, x->loadedVg->voices);
+        }
+        for (int i = 0; i < PORYA_TRACK_COUNT; i++)
+        {
+            m4a_program_change(x->m4a, i, (uint8_t)x->progSlot[i]);
         }
     }
 
@@ -402,10 +396,10 @@ static void porya_perform64(t_porya* x,
         uint32_t chunk = toGo;
         if (chunk > (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
             chunk = (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
-        m4a_advance(x->m4a_v2, (int)chunk);
+        m4a_advance(x->m4a, (int)chunk);
         hw_audio_render_events(
-            x->hw_v2, m4a_get_pending_writes(x->m4a_v2), m4a_get_pcm_ring(x->m4a_v2), sL + off, sR + off, (int)chunk);
-        m4a_consume_writes(x->m4a_v2);
+            x->hw, m4a_get_pending_writes(x->m4a), m4a_get_pcm_ring(x->m4a), sL + off, sR + off, (int)chunk);
+        m4a_consume_writes(x->m4a);
         off += chunk;
         toGo -= chunk;
     }
@@ -430,7 +424,7 @@ static void porya_dispatch_event(t_porya* x, uint8_t status, uint8_t d1, uint8_t
 {
     int type = (status >> 4) & 0x0F;
     int ch = status & 0x0F;
-    if (ch >= MAX_TRACKS)
+    if (ch >= PORYA_TRACK_COUNT)
         return;
     d1 &= 0x7F;
     d2 &= 0x7F;
@@ -438,36 +432,30 @@ static void porya_dispatch_event(t_porya* x, uint8_t status, uint8_t d1, uint8_t
     switch (type)
     {
     case 0x8:
-        m4a_engine_note_off(&x->engine, ch, d1);
-        m4a_note_off(x->m4a_v2, ch, d1);
+        m4a_note_off(x->m4a, ch, d1);
         break;
     case 0x9:
         if (d2 == 0)
         {
-            m4a_engine_note_off(&x->engine, ch, d1);
-            m4a_note_off(x->m4a_v2, ch, d1);
+            m4a_note_off(x->m4a, ch, d1);
         }
         else
         {
-            m4a_engine_note_on(&x->engine, ch, d1, d2);
-            m4a_note_on(x->m4a_v2, ch, d1, d2);
+            m4a_note_on(x->m4a, ch, d1, d2);
         }
         break;
     case 0xB:
-        /* CCs incl. XCMD on 29/30/31 — engine routes them */
-        m4a_engine_cc(&x->engine, ch, d1, d2);
-        m4a_cc(x->m4a_v2, ch, d1, d2);
+        /* CCs incl. XCMD on 29/30/31 — the driver routes them */
+        m4a_cc(x->m4a, ch, d1, d2);
         break;
     case 0xC:
-        m4a_engine_program_change(&x->engine, ch, d1);
-        m4a_program_change(x->m4a_v2, ch, d1);
+        m4a_program_change(x->m4a, ch, d1);
         x->progSlot[ch] = d1;
         break;
     case 0xE:
     {
         int16_t signed14 = (int16_t)(((d2 << 7) | d1) - 8192);
-        m4a_engine_pitch_bend(&x->engine, ch, signed14);
-        m4a_pitch_bend(x->m4a_v2, ch, signed14);
+        m4a_pitch_bend(x->m4a, ch, signed14);
         break;
     }
     default:
@@ -558,10 +546,9 @@ static void porya_midievent(t_porya* x, t_symbol* s, long argc, t_atom* argv)
 
 static void porya_program(t_porya* x, long track, long program)
 {
-    int t = (int)clamp_long(track, 0, MAX_TRACKS - 1);
+    int t = (int)clamp_long(track, 0, PORYA_TRACK_COUNT - 1);
     int p = (int)clamp_long(program, 0, 127);
-    m4a_engine_program_change(&x->engine, t, (uint8_t)p);
-    m4a_program_change(x->m4a_v2, t, (uint8_t)p);
+    m4a_program_change(x->m4a, t, (uint8_t)p);
     x->progSlot[t] = p;
 }
 
@@ -569,8 +556,7 @@ static void porya_tempo(t_porya* x, double bpm)
 {
     if (bpm < 1.0)
         bpm = 1.0;
-    m4a_engine_set_tempo_bpm(&x->engine, bpm);
-    m4a_set_tempo_bpm(x->m4a_v2, bpm);
+    m4a_set_tempo_bpm(x->m4a, bpm);
 }
 
 /* ---- recorder messages -------------------------------------------------- */
@@ -742,8 +728,7 @@ static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* ba
         char msg[512];
         snprintf(msg, sizeof(msg), "voicegroup load failed: root=%s name=%s", rootPath, bankName);
         object_error((t_object*)x, "%s", msg);
-        m4a_engine_set_voicegroup(&x->engine, NULL);
-        m4a_driver_set_voicegroup(x->m4a_v2, NULL);
+        m4a_driver_set_voicegroup(x->m4a, NULL);
         if (x->loadedVg)
         {
             voicegroup_free(x->loadedVg);
@@ -757,10 +742,8 @@ static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* ba
     }
 
     LoadedVoiceGroup* old = x->loadedVg;
-    m4a_engine_all_sound_off(&x->engine);
-    m4a_all_sound_off(x->m4a_v2);
-    m4a_engine_set_voicegroup(&x->engine, vg->voices);
-    m4a_driver_set_voicegroup(x->m4a_v2, vg->voices);
+    m4a_all_sound_off(x->m4a);
+    m4a_driver_set_voicegroup(x->m4a, vg->voices);
     x->loadedVg = vg;
     if (old)
         voicegroup_free(old);
@@ -776,10 +759,9 @@ static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* ba
 
     /* re-apply persisted program slots so each track has the right instrument
      * for the new voicegroup */
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < PORYA_TRACK_COUNT; i++)
     {
-        m4a_engine_program_change(&x->engine, i, (uint8_t)x->progSlot[i]);
-        m4a_program_change(x->m4a_v2, i, (uint8_t)x->progSlot[i]);
+        m4a_program_change(x->m4a, i, (uint8_t)x->progSlot[i]);
     }
 
     object_post((t_object*)x, "voicegroup loaded: root=%s name=%s", rootPath, bankName);
@@ -808,7 +790,7 @@ static int prog_index_from_attr(t_object* attr)
     if (!name || strncmp(name->s_name, "prog", 4) != 0)
         return -1;
     int idx = atoi(name->s_name + 4);
-    if (idx < 0 || idx >= 16)
+    if (idx < 0 || idx >= PORYA_TRACK_COUNT)
         return -1;
     return idx;
 }
@@ -833,8 +815,7 @@ static t_max_err prog_set(t_porya* x, t_object* attr, long ac, t_atom* av)
         return MAX_ERR_NONE;
     long v = clamp_long(atom_getlong(av), 0, 127);
     x->progSlot[idx] = v;
-    m4a_engine_program_change(&x->engine, idx, (uint8_t)v);
-    m4a_program_change(x->m4a_v2, idx, (uint8_t)v);
+    m4a_program_change(x->m4a, idx, (uint8_t)v);
     return MAX_ERR_NONE;
 }
 
@@ -844,8 +825,7 @@ static t_max_err songvol_set(t_porya* x, t_object* attr, long ac, t_atom* av)
         return MAX_ERR_NONE;
     long v = clamp_long(atom_getlong(av), 0, 127);
     x->songVolume = v;
-    m4a_engine_set_song_volume(&x->engine, (uint8_t)v);
-    m4a_set_song_volume(x->m4a_v2, (uint8_t)v);
+    m4a_set_song_volume(x->m4a, (uint8_t)v);
     return MAX_ERR_NONE;
 }
 
@@ -855,8 +835,7 @@ static t_max_err reverb_set(t_porya* x, t_object* attr, long ac, t_atom* av)
         return MAX_ERR_NONE;
     long v = clamp_long(atom_getlong(av), 0, 127);
     x->reverbAmount = v;
-    m4a_engine_set_reverb_amount(&x->engine, (uint8_t)v);
-    m4a_set_reverb_amount(x->m4a_v2, (uint8_t)v);
+    m4a_set_reverb_amount(x->m4a, (uint8_t)v);
     return MAX_ERR_NONE;
 }
 
@@ -866,7 +845,6 @@ static t_max_err analog_set(t_porya* x, t_object* attr, long ac, t_atom* av)
         return MAX_ERR_NONE;
     long v = clamp_long(atom_getlong(av), 0, 1);
     x->analogFilter = v;
-    m4a_engine_set_analog_filter(&x->engine, v ? true : false);
-    m4a_set_analog_filter(x->m4a_v2, v ? true : false);
+    m4a_set_analog_filter(x->m4a, v ? true : false);
     return MAX_ERR_NONE;
 }

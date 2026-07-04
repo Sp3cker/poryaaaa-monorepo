@@ -52,14 +52,9 @@ include_directories(
 add_subdirectory("${PORYA_ROOT}/plugin/m4a" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_m4a_driver")
 add_subdirectory("${PORYA_ROOT}/plugin/hw_audio" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_hw_audio")
 
-# Only pick up the wrapper sources here; the engine C sources are listed
-# explicitly below so we don't accidentally drag in build-system files.
+# Only pick up the wrapper sources here; shared driver/chip sources come from
+# the explicit m4a_driver and hw_audio targets below.
 file(GLOB LOCAL_SRC "*.h" "*.c" "*.cpp")
-list(REMOVE_ITEM LOCAL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/m4a_engine_recorder_stubs.cpp")
-
-set(ENGINE_SRC
-    "${PORYA_ROOT}/plugin/m4a_engine.c"
-)
 
 file(GLOB VG_SRC "${PORYA_ROOT}/plugin/voicegroup/*.c")
 
@@ -76,7 +71,6 @@ add_library(
     ${PROJECT_NAME}
     MODULE
     ${LOCAL_SRC}
-    ${ENGINE_SRC}
     ${VG_SRC}
     ${RECORDER_SRC}
     ${FILE_WATCHER_SRC}

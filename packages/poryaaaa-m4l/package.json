@@ -16,7 +16,7 @@
     "bundle:node": "esbuild code-src/poryaaaa_voicegroup_server.ts code-src/ccomidi_voicegroup_client.ts code-src/cleanup.ts --bundle --outdir=javascript --format=cjs --platform=node --target=node24 --external:max-api --external:@poryaaaa/voicegroup-core-node --log-level=warning",
     "build:voicegroup-core-static": "bash scripts/build_voicegroup_core_static.sh",
     "build:externals": "run-s --silent build:voicegroup-core-static build:externals:cmake",
-    "build:externals:cmake": "cmake -G Ninja -B build-ninja --log-level=WARNING && cmake --build build-ninja --config Release",
+    "build:externals:cmake": "cmake -G Ninja -B build-ninja -DCMAKE_BUILD_TYPE=Release --log-level=WARNING && cmake --build build-ninja --config Release",
     "install:max-package": "scripts/install_max_package.sh",
     "probe:recorder-size": "tsx code-src/tools/recorder-midi-size-probe.ts",
     "watch": "run-p watch:v8 watch:node",
