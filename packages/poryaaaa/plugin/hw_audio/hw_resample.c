@@ -127,22 +127,40 @@ int hw_resample_process(
             const float* kk = rs->kernel[phase_idx];
             float sum_l = 0.0f, sum_r = 0.0f;
 
-            /* Convolve: tap t corresponds to input at position
-             * anchor - half + 1 + t.  Map to ring: position of input I
-             * is (ring_head + I - input_idx) mod TAPS, normalized
-             * positive.  Skip taps whose input is missing (only
-             * happens at session start before ring is filled). */
-            for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
+            /* Convolve 32 taps for this output sample.  During startup,
+             * some requested tap positions can be before time zero or not
+             * yet present in the ring, so the fallback path keeps the
+             * per-tap validity checks.  Once the first tap is known to be
+             * inside the populated 32-sample history, every later tap is
+             * valid too; use the steady-state path to walk the ring with a
+             * cheap power-of-two mask instead of doing two bounds checks and
+             * modulo normalization for every tap. */
+            int64_t first = anchor - (int64_t)half + 1;
+            if (first >= 0 && rs->input_idx - first <= (int64_t)HW_RESAMPLE_TAPS)
             {
-                int64_t I = anchor - (int64_t)half + 1 + (int64_t)t;
-                if (I < 0 || I >= rs->input_idx)
-                    continue;
-                if (rs->input_idx - I > (int64_t)HW_RESAMPLE_TAPS)
-                    continue;
-                int64_t off = (int64_t)rs->ring_head + I - rs->input_idx;
-                int ring_idx = (int)(((off % HW_RESAMPLE_TAPS) + HW_RESAMPLE_TAPS) % HW_RESAMPLE_TAPS);
-                sum_l += rs->ring_l[ring_idx] * kk[t];
-                sum_r += rs->ring_r[ring_idx] * kk[t];
+                int ring_idx = (int)((uint64_t)((int64_t)rs->ring_head + first - rs->input_idx) &
+                                     (uint64_t)(HW_RESAMPLE_TAPS - 1));
+                for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
+                {
+                    sum_l += rs->ring_l[ring_idx] * kk[t];
+                    sum_r += rs->ring_r[ring_idx] * kk[t];
+                    ring_idx = (ring_idx + 1) & (HW_RESAMPLE_TAPS - 1);
+                }
+            }
+            else
+            {
+                for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
+                {
+                    int64_t I = first + (int64_t)t;
+                    if (I < 0 || I >= rs->input_idx)
+                        continue;
+                    if (rs->input_idx - I > (int64_t)HW_RESAMPLE_TAPS)
+                        continue;
+                    int64_t off = (int64_t)rs->ring_head + I - rs->input_idx;
+                    int ring_idx = (int)((uint64_t)off & (uint64_t)(HW_RESAMPLE_TAPS - 1));
+                    sum_l += rs->ring_l[ring_idx] * kk[t];
+                    sum_r += rs->ring_r[ring_idx] * kk[t];
+                }
             }
 
             if (out_l)
