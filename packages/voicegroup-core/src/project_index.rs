@@ -58,7 +58,7 @@ impl BankSourceText {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectIndex {
     root: PathBuf,
-    voice_groups: BTreeMap<String, VoiceGroupSource>,
+    voice_groups: BTreeMap<String, ProjectVoiceGroup>,
     // Physical source files under sound/voicegroups/. These feed include completion only;
     // they deliberately do not make a voicegroup symbol valid for analysis.
     voicegroup_files: BTreeSet<String>,
@@ -69,15 +69,21 @@ pub struct ProjectIndex {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum VoiceGroupSource {
-    Combined {
+struct ProjectVoiceGroup {
+    declaration: DefinitionLocation,
+    contents: VoiceGroupContents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VoiceGroupContents {
+    // Normally named voicegroup contents
+    StandaloneFile {
+        relative_path: String,
+    },
+    // pokered style, everything in 1 file.
+    LabeledSubsection {
         relative_path: String,
         label: String,
-        definition: DefinitionLocation,
-    },
-    File {
-        relative_path: String,
-        definition: DefinitionLocation,
     },
 }
 
@@ -138,10 +144,9 @@ impl ProjectIndex {
 
     /// Locates the project-level definition entry for a voicegroup bank name.
     pub fn voicegroup_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
-        match self.voice_groups.get(name)? {
-            VoiceGroupSource::Combined { definition, .. }
-            | VoiceGroupSource::File { definition, .. } => Some(definition.clone()),
-        }
+        self.voice_groups
+            .get(name)
+            .map(|voice_group| voice_group.declaration.clone())
     }
 
     /// Locates the source header for a keysplit table symbol.
@@ -167,7 +172,7 @@ impl ProjectIndex {
     }
 
     pub fn load_program_bank(&self, bank_name: &str) -> ProgramBankLoadResult {
-        let Some(source) = self.voice_groups.get(bank_name) else {
+        let Some(voice_group) = self.voice_groups.get(bank_name) else {
             return ProgramBankLoadResult {
                 bank: None,
                 diagnostics: vec![diagnostic(
@@ -178,7 +183,7 @@ impl ProjectIndex {
             };
         };
 
-        let Ok(source_text) = self.read_bank_source(source) else {
+        let Ok(source_text) = self.read_bank_source(&voice_group.contents) else {
             return ProgramBankLoadResult {
                 bank: None,
                 diagnostics: vec![diagnostic(
@@ -286,10 +291,12 @@ impl ProjectIndex {
                 };
                 self.voice_groups
                     .entry(label.name.text.clone())
-                    .or_insert_with(|| VoiceGroupSource::Combined {
-                        relative_path: relative_path.to_string(),
-                        label: label.name.text,
-                        definition,
+                    .or_insert_with(|| ProjectVoiceGroup {
+                        declaration: definition,
+                        contents: VoiceGroupContents::LabeledSubsection {
+                            relative_path: relative_path.to_string(),
+                            label: label.name.text,
+                        },
                     });
             }
         }
@@ -340,9 +347,11 @@ impl ProjectIndex {
         for voice_group in parse_document(&text).voice_groups {
             self.voice_groups
                 .entry(voice_group.name.text)
-                .or_insert_with(|| VoiceGroupSource::File {
-                    relative_path: relative_path.to_string(),
-                    definition: definition.clone(),
+                .or_insert_with(|| ProjectVoiceGroup {
+                    declaration: definition.clone(),
+                    contents: VoiceGroupContents::StandaloneFile {
+                        relative_path: relative_path.to_string(),
+                    },
                 });
         }
 
@@ -413,33 +422,32 @@ impl ProjectIndex {
         Ok(())
     }
 
-    fn read_bank_source(&self, source: &VoiceGroupSource) -> io::Result<BankSourceText> {
-        match source {
-            VoiceGroupSource::Combined {
+    fn read_bank_source(&self, contents: &VoiceGroupContents) -> io::Result<BankSourceText> {
+        match contents {
+            VoiceGroupContents::StandaloneFile { relative_path } => {
+                let text = fs::read_to_string(self.root.join(relative_path))?;
+                let line_map = (1..=text.lines().count()).collect();
+                Ok(BankSourceText {
+                    relative_path: relative_path.clone(),
+                    text,
+                    line_map,
+                })
+            }
+            VoiceGroupContents::LabeledSubsection {
                 relative_path,
                 label,
-                ..
             } => {
                 let text = fs::read_to_string(self.root.join(relative_path))?;
                 let (section, line_map) = extract_combined_section_with_map(&text, label)
                     .ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "combined voicegroup section is no longer present",
+                            "labeled voicegroup subsection is no longer present",
                         )
                     })?;
                 Ok(BankSourceText {
                     relative_path: relative_path.clone(),
                     text: section,
-                    line_map,
-                })
-            }
-            VoiceGroupSource::File { relative_path, .. } => {
-                let text = fs::read_to_string(self.root.join(relative_path))?;
-                let line_map = (1..=text.lines().count()).collect();
-                Ok(BankSourceText {
-                    relative_path: relative_path.clone(),
-                    text,
                     line_map,
                 })
             }

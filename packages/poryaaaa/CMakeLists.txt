@@ -326,6 +326,17 @@ if(WIN32)
     endif()
 endif()
 
+# ---- Audio Engine Benchmark ----
+add_executable(poryaaaa_audio_bench
+    bench/audio_engine_bench.c
+)
+poryaaaa_enable_msvc_c_atomics(poryaaaa_audio_bench)
+poryaaaa_enable_project_warnings(poryaaaa_audio_bench)
+target_link_libraries(poryaaaa_audio_bench PRIVATE m4a_driver hw_audio)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_audio_bench PRIVATE m)
+endif()
+
 # ---- Node N-API voicegroup parser ----
 find_path(NODE_API_INCLUDE_DIR node_api.h
     HINTS /usr/local/include/node /opt/homebrew/include/node)
