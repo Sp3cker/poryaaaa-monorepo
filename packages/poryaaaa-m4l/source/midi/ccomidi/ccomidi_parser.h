@@ -31,6 +31,14 @@ struct ParserOutput
     std::uint8_t length = 0; /* 0..3 */
 };
 
+struct StartupSnapshotState
+{
+    /* Tracks whether the M4L wrapper has already emitted setup for the current
+     * playback/export window.  Kept beside the parser so tests can verify the
+     * first-complete-channel-event gate without linking Max. */
+    bool primed = false;
+};
+
 inline int data_byte_count(std::uint8_t status)
 {
     std::uint8_t high = status & 0xF0;
@@ -38,5 +46,7 @@ inline int data_byte_count(std::uint8_t status)
 }
 
 ParserOutput parse_byte(ParserState& s, std::uint8_t byte);
+bool should_emit_startup_snapshot(StartupSnapshotState& s, const ParserOutput& out);
+void reset_startup_snapshot(StartupSnapshotState& s);
 
 } // namespace ccomidi

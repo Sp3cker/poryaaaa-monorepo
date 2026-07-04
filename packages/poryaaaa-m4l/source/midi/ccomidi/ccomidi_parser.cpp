@@ -43,4 +43,25 @@ ParserOutput parse_byte(ParserState& s, std::uint8_t byte)
     return out;
 }
 
+bool should_emit_startup_snapshot(StartupSnapshotState& s, const ParserOutput& out)
+{
+    /* The fallback must run on a complete channel-voice message, not on raw
+     * status/data bytes or realtime clock bytes, so the setup snapshot is
+     * emitted immediately before real musical MIDI enters poryaaaa~. */
+    if (s.primed || out.length == 0)
+        return false;
+
+    std::uint8_t status = out.bytes[0];
+    if (status < 0x80 || status >= 0xF0)
+        return false;
+
+    s.primed = true;
+    return true;
+}
+
+void reset_startup_snapshot(StartupSnapshotState& s)
+{
+    s.primed = false;
+}
+
 } // namespace ccomidi

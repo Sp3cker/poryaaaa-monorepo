@@ -15,6 +15,9 @@ using ccomidi::encode_raw_bend_value;
 using ccomidi::parse_byte;
 using ccomidi::ParserOutput;
 using ccomidi::ParserState;
+using ccomidi::reset_startup_snapshot;
+using ccomidi::should_emit_startup_snapshot;
+using ccomidi::StartupSnapshotState;
 
 namespace
 {
@@ -59,6 +62,11 @@ void feed(ParserState& s, std::uint8_t byte, std::vector<std::uint8_t>& out)
     ParserOutput o = parse_byte(s, byte);
     for (std::uint8_t i = 0; i < o.length; ++i)
         out.push_back(o.bytes[i]);
+}
+
+ParserOutput feed_one(ParserState& s, std::uint8_t byte)
+{
+    return parse_byte(s, byte);
 }
 
 /* ----- channel-voice messages ----- */
@@ -167,6 +175,54 @@ void test_xcmd_cc_passes_through_unchanged()
     ASSERT_EQ(out[0], 0xB4, "XCMD status preserved");
     ASSERT_EQ(out[1], 30, "XCMD CC# preserved");
     ASSERT_EQ(out[2], 77, "XCMD value preserved");
+}
+
+void test_startup_snapshot_primes_on_first_complete_channel_event()
+{
+    ParserState s{};
+    StartupSnapshotState gate{};
+
+    ParserOutput out = feed_one(s, 0x90);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 0, "status byte alone does not prime");
+    out = feed_one(s, 60);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 0, "partial message does not prime");
+    out = feed_one(s, 100);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 1, "first complete note primes snapshot");
+
+    out = feed_one(s, 62);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 0, "running-status partial does not re-prime");
+    out = feed_one(s, 100);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 0, "later channel messages do not re-prime");
+}
+
+void test_startup_snapshot_ignores_realtime_until_channel_event()
+{
+    ParserState s{};
+    StartupSnapshotState gate{};
+
+    ParserOutput out = feed_one(s, 0xF8);
+    ASSERT_EQ(out.length, 1, "realtime byte is output");
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 0, "realtime byte does not prime");
+
+    feed_one(s, 0xC0);
+    out = feed_one(s, 12);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 1, "program change primes after realtime");
+}
+
+void test_startup_snapshot_reset_allows_next_transport_start()
+{
+    ParserState s{};
+    StartupSnapshotState gate{};
+
+    feed_one(s, 0x90);
+    feed_one(s, 60);
+    ParserOutput out = feed_one(s, 100);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 1, "first transport start primes");
+    reset_startup_snapshot(gate);
+
+    feed_one(s, 62);
+    out = feed_one(s, 100);
+    ASSERT_EQ(should_emit_startup_snapshot(gate, out), 1, "reset allows next start to prime");
 }
 
 void test_raw_bend_value_encodes_center_at_64()
@@ -279,6 +335,9 @@ int main()
     RUN(test_pitch_bend_emits_three_bytes);
     RUN(test_cc_emits_three_bytes);
     RUN(test_xcmd_cc_passes_through_unchanged);
+    RUN(test_startup_snapshot_primes_on_first_complete_channel_event);
+    RUN(test_startup_snapshot_ignores_realtime_until_channel_event);
+    RUN(test_startup_snapshot_reset_allows_next_transport_start);
     RUN(test_raw_bend_value_encodes_center_at_64);
     RUN(test_raw_bend_value_clamps);
     RUN(test_realtime_byte_passes_through_verbatim);

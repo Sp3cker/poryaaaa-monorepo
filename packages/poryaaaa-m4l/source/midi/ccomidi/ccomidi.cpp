@@ -85,6 +85,7 @@ typedef struct _cco
     std::array<long, OptCount> pendingClear;
 
     ParserState parserState;
+    StartupSnapshotState startupSnapshot;
 } t_cco;
 
 static t_class* cco_class = nullptr;
@@ -244,6 +245,9 @@ static void emit_transport_snapshot(t_cco* x)
     emit_program_value(x);
     emit_cc(x, kCcVolume, x->volVal);
     emit_cc(x, kCcPan, x->panVal);
+    /* The normal transport path already seeded poryaaaa~ for this playback;
+     * suppress the first-MIDI fallback below so startup setup is not doubled. */
+    x->startupSnapshot.primed = true;
 
     for (std::size_t i = 0; i < OptCount; ++i)
     {
@@ -305,6 +309,12 @@ static void set_optional_value(t_cco* x, OptionalControl opt, long old_value, lo
 static void cco_int(t_cco* x, long b)
 {
     ParserOutput out = parse_byte(x->parserState, (std::uint8_t)(b & 0xFF));
+    /* Ableton offline export can deliver MIDI bytes before the M4L scheduler
+     * observer sends transport/sendall setup.  Emit the saved program/volume/
+     * pan snapshot before the first complete channel event so poryaaaa~ sees
+     * the selected PSG program before the exported note starts. */
+    if (should_emit_startup_snapshot(x->startupSnapshot, out))
+        emit_transport_snapshot(x);
     for (std::uint8_t i = 0; i < out.length; ++i)
     {
         outlet_int(x->out_midi, out.bytes[i]);
@@ -338,6 +348,10 @@ static void cco_transport(t_cco* x, long playing)
 {
     long was = x->transportPlaying;
     x->transportPlaying = playing ? 1 : 0;
+    /* A stop edge starts a fresh export/playback window; the next note may
+     * need to reseed setup if the scheduler transport edge is missing again. */
+    if (!x->transportPlaying)
+        reset_startup_snapshot(x->startupSnapshot);
     if (!was && x->transportPlaying)
         emit_transport_snapshot(x);
 }
@@ -472,6 +486,7 @@ static void* cco_new(t_symbol* /*s*/, long /*argc*/, t_atom* /*argv*/)
     x->transportPlaying = 0;
     x->pendingClear = {};
     x->parserState = ParserState{};
+    x->startupSnapshot = StartupSnapshotState{};
 
     x->restoreMode = 0;
     return x;
