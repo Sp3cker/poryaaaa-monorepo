@@ -387,6 +387,109 @@ voice_group missing_symbols
 }
 
 #[test]
+fn analyzer_unknown_directsound_message_names_source_file() {
+    let source = "\
+voice_group test
+\tvoice_directsound 60, 0, DirectSoundWaveData_Missing, 1, 2, 3, 4
+";
+
+    let document = parse_document(source);
+    let diagnostics = analyze_document(&document, &AnalysisContext::default());
+
+    assert_eq!(
+        diagnostic_codes(&diagnostics),
+        ["unknown-directsound-symbol"]
+    );
+    assert!(
+        !diagnostics[0].message.contains("analysis context"),
+        "message should not expose analyzer internals: {}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("direct_sound_data.inc"),
+        "message should name the DirectSound declaration source: {}",
+        diagnostics[0].message
+    );
+}
+
+#[test]
+fn analyzer_unknown_programmable_wave_message_names_source_file() {
+    let source = "\
+voice_group test
+\tvoice_programmable_wave 60, 0, ProgrammableWaveData_Missing, 1, 2, 8, 3
+";
+
+    let document = parse_document(source);
+    let diagnostics = analyze_document(&document, &AnalysisContext::default());
+
+    assert_eq!(
+        diagnostic_codes(&diagnostics),
+        ["unknown-programmable-wave-symbol"]
+    );
+    assert!(
+        !diagnostics[0].message.contains("analysis context"),
+        "message should not expose analyzer internals: {}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("programmable_wave_data.inc"),
+        "message should name the ProgrammableWave declaration source: {}",
+        diagnostics[0].message
+    );
+}
+
+#[test]
+fn analyzer_unknown_keysplit_message_names_source_file() {
+    let source = "\
+voice_group local
+\tvoice_keysplit local, keysplit_missing
+";
+
+    let document = parse_document(source);
+    let diagnostics = analyze_document(&document, &AnalysisContext::default());
+
+    assert_eq!(diagnostic_codes(&diagnostics), ["unknown-keysplit-symbol"]);
+    assert!(
+        !diagnostics[0].message.contains("analysis context"),
+        "message should not expose analyzer internals: {}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("keysplit_tables.inc"),
+        "message should name the Keysplit declaration source: {}",
+        diagnostics[0].message
+    );
+}
+
+#[test]
+fn analyzer_unknown_voicegroup_message_names_source_layout() {
+    let source = "\
+voice_group consumer
+\tvoice_keysplit_all voicegroup_missing
+";
+
+    let document = parse_document(source);
+    let diagnostics = analyze_document(&document, &AnalysisContext::default());
+
+    assert_eq!(
+        diagnostic_codes(&diagnostics),
+        ["unknown-voicegroup-symbol"]
+    );
+    assert!(
+        !diagnostics[0].message.contains("analysis context"),
+        "message should not expose analyzer internals: {}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("voice_groups.inc"),
+        "message should name the VoiceGroup declaration layout: {}",
+        diagnostics[0].message
+    );
+}
+
+#[test]
 fn analyzer_reports_duplicate_voice_group_names_and_duplicate_slots_within_name() {
     let source = "\
 voice_group repeated, 4

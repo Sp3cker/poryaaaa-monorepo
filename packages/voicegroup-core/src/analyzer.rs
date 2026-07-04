@@ -230,7 +230,7 @@ fn analyze_symbol_argument(
             VoiceGroupSymbolStatus::Unknown => diagnostics.push(error(
                 argument.range.clone(),
                 unknown_symbol_code(namespace),
-                "symbol is not declared in the analysis context",
+                unknown_symbol_message(namespace),
             )),
         }
         return;
@@ -240,7 +240,7 @@ fn analyze_symbol_argument(
         diagnostics.push(error(
             argument.range.clone(),
             unknown_symbol_code(namespace),
-            "symbol is not declared in the analysis context",
+            unknown_symbol_message(namespace),
         ));
     }
 }
@@ -288,6 +288,23 @@ fn unknown_symbol_code(namespace: SymbolNamespace) -> &'static str {
         SymbolNamespace::ProgrammableWave => "unknown-programmable-wave-symbol",
         SymbolNamespace::VoiceGroup => "unknown-voicegroup-symbol",
         SymbolNamespace::Keysplit => "unknown-keysplit-symbol",
+    }
+}
+
+/// Gives unknown-symbol diagnostics messages that name the declaration source
+/// a user should inspect instead of exposing the analyzer's internal context.
+fn unknown_symbol_message(namespace: SymbolNamespace) -> &'static str {
+    match namespace {
+        SymbolNamespace::DirectSound => {
+            "DirectSound sample symbol is not declared in direct_sound_data.inc"
+        }
+        SymbolNamespace::ProgrammableWave => {
+            "programmable wave symbol is not declared in programmable_wave_data.inc"
+        }
+        SymbolNamespace::VoiceGroup => {
+            "voicegroup is not declared in voice_groups.inc or sound/voicegroups/*.inc"
+        }
+        SymbolNamespace::Keysplit => "keysplit table is not declared in keysplit_tables.inc",
     }
 }
 

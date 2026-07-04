@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Voicegroup INC",
+  "scopeName": "source.voicegroup-inc",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#labels" },
+    { "include": "#macros" },
+    { "include": "#numbers" },
+    { "include": "#symbols" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.at-sign.voicegroup-inc",
+          "match": "@.*$"
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "name": "meta.label.voicegroup-inc",
+          "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(::)",
+          "captures": {
+            "1": { "name": "entity.name.label.voicegroup-inc" },
+            "2": { "name": "punctuation.definition.label.voicegroup-inc" }
+          }
+        }
+      ]
+    },
+    "macros": {
+      "patterns": [
+        {
+          "name": "support.function.macro.voicegroup-inc",
+          "match": "\\b(?:voice_[A-Za-z0-9_]+|cry(?:_reverse)?)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.integer.voicegroup-inc",
+          "match": "\\b(?:0x[0-9A-Fa-f]+|[0-9]+)\\b"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "variable.other.symbol.voicegroup-inc",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

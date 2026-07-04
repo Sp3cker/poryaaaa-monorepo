@@ -27,6 +27,13 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "voicegroup-inc",
+        "scopeName": "source.voicegroup-inc",
+        "path": "./syntaxes/voicegroup-inc.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "Voicegroup LSP",
       "properties": {

@@ -19,6 +19,12 @@ pub struct ProgramBankLoadResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionLocation {
+    pub relative_path: String,
+    pub range: SourceRange,
+}
+
 // Keeps sparse parsed snippets tied to their source file lines for diagnostics.
 struct BankSourceText {
     relative_path: String,
@@ -63,9 +69,11 @@ enum VoiceGroupSource {
     Combined {
         relative_path: String,
         label: String,
+        definition: DefinitionLocation,
     },
     File {
         relative_path: String,
+        definition: DefinitionLocation,
     },
 }
 
@@ -117,6 +125,14 @@ impl ProjectIndex {
     /// Iterates voicegroup bank names declared through the project index.
     pub fn voicegroup_names(&self) -> impl Iterator<Item = &str> {
         self.voice_groups.keys().map(String::as_str)
+    }
+
+    /// Locates the project-level definition entry for a voicegroup bank name.
+    pub fn voicegroup_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
+        match self.voice_groups.get(name)? {
+            VoiceGroupSource::Combined { definition, .. }
+            | VoiceGroupSource::File { definition, .. } => Some(definition.clone()),
+        }
     }
 
     pub fn direct_sound_assets(&self) -> impl Iterator<Item = &ResolvedAsset> {
@@ -213,11 +229,16 @@ impl ProjectIndex {
         let text = fs::read_to_string(path)?;
         for label in parse_document(&text).assembly_labels {
             if combined_section_has_voice_macro(&text, &label.name.text) {
+                let definition = DefinitionLocation {
+                    relative_path: relative_path.to_string(),
+                    range: label.name.range.clone(),
+                };
                 self.voice_groups
                     .entry(label.name.text.clone())
                     .or_insert_with(|| VoiceGroupSource::Combined {
                         relative_path: relative_path.to_string(),
                         label: label.name.text,
+                        definition,
                     });
             }
         }
@@ -235,21 +256,30 @@ impl ProjectIndex {
         }
 
         let text = fs::read_to_string(path)?;
-        for line in text.lines() {
-            let stripped = strip_comment(line).trim();
-            let Some(relative_path) = include_path(stripped) else {
+        for (line_index, line) in text.lines().enumerate() {
+            let stripped = strip_comment(line);
+            let Some((relative_path, range)) = include_path_with_range(stripped, line_index + 1)
+            else {
                 continue;
             };
             if !is_voicegroup_include_path(&relative_path) {
                 continue;
             }
-            self.discover_voicegroup_file(&relative_path)?;
+            let definition = DefinitionLocation {
+                relative_path: include_table_relative_path.to_string(),
+                range,
+            };
+            self.discover_voicegroup_file(&relative_path, definition)?;
         }
 
         Ok(())
     }
 
-    fn discover_voicegroup_file(&mut self, relative_path: &str) -> io::Result<()> {
+    fn discover_voicegroup_file(
+        &mut self,
+        relative_path: &str,
+        definition: DefinitionLocation,
+    ) -> io::Result<()> {
         let path = self.root.join(relative_path);
         if !path.is_file() {
             return Ok(());
@@ -261,6 +291,7 @@ impl ProjectIndex {
                 .entry(voice_group.name.text)
                 .or_insert_with(|| VoiceGroupSource::File {
                     relative_path: relative_path.to_string(),
+                    definition: definition.clone(),
                 });
         }
 
@@ -334,6 +365,7 @@ impl ProjectIndex {
             VoiceGroupSource::Combined {
                 relative_path,
                 label,
+                ..
             } => {
                 let text = fs::read_to_string(self.root.join(relative_path))?;
                 let (section, line_map) = extract_combined_section_with_map(&text, label)
@@ -349,7 +381,7 @@ impl ProjectIndex {
                     line_map,
                 })
             }
-            VoiceGroupSource::File { relative_path } => {
+            VoiceGroupSource::File { relative_path, .. } => {
                 let text = fs::read_to_string(self.root.join(relative_path))?;
                 let line_map = (1..=text.lines().count()).collect();
                 Ok(BankSourceText {
@@ -448,6 +480,23 @@ fn strip_comment(line: &str) -> &str {
     line.split_once('@')
         .map(|(source, _)| source)
         .unwrap_or(line)
+}
+
+fn include_path_with_range(line: &str, line_number: usize) -> Option<(String, SourceRange)> {
+    let relative_path = include_path(line)?;
+    let quote = line.find('"')?;
+    let start = quote + 2;
+    let range = SourceRange {
+        start: SourcePosition {
+            line: line_number,
+            column: start,
+        },
+        end: SourcePosition {
+            line: line_number,
+            column: start + relative_path.len(),
+        },
+    };
+    Some((relative_path, range))
 }
 
 fn incbin_path(line: &str) -> Option<String> {

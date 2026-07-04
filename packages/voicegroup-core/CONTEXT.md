@@ -20,6 +20,11 @@ _Avoid_: AST (when it hides the source-range contract), raw lines, parser output
 A normal voicegroup bank section introduced by `voice_group name` or `voice_group name, start_slot`. This is distinct from an assembly label such as `label::`; assembly labels may appear in symbol-declaring files, but they are not the normal voicegroup bank declaration shape.
 _Avoid_: label, assembly section.
 
+**Voicegroup file**:
+A project-relative `.inc` file under `sound/voicegroups/`. It is a source file that may contain one or more **voicegroup sections** and may or may not be included from `sound/voice_groups.inc` yet. Use this term for file discovery and include completions.
+_Avoid_: candidate, voicegroup.
+
+
 **Type code**:
 The GBA voice-type byte the **macro catalog** owns (e.g. `0x00` DirectSound). Travels to non-linking consumers (TS UI, JSON state) as a derived map, not a hand-copied switch.
 _Avoid_: voice type id, kind.

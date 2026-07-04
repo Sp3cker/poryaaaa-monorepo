@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use voicegroup_core::ast::{SourcePosition, SourceRange};
 use voicegroup_core::catalog::VoiceType;
 use voicegroup_core::program_bank::ProgramData;
 use voicegroup_core::project_index::ProjectIndex;
@@ -258,6 +259,76 @@ voice_group petalburg_drumset, 36
     );
 
     fs::remove_dir_all(root).expect("remove temp project");
+}
+
+#[test]
+fn voicegroup_definition_location_for_included_file_points_to_include_path() {
+    let root = temp_project("included-definition");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        ".include \"sound/voicegroups/village_bridge.inc\"\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/village_bridge.inc",
+        "\
+voice_group village_bridge
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .voicegroup_definition_location("village_bridge")
+        .expect("definition location for included voicegroup");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/voice_groups.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition {
+                line: 1,
+                column: 11
+            },
+            end: SourcePosition {
+                line: 1,
+                column: 47
+            },
+        }
+    );
+}
+
+#[test]
+fn voicegroup_definition_location_for_combined_voicegroup_points_to_label() {
+    let root = temp_project("combined-definition");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+village_bridge::
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .voicegroup_definition_location("village_bridge")
+        .expect("definition location for combined voicegroup");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/voice_groups.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition { line: 1, column: 1 },
+            end: SourcePosition {
+                line: 1,
+                column: 15
+            },
+        }
+    );
 }
 
 #[test]

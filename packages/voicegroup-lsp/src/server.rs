@@ -5,18 +5,23 @@ use lsp_types::{
         DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
         Notification,
     },
+    request::{GotoDefinition, Request as LspRequest},
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, PublishDiagnosticsParams,
+    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Location, Position,
+    PublishDiagnosticsParams,
 };
 use serde::de::DeserializeOwned;
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
 };
 use url::Url;
 
-use crate::{diagnostics::diagnostics_for_text, documents::DocumentStore};
-use voicegroup_core::{analyzer::AnalysisContext, project_index::ProjectIndex};
+use crate::{
+    definition::goto_definition, diagnostics::diagnostics_for_text, documents::DocumentStore,
+};
+use voicegroup_core::project_index::ProjectIndex;
 
 /// Runs the language server over stdio so editor clients can launch the binary directly.
 pub fn run_stdio() -> Result<()> {
@@ -39,7 +44,8 @@ fn run(connection: Connection) -> Result<()> {
 /// Advertises only full document synchronization for the first Rust LSP milestone.
 fn server_capabilities() -> serde_json::Value {
     serde_json::json!({
-        "textDocumentSync": 1
+        "textDocumentSync": 1,
+        "definitionProvider": true
     })
 }
 
@@ -71,13 +77,59 @@ impl Server {
                     {
                         return Ok(());
                     }
-                    self.respond_method_not_found(request)?;
+                    self.handle_request(request)?;
                 }
                 Message::Notification(notification) => self.handle_notification(notification)?,
                 Message::Response(_) => {}
             }
         }
         Ok(())
+    }
+
+    /// Handles editor requests that need a direct response instead of a notification.
+    fn handle_request(&mut self, request: lsp_server::Request) -> Result<()> {
+        let id = request.id.clone();
+        match request.method.as_str() {
+            GotoDefinition::METHOD => {
+                let params: GotoDefinitionParams =
+                    serde_json::from_value(request.params).context("decoding definition params")?;
+                let response = self.definition_response(params)?;
+                self.connection
+                    .sender
+                    .send(Message::Response(Response::new_ok(
+                        id,
+                        serde_json::to_value(response)
+                            .context("serializing definition response")?,
+                    )))
+                    .context("sending definition response")
+            }
+            _ => self.respond_method_not_found(request),
+        }
+    }
+
+    /// Resolves a goto-definition request against the latest open buffer text.
+    fn definition_response(
+        &mut self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let params = params.text_document_position_params;
+        let uri = parse_document_uri(&params.text_document.uri)?;
+        let Some(text) = self.document_text(&uri) else {
+            return Ok(None);
+        };
+        Ok(self
+            .project_contexts
+            .definition_for_document(&uri, &text, params.position)
+            .map(GotoDefinitionResponse::Scalar))
+    }
+
+    /// Reads unsaved document text first, falling back to disk for unopened files.
+    fn document_text(&self, uri: &Url) -> Option<String> {
+        self.documents.get(uri).map(str::to_string).or_else(|| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|path| fs::read_to_string(path).ok())
+        })
     }
 
     /// Handles document lifecycle notifications that can change diagnostics.
@@ -212,14 +264,14 @@ fn url_to_lsp_uri(uri: &Url) -> Result<lsp_types::Uri> {
 }
 
 struct ProjectContexts {
-    contexts: HashMap<PathBuf, Option<AnalysisContext>>,
+    projects: HashMap<PathBuf, Option<ProjectIndex>>,
 }
 
 impl ProjectContexts {
     /// Starts with no cached project contexts; roots are loaded on first document use.
     fn new() -> Self {
         Self {
-            contexts: HashMap::new(),
+            projects: HashMap::new(),
         }
     }
 
@@ -231,23 +283,36 @@ impl ProjectContexts {
         };
 
         let analysis_context = self
-            .contexts
-            .entry(root.clone())
-            .or_insert_with(|| load_analysis_context(&root));
+            .project_index_for_root(root)
+            .map(ProjectIndex::analysis_context);
         diagnostics_for_text(text, analysis_context.as_ref())
+    }
+
+    /// Finds the project-level definition location for the voicegroup symbol under the cursor.
+    fn definition_for_document(
+        &mut self,
+        uri: &Url,
+        text: &str,
+        position: Position,
+    ) -> Option<Location> {
+        let root = project_root_for_document(uri)?;
+        let index = self.project_index_for_root(root.clone())?;
+        goto_definition(index, &root, text, position)
+    }
+
+    /// Loads each project index once so diagnostics and definitions share the same source model.
+    fn project_index_for_root(&mut self, root: PathBuf) -> Option<&ProjectIndex> {
+        if !self.projects.contains_key(&root) {
+            self.projects
+                .insert(root.clone(), ProjectIndex::load(&root).ok());
+        }
+        self.projects.get(&root).and_then(Option::as_ref)
     }
 
     /// Drops cached project symbols so watched asset-file changes take effect.
     fn clear(&mut self) {
-        self.contexts.clear();
+        self.projects.clear();
     }
-}
-
-/// Builds analyzer symbols from the nearest voicegroup project root for a file.
-fn load_analysis_context(root: &Path) -> Option<AnalysisContext> {
-    ProjectIndex::load(root)
-        .ok()
-        .map(|index| index.analysis_context())
 }
 
 /// Walks upward from a document to find the decomp project root that owns sound/.
@@ -267,12 +332,22 @@ fn has_voicegroup_project_markers(root: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ProjectContexts;
+    use super::{server_capabilities, ProjectContexts};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
     use url::Url;
+
+    #[test]
+    fn server_capabilities_advertise_definition_provider() {
+        let capabilities = server_capabilities();
+
+        assert_eq!(
+            capabilities.get("definitionProvider"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 
     #[test]
     fn diagnostics_for_document_loads_symbols_from_document_project_root() {
@@ -350,6 +425,49 @@ mod tests {
 
         let _ = fs::remove_dir_all(parent);
         assert_eq!(diagnostics, []);
+    }
+
+    #[test]
+    fn definition_for_included_voicegroup_resolves_to_project_include() {
+        let parent = temp_project_root("definition");
+        let project = parent.join("decomp");
+        fs::create_dir_all(project.join("sound/voicegroups")).expect("create voicegroup dir");
+        fs::write(
+            project.join("sound/voice_groups.inc"),
+            ".include \"sound/voicegroups/village_bridge.inc\"\n",
+        )
+        .expect("write voicegroup include table");
+        let text = "\
+voice_group village_bridge
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+";
+        fs::write(project.join("sound/voicegroups/village_bridge.inc"), text)
+            .expect("write voicegroup file");
+
+        let document_uri =
+            Url::from_file_path(project.join("sound/voicegroups/village_bridge.inc"))
+                .expect("convert document path to uri");
+        let mut contexts = ProjectContexts::new();
+        let location = contexts
+            .definition_for_document(&document_uri, text, lsp_types::Position::new(0, 14))
+            .expect("definition location");
+
+        let expected_uri = Url::from_file_path(project.join("sound/voice_groups.inc"))
+            .expect("convert definition path to url")
+            .as_str()
+            .parse()
+            .expect("convert definition url to lsp uri");
+        let _ = fs::remove_dir_all(parent);
+        assert_eq!(
+            location,
+            lsp_types::Location {
+                uri: expected_uri,
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(0, 10),
+                    lsp_types::Position::new(0, 46),
+                ),
+            }
+        );
     }
 
     fn temp_project_root(name: &str) -> std::path::PathBuf {

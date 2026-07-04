@@ -211,7 +211,7 @@ main_drumset::
 
     assert_eq!(
         error,
-        "line 6: unknown-directsound-symbol: symbol is not declared in the analysis context"
+        "line 6: unknown-directsound-symbol: DirectSound sample symbol is not declared in direct_sound_data.inc"
     );
     assert_eq!(
         fs::read_to_string(&projects_json_path).expect("existing projects.json remains"),
