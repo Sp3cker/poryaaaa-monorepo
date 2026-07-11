@@ -124,6 +124,7 @@ extern "C"
         uint8_t envelopeGoal;   /* target on note-on */
         uint8_t sustainGoal;    /* sustain level scaled by envelopeGoal */
         uint8_t envelopeCounter;
+        uint8_t envelopeStepTimeAndDir; /* NRx2 low nibble retained across phase writes */
         uint8_t pseudoEchoVolume;
         uint8_t pseudoEchoLength;
         uint8_t midiKey;
@@ -151,11 +152,9 @@ extern "C"
          * wave to NR_3 (only safe while wave_dac_on=false). */
         bool waveRamPending;
 
-        /* Set by m4a_drv_cgb_start; consumed-and-cleared by the next
-         * emit_vol_write to drive the NRx4 trigger bit.  Real m4a only
-         * sets the trigger bit on note start; envelope-update MO_VOL
-         * ticks must NOT re-trigger because real-GB hardware resets the
-         * wave RAM position (NR34) and noise LFSR (NR44) on trigger. */
+        /* Set by m4a_drv_cgb_start and consumed by emit_vol_write.  Wave
+         * uses it to limit NR34 trigger to fresh notes; square and noise
+         * follow the ROM's trigger-on-volume-write behavior. */
         bool freshStart;
     } M4ADriverCgbChan;
 

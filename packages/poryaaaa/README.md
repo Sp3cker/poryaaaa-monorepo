@@ -255,11 +255,11 @@ imgui/                   Dear ImGui (submodule)
 
 ### How the engine works
 
-The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelopes and LFO, while rendering audio sample-by-sample at the configured sample rate (typically 44100 or 48000 Hz).
+The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelopes and LFO. The complete hardware mix is generated at the SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`) and converted to the configured host rate by the same `blip_buf` frontend used by mGBA.
 
-**PCM channels** use the same 23-bit fractional sample position and linear interpolation as the GBA's `SoundMainRAM` mixer. Frequency is computed using `MidiKeyToFreq` with the exact scale/frequency table lookups, then scaled from the GBA's ~13379 Hz output rate to the target sample rate.
+**PCM channels** use the same 23-bit fractional sample position and linear interpolation as the GBA's `SoundMainRAM` mixer. Frequency is computed using `MidiKeyToFreq` with the exact scale/frequency table lookups. The resulting DirectSound samples are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
 
-**CGB channels** are synthesized in software: square waves use an 8-step duty cycle pattern with a phase accumulator, programmable wave reads 4-bit nibbles from 16-byte waveforms, and noise uses a 15-bit LFSR.
+**CGB channels** are synthesized in software: square duty steps advance on integer GBA CPU-cycle deadlines, programmable wave reads 4-bit nibbles from 16-byte waveforms, and noise follows mGBA's 7-bit or 15-bit LFSR behavior.
 
 **`poryaaaa_render`** pre-renders the entire song to float stereo buffers before writing or playing back. For looping songs it builds an extended event timeline by repeating the loop body events with increasing sample offsets, then applies a linear fadeout envelope in place over the final window.
 

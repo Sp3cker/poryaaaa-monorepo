@@ -209,6 +209,7 @@ typedef struct
 typedef struct
 {
     uint64_t samplePos;
+    uint32_t sequence; /* chronological order before tick-to-sample rounding */
     uint8_t channel;
     uint8_t track; /* SMF track index */
     uint8_t type;
@@ -488,7 +489,13 @@ static int cmp_render_events(const void* a, const void* b)
     /* Tempo changes apply before channel events at the same sample. */
     int ka = (ea->type == RENDER_EVENT_TEMPO) ? 0 : 1;
     int kb = (eb->type == RENDER_EVENT_TEMPO) ? 0 : 1;
-    return ka - kb;
+    if (ka != kb)
+        return ka - kb;
+    if (ea->sequence < eb->sequence)
+        return -1;
+    if (ea->sequence > eb->sequence)
+        return 1;
+    return 0;
 }
 
 /*
@@ -686,6 +693,7 @@ static RenderEventArray* parse_midi(const char* path,
     {
         const RawMidiEvent* re = &rawEvents.events[i];
         result->events[i].samplePos = tick_to_sample(re->tick, tempos.events, tempos.count, tpqn, sampleRate);
+        result->events[i].sequence = (uint32_t)i;
         result->events[i].channel = re->channel;
         result->events[i].track = re->track;
         result->events[i].type = re->type;
@@ -702,6 +710,7 @@ static RenderEventArray* parse_midi(const char* path,
         uint16_t bpmI = (uint16_t)(bpm + 0.5);
         RenderEvent* re = &result->events[rawEvents.count + i];
         re->samplePos = tick_to_sample(tempos.events[i].tick, tempos.events, tempos.count, tpqn, sampleRate);
+        re->sequence = (uint32_t)i;
         re->channel = 0;
         re->track = 0;
         re->type = RENDER_EVENT_TEMPO;
@@ -790,7 +799,7 @@ static void playback_callback(ma_device* dev, void* out, const void* in, ma_uint
 
 /* Parse --solo NAME into a HwAudioSoloBits mask.  Names match the
  * patched mGBA capture tool's `--solo` channel set
- * (`tools/captures/mgba-headless-channel-mute/`) so the same name
+ * (`tools/mgba-reference/`) so the same name
  * selects the same channel on both sides of a parity capture.
  *
  * Returns 0 on unknown name (caller should treat as error). */
@@ -845,7 +854,7 @@ static void print_usage(const char* prog)
             "Loop options (when MIDI contains '[' / ']' text events):\n"
             "  --loop-count <n>            Number of loop body repetitions (default: 2)\n"
             "  --fadeout <seconds>         Fadeout duration after final loop (default: 5.0)\n"
-            "  --total-duration-seconds <s>  Override loop-count; set exact total duration\n"
+            "  --total-duration-seconds <s>  Set exact output duration; overrides loop count/tail\n"
             "                                (fadeout occupies the final --fadeout seconds)\n"
             "\n"
             "Capture options:\n"
@@ -1197,9 +1206,11 @@ int main(int argc, char* argv[])
     }
     else
     {
-        /* No loop: use original events + tail silence */
-        uint64_t tailSamps = (uint64_t)(tailSeconds * sampleRate + 0.5);
-        totalSamples = totalMidiSamples + tailSamps;
+        /* No loop: exact requested duration, otherwise original events + tail. */
+        if (totalDurSeconds >= 0.0)
+            totalSamples = (uint64_t)(totalDurSeconds * sampleRate + 0.5);
+        else
+            totalSamples = totalMidiSamples + (uint64_t)(tailSeconds * sampleRate + 0.5);
         renderEvts = events->events;
         renderEvtCount = events->count;
     }

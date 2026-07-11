@@ -7,12 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Floor for the chip-internal render rate.  The FIFO drain cadence
- * still follows SOUNDBIAS exactly, but the PSG/mix/resampler pipeline
- * stays at or above this rate so normal 44.1/48 kHz hosts remain in
- * the downsampling path. */
-#define HW_AUDIO_INTERNAL_RATE_FLOOR 131072
-
 /* Inner chunk size for the internal-rate render loop.  Each segment of
  * the host-rate render is broken into chunks of this many internal
  * samples; PSG/PCM/mix produce into the per-channel scratch buffers,
@@ -28,7 +22,7 @@ struct HwAudio
     HwPsgSynth psg;      /* sq1, sq2, wave, noise — render-rate synth */
     HwPcm pcm;           /* two-stage drain: HwDmaToFifo + HwFifoDrain */
     HwMixBus mix;        /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
-    HwResample resample; /* internal_rate → host_rate (step 9) */
+    HwResample resample; /* DAC cadence -> host rate through mGBA's frontend */
 
     /* Per-channel solo/mute mask.  Bits HW_AUDIO_SOLO_* gate whether
      * each channel's pre-mix buffer feeds hw_mix_render — masked-off
@@ -37,20 +31,6 @@ struct HwAudio
      * channel set so a single name selects the same channel on both
      * sides). */
     uint32_t solo_mask;
-
-    /* Cumulative sample-clock trackers used to keep PSG/PCM/mix
-     * advance in lock-step with host frames REQUESTED, regardless of
-     * how the caller chunks render calls.  Each render call computes
-     * a target total of internal samples derived ONLY from the
-     * cumulative host-frame total, not the current call's frame count
-     * — so e.g. one 4096-frame call and four 1024-frame calls feed
-     * the same total internal samples (modulo ≤ 1 sample integer
-     * rounding) and produce equivalent output.  Without this
-     * accounting, each call's `round(frames * step) + lookahead`
-     * would over-advance chip state by `lookahead` per call,
-     * producing audible pitch/timing drift. */
-    int64_t total_inputs_pushed;  /* cumulative internal samples fed to resampler */
-    int64_t total_outputs_target; /* cumulative host frames requested */
 
     /* Per-channel scratch at internal rate.  PSG synth writes 4, PCM
      * drain writes 2, mix bus consumes all 6 to produce stereo into
@@ -64,10 +44,6 @@ struct HwAudio
     float scratch_dma_b[HW_AUDIO_INTERNAL_CHUNK];
     float mix_l[HW_AUDIO_INTERNAL_CHUNK];
     float mix_r[HW_AUDIO_INTERNAL_CHUNK];
-
-    /* Outstanding chip-side parity gates — see plan §12 blocking-gates list:
-     *   - mGBA capture-comparison parity (step 10b) — self-consistency
-     *     tests landed at §12.10a but match-against-reference is open */
 };
 
 /* SOUNDBIAS-derived quirk rate.
@@ -78,16 +54,13 @@ static int chip_quirk_rate(uint8_t sampling_cycle)
     return 32768 << (sampling_cycle & 0x3);
 }
 
-/* PSG/PCM/mix render rate.  Keep the synthesis/resampler pipeline at
- * 131072 Hz for sampling_cycle 0/1/2; sampling_cycle 3 raises it to
- * 262144 Hz.  The lower SOUNDBIAS cadences are still represented by
- * chip_quirk_rate() in the PCM FIFO drain. */
+/* mGBA samples the complete GBA mix at the SOUNDBIAS-selected DAC cadence. */
 static int chip_internal_rate(uint8_t sampling_cycle)
 {
-    int q = chip_quirk_rate(sampling_cycle);
-    return q > HW_AUDIO_INTERNAL_RATE_FLOOR ? q : HW_AUDIO_INTERNAL_RATE_FLOOR;
+    return chip_quirk_rate(sampling_cycle);
 }
 
+/* Apply SOUNDBIAS cadence changes to every clocked audio component. */
 static void hw_audio_sync_rates_from_mix(HwAudio* hw)
 {
     int desired_internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
@@ -103,8 +76,6 @@ static void hw_audio_sync_rates_from_mix(HwAudio* hw)
          * filled at the previous input cadence, so keep the transition
          * local by flushing and rebuilding here. */
         hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
-        hw->total_inputs_pushed = 0;
-        hw->total_outputs_target = 0;
     }
 
     hw_pcm_set_quirk_rate(&hw->pcm, desired_quirk_rate);
@@ -117,10 +88,8 @@ HwAudio* hw_audio_create(float host_sample_rate)
         return NULL;
     hw->host_rate = host_sample_rate;
     hw->solo_mask = HW_AUDIO_SOLO_FULL;
-    hw_mix_init(&hw->mix); /* establishes default sampling_cycle = 0 */
+    hw_mix_init(&hw->mix); /* establishes m4a's sampling_cycle = 1 */
     hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
-    hw->total_inputs_pushed = 0;
-    hw->total_outputs_target = 0;
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
     hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
     hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
@@ -167,8 +136,6 @@ void hw_audio_set_host_rate(HwAudio* hw, float hz)
      * and create an audible glitch.  Callers that swap host rate
      * mid-stream get one block of resampler-warmup latency. */
     hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hz);
-    hw->total_inputs_pushed = 0;
-    hw->total_outputs_target = 0;
 }
 
 /* Render `internal_count` chip-internal samples through PSG → PCM →
@@ -272,36 +239,6 @@ void hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, 
         memset(outR, 0, (size_t)frames * sizeof(float));
 }
 
-/* Map a cumulative host-output count to the cumulative internal-input
- * count required to produce them, given the resampler's step and
- * fixed initial-phase / lookahead constants.
- *
- * Resampler init is `output_pos = HW_RESAMPLE_TAPS/2 - 1` and the
- * produce-condition is `input_idx ≥ floor(output_pos) + HW_RESAMPLE_TAPS/2 + 1`.
- * For N outputs (N ≥ 1), the last output sits at output_pos =
- * (TAPS/2 - 1) + (N-1)*step, so the smallest input_idx that can produce
- * it is `floor((TAPS/2 - 1) + (N-1)*step) + (TAPS/2 + 1)`.
- *
- * Block-size invariance follows: cumulative inputs depends only on
- * cumulative N, not on per-call frame counts.  Per-call delta is just
- * the difference between two such totals — no floor is taken on the
- * intermediate per-call float, so the same total render produces the
- * same total internal samples regardless of how it's chunked. */
-static int64_t inputs_for_total_outputs(int64_t total_outputs, double step)
-{
-    if (total_outputs <= 0)
-        return 0;
-    const int64_t init_offset = (int64_t)(HW_RESAMPLE_TAPS / 2 - 1); /* 15 */
-    const int64_t lookahead = (int64_t)(HW_RESAMPLE_TAPS / 2 + 1);   /* 17 */
-    double frac_pos = (double)init_offset + (double)(total_outputs - 1) * step;
-    int64_t floor_pos;
-    if (frac_pos >= 0.0)
-        floor_pos = (int64_t)frac_pos;
-    else
-        floor_pos = (int64_t)frac_pos - ((double)((int64_t)frac_pos) > frac_pos ? 1 : 0);
-    return floor_pos + lookahead;
-}
-
 static void render_to_host_offset(
     HwAudio* hw, const M4APcmRing* pcm_ring, float* outL, float* outR, int target_host, int* rendered_host)
 {
@@ -309,21 +246,21 @@ static void render_to_host_offset(
     if (host_delta <= 0)
         return;
 
-    const double step = (double)hw->internal_rate / (double)hw->host_rate;
-    const int64_t new_outputs_target = hw->total_outputs_target + (int64_t)host_delta;
-    const int64_t target_inputs_total = inputs_for_total_outputs(new_outputs_target, step);
-    int64_t internal_to_render_64 = target_inputs_total - hw->total_inputs_pushed;
-    if (internal_to_render_64 < 0)
-        internal_to_render_64 = 0;
+    int produced = hw_resample_process(&hw->resample,
+                                       NULL,
+                                       NULL,
+                                       0,
+                                       outL ? outL + *rendered_host : NULL,
+                                       outR ? outR + *rendered_host : NULL,
+                                       host_delta);
+    *rendered_host += produced;
 
-    int internal_to_render = (int)internal_to_render_64;
-    if (internal_to_render > 0)
+    int remaining = target_host - *rendered_host;
+    if (remaining > 0)
     {
+        int internal_to_render = hw_resample_inputs_needed(&hw->resample, remaining);
         render_segment(hw, pcm_ring, outL, outR, internal_to_render, rendered_host, target_host);
     }
-
-    hw->total_inputs_pushed += internal_to_render_64;
-    hw->total_outputs_target = new_outputs_target;
 
     /* Preserve the event timeline when a freshly reset resampler has
      * startup latency.  Later segments must start writing at target_host,
@@ -423,8 +360,7 @@ void hw_audio_render_events(
      *     mix bus when step 8 landed.  S&H at internal_rate.
      *   - HwMixBus consumes NR50/NR51, SOUNDCNT_H, SOUNDBIAS.  Combines
      *     the six mono buffers, applies bias-add+clip, produces stereo.
-     *   - HwResample drains stereo internal-rate samples and produces
-     *     stereo host-rate samples (windowed-sinc polyphase, §12 step 9). */
+     *   - HwResample drains stereo DAC samples through mGBA's blip frontend. */
     int rendered_host = 0;
 
     if (events)

@@ -37,8 +37,8 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
      * the register file says at render time. */
     drv->regs.dma_a_enable_right = true;
     drv->regs.dma_b_enable_left = true;
-    drv->regs.bias_level = 0x200;      /* SOUNDBIAS hardware default */
-    drv->regs.bias_sampling_cycle = 0; /* 32768 Hz quirk rate */
+    drv->regs.bias_level = 0x200;
+    drv->regs.bias_sampling_cycle = 1; /* m4a_init selects the 65536 Hz DAC rate */
 
     /* m4a tempo defaults: ply_tempo defaults to 75, and the doubling step
      * (D = ply_tempo*2) is canonical from MPlayMain. */
@@ -59,11 +59,11 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
         drv->cgb[i].panMask = 0xFF;
     }
 
-    /* Default per-track init: pan center, bend range 2 semitones, vol 100. */
+    /* MIDI tracks without CC7 start at full volume before song scaling. */
     for (int i = 0; i < M4A_MAX_TRACKS; i++)
     {
-        drv->tracks[i].rawVolume = 100;
-        drv->tracks[i].volume = 100;
+        drv->tracks[i].rawVolume = 127;
+        drv->tracks[i].volume = 127;
         drv->tracks[i].volX = 64;
         drv->tracks[i].pan = 0;
         drv->tracks[i].bendRange = 2;

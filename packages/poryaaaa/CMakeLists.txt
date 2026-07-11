@@ -326,6 +326,46 @@ if(WIN32)
     endif()
 endif()
 
+# ---- Full mGBA MP2K reference recorder ----
+option(PORYAAAA_BUILD_MGBA_REFERENCE
+    "Build the full-ROM mGBA reference recorder" OFF)
+set(PORYAAAA_MGBA_ROOT "" CACHE PATH
+    "mGBA installation prefix for the reference recorder")
+
+if(PORYAAAA_BUILD_MGBA_REFERENCE)
+    find_path(PORYAAAA_MGBA_INCLUDE_DIR mgba/core/core.h
+        HINTS
+            "${PORYAAAA_MGBA_ROOT}/include"
+            /usr/local/include
+            /opt/homebrew/include)
+    find_library(PORYAAAA_MGBA_LIBRARY mgba
+        HINTS
+            "${PORYAAAA_MGBA_ROOT}/lib"
+            /usr/local/lib
+            /opt/homebrew/lib)
+
+    if(NOT PORYAAAA_MGBA_INCLUDE_DIR OR NOT PORYAAAA_MGBA_LIBRARY)
+        message(FATAL_ERROR
+            "PORYAAAA_BUILD_MGBA_REFERENCE requires an mGBA development install; "
+            "set PORYAAAA_MGBA_ROOT to its prefix")
+    endif()
+
+    add_executable(mgba_mp2k_reference
+        tools/mgba-reference/mgba_mp2k_reference.c
+    )
+    poryaaaa_enable_project_warnings(mgba_mp2k_reference)
+    target_include_directories(mgba_mp2k_reference PRIVATE
+        "${PORYAAAA_MGBA_INCLUDE_DIR}"
+    )
+    target_compile_definitions(mgba_mp2k_reference PRIVATE ENABLE_VFS=1)
+    target_link_libraries(mgba_mp2k_reference PRIVATE
+        "${PORYAAAA_MGBA_LIBRARY}"
+    )
+    if(NOT MSVC)
+        target_link_libraries(mgba_mp2k_reference PRIVATE m)
+    endif()
+endif()
+
 # ---- Audio Engine Benchmark ----
 add_executable(poryaaaa_audio_bench
     bench/audio_engine_bench.c

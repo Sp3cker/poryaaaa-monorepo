@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::analyzer::{analyze_document, AnalysisContext};
 use crate::ast::{Diagnostic, DiagnosticSeverity, SourcePosition, SourceRange};
-use crate::catalog::SymbolNamespace;
+use crate::catalog::{find_macro, ArgumentSchema, SymbolNamespace};
 use crate::parser::parse_document;
 use crate::program_bank::{
     build_program_bank, ProgramBank, ProgramBankBuildResult, ProgramBankContext, ResolvedAsset,
@@ -64,6 +64,8 @@ pub struct ProjectIndex {
     voicegroup_files: BTreeSet<String>,
     direct_sound_assets: BTreeMap<String, ResolvedAsset>,
     programmable_wave_assets: BTreeMap<String, ResolvedAsset>,
+    direct_sound_definitions: BTreeMap<String, DefinitionLocation>,
+    programmable_wave_definitions: BTreeMap<String, DefinitionLocation>,
     keysplit_tables: BTreeMap<String, [u8; 128]>,
     keysplit_definitions: BTreeMap<String, DefinitionLocation>,
 }
@@ -102,6 +104,8 @@ impl ProjectIndex {
             voicegroup_files: BTreeSet::new(),
             direct_sound_assets: BTreeMap::new(),
             programmable_wave_assets: BTreeMap::new(),
+            direct_sound_definitions: BTreeMap::new(),
+            programmable_wave_definitions: BTreeMap::new(),
             keysplit_tables: BTreeMap::new(),
             keysplit_definitions: BTreeMap::new(),
         };
@@ -152,6 +156,97 @@ impl ProjectIndex {
     /// Locates the source header for a keysplit table symbol.
     pub fn keysplit_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
         self.keysplit_definitions.get(name).cloned()
+    }
+
+    /// Locates the declaration label for a DirectSound sample symbol.
+    pub fn direct_sound_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
+        self.direct_sound_definitions.get(name).cloned()
+    }
+
+    /// Locates the declaration label for a programmable-wave sample symbol.
+    pub fn programmable_wave_definition_location(&self, name: &str) -> Option<DefinitionLocation> {
+        self.programmable_wave_definitions.get(name).cloned()
+    }
+
+    /// Resolves the project source target under a cursor in an unsaved document.
+    pub fn definition_at(
+        &self,
+        relative_path: &str,
+        text: &str,
+        position: SourcePosition,
+    ) -> Option<DefinitionLocation> {
+        if relative_path == "sound/voice_groups.inc" {
+            if let Some(location) = self.voicegroup_include_target_at(text, &position) {
+                return Some(location);
+            }
+        }
+
+        let document = parse_document(text);
+        for voice_group in &document.voice_groups {
+            if voice_group.name.range.contains(&position) {
+                return self.voicegroup_definition_location(&voice_group.name.text);
+            }
+
+            for program in &voice_group.programs {
+                let Some(definition) = find_macro(&program.macro_name.text) else {
+                    continue;
+                };
+                for (argument, schema) in program.arguments.iter().zip(definition.arguments.iter()) {
+                    if !argument.range.contains(&position) {
+                        continue;
+                    }
+                    let ArgumentSchema::Symbol { namespace } = schema.schema else {
+                        continue;
+                    };
+                    return match namespace {
+                        SymbolNamespace::VoiceGroup => self.voicegroup_symbol_location(&argument.text),
+                        SymbolNamespace::Keysplit => self.keysplit_definition_location(&argument.text),
+                        SymbolNamespace::DirectSound => {
+                            self.direct_sound_definition_location(&argument.text)
+                        }
+                        SymbolNamespace::ProgrammableWave => {
+                            self.programmable_wave_definition_location(&argument.text)
+                        }
+                    };
+                }
+            }
+        }
+
+        None
+    }
+
+    fn voicegroup_include_target_at(
+        &self,
+        text: &str,
+        position: &SourcePosition,
+    ) -> Option<DefinitionLocation> {
+        for (line_index, line) in text.lines().enumerate() {
+            let source = strip_comment(line);
+            let Some((relative_path, range)) = include_path_with_range(source, line_index + 1)
+            else {
+                continue;
+            };
+            if !range.contains(position) || !is_voicegroup_include_path(&relative_path) {
+                continue;
+            }
+            if !self.root.join(&relative_path).is_file() {
+                return None;
+            }
+            return Some(DefinitionLocation {
+                relative_path,
+                range: empty_range(),
+            });
+        }
+
+        None
+    }
+
+    fn voicegroup_symbol_location(&self, symbol: &str) -> Option<DefinitionLocation> {
+        self.voicegroup_definition_location(symbol).or_else(|| {
+            symbol
+                .strip_prefix("voicegroup_")
+                .and_then(|stripped| self.voicegroup_definition_location(stripped))
+        })
     }
 
     /// Iterates physical voicegroup source files available for include completions.
@@ -374,11 +469,16 @@ impl ProjectIndex {
 
         let text = fs::read_to_string(path)?;
         let mut current_symbol = None;
-        for line in text.lines() {
+        for (line_index, line) in text.lines().enumerate() {
             let stripped = strip_comment(line).trim();
             let line_document = parse_document(stripped);
             if let Some(label) = line_document.assembly_labels.first() {
-                current_symbol = Some(label.name.text.clone());
+                let symbol = label.name.text.clone();
+                let mut range = label.name.range.clone();
+                range.start.line = line_index + 1;
+                range.end.line = line_index + 1;
+                self.insert_definition(kind, symbol.clone(), relative_path, range);
+                current_symbol = Some(symbol);
                 continue;
             }
 
@@ -404,6 +504,31 @@ impl ProjectIndex {
             }
             AssetKind::ProgrammableWave => {
                 self.programmable_wave_assets.entry(symbol).or_insert(asset);
+            }
+        }
+    }
+
+    fn insert_definition(
+        &mut self,
+        kind: AssetKind,
+        symbol: String,
+        relative_path: &str,
+        range: SourceRange,
+    ) {
+        let definition = DefinitionLocation {
+            relative_path: relative_path.to_string(),
+            range,
+        };
+        match kind {
+            AssetKind::DirectSound => {
+                self.direct_sound_definitions
+                    .entry(symbol)
+                    .or_insert(definition);
+            }
+            AssetKind::ProgrammableWave => {
+                self.programmable_wave_definitions
+                    .entry(symbol)
+                    .or_insert(definition);
             }
         }
     }

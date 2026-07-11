@@ -12,23 +12,11 @@ extern "C"
 {
 #endif
 
-    /* Software m4a driver.  Mirrors the real m4a routines from the
+    /* Software m4a driver. Mirrors the real m4a routines from the
      * pokeemerald disassembly (Music 4 Advance / Sappy / MPlayDef).
-     *
-     * Status (2026-04-29): MIDI ingress drives real CGB + DirectSound
-     * channel state; m4a_advance fires SoundMain at vblank cadence
-     * (CgbSound + SoundMainRAM + SoundMainRAM_Reverb + LFO tick).  The
-     * register-file (M4ARegisterFile) and PCM ring (M4APcmRing) are the
-     * authoritative driver→chip outputs.  Driver side is now feature-
-     * complete for the parity targets we care about — §12 step 1's LFO
-     * advancement landed (m4a_internal_lfo_tick in m4a_track.c, fired
-     * from m4a_main.c's tempoC overflow loop); MPlayMain song-walk
-     * remains a deliberate no-op because the DAW is the song player.
-     * §12 step 2 PCM mixer + reverb still needs a verification audit
-     * against v1 and real m4a before this output is a valid parity
-     * baseline.  Audibility is achieved end-to-end behind v2 flags;
-     * mGBA capture-comparison parity (§12 step 10b) remains the open
-     * parity gate — see plan §12 blocking-gates list. */
+     * m4a_advance fires SoundMain at VBlank cadence; the register file
+     * and PCM ring are the authoritative driver-to-chip outputs. Song
+     * sequencing remains external because the DAW or renderer owns it. */
     typedef struct M4ADriver M4ADriver;
 
     /* Mirror of M4AEngineXcmdFn so v2 can be wired into poryaaaa's xcmd path

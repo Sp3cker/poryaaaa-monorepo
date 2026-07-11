@@ -12,9 +12,8 @@ void hw_pcm_init(HwPcm* pcm, float render_rate)
 {
     memset(pcm, 0, sizeof(*pcm));
     pcm->render_rate = render_rate;
-    /* Default quirk_rate matches SOUNDBIAS sampling_cycle = 0
-     * (32768 Hz, the Pokemon Emerald default).  HwAudio overrides
-     * this when sampling_cycle changes. */
+    /* Standalone reset default follows SOUNDBIAS sampling_cycle = 0.
+     * HwAudio immediately overrides this from the active mix state. */
     pcm->quirk_rate = 32768;
     /* Negative sentinels force the first render sample to populate
      * held_pcm/held_quirk from ring[0] / pcm head before any output

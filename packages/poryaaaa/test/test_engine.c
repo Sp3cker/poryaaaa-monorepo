@@ -10,6 +10,7 @@
 #include "hw_audio/hw_audio.h"
 #include "hw_audio/hw_pcm.h"
 #include "hw_audio/hw_psg.h"
+#include "hw_audio/hw_resample.h"
 /* Tests access internal track / channel state to verify XCMD field
  * mutations and propagation into newly-started notes (xcmd.md).  The
  * driver's public header keeps M4ADriver opaque; test code is the
@@ -254,6 +255,9 @@ static void test_engine_init(void)
     ASSERT(engine.voiceGroup == NULL, "voicegroup starts NULL");
     ASSERT(m4a_engine_driver(&engine) != NULL, "driver accessor returns non-null");
     ASSERT(m4a_engine_hw_audio(&engine) != NULL, "hw accessor returns non-null");
+    ASSERT_EQ(m4a_get_register_file(m4a_engine_driver(&engine))->bias_sampling_cycle,
+              1,
+              "driver defaults to the ROM's 65536 Hz SOUNDBIAS resolution");
 
     m4a_engine_destroy(&engine);
 }
@@ -708,14 +712,11 @@ static void test_v2_trigger_semantics(void)
     DRIVE(4096);
     ASSERT(!r->trigger_sq2, "trigger_sq2 stays cleared in steady sustain");
 
-    /* note_off → release phase: envelope continues down to zero in
-     * software.  MO_VOL fires (NRx2 envelope updates), but NRx4 trigger
-     * MUST NOT be set — re-triggering during release would reset the
-     * wave RAM position (NR34) / noise LFSR (NR44) on real GB hardware.
-     * Trigger is a fresh-note signal only.  Mirrors v1 + real m4a. */
+    /* note_off → release phase: CgbSound retriggers square channels on
+     * each envelope write.  Square duty phase is preserved by hardware. */
     m4a_note_off(drv, 0, 60);
     m4a_advance(drv, 1024);
-    ASSERT(!r->trigger_sq2, "trigger_sq2 stays cleared on release transition");
+    ASSERT(r->trigger_sq2, "release volume write retriggers SQ2 like CgbSound");
 
     hw_audio_destroy(hw);
 #undef DRIVE
@@ -783,6 +784,35 @@ static void test_v2_cgb_alt_voice_quantizes_pitch_writes(void)
     m4a_advance(drv, 1024);
     ASSERT_EQ(drv->cgb[0].voiceType, VOICE_SQUARE_1, "CGB channel preserves original non-alt voice type");
     ASSERT_EQ(drv->regs.sq1_freq, base, "non-alt SQ1 does not quantize pitch writes at sampling_cycle 0");
+
+    m4a_driver_destroy(drv);
+}
+
+/* Missing MIDI CC7 means full track volume before midi.cfg song scaling. */
+static void test_v2_default_midi_volume_matches_mp2k(void)
+{
+    printf("Testing v2 default MIDI volume matches MP2K full volume...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2_ALT;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 2;
+    voices[0].sustain = 3;
+    voices[0].release = 1;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_set_song_volume(drv, 90);
+
+    ASSERT_EQ(drv->tracks[0].rawVolume, 127, "missing CC7 defaults to full MIDI volume");
+    ASSERT_EQ(drv->tracks[0].volume, 90, "midi.cfg song volume scales the full default once");
+
+    m4a_note_on(drv, 0, 83, 64);
+    ASSERT_EQ(drv->cgb[1].envelopeGoal, 5, "mus_rg_heal square-2 note reaches MP2K envelope goal 5");
 
     m4a_driver_destroy(drv);
 }
@@ -1809,10 +1839,9 @@ static void test_v2_pcm_pseudo_echo_nonzero_length_counts_down(void)
 }
 
 /* Layer 1.5 event-stream contract.  After note_on + 1 vblank the
- * driver must have queued the canonical CgbSound write order
- * (NRx1, NRx2, NRx3, NRx4-with-trigger, NR51) on the active channel,
- * all stamped with the same sample_offset (the host-frame position of
- * the vblank firing).  m4a_consume_writes empties the queue. */
+ * driver must have queued Emerald CgbSound's square start order, all
+ * stamped with the same sample_offset.  m4a_consume_writes empties the
+ * queue. */
 static void test_v2_event_stream(void)
 {
     printf("Testing v2 Layer 1.5 event-stream order + consumption...\n");
@@ -1822,9 +1851,10 @@ static void test_v2_event_stream(void)
     voices[0].type = VOICE_SQUARE_2;
     voices[0].key = 60;
     voices[0].attack = 0;
-    voices[0].decay = 0;
-    voices[0].sustain = 16;
-    voices[0].release = 16;
+    voices[0].decay = 2;
+    voices[0].sustain = 8;
+    voices[0].release = 1;
+    voices[0].length = 63;
     voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
 
     M4ADriver* drv = m4a_driver_create(44100.0f);
@@ -1842,8 +1872,9 @@ static void test_v2_event_stream(void)
     m4a_advance(drv, 1024);
     b = m4a_get_pending_writes(drv);
 
-    /* sq2 path emits NR21, NR22, NR23, NR24, then NR51.  Find them in order. */
-    int seenN21 = -1, seenN22 = -1, seenN23 = -1, seenN24 = -1, seenN51 = -1;
+    /* A square start first initializes duty/length, then applies pitch
+     * without a trigger, then pan and the triggered decay envelope. */
+    int seenN21 = -1, seenN22 = -1, seenN23 = -1, seenN24Pitch = -1, seenN24Trigger = -1, seenN51 = -1;
     for (size_t i = 0; i < b->count; i++)
     {
         switch (b->events[i].reg)
@@ -1861,8 +1892,15 @@ static void test_v2_event_stream(void)
                 seenN23 = (int)i;
             break;
         case M4A_REG_NR24:
-            if (seenN24 < 0)
-                seenN24 = (int)i;
+            if (b->events[i].value & 0x80)
+            {
+                if (seenN24Trigger < 0)
+                    seenN24Trigger = (int)i;
+            }
+            else if (seenN24Pitch < 0)
+            {
+                seenN24Pitch = (int)i;
+            }
             break;
         case M4A_REG_NR51:
             if (seenN51 < 0)
@@ -1875,19 +1913,25 @@ static void test_v2_event_stream(void)
     ASSERT(seenN21 >= 0, "NR21 (sq2 length+duty) emitted");
     ASSERT(seenN22 >= 0, "NR22 (sq2 envelope) emitted");
     ASSERT(seenN23 >= 0, "NR23 (sq2 freq lo) emitted");
-    ASSERT(seenN24 >= 0, "NR24 (sq2 trigger+freq hi) emitted");
+    ASSERT(seenN24Pitch >= 0, "NR24 (sq2 pitch without trigger) emitted");
+    ASSERT(seenN24Trigger >= 0, "NR24 (sq2 trigger+freq hi) emitted");
     ASSERT(seenN51 >= 0, "NR51 (pan masks) emitted");
 
-    /* CgbSound order — pokeemerald: NR21 < NR22 < NR23 < NR24 < NR51. */
-    ASSERT(seenN21 < seenN22, "NR21 before NR22 in queue");
-    ASSERT(seenN22 < seenN23, "NR22 before NR23 in queue");
-    ASSERT(seenN23 < seenN24, "NR23 before NR24 in queue");
-    ASSERT(seenN24 < seenN51, "NR24 (trigger) before NR51");
+    ASSERT(seenN21 < seenN23, "NR21 before pitch writes in queue");
+    ASSERT(seenN23 < seenN24Pitch, "NR23 before non-triggered NR24 in queue");
+    ASSERT(seenN24Pitch < seenN51, "pitch writes before NR51 in queue");
+    ASSERT(seenN51 < seenN22, "NR51 before NR22 in queue");
+    ASSERT(seenN22 < seenN24Trigger, "NR22 before triggered NR24 in queue");
 
-    /* NR24 carries the NRx4-with-trigger encoding: bit 7 = 1. */
-    uint32_t nr24 = b->events[seenN24].value;
-    ASSERT((nr24 & 0x80) != 0, "NR24 has trigger bit (0x80) set");
-    ASSERT((nr24 & 0x40) == 0, "NR24 keeps hardware length disabled");
+    uint32_t nr22 = b->events[seenN22].value;
+    uint32_t nr24Pitch = b->events[seenN24Pitch].value;
+    uint32_t nr24Trigger = b->events[seenN24Trigger].value;
+    uint32_t expectedNr22 = ((uint32_t)drv->cgb[1].envelopeGoal << 4) | 2u;
+    ASSERT_EQ(nr22, expectedNr22, "instant attack programs hardware decay pace 2");
+    ASSERT((nr24Pitch & 0x80) == 0, "pitch NR24 does not trigger");
+    ASSERT((nr24Pitch & 0x40) != 0, "pitch NR24 enables nonzero hardware length");
+    ASSERT((nr24Trigger & 0x80) != 0, "volume NR24 has trigger bit set");
+    ASSERT((nr24Trigger & 0x40) != 0, "volume NR24 keeps nonzero hardware length enabled");
 
     /* All vblank-emitted events share the same sample_offset (that
      * vblank's firing position within the render span). */
@@ -2813,7 +2857,7 @@ static void test_v2_psg_pan_routing(void)
 
     enum
     {
-        N = 4096
+        N = 8192
     };
     float L[N], R[N];
     v2_render_chunked(drv, hw, L, R, N);
@@ -2978,18 +3022,10 @@ static void test_v2_psg_export_shape_audible_across_sample_rates(void)
     }
 }
 
-/* CGB retrigger semantics: NRx4 trigger bit must fire on note start only,
- * NEVER on subsequent envelope-update vblanks.  Real GB hardware resets
- * the wave RAM position (NR34 trigger) and noise LFSR (NR44 trigger) on
- * trigger; re-triggering during sustain corrupts wave/noise output.
- * Reference: mGBA / hardware (see project_audio_reference_target.md);
- * also matches v1 + real m4a behaviour: ChnVolSetCgb computes envelope;
- * CgbSound writes NRx2 every tick but NRx4-with-trigger only on fresh
- * note.  This is a DRIVER-side regression and does not require the chip,
- * since the contract is purely about which Layer-1.5 events the driver emits. */
-static void test_v2_cgb_trigger_only_on_note_start(void)
+/* Locks wave/noise volume-write triggers to the ROM's CgbSound contract. */
+static void test_v2_cgb_volume_triggers_match_m4a(void)
 {
-    printf("Testing v2 NRx4 trigger fires once on note start, not on sustain...\n");
+    printf("Testing v2 CGB volume-write triggers match m4a...\n");
 
     static uint32_t waveRam[4];
     for (int i = 0; i < 16; i++)
@@ -3052,9 +3088,8 @@ static void test_v2_cgb_trigger_only_on_note_start(void)
     ASSERT_EQ(n44_trig, 1, "first vblank emits exactly 1 NR44 with trigger");
     m4a_consume_writes(drv);
 
-    /* Drive enough vblanks to traverse attack → decay → sustain.  All
-     * subsequent NRx4 writes from envelope steps must carry trigger=0
-     * (no fresh note since the initial note_on). */
+    /* Hardware envelopes advance without register writes.  Neither wave
+     * nor noise retriggers before an MP2K envelope phase transition. */
     for (int chunk = 0; chunk < 20; chunk++)
     {
         m4a_advance(drv, 1024);
@@ -3079,12 +3114,12 @@ static void test_v2_cgb_trigger_only_on_note_start(void)
         m4a_consume_writes(drv);
     }
     ASSERT_EQ(n34_trig, 1, "no extra NR34 retriggers during sustain");
-    ASSERT_EQ(n44_trig, 1, "no extra NR44 retriggers during sustain");
-    /* Envelope updates do still emit NRx4-no-trigger frequently. */
+    ASSERT_EQ(n44_trig, 1, "hardware noise attack does not retrigger NR44");
     ASSERT(n34_notrig > 0, "NR34-no-trigger emitted during sustain");
     ASSERT(n44_notrig > 0, "NR44-no-trigger emitted during sustain");
 
-    /* note_off → release: still no fresh trigger. */
+    int n44_after_sustain = n44_trig;
+    /* note_off → release: wave remains untriggered; noise envelope writes retrigger. */
     m4a_note_off(drv, 0, 60);
     m4a_note_off(drv, 1, 60);
     for (int chunk = 0; chunk < 8; chunk++)
@@ -3101,9 +3136,10 @@ static void test_v2_cgb_trigger_only_on_note_start(void)
         m4a_consume_writes(drv);
     }
     ASSERT_EQ(n34_trig, 1, "release does NOT refire NR34 trigger");
-    ASSERT_EQ(n44_trig, 1, "release does NOT refire NR44 trigger");
+    ASSERT(n44_trig > n44_after_sustain, "noise release writes refire NR44 trigger");
 
     /* New note_on → exactly one more trigger on each. */
+    int n44_after_release = n44_trig;
     m4a_note_on(drv, 0, 64, 100);
     m4a_note_on(drv, 1, 64, 100);
     m4a_advance(drv, 1024);
@@ -3116,7 +3152,7 @@ static void test_v2_cgb_trigger_only_on_note_start(void)
             n44_trig++;
     }
     ASSERT_EQ(n34_trig, 2, "second note_on emits exactly one more NR34 trigger");
-    ASSERT_EQ(n44_trig, 2, "second note_on emits exactly one more NR44 trigger");
+    ASSERT_EQ(n44_trig, n44_after_release + 1, "second note_on emits exactly one more NR44 trigger");
 
     m4a_driver_destroy(drv);
 }
@@ -3717,6 +3753,19 @@ static void test_v2_all_sound_off_immediate(void)
     ASSERT_EQ(r->sq2_env_volume, 0, "all_sound_off zeroes sq2 env volume");
     ASSERT(!r->trigger_sq2, "all_sound_off does NOT set trigger_sq2");
 
+    const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+    bool wroteNr22 = false;
+    bool wroteNr24 = false;
+    for (size_t i = 0; i < batch->count; i++)
+    {
+        if (batch->events[i].reg == M4A_REG_NR22 && batch->events[i].value == 0x08u)
+            wroteNr22 = true;
+        if (batch->events[i].reg == M4A_REG_NR24 && batch->events[i].value == 0x80u)
+            wroteNr24 = true;
+    }
+    ASSERT(wroteNr22, "CgbOscOff keeps SQ2 DAC active at zero volume");
+    ASSERT(wroteNr24, "CgbOscOff retriggers SQ2 so its silent oscillator advances");
+
     m4a_driver_destroy(drv);
 }
 
@@ -3727,7 +3776,7 @@ static void test_v2_all_sound_off_immediate(void)
 
 static void test_hw_psg_frame_sequencer_init_convention(void)
 {
-    printf("Testing hw_psg frame sequencer: init first tick dispatches step 1...\n");
+    printf("Testing hw_psg frame sequencer: post-m4a init first tick dispatches step 0...\n");
 
     HwPsgSynth psg;
     float sq1[256], sq2[256], wave[256], noise[256];
@@ -3738,10 +3787,10 @@ static void test_hw_psg_frame_sequencer_init_convention(void)
     hw_psg_get_frame_sequencer_debug(&psg, &dbg);
 
     ASSERT_EQ(dbg.frame_ticks, 1, "one 512 Hz frame tick after 256 samples at 131072 Hz");
-    ASSERT_EQ(dbg.frame_step, 1, "full init starts from mGBA frame=0, first tick dispatches step 1");
-    ASSERT_EQ(dbg.length_ticks, 0, "step 1 does not clock length");
-    ASSERT_EQ(dbg.sweep_ticks, 0, "step 1 does not clock sweep");
-    ASSERT_EQ(dbg.envelope_ticks, 0, "step 1 does not clock envelope");
+    ASSERT_EQ(dbg.frame_step, 0, "m4a NR52 enable leaves mGBA at frame 7, then first tick dispatches step 0");
+    ASSERT_EQ(dbg.length_ticks, 1, "step 0 clocks length");
+    ASSERT_EQ(dbg.sweep_ticks, 0, "step 0 does not clock sweep");
+    ASSERT_EQ(dbg.envelope_ticks, 0, "step 0 does not clock envelope");
 }
 
 static void test_hw_psg_frame_sequencer_dispatch_table(void)
@@ -3756,10 +3805,44 @@ static void test_hw_psg_frame_sequencer_dispatch_table(void)
     hw_psg_get_frame_sequencer_debug(&psg, &dbg);
 
     ASSERT_EQ(dbg.frame_ticks, 8, "eight frame ticks after 2048 samples at 131072 Hz");
-    ASSERT_EQ(dbg.frame_step, 0, "eighth tick wraps to frame step 0");
+    ASSERT_EQ(dbg.frame_step, 7, "eight ticks return the post-m4a init frame step to 7");
     ASSERT_EQ(dbg.length_ticks, 4, "length clocks on steps 0,2,4,6");
     ASSERT_EQ(dbg.sweep_ticks, 2, "sweep clocks on steps 2,6");
     ASSERT_EQ(dbg.envelope_ticks, 1, "envelope clocks on step 7");
+}
+
+/* The chip, not the MP2K shadow state, advances square envelopes at 64 Hz. */
+static void test_hw_psg_hardware_envelope_steps_at_64_hz(void)
+{
+    printf("Testing hw_psg hardware envelope advances at 64 Hz...\n");
+
+    HwPsgSynth psg;
+    hw_psg_init(&psg, 131072.0f);
+
+    M4ARegWrite attack[] = {
+        {0, M4A_REG_NR21, 0x80},
+        {0, M4A_REG_NR22, 0x2A}, /* initial 2, increase, pace 2 */
+        {0, M4A_REG_NR24, 0x80},
+    };
+    for (size_t i = 0; i < sizeof(attack) / sizeof(attack[0]); i++)
+        hw_psg_apply_event(&psg, &attack[i]);
+
+    ASSERT_EQ(psg.sq2_envelope.current_volume, 2, "trigger loads the envelope initial volume");
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
+    ASSERT_EQ(psg.sq2_envelope.current_volume, 2, "pace 2 holds through the first envelope clock");
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
+    ASSERT_EQ(psg.sq2_envelope.current_volume, 3, "pace 2 increments on the second envelope clock");
+
+    M4ARegWrite decay[] = {
+        {0, M4A_REG_NR22, 0x81}, /* initial 8, decrease, pace 1 */
+        {0, M4A_REG_NR24, 0x80},
+    };
+    for (size_t i = 0; i < sizeof(decay) / sizeof(decay[0]); i++)
+        hw_psg_apply_event(&psg, &decay[i]);
+
+    ASSERT_EQ(psg.sq2_envelope.current_volume, 8, "decay trigger reloads its initial volume");
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
+    ASSERT_EQ(psg.sq2_envelope.current_volume, 7, "pace 1 decrements on the next envelope clock");
 }
 
 static void test_hw_psg_frame_sequencer_chunk_invariance(void)
@@ -3806,7 +3889,7 @@ static void test_hw_psg_frame_sequencer_rate_continuity(void)
     hw_psg_get_frame_sequencer_debug(&psg, &dbg);
 
     ASSERT_EQ(dbg.frame_ticks, 1, "half tick at 131072 plus half tick at 262144 clocks once");
-    ASSERT_EQ(dbg.frame_step, 1, "rate change does not reset frame step");
+    ASSERT_EQ(dbg.frame_step, 0, "rate change does not reset frame step");
     ASSERT_NEAR(dbg.frame_accum, 0.0, 1e-12, "rate change preserves accumulator and lands on tick boundary");
 }
 
@@ -4044,7 +4127,7 @@ static void test_hw_psg_sq1_negative_sweep_commits_on_frame_step(void)
     hw_psg_apply_event(&psg, &nr13);
     hw_psg_apply_event(&psg, &nr14);
 
-    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 512);
+    hw_psg_render(&psg, NULL, NULL, NULL, NULL, 768);
     ASSERT_EQ(psg.sq1_sweep_timer, 1, "step 2 decrements negative sweep timer");
     ASSERT_EQ(psg.sq1_freq, 1024, "first sweep tick does not commit before timer zero");
 
@@ -4171,6 +4254,68 @@ static void test_hw_psg_square_duty_phase_matches_mgba(void)
     }
 }
 
+/* Proves register-time catch-up preserves mGBA's free-running duty index. */
+static void test_hw_psg_square_duty_advances_while_silent(void)
+{
+    printf("Testing hw_psg square duty advances while silent...\n");
+
+    HwPsgSynth psg;
+    hw_psg_init(&psg, 65536.0f);
+
+    float silent[128];
+    hw_psg_render(&psg, NULL, silent, NULL, NULL, 128);
+
+    M4ARegWrite ev[] = {
+        {0, M4A_REG_NR21, 0x00},
+        {0, M4A_REG_NR22, 0xF8},
+        {0, M4A_REG_NR23, 2040 & 0xFF},
+        {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7)},
+    };
+    for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
+        hw_psg_apply_event(&psg, &ev[i]);
+
+    float first;
+    hw_psg_render(&psg, NULL, &first, NULL, NULL, 1);
+
+    ASSERT_NEAR(first, 0.0f, 0.00001f, "silent elapsed time advances duty index before trigger");
+}
+
+/* Locks noise trigger and shift behavior to the linked mGBA 0.10.5 reference. */
+static void test_hw_psg_noise_sequence_matches_mgba_0_10_5(void)
+{
+    printf("Testing hw_psg noise sequence matches mGBA 0.10.5...\n");
+
+    static const char* expected[] = {
+        "11111111111111000000000000001000",
+        "11111100000010000011000010100011",
+    };
+    static const uint16_t initialLfsr[] = {0x7FFFu, 0x007Fu};
+
+    for (int width = 0; width < 2; width++)
+    {
+        HwPsgSynth psg;
+        hw_psg_init(&psg, 524288.0f);
+
+        M4ARegWrite events[] = {
+            {0, M4A_REG_NR42, 0xF8},
+            {0, M4A_REG_NR43, width ? 0x08u : 0x00u},
+            {0, M4A_REG_NR44, 0x80},
+        };
+        for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++)
+            hw_psg_apply_event(&psg, &events[i]);
+
+        ASSERT_EQ(psg.noise_lfsr, initialLfsr[width], "NR44 trigger resets noise LFSR like mGBA 0.10.5");
+
+        float noise[32];
+        hw_psg_render(&psg, NULL, NULL, NULL, noise, 32);
+        for (int i = 0; i < 32; i++)
+        {
+            float want = expected[width][i] == '1' ? 1.0f : 0.0f;
+            ASSERT_NEAR(noise[i], want, 0.00001f, "noise LFSR sample matches mGBA 0.10.5");
+        }
+    }
+}
+
 static void test_chip_canned_square_audible(void)
 {
     printf("Testing chip-only: canned NRxx events drive sq2 audible...\n");
@@ -4219,6 +4364,79 @@ static void test_chip_canned_square_audible(void)
     hw_audio_destroy(hw);
 }
 
+/* Proves the public chip output includes mGBA blip_buf's DC-blocking pole. */
+static void test_chip_output_matches_mgba_frontend_highpass(void)
+{
+    printf("Testing chip-only: output applies mGBA frontend high-pass...\n");
+
+    HwAudio* hw = hw_audio_create(65536.0f);
+    M4ARegWrite ev[] = {
+        {0, M4A_REG_NR52, 0x80},
+        {0, M4A_REG_NR50, 0x77},
+        {0, M4A_REG_NR51, 0x22},
+        {0, M4A_REG_SOUNDCNT_H, 0x02},
+        {0, M4A_REG_NR21, 0xC0}, /* 75% duty has a positive raw-DAC mean */
+        {0, M4A_REG_NR22, 0xF8},
+        {0, M4A_REG_NR23, 1984 & 0xFF}, /* exact 2048 Hz period at 65536 Hz */
+        {0, M4A_REG_NR24, 0x80 | ((1984 >> 8) & 7)},
+    };
+    M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
+
+    enum
+    {
+        N = 8192,
+        WINDOW = 2048
+    };
+    float L[N], R[N];
+    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+
+    double mean = 0.0;
+    for (int i = N - WINDOW; i < N; i++)
+        mean += L[i];
+    mean /= WINDOW;
+    if (mean < 0.0)
+        mean = -mean;
+
+    ASSERT(mean < 0.01, "mGBA frontend high-pass removes the square wave's positive DC mean");
+    hw_audio_destroy(hw);
+}
+
+/* Locks the frontend step response to mGBA's bundled blip_buf 1.1.0. */
+static void test_hw_resample_matches_mgba_blip_step(void)
+{
+    printf("Testing hw_resample step response matches mGBA blip_buf...\n");
+
+    static const int16_t expected[] = {
+        0,
+        10,
+        -19,
+        69,
+        -53,
+        230,
+        3,
+        1459,
+        6711,
+        8173,
+        7927,
+        8196,
+        8058,
+        8130,
+        8085,
+        8080,
+    };
+    float input[32], output[32];
+    for (int i = 0; i < 32; i++)
+        input[i] = 0.25f;
+
+    HwResample resample;
+    hw_resample_init(&resample, 65536.0, 65536.0);
+    int produced = hw_resample_process(&resample, input, NULL, 32, output, NULL, 32);
+
+    ASSERT_EQ(produced, 32, "equal-rate blip frontend produces one sample per DAC sample");
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+        ASSERT_NEAR(output[i], expected[i] / 32768.0f, 0.000001f, "blip frontend step sample matches mGBA");
+}
+
 static void test_chip_canned_master_disable_silences(void)
 {
     printf("Testing chip-only: NR52 master-disable silences PSG...\n");
@@ -4243,17 +4461,15 @@ static void test_chip_canned_master_disable_silences(void)
 
     enum
     {
-        N = 4096
+        N = 8192
     };
     float L[N], R[N];
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
-    /* First half: signal; second half: silence after a smear region.
-     * The §12-step-9 polyphase resampler has a kernel half-width of
-     * HW_RESAMPLE_TAPS/2 input (chip-internal) samples = 16, which at
-     * step ≈ 2.97 is about 5 host samples either side of the event.
-     * A few dozen host samples past the event boundary is well clear
-     * of the smear; the late tail must be exactly zero. */
+    /* First half: signal; after disable the blip impulse and frontend
+     * high-pass tail must decay to silence. A few dozen host samples
+     * past the event boundary clears the impulse; the longer tail follows
+     * the 511/512 pole. */
     float peakFirst = 0.0f;
     /* Stay clear of the smear at the boundary; the first few hundred
      * samples are plenty audible without including transition smear. */
@@ -4267,17 +4483,17 @@ static void test_chip_canned_master_disable_silences(void)
     }
     ASSERT(peakFirst > 0.001f, "first half (master enabled) audible");
 
-    bool secondSilent = true;
-    /* Skip the resampler smear region right after the event. */
-    for (int i = 2048 + 64; i < N; i++)
+    float latePeak = 0.0f;
+    for (int i = N - 512; i < N; i++)
     {
-        if (L[i] != 0.0f || R[i] != 0.0f)
-        {
-            secondSilent = false;
-            break;
-        }
+        float a = L[i] < 0.0f ? -L[i] : L[i];
+        float b = R[i] < 0.0f ? -R[i] : R[i];
+        if (a > latePeak)
+            latePeak = a;
+        if (b > latePeak)
+            latePeak = b;
     }
-    ASSERT(secondSilent, "second half (master disabled) all-zero past smear");
+    ASSERT(latePeak < 5e-5f, "master-disable frontend tail decays to silence");
 
     hw_audio_destroy(hw);
 }
@@ -4331,6 +4547,9 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
         }
         hw_audio_render_events(hw, &empty, NULL, L, R, CHUNK);
 
+        if (chunk_i < 32)
+            continue; /* allow mGBA's 511/512 frontend pole to decay */
+
         for (int i = 0; i < CHUNK; i++)
         {
             float a = L[i];
@@ -4352,7 +4571,7 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
     if (worst > 5e-5f)
         printf(
             "  [debug] worst after-playback silent dev = %g at chunk %d sample %d\n", worst, worst_chunk, worst_sample);
-    ASSERT(worst < 5e-5f, "empty blocks after playback stay silent and overwrite the whole output buffer");
+    ASSERT(worst < 5e-5f, "empty blocks stay silent after the frontend tail and overwrite the output buffer");
 
     hw_audio_destroy(hw);
 }
@@ -4429,7 +4648,7 @@ static void test_chip_canned_wave_audible(void)
 
     enum
     {
-        N = 4096
+        N = 8192
     };
     float L[N], R[N];
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
@@ -4580,17 +4799,18 @@ static void test_chip_canned_noise_dac_off_silences(void)
 
     enum
     {
-        N = 4096
+        N = 8192
     };
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
-    /* First half: signal; second half: silent past resampler smear.
-     * See test_chip_canned_master_disable_silences for smear rationale —
-     * step-9 polyphase kernel smears step changes across ±5 host
-     * samples; a 64-sample skip past the boundary is comfortable. */
+    /* First half: signal; the resampler smear and frontend high-pass tail
+     * decay after the DAC turns off.
+     * See test_chip_canned_master_disable_silences for smear rationale.
+     * The mGBA blip impulse has a short ringing tail, so a 64-sample
+     * skip past the boundary is comfortable. */
     float peakFirst = 0.0f;
     for (int i = 64; i < 2048 - 64; i++)
     {
@@ -4602,16 +4822,17 @@ static void test_chip_canned_noise_dac_off_silences(void)
     }
     ASSERT(peakFirst > 0.001f, "first half (DAC on) audible");
 
-    bool secondSilent = true;
-    for (int i = 2048 + 64; i < N; i++)
+    float latePeak = 0.0f;
+    for (int i = N - 512; i < N; i++)
     {
-        if (L[i] != 0.0f || R[i] != 0.0f)
-        {
-            secondSilent = false;
-            break;
-        }
+        float a = L[i] < 0.0f ? -L[i] : L[i];
+        float b = R[i] < 0.0f ? -R[i] : R[i];
+        if (a > latePeak)
+            latePeak = a;
+        if (b > latePeak)
+            latePeak = b;
     }
-    ASSERT(secondSilent, "second half (DAC off) all-zero past smear");
+    ASSERT(latePeak < 5e-5f, "DAC-off frontend tail decays to silence");
 
     hw_audio_destroy(hw);
 }
@@ -4622,7 +4843,7 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * routing/scaling math, SOUNDBIAS bias_level DC offset math, and the
  * 10-bit DAC bias-add+clip math (default + asymmetric).  All of these
  * tests run with the chip at its internal render rate and through the
- * polyphase resampler to host.  Per-cadence tests live in the §12.10a
+ * mGBA blip frontend to host. Per-cadence tests live in the §12.10a
  * block below (cadence sweep + direct internal_rate switching assertion).
  *
  * They do NOT prove parity against mGBA / real-hardware captures —
@@ -4659,8 +4880,7 @@ static void test_chip_canned_soundbias_dc_offset(void)
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
     /* Expect every post-warmup sample at 0 within kernel precision.
-     * The polyphase resampler's ring starts zero-filled, so this is
-     * effectively zero-in-zero-out. */
+     * The blip delta ring starts zero-filled, so this is zero-in-zero-out. */
     const float dc_eps = 5e-5f;
     const int warmup_host = 32;
     bool allOnTarget = true;
@@ -4731,8 +4951,7 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
      * R side: no PSG routed → input 0 → output 0 (mGBA _applyBias
      * subtracts bias back, no embedded DC in silent output).
      *
-     * Tolerances: polyphase resampler rings on the clipped square edges
-     * (~9% Gibbs overshoot of step amplitude). */
+     * Tolerances: the mGBA blip impulse rings on clipped square edges. */
     const float clip_top = (1023.0f - 832.0f) * 48.0f / 32768.0f;
     const float ring_eps = 0.04f;
     const float dc_eps = 5e-5f;
@@ -4747,7 +4966,7 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
     }
     ASSERT(maxL <= clip_top + ring_eps, "L high side clipped at clip_top (within ringing)");
     ASSERT(maxL >= clip_top - ring_eps, "L high side reaches clip ceiling (clip path exercised)");
-    ASSERT(minL >= -ring_eps, "L low side stays at/above 0 (no clip on negative)");
+    ASSERT(minL >= -clip_top - ring_eps, "frontend high-pass negative swing stays within the clipped step size");
     /* R side has no PSG signal AND mGBA _applyBias subtracts bias back,
      * so silent output stays at 0. */
     float dR = R[warmup];
@@ -4876,19 +5095,19 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
     ASSERT(ratio > 0.495f && ratio < 0.505f, "50% DMA vol scales peak by ½");
 }
 
-/* ---- §12 step 9: polyphase resampler quality ----
+/* ---- §12 step 9: mGBA blip frontend quality ----
  *
  * Anti-aliasing check: at sampling_cycle=2 (131072 Hz chip cadence), a
  * square wave whose fundamental is above host Nyquist (22050 Hz @ 44100)
- * must be attenuated by the resampler's low-pass kernel, NOT aliased
+ * must be attenuated by the frontend's impulse kernel, NOT aliased
  * into the audible band.  Compares peak
  * at a low fundamental (~1300 Hz, well in passband) to peak at a high
  * fundamental (~26214 Hz, above host Nyquist).  A linear-interp or
  * zero-order-hold resampler would let aliasing leak through and the
- * ratio would be ≈ 1.  Windowed-sinc rejects it heavily. */
+ * ratio would be approximately 1. mGBA's blip frontend rejects it. */
 static void test_chip_canned_resample_antialias(void)
 {
-    printf("Testing chip-only: polyphase resampler attenuates above host Nyquist...\n");
+    printf("Testing chip-only: mGBA blip frontend attenuates above host Nyquist...\n");
 
     /* Helper: render an SQ2 trigger at the given freq word and report
      * post-warmup peak amplitude on the L channel. */
@@ -4967,11 +5186,11 @@ static void test_chip_canned_resample_antialias(void)
      * produce ~0.3516 peak at the host (single PSG max after GBA output
      * scale; square-wave
      * amplitude is largely unaffected by aliasing — the alias just
-     * shifts the perceived frequency).  With the polyphase low-pass
+     * shifts the perceived frequency). With the mGBA blip impulse
      * we expect heavy attenuation of the fundamental and odd
      * harmonics; a ratio < 0.5 is a comfortable bound that linear
      * interp would not satisfy. */
-    ASSERT(peak_high < peak_low * 0.5f, "high-freq sq attenuated by polyphase filter");
+    ASSERT(peak_high < peak_low * 0.5f, "high-freq sq attenuated by mGBA blip frontend");
 }
 
 /* ---- §12 step 9: cumulative sample-clock invariance ----
@@ -5194,9 +5413,8 @@ static void test_chip_canned_dc_streaming(void)
  *
  * SOUNDBIAS bits 14-15 are the "amplitude resolution selector"
  * (sampling_cycle).  The PCM FIFO drain tracks that quirk cadence
- * directly.  The chip's PSG/mix/resampler render rate stays at
- * `max(131072, 32768 << sampling_cycle)` so common host rates remain
- * on the downsampling path.
+ * directly. The chip's PSG/mix cadence is exactly
+ * `32768 << sampling_cycle`, matching mGBA's DAC sampling interval.
  *
  * These tests exercise all four cadences via the setup-then-play
  * pattern, and the mid-call regression below proves an event-offset
@@ -5265,11 +5483,8 @@ static void test_chip_canned_soundbias_cycle_audible_sweep(void)
     }
 }
 
-/* Direct rate-switching test: assert hw_audio_internal_rate() applies
- * the render-rate floor and still tracks sampling_cycle when it rises
- * above that floor.  Lower SOUNDBIAS cadences are represented by
- * HwPcm's FIFO drain quirk rate, not by lowering the whole render/
- * resampler pipeline below common host rates.
+/* Direct rate-switching test: assert hw_audio_internal_rate() follows
+ * the exact SOUNDBIAS DAC cadence used by mGBA.
  *
  * The transition checks use setup calls so each sampling_cycle is the
  * starting state for the next assertion; the final block asserts that
@@ -5280,8 +5495,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 
     HwAudio* hw = hw_audio_create(44100.0f);
 
-    /* Default sampling_cycle = 0 → internal rate floor. */
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "default sampling_cycle = 0 yields internal 131072 Hz");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 65536, "default sampling_cycle = 1 yields internal 65536 Hz");
 
 /* Helper macro: apply SOUNDBIAS via a setup call, then run a
  * trivial play call to trigger the start-of-call rate sync. */
@@ -5298,7 +5512,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
     } while (0)
 
     SOUNDBIAS_TRANSITION(1);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 1 stays at internal 131072 Hz floor");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 65536, "sampling_cycle = 1 yields internal 65536 Hz");
 
     SOUNDBIAS_TRANSITION(2);
     ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle = 2 yields internal 131072 Hz");
@@ -5308,7 +5522,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 
     /* Switching back lowers internal rate again. */
     SOUNDBIAS_TRANSITION(0);
-    ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "sampling_cycle back to 0 returns internal to 131072 Hz floor");
+    ASSERT_EQ(hw_audio_internal_rate(hw), 32768, "sampling_cycle back to 0 yields internal 32768 Hz");
 
 #undef SOUNDBIAS_TRANSITION
 
@@ -5322,7 +5536,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
         /* Reset to a known state first. */
         hw_audio_destroy(hw);
         hw = hw_audio_create(44100.0f);
-        ASSERT_EQ(hw_audio_internal_rate(hw), 131072, "fresh chip starts at 131072");
+        ASSERT_EQ(hw_audio_internal_rate(hw), 65536, "fresh chip starts at 65536");
         hw_audio_render_events(hw, &batch, NULL, scratch, scratch, 1);
         ASSERT_EQ(hw_audio_internal_rate(hw), 262144, "mid-call SOUNDBIAS switches rate before return");
     }
@@ -5507,7 +5721,7 @@ static void test_chip_canned_pcm_two_stage_drain(void)
  * "non-zero", which can hide level / sign / scale bugs). */
 static void test_chip_canned_pcm_constant_byte(void)
 {
-    printf("Testing chip-only: constant ring value yields exact post-mix DC...\n");
+    printf("Testing chip-only: constant ring value yields the expected frontend step...\n");
 
     M4APcmRing ring;
     memset(&ring, 0, sizeof(ring));
@@ -5539,41 +5753,29 @@ static void test_chip_canned_pcm_constant_byte(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, &ring, L, R, N);
 
-    /* Expected post-mix L value (after warmup):
+    /* Expected raw-DAC L step:
      *   mGBA sample count = +64 << 2 = 256
      *   final output = 256 × 48 / 32768 = +0.375
-     * R is silent (DMA A not routed there, DMA B disabled, no PSG). */
+     * The frontend high-pass reaches that step, then removes its DC. */
     const float expected_L = 0.375f;
-    const float dc_eps = 5e-5f;
-    const int warmup = 64;
-
-    bool L_steady = true;
-    bool R_steady = true;
-    int fail_idx = -1;
-    for (int i = warmup; i < N; i++)
+    float peakL = 0.0f;
+    float latePeak = 0.0f;
+    bool R_silent = true;
+    for (int i = 0; i < N; i++)
     {
-        float dL = L[i] - expected_L;
-        if (dL < 0)
-            dL = -dL;
-        float dR = R[i] - 0.0f;
-        if (dR < 0)
-            dR = -dR;
-        if (dL > dc_eps)
-        {
-            L_steady = false;
-            fail_idx = i;
-            break;
-        }
-        if (dR > dc_eps)
-        {
-            R_steady = false;
-            fail_idx = i;
-            break;
-        }
+        float a = L[i] < 0.0f ? -L[i] : L[i];
+        float b = R[i] < 0.0f ? -R[i] : R[i];
+        if (a > peakL)
+            peakL = a;
+        if (i >= N - 256 && a > latePeak)
+            latePeak = a;
+        if (b > 5e-5f)
+            R_silent = false;
     }
-    ASSERT(L_steady, "L holds at +0.375 (= (64 << 2) × 48 / 32768)");
-    ASSERT(R_steady, "R is silent (no PCM routed there)");
-    (void)fail_idx;
+    ASSERT(peakL >= expected_L - 0.04f, "L frontend step reaches the +0.375 raw-DAC level");
+    ASSERT(peakL <= expected_L + 0.04f, "L frontend step stays near the +0.375 raw-DAC level");
+    ASSERT(latePeak < 0.02f, "frontend high-pass removes constant DMA DC");
+    ASSERT(R_silent, "R is silent (no PCM routed there)");
 
     hw_audio_destroy(hw);
 }
@@ -5731,11 +5933,12 @@ static void test_chip_canned_solo_mask_isolates_channels(void)
     /* PSG-only (SQ1+SQ2+wave+noise; only SQ2 active here): unipolar
      * SQ2 routed L+R produces AC peak around 0.03-0.07 in this
      * 2048-frame window because the chosen ~377 Hz fundamental fits
-     * less than 2 full periods, and the polyphase kernel transient
+     * less than 2 full periods, and the blip impulse transient
      * dominates much of the buffer.  Threshold 0.02 stays well above
      * the silent floor (~1e-4) while tolerating the rendered
-     * amplitude.  Absolute level tuning is a follow-on parity item
-     * (see plan §12 PSG-unipolar gate). */
+     * amplitude. Isolated SQ1, SQ2, and noise levels match mGBA; combined
+     * PSG mixes that include the programmable-wave channel remain a
+     * separate comparison boundary. */
     ASSERT(peak_psg > 0.02f, "psg-only is audible (unipolar)");
     ASSERT(peak_psg < peak_full + 0.001f, "psg-only ≤ full (no extra signal from masking out PCM)");
 
@@ -5785,19 +5988,15 @@ static void test_chip_canned_soundbias_cycle_0_vs_3_levels(void)
     };
     float L0[N], R0[N], L3[N], R3[N];
 
-    /* sampling_cycle=0 → internal_rate stays at the 131072 Hz floor. */
+    /* sampling_cycle=0 → the GBA DAC runs at 32768 Hz. */
     uint32_t sb0 = 0x200u | (0u << 14);
     float peak0 = run_sq2_at_soundbias(sb0, N, L0, R0);
 
-    /* sampling_cycle=3 → internal_rate bumps to 262144 Hz; resampler
-     * step doubles, kernel rebuilds, all internal stages run at
-     * 262144 Hz.  The end-to-end host output should produce a
-     * comparable peak amplitude — both rates pass the audio band
-     * (0..host/2) identically; only above-Nyquist content (which we
-     * don't have in this signal) would diverge.
+    /* sampling_cycle=3 → the DAC runs at 262144 Hz.  The end-to-end
+     * host output should still produce a comparable peak amplitude.
      *
      * NOTE: this test does NOT prove rate switching by itself — a
-     * broken implementation that stayed at 131072 Hz would also pass
+     * broken implementation that stayed at one rate would also pass
      * because at low frequencies the host output is rate-invariant.
      * The unambiguous switching proof is
      * test_chip_canned_soundbias_internal_rate_switches above. */
@@ -5831,6 +6030,7 @@ int main(void)
     test_polyphony_stealing();
     test_v2_trigger_semantics();
     test_v2_cgb_alt_voice_quantizes_pitch_writes();
+    test_v2_default_midi_volume_matches_mp2k();
     test_v2_song_volume_rescales();
     test_v2_pcm_ring_fills();
     test_v2_pcm_frequency_scale();
@@ -5860,7 +6060,7 @@ int main(void)
     test_v2_lfo_default_speed_modulates_freq();
     test_v2_lfo_delay_holds_off();
     test_v2_lfo_lfodl_resets_running_modulation();
-    test_v2_cgb_trigger_only_on_note_start();
+    test_v2_cgb_volume_triggers_match_m4a();
     test_v2_pcm_publish_event_per_vblank();
     test_v2_psg_square_audible();
     test_v2_psg_pan_routing();
@@ -5874,6 +6074,7 @@ int main(void)
 
     test_hw_psg_frame_sequencer_init_convention();
     test_hw_psg_frame_sequencer_dispatch_table();
+    test_hw_psg_hardware_envelope_steps_at_64_hz();
     test_hw_psg_frame_sequencer_chunk_invariance();
     test_hw_psg_frame_sequencer_rate_continuity();
     test_hw_psg_frame_sequencer_nr52_power_cycle();
@@ -5888,10 +6089,14 @@ int main(void)
     test_hw_psg_sq1_trigger_uses_dac_enabled_state();
     test_hw_psg_nr52_power_cycle_preserves_wave_ram();
     test_hw_psg_square_duty_phase_matches_mgba();
+    test_hw_psg_square_duty_advances_while_silent();
+    test_hw_psg_noise_sequence_matches_mgba_0_10_5();
 
     /* Chip-only canned-event tests.  These also run under full v2, but their
      * value is the chip-only setup that does not depend on driver events. */
     test_chip_canned_square_audible();
+    test_chip_output_matches_mgba_frontend_highpass();
+    test_hw_resample_matches_mgba_blip_step();
     test_chip_canned_master_disable_silences();
     test_chip_canned_after_playback_empty_blocks_stay_silent();
     test_chip_canned_pan_routing();

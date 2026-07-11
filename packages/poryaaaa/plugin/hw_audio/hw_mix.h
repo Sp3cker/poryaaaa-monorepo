@@ -23,15 +23,11 @@ extern "C"
      *   ↓
      *   THIS MODULE — SOUNDCNT_L/H routing + scaling, SOUNDBIAS bias+clip
      *   ↓                 (operates at chip-internal rate post-§12.9)
-     *   Stereo float at chip-internal rate → polyphase resampler → host
+     *   Stereo float at chip-internal rate -> mGBA blip frontend -> host
      *
-     * ⚠ Self-consistency tested but mGBA / hardware parity NOT proven —
-     * see plan §12.10b.  This module computes the correct mix-bus + DAC
-     * math at the chip-internal render rate, and the polyphase
-     * resampler downstream brings it to host rate.  Don't make spectral / level / per-channel comparisons
-     * against mGBA captures from this module's output until §12.10b
-     * lands.
-     *
+     * The PSG mix-bus levels are locked to mono mGBA capture pairs. PCM,
+     * wave, and full-song parity require their own coverage before broader
+     * whole-engine claims.
      *
      * Register decoding reference (mGBA gba_audio.c + GBATEK):
      *

@@ -16,7 +16,6 @@ const KEYSPLIT_REFERENCE_TOKEN_INDEX: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReferenceKind {
-    VoiceGroupDeclaration,
     SubVoiceGroup,
     Keysplit,
 }
@@ -28,34 +27,15 @@ struct ReferenceToken {
     kind: ReferenceKind,
 }
 
-/// Resolves a voicegroup declaration or reference under the cursor to its project index entry.
+/// Adapts an LSP goto-definition request to core's project navigation result.
 pub fn goto_definition(
     index: &ProjectIndex,
     project_root: &Path,
+    relative_path: &str,
     text: &str,
     position: Position,
 ) -> Option<Location> {
-    let position = lsp_to_source_position(position);
-    let token = reference_tokens(text).into_iter().find(|token| {
-        token.range.contains(&position)
-            && matches!(
-                token.kind,
-                ReferenceKind::VoiceGroupDeclaration
-                    | ReferenceKind::SubVoiceGroup
-                    | ReferenceKind::Keysplit
-            )
-    })?;
-    let definition = match token.kind {
-        ReferenceKind::VoiceGroupDeclaration | ReferenceKind::SubVoiceGroup => index
-            .voicegroup_definition_location(&token.symbol)
-            .or_else(|| {
-                token
-                    .symbol
-                    .strip_prefix("voicegroup_")
-                    .and_then(|stripped| index.voicegroup_definition_location(stripped))
-            }),
-        ReferenceKind::Keysplit => index.keysplit_definition_location(&token.symbol),
-    }?;
+    let definition = index.definition_at(relative_path, text, lsp_to_source_position(position))?;
     let uri = Url::from_file_path(project_root.join(definition.relative_path)).ok()?;
     Some(Location {
         uri: uri.as_str().parse().ok()?,
@@ -67,9 +47,7 @@ pub fn goto_definition(
 pub fn semantic_tokens_for_text(text: &str) -> SemanticTokens {
     let mut tokens: Vec<_> = reference_tokens(text)
         .into_iter()
-        .filter_map(|reference| {
-            semantic_token_type(reference.kind).map(|token_type| (reference.range, token_type))
-        })
+        .map(|reference| (reference.range, semantic_token_type(reference.kind)))
         .collect();
     tokens.sort_by_key(|(range, _)| (range.start.line, range.start.column));
 
@@ -109,11 +87,6 @@ fn reference_tokens(text: &str) -> Vec<ReferenceToken> {
     let document = parse_document(text);
     let mut tokens = Vec::new();
     for voice_group in &document.voice_groups {
-        tokens.push(ReferenceToken {
-            symbol: voice_group.name.text.clone(),
-            range: voice_group.name.range.clone(),
-            kind: ReferenceKind::VoiceGroupDeclaration,
-        });
         for program in &voice_group.programs {
             let Some(definition) = find_macro(&program.macro_name.text) else {
                 continue;
@@ -138,11 +111,10 @@ fn reference_tokens(text: &str) -> Vec<ReferenceToken> {
     tokens
 }
 
-fn semantic_token_type(kind: ReferenceKind) -> Option<u32> {
+fn semantic_token_type(kind: ReferenceKind) -> u32 {
     match kind {
-        ReferenceKind::SubVoiceGroup => Some(SUB_VOICEGROUP_TOKEN_INDEX),
-        ReferenceKind::Keysplit => Some(KEYSPLIT_REFERENCE_TOKEN_INDEX),
-        ReferenceKind::VoiceGroupDeclaration => None,
+        ReferenceKind::SubVoiceGroup => SUB_VOICEGROUP_TOKEN_INDEX,
+        ReferenceKind::Keysplit => KEYSPLIT_REFERENCE_TOKEN_INDEX,
     }
 }
 fn lsp_to_source_position(position: Position) -> SourcePosition {
@@ -173,8 +145,14 @@ voice_group route_one
 \tvoice_keysplit_all voicegroup_village_bridge
 ";
 
-        let location = goto_definition(&index, &project, text, Position::new(1, 25))
-            .expect("definition location");
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voicegroups/route_one.inc",
+            text,
+            Position::new(1, 25),
+        )
+        .expect("definition location");
 
         assert_village_bridge_include_location(location, &project);
         let _ = fs::remove_dir_all(project);
@@ -190,8 +168,14 @@ voice_group route_one
 \tvoice_keysplit_all voicegroup_village_bridge
 ";
 
-        let location = goto_definition(&index, &project, text, Position::new(2, 25))
-            .expect("definition location");
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voicegroups/route_one.inc",
+            text,
+            Position::new(2, 25),
+        )
+        .expect("definition location");
 
         assert_village_bridge_include_location(location, &project);
         let _ = fs::remove_dir_all(project);
@@ -214,8 +198,14 @@ voice_group route_one
 \tvoice_keysplit voicegroup_village_bridge, keysplit_strings
 ";
 
-        let location = goto_definition(&index, &project, text, Position::new(1, 48))
-            .expect("definition location");
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voicegroups/route_one.inc",
+            text,
+            Position::new(1, 48),
+        )
+        .expect("definition location");
 
         let expected_uri = Url::from_file_path(project.join("sound/keysplit_tables.inc"))
             .expect("convert definition path to url")
@@ -228,6 +218,123 @@ voice_group route_one
             Location {
                 uri: expected_uri,
                 range: Range::new(Position::new(0, 9), Position::new(0, 16)),
+            }
+        );
+    }
+
+    #[test]
+    fn goto_definition_resolves_directsound_argument_to_data_label() {
+        let project = temp_project_root("directsound-definition");
+        fs::create_dir_all(project.join("sound")).expect("create sound dir");
+        fs::write(
+            project.join("sound/direct_sound_data.inc"),
+            "\
+\t.align 2
+DirectSoundWaveData_Kick::
+\t.incbin \"sound/direct_sound_samples/kick.bin\"
+",
+        )
+        .expect("write direct sound data");
+        let index = ProjectIndex::load(&project).expect("load project index");
+        let text = "\
+voice_group route_one
+\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242
+";
+
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voicegroups/route_one.inc",
+            text,
+            Position::new(1, 27),
+        )
+        .expect("definition location");
+
+        let expected_uri = Url::from_file_path(project.join("sound/direct_sound_data.inc"))
+            .expect("convert definition path to url")
+            .as_str()
+            .parse()
+            .expect("convert definition url to lsp uri");
+        let _ = fs::remove_dir_all(project);
+        assert_eq!(
+            location,
+            Location {
+                uri: expected_uri,
+                range: Range::new(Position::new(1, 0), Position::new(1, 24)),
+            }
+        );
+    }
+
+    #[test]
+    fn goto_definition_resolves_programmable_wave_argument_to_data_label() {
+        let project = temp_project_root("programmable-wave-definition");
+        fs::create_dir_all(project.join("sound")).expect("create sound dir");
+        fs::write(
+            project.join("sound/programmable_wave_data.inc"),
+            "\
+\t.align 2
+ProgrammableWaveData_Pulse::
+\t.incbin \"sound/programmable_wave_samples/pulse.pcm\"
+",
+        )
+        .expect("write programmable wave data");
+        let index = ProjectIndex::load(&project).expect("load project index");
+        let text = "\
+voice_group route_one
+\tvoice_programmable_wave 60, 0, ProgrammableWaveData_Pulse, 1, 2, 8, 3
+";
+
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voicegroups/route_one.inc",
+            text,
+            Position::new(1, 34),
+        )
+        .expect("definition location");
+
+        let expected_uri = Url::from_file_path(project.join("sound/programmable_wave_data.inc"))
+            .expect("convert definition path to url")
+            .as_str()
+            .parse()
+            .expect("convert definition url to lsp uri");
+        let _ = fs::remove_dir_all(project);
+        assert_eq!(
+            location,
+            Location {
+                uri: expected_uri,
+                range: Range::new(Position::new(1, 0), Position::new(1, 26)),
+            }
+        );
+    }
+
+    #[test]
+    fn goto_definition_resolves_voice_groups_include_path_to_included_file() {
+        let project = project_with_included_village_bridge("include-target");
+        let index = ProjectIndex::load(&project).expect("load project index");
+        let text = ".include \"sound/voicegroups/village_bridge.inc\"\n";
+
+        let location = goto_definition(
+            &index,
+            &project,
+            "sound/voice_groups.inc",
+            text,
+            Position::new(0, 23),
+        )
+        .expect("definition location");
+
+        let expected_uri =
+            Url::from_file_path(project.join("sound/voicegroups/village_bridge.inc"))
+                .expect("convert definition path to url")
+                .as_str()
+                .parse()
+                .expect("convert definition url to lsp uri");
+        let _ = fs::remove_dir_all(project);
+        assert_eq!(
+            location,
+            Location {
+                uri: expected_uri,
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
             }
         );
     }

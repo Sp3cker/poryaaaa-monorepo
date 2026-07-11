@@ -351,7 +351,7 @@ impl ProjectContexts {
         diagnostics_for_text(text, Some(&analysis_context))
     }
 
-    /// Finds the project-level definition location for the voicegroup symbol under the cursor.
+    /// Finds the project-level definition location for the symbol under the cursor.
     fn definition_for_document(
         &mut self,
         uri: &Url,
@@ -359,8 +359,9 @@ impl ProjectContexts {
         position: Position,
     ) -> Option<Location> {
         let root = project_root_for_document(uri)?;
+        let relative_path = project_relative_path(&root, uri)?;
         let index = self.index_for_document(uri)?;
-        goto_definition(index, &root, text, position)
+        goto_definition(index, &root, &relative_path, text, position)
     }
 
     /// Produces include completions from physical voicegroup files for voice_groups.inc.
@@ -481,6 +482,19 @@ fn project_root_for_document(uri: &Url) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Converts a document URI into the slash-separated path core uses inside a project.
+fn project_relative_path(root: &Path, uri: &Url) -> Option<String> {
+    let path = uri.to_file_path().ok()?;
+    let relative = path.strip_prefix(root).ok()?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part.to_string_lossy().into_owned());
+    }
+    Some(parts.join("/"))
+}
 /// Recognizes the two supported source layouts without indexing parent repos.
 fn has_voicegroup_project_markers(root: &Path) -> bool {
     root.join("sound/voice_groups.inc").is_file() || root.join("sound/voicegroups").is_dir()

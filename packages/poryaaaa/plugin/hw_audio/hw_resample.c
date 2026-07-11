@@ -1,186 +1,226 @@
+/* blip_buf 1.1.0-compatible frontend used by mGBA 0.10.5.
+ * Copyright (C) 2003-2009 Shay Green. Filter table and algorithm are
+ * adapted under the GNU Lesser General Public License, version 2.1 or,
+ * at your option, any later version. This code comes without warranty. */
 #include "hw_resample.h"
 
+#include <assert.h>
 #include <math.h>
 #include <string.h>
 
-#ifndef M_PI
-#    define M_PI 3.14159265358979323846
+#define GBA_AUDIO_CLOCK 16777216.0
+#define BLIP_TIME_BITS 52
+#define BLIP_PRE_SHIFT 32
+#define BLIP_FRAC_BITS 20
+#define BLIP_PHASE_BITS 5
+#define BLIP_PHASE_COUNT (1 << BLIP_PHASE_BITS)
+#define BLIP_DELTA_BITS 15
+#define BLIP_DELTA_UNIT (1 << BLIP_DELTA_BITS)
+#define BLIP_BASS_SHIFT 9
+#define BLIP_HALF_WIDTH 8
+
+static const uint64_t kTimeUnit = (uint64_t)1 << BLIP_TIME_BITS;
+
+static const int16_t kBlipStep[BLIP_PHASE_COUNT + 1][BLIP_HALF_WIDTH] = {
+    {43, -115, 350, -488, 1136, -914, 5861, 21022}, {44, -118, 348, -473, 1076, -799, 5274, 21001},
+    {45, -121, 344, -454, 1011, -677, 4706, 20936}, {46, -122, 336, -431, 942, -549, 4156, 20829},
+    {47, -123, 327, -404, 868, -418, 3629, 20679},  {47, -122, 316, -375, 792, -285, 3124, 20488},
+    {47, -120, 303, -344, 714, -151, 2644, 20256},  {46, -117, 289, -310, 634, -17, 2188, 19985},
+    {46, -114, 273, -275, 553, 117, 1758, 19675},   {44, -108, 255, -237, 471, 247, 1356, 19327},
+    {43, -103, 237, -199, 390, 373, 981, 18944},    {42, -98, 218, -160, 310, 495, 633, 18527},
+    {40, -91, 198, -121, 231, 611, 314, 18078},     {38, -84, 178, -81, 153, 722, 22, 17599},
+    {36, -76, 157, -43, 80, 824, -241, 17092},      {34, -68, 135, -3, 8, 919, -476, 16558},
+    {32, -61, 115, 34, -60, 1006, -683, 16001},     {29, -52, 94, 70, -123, 1083, -862, 15422},
+    {27, -44, 73, 106, -184, 1152, -1015, 14824},   {25, -36, 53, 139, -239, 1211, -1142, 14210},
+    {22, -27, 34, 170, -290, 1261, -1244, 13582},   {20, -20, 16, 199, -335, 1301, -1322, 12942},
+    {18, -12, -3, 226, -375, 1331, -1376, 12293},   {15, -4, -19, 250, -410, 1351, -1408, 11638},
+    {13, 3, -35, 272, -439, 1361, -1419, 10979},    {11, 9, -49, 292, -464, 1362, -1410, 10319},
+    {9, 16, -63, 309, -483, 1354, -1383, 9660},     {7, 22, -75, 322, -496, 1337, -1339, 9005},
+    {6, 26, -85, 333, -504, 1312, -1280, 8355},     {4, 31, -94, 341, -507, 1278, -1205, 7713},
+    {3, 35, -102, 347, -506, 1238, -1119, 7082},    {1, 40, -110, 350, -499, 1190, -1021, 6464},
+    {0, 43, -115, 350, -488, 1136, -914, 5861},
+};
+
+/* Map a GBA CPU timestamp onto blip_buf's fixed output-sample timeline. */
+static uint64_t fixed_time(const HwResample* rs, uint64_t clocks)
+{
+#if defined(__SIZEOF_INT128__)
+    __uint128_t value = (__uint128_t)clocks * rs->factor + rs->offset;
+    return (uint64_t)(value >> BLIP_PRE_SHIFT);
+#else
+    long double value = (long double)clocks * (long double)rs->factor + (long double)rs->offset;
+    return (uint64_t)(value / 4294967296.0L);
 #endif
+}
 
-/* Renormalize the input/output position bookkeeping when input_idx
- * grows past this threshold.  Keeps both fields well within double
- * precision so cumulative drift doesn't accumulate over long renders. */
-#define HW_RESAMPLE_RENORM_THRESHOLD ((int64_t)1 << 30)
+/* Distribute one DAC step across the same impulse kernel mGBA uses. */
+static void add_delta(HwResample* rs, int* buffer, uint32_t input_time, int delta)
+{
+    uint64_t clocks = (uint64_t)input_time * rs->clocks_per_input;
+    uint32_t fixed = (uint32_t)fixed_time(rs, clocks);
+    int output_index = rs->available + (int)(fixed >> BLIP_FRAC_BITS);
+    int phase_shift = BLIP_FRAC_BITS - BLIP_PHASE_BITS;
+    int phase = (fixed >> phase_shift) & (BLIP_PHASE_COUNT - 1);
+    int interpolation = (fixed >> (phase_shift - BLIP_DELTA_BITS)) & (BLIP_DELTA_UNIT - 1);
+    int delta2 = (delta * interpolation) >> BLIP_DELTA_BITS;
+    delta -= delta2;
 
-static void rs_build_kernel(HwResample* rs, double input_rate, double output_rate)
+    assert(output_index <= HW_RESAMPLE_BUFFER_SIZE + 2);
+    for (int i = 0; i < BLIP_HALF_WIDTH; i++)
+        buffer[output_index + i] += kBlipStep[phase][i] * delta + kBlipStep[phase + 1][i] * delta2;
+    for (int i = 0; i < BLIP_HALF_WIDTH; i++)
+    {
+        int table_index = BLIP_HALF_WIDTH - 1 - i;
+        buffer[output_index + BLIP_HALF_WIDTH + i] += kBlipStep[BLIP_PHASE_COUNT - phase][table_index] * delta +
+                                                      kBlipStep[BLIP_PHASE_COUNT - phase - 1][table_index] * delta2;
+    }
+}
+
+/* Commit one input block while preserving fractional output time. */
+static void end_frame(HwResample* rs, uint32_t input_count)
+{
+    uint64_t clocks = (uint64_t)input_count * rs->clocks_per_input;
+#if defined(__SIZEOF_INT128__)
+    __uint128_t value = (__uint128_t)clocks * rs->factor + rs->offset;
+    rs->available += (int)(value >> BLIP_TIME_BITS);
+    rs->offset = (uint64_t)value & (kTimeUnit - 1);
+#else
+    long double value = (long double)clocks * (long double)rs->factor + (long double)rs->offset;
+    uint64_t whole = (uint64_t)(value / (long double)kTimeUnit);
+    rs->available += (int)whole;
+    rs->offset = (uint64_t)(value - (long double)whole * (long double)kTimeUnit);
+#endif
+    assert(rs->available <= HW_RESAMPLE_BUFFER_SIZE);
+}
+
+/* Match blip_buf's signed 16-bit output saturation. */
+static int clamp_sample(int sample)
+{
+    if (sample > 32767)
+        return 32767;
+    if (sample < -32768)
+        return -32768;
+    return sample;
+}
+
+/* Integrate deltas and apply blip_buf's 511/512 DC-blocking pole. */
+static int read_samples(HwResample* rs, float* out_l, float* out_r, int count)
+{
+    if (count > rs->available)
+        count = rs->available;
+
+    int sum_l = rs->integrator_l;
+    int sum_r = rs->integrator_r;
+    for (int i = 0; i < count; i++)
+    {
+        int sample_l = clamp_sample(sum_l >> BLIP_DELTA_BITS);
+        int sample_r = clamp_sample(sum_r >> BLIP_DELTA_BITS);
+        sum_l += rs->delta_l[i];
+        sum_r += rs->delta_r[i];
+        if (out_l)
+            out_l[i] = sample_l / 32768.0f;
+        if (out_r)
+            out_r[i] = sample_r / 32768.0f;
+        sum_l -= sample_l << (BLIP_DELTA_BITS - BLIP_BASS_SHIFT);
+        sum_r -= sample_r << (BLIP_DELTA_BITS - BLIP_BASS_SHIFT);
+    }
+    rs->integrator_l = sum_l;
+    rs->integrator_r = sum_r;
+
+    if (count > 0)
+    {
+        int remaining = rs->available + HW_RESAMPLE_EXTRA - count;
+        rs->available -= count;
+        memmove(rs->delta_l, rs->delta_l + count, (size_t)remaining * sizeof(rs->delta_l[0]));
+        memmove(rs->delta_r, rs->delta_r + count, (size_t)remaining * sizeof(rs->delta_r[0]));
+        memset(rs->delta_l + remaining, 0, (size_t)count * sizeof(rs->delta_l[0]));
+        memset(rs->delta_r + remaining, 0, (size_t)count * sizeof(rs->delta_r[0]));
+    }
+    return count;
+}
+
+/* Quantize the chip mix into the signed DAC domain consumed by blip_buf. */
+static int float_to_sample(float sample)
+{
+    long value = lrintf(sample * 32768.0f);
+    if (value > 32767)
+        value = 32767;
+    else if (value < -32768)
+        value = -32768;
+    return (int)value;
+}
+
+/* Derive mGBA's fixed clock-to-output ratio for the selected DAC cadence. */
+void hw_resample_set_rates(HwResample* rs, double input_rate, double output_rate)
 {
     if (input_rate <= 0.0 || output_rate <= 0.0)
     {
-        rs->step = 1.0;
-        memset(rs->kernel, 0, sizeof(rs->kernel));
+        rs->factor = 1;
+        rs->clocks_per_input = 1;
         return;
     }
-    rs->step = input_rate / output_rate;
 
-    /* Cut frequency in normalized input-rate units (1.0 = input
-     * Nyquist).  Set to min(input,output)/input — for downsampling
-     * (input>output) this is output/input <1 and band-limits at the
-     * output Nyquist; for upsampling (input<output) it is 1 and
-     * passes everything up to input Nyquist. */
-    double cut = (output_rate < input_rate ? output_rate : input_rate) / input_rate;
-    if (cut > 1.0)
-        cut = 1.0;
+    double factor = (double)kTimeUnit * output_rate / GBA_AUDIO_CLOCK;
+    rs->factor = (uint64_t)factor;
+    if ((double)rs->factor < factor)
+        rs->factor++;
 
-    const int half = HW_RESAMPLE_TAPS / 2;
-
-    for (int k = 0; k < HW_RESAMPLE_PHASES; k++)
-    {
-        double frac = (double)k / (double)HW_RESAMPLE_PHASES; /* 0..1 */
-        double row[HW_RESAMPLE_TAPS];
-        double sum = 0.0;
-        for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
-        {
-            /* x = distance in input-sample units from output to this tap.
-             * Tap t corresponds to input position (anchor - half + 1 + t)
-             * for output at (anchor + frac).  x = (t - half + 1) - frac. */
-            double x = (double)(t - half + 1) - frac;
-            double s;
-            if (x > -1e-12 && x < 1e-12)
-            {
-                s = cut;
-            }
-            else
-            {
-                s = sin(M_PI * cut * x) / (M_PI * x);
-            }
-            /* Hann window across taps. */
-            double w = 0.5 - 0.5 * cos(2.0 * M_PI * (double)t / (double)(HW_RESAMPLE_TAPS - 1));
-            row[t] = s * w;
-            sum += row[t];
-        }
-        /* Normalize so each sub-kernel has DC gain = 1.  Without this,
-         * truncation + windowing leaves a small frac-dependent error
-         * that shows up as tiny DC offset variation on constant inputs. */
-        double inv_sum = (sum > 1e-12 || sum < -1e-12) ? 1.0 / sum : 0.0;
-        for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
-        {
-            rs->kernel[k][t] = (float)(row[t] * inv_sum);
-        }
-    }
+    double clocks = GBA_AUDIO_CLOCK / input_rate;
+    rs->clocks_per_input = (uint32_t)(clocks + 0.5);
+    if (rs->clocks_per_input == 0)
+        rs->clocks_per_input = 1;
 }
 
+/* Reset all streaming state for a new input/output rate epoch. */
 void hw_resample_init(HwResample* rs, double input_rate, double output_rate)
 {
     memset(rs, 0, sizeof(*rs));
-    rs_build_kernel(rs, input_rate, output_rate);
-    /* Initial output position: TAPS/2 - 1 input units in.  After
-     * pushing TAPS inputs we have a fully-populated ring covering
-     * input positions 0..TAPS-1 and the first output (at position
-     * TAPS/2 - 1) uses the entire ring. */
-    rs->output_pos = (double)(HW_RESAMPLE_TAPS / 2 - 1);
+    hw_resample_set_rates(rs, input_rate, output_rate);
+    rs->offset = rs->factor / 2;
 }
 
-void hw_resample_set_rates(HwResample* rs, double input_rate, double output_rate)
+/* Compute the minimum DAC input count needed for a requested host span. */
+int hw_resample_inputs_needed(const HwResample* rs, int output_samples)
 {
-    rs_build_kernel(rs, input_rate, output_rate);
+    if (output_samples <= 0 || rs->factor == 0)
+        return 0;
+
+#if defined(__SIZEOF_INT128__)
+    __uint128_t needed = (__uint128_t)(uint32_t)output_samples * kTimeUnit;
+    uint64_t clocks = 0;
+    if (needed > rs->offset)
+        clocks = (uint64_t)((needed - rs->offset + rs->factor - 1) / rs->factor);
+#else
+    long double needed = (long double)output_samples * (long double)kTimeUnit;
+    uint64_t clocks = 0;
+    if (needed > rs->offset)
+        clocks = (uint64_t)ceill((needed - rs->offset) / (long double)rs->factor);
+#endif
+    return (int)((clocks + rs->clocks_per_input - 1) / rs->clocks_per_input);
 }
 
+/* Feed DAC steps and drain the host samples made readable by that time. */
 int hw_resample_process(
     HwResample* rs, const float* in_l, const float* in_r, int in_n, float* out_l, float* out_r, int max_out)
 {
-    if (in_n <= 0)
+    if (in_n < 0 || max_out < 0)
         return 0;
-    /* max_out == 0 is a valid use: caller wants to push inputs into
-     * the ring for future drains without producing any outputs now.
-     * Don't early-return — fall through to the push loop with
-     * produced ≥ max_out so the inner produce-while never fires. */
-
-    const int half = HW_RESAMPLE_TAPS / 2;
-    int produced = 0;
 
     for (int i = 0; i < in_n; i++)
     {
-        /* Push input into ring (newest at ring_head, then advance). */
-        rs->ring_l[rs->ring_head] = in_l ? in_l[i] : 0.0f;
-        rs->ring_r[rs->ring_head] = in_r ? in_r[i] : 0.0f;
-        rs->ring_head = (rs->ring_head + 1) % HW_RESAMPLE_TAPS;
-        if (rs->ring_count < HW_RESAMPLE_TAPS)
-            rs->ring_count++;
-        rs->input_idx++;
-
-        /* Drain outputs while we have enough lookahead.  Need input at
-         * (anchor + half) to be available — i.e. input_idx ≥ anchor + half + 1.
-         * Anchor = floor(output_pos). */
-        while (produced < max_out)
-        {
-            int64_t anchor = (int64_t)floor(rs->output_pos);
-            if (anchor + half + 1 > rs->input_idx)
-                break;
-
-            double frac = rs->output_pos - (double)anchor;
-            int phase_idx = (int)(frac * (double)HW_RESAMPLE_PHASES);
-            if (phase_idx >= HW_RESAMPLE_PHASES)
-                phase_idx = HW_RESAMPLE_PHASES - 1;
-            if (phase_idx < 0)
-                phase_idx = 0;
-
-            const float* kk = rs->kernel[phase_idx];
-            float sum_l = 0.0f, sum_r = 0.0f;
-
-            /* Convolve 32 taps for this output sample.  During startup,
-             * some requested tap positions can be before time zero or not
-             * yet present in the ring, so the fallback path keeps the
-             * per-tap validity checks.  Once the first tap is known to be
-             * inside the populated 32-sample history, every later tap is
-             * valid too; use the steady-state path to walk the ring with a
-             * cheap power-of-two mask instead of doing two bounds checks and
-             * modulo normalization for every tap. */
-            int64_t first = anchor - (int64_t)half + 1;
-            if (first >= 0 && rs->input_idx - first <= (int64_t)HW_RESAMPLE_TAPS)
-            {
-                int ring_idx = (int)((uint64_t)((int64_t)rs->ring_head + first - rs->input_idx) &
-                                     (uint64_t)(HW_RESAMPLE_TAPS - 1));
-                for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
-                {
-                    sum_l += rs->ring_l[ring_idx] * kk[t];
-                    sum_r += rs->ring_r[ring_idx] * kk[t];
-                    ring_idx = (ring_idx + 1) & (HW_RESAMPLE_TAPS - 1);
-                }
-            }
-            else
-            {
-                for (int t = 0; t < HW_RESAMPLE_TAPS; t++)
-                {
-                    int64_t I = first + (int64_t)t;
-                    if (I < 0 || I >= rs->input_idx)
-                        continue;
-                    if (rs->input_idx - I > (int64_t)HW_RESAMPLE_TAPS)
-                        continue;
-                    int64_t off = (int64_t)rs->ring_head + I - rs->input_idx;
-                    int ring_idx = (int)((uint64_t)off & (uint64_t)(HW_RESAMPLE_TAPS - 1));
-                    sum_l += rs->ring_l[ring_idx] * kk[t];
-                    sum_r += rs->ring_r[ring_idx] * kk[t];
-                }
-            }
-
-            if (out_l)
-                out_l[produced] = sum_l;
-            if (out_r)
-                out_r[produced] = sum_r;
-            produced++;
-            rs->output_pos += rs->step;
-        }
-
-        /* Renormalize input_idx and output_pos when input_idx grows
-         * large enough to threaten double precision (every ~2^30
-         * inputs ≈ several hours at 131 kHz). */
-        if (rs->input_idx > HW_RESAMPLE_RENORM_THRESHOLD)
-        {
-            int64_t shift = rs->input_idx - (int64_t)HW_RESAMPLE_TAPS;
-            rs->input_idx -= shift;
-            rs->output_pos -= (double)shift;
-        }
+        int sample_l = float_to_sample(in_l ? in_l[i] : 0.0f);
+        int sample_r = float_to_sample(in_r ? in_r[i] : 0.0f);
+        int delta_l = sample_l - rs->last_input_l;
+        int delta_r = sample_r - rs->last_input_r;
+        if (delta_l)
+            add_delta(rs, rs->delta_l, (uint32_t)i, delta_l);
+        if (delta_r)
+            add_delta(rs, rs->delta_r, (uint32_t)i, delta_r);
+        rs->last_input_l = sample_l;
+        rs->last_input_r = sample_r;
     }
+    if (in_n > 0)
+        end_frame(rs, (uint32_t)in_n);
 
-    return produced;
+    return read_samples(rs, out_l, out_r, max_out);
 }

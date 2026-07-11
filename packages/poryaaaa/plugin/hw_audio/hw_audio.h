@@ -12,10 +12,10 @@ extern "C"
 
     /* GBA audio chip emulation.  Mirrors mGBA's gb_audio.c / gba_audio.c.
      *
-     * Status (2026-04-29):
-     *   - PSG square / wave / noise: synthesised at the chip-internal
-     *     render rate (`max(131072, 32768 << sampling_cycle)`), updated at
-     *     SOUNDBIAS event offsets.
+     * Status (2026-07-09):
+     *   - PSG square / wave / noise: synthesised at mGBA's
+     *     SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`),
+     *     updated at register-event offsets.
      *   - PCM DirectSound: two-stage drain (§12 step 5 closed).
      *     HwDmaToFifo reads M4APcmRing at pcm_rate_hz; HwFifoDrain
      *     snapshots the FIFO head at the SOUNDBIAS-derived quirk rate
@@ -23,31 +23,25 @@ extern "C"
      *     quirk byte sign-extended.
      *   - Mix bus: full SOUNDCNT_L (NR50/NR51) + SOUNDCNT_H + SOUNDBIAS
      *     bias-add / clip pipeline at internal rate (§12 step 8 + 9).
-     *   - Output resampler: windowed-sinc polyphase from internal rate
-     *     to host rate (§12 step 9, hw_resample.c).  Kernel rebuilds
-     *     when sampling_cycle changes at a SOUNDBIAS event.  Cumulative
-     *     sample-clock accounting in hw_audio.c gives block-size
-     *     invariance regardless of how the caller chunks render windows.
+     *   - Output frontend: streaming port of mGBA 0.10.5's bundled
+     *     blip_buf 1.1.0 impulse kernel, clock mapping, clipping, and
+     *     511/512 DC-blocking pole. Cumulative sample-clock accounting
+     *     keeps output invariant under host block-size changes.
      *
-     * Audibility ≠ parity.  The chip is audible end-to-end, properly
-     * band-limited at host_rate/2, and structurally complete; but it is
-     * NOT yet a fully faithful model of mGBA / real hardware until step
-     * 10b (mGBA capture-comparison parity — self-consistency tests at
-     * §12.10a only prove pipeline coherence, not match against a
-     * reference) closes.  See plan §12 "blocking gates" list.  Don't
-     * make spectral / level claims against mGBA captures from this
-     * build. */
+     * Mono mGBA capture pairs prove the square/noise waveform and level
+     * path used by the reference tools. Whole-engine parity still depends
+     * on the song parser, PCM, wave, timing, and reverb paths. */
     typedef struct HwAudio HwAudio;
 
     HwAudio* hw_audio_create(float host_sample_rate);
     void hw_audio_destroy(HwAudio* hw);
     void hw_audio_set_host_rate(HwAudio* hw, float hz);
 
-    /* ⚠ DEBUG / TEST VISIBILITY ONLY — not part of the production chip
+    /* DEBUG / TEST VISIBILITY ONLY - not part of the production chip
      * timing contract.  Returns the chip's current internal render rate
-     * (PSG/PCM/mix synth rate, before the polyphase resampler).  This is
-     * `max(131072, 32768 << sampling_cycle)`: 131072 Hz for sampling_cycle
-     * 0/1/2 and 262144 Hz for sampling_cycle 3.  Exposed because it caught
+     * (PSG/PCM/mix synth rate, before the mGBA blip frontend).  This is
+     * `32768 << sampling_cycle`: 32768, 65536, 131072, or 262144 Hz.
+     * Exposed because it caught
      * a real class of cadence-
      * switching bug (a fixed-rate implementation that ignored
      * sampling_cycle would silently still produce audible output for
@@ -65,7 +59,7 @@ extern "C"
      * masked-off channels are passed as NULL to hw_mix_render, which
      * treats them as silent.  Channel names + bit positions match the
      * patched mGBA headless tool's `--solo` / `--mute` channel set
-     * (`tools/captures/mgba-headless-channel-mute/`), so a single name
+     * (`tools/mgba-reference/`), so a single name
      * can drive both sides of a parity comparison.
      *
      * SOUNDCNT_L / H routing + scaling and SOUNDBIAS bias-add still run

@@ -1,5 +1,15 @@
 # Audio Engine Rewrite: Layered DSP Architecture
 
+> **SUPERSEDED HISTORICAL PLAN — DO NOT USE AS CURRENT IMPLEMENTATION
+> GUIDANCE.** The internal-rate floor, per-channel sample-and-hold, and
+> Hann/polyphase resampler described below were replaced by the
+> SOUNDBIAS-selected DAC cadence and mGBA-compatible blip-buffer path. See
+> [`tools/mgba-reference/README.md`](tools/mgba-reference/README.md) for the
+> current reference workflow and
+> [`.scratch/mgba-sq2-parity/CONTEXT.md`](../../.scratch/mgba-sq2-parity/CONTEXT.md)
+> for the current parity handoff. The original text is retained only as a
+> record of the earlier design.
+
 **Status:** plan, not started.  Branch: `loader-refactor`.
 
 The current `plugin/m4a_channel.c` and `plugin/m4a_engine.c` mix four

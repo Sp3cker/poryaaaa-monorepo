@@ -14,11 +14,7 @@ extern "C"
 
     /* DirectSound PCM path — mirrors mGBA's FIFO drain.
      *
-     * ⚠ Self-consistency tested but mGBA / hardware parity NOT proven —
-     * see plan §12.10b.  Don't make PCM-parity claims against v1 / mGBA
-     * / hardware from this file until that gate closes.
-     *
-     * §12 step 5 (closed): two-stage chain per plan §6b.
+     * Two-stage chain:
      *
      *   M4APcmRing  ──[pcm_rate_hz]──▶  held_pcm_a/b   (HwDmaToFifo)
      *                                       │
@@ -47,13 +43,7 @@ extern "C"
      * stages collapse behaviourally to a single S&H — the quirk cadence
      * is far above pcm cadence, so nearly every quirk tick re-snapshots
      * the same head byte until pcm advances.  The split matters for
-     * ROMhacks setting non-default pcm_rate or sampling_cycle.
-     *
-     * Open gates remaining in plan §12 "blocking gates":
-     *   - step 10b — mGBA capture-comparison parity (self-consistency
-     *     landed at §12.10a but doesn't prove match against reference).
-     *   - steps 1-2 audit — driver-side `MPlayMain` / `ply_*` + LFO/MODT
-     *     and PCM/reverb verification before whole-song A/B. */
+     * ROMhacks setting non-default pcm_rate or sampling_cycle. */
 
     typedef struct
     {
@@ -100,9 +90,9 @@ extern "C"
         int8_t held_quirk_a;
         int8_t held_quirk_b;
 
-        /* Render rate (chip-internal).  Driven by HwAudio: this is
-         * `max(131072, 32768 << sampling_cycle)`, NOT the host rate.
-         * Output is then resampled to host by hw_resample.c. */
+        /* Render rate (chip-internal). Driven by HwAudio: this is
+         * `32768 << sampling_cycle`, not the host rate. Output then passes
+         * through the mGBA blip frontend in hw_resample.c. */
         float render_rate;
 
         /* SOUNDBIAS-derived quirk rate (32k/65k/131k/262k Hz) at which

@@ -366,6 +366,152 @@ split 1, 64
 }
 
 #[test]
+fn direct_sound_definition_location_points_to_sample_label() {
+    let root = temp_project("directsound-definition");
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "\
+\t.align 2
+DirectSoundWaveData_Kick::
+\t.incbin \"sound/direct_sound_samples/kick.bin\"
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .direct_sound_definition_location("DirectSoundWaveData_Kick")
+        .expect("definition location for direct sound sample");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/direct_sound_data.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition { line: 2, column: 1 },
+            end: SourcePosition {
+                line: 2,
+                column: 25
+            },
+        }
+    );
+}
+
+#[test]
+fn programmable_wave_definition_location_points_to_sample_label() {
+    let root = temp_project("programmable-wave-definition");
+    write_file(
+        &root,
+        "sound/programmable_wave_data.inc",
+        "\
+\t.align 2
+ProgrammableWaveData_Pulse::
+\t.incbin \"sound/programmable_wave_samples/pulse.pcm\"
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .programmable_wave_definition_location("ProgrammableWaveData_Pulse")
+        .expect("definition location for programmable wave sample");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/programmable_wave_data.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition { line: 2, column: 1 },
+            end: SourcePosition {
+                line: 2,
+                column: 27
+            },
+        }
+    );
+}
+
+#[test]
+fn definition_at_voice_groups_include_path_points_to_included_file() {
+    let root = temp_project("include-navigation");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        ".include \"sound/voicegroups/village_bridge.inc\"\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/village_bridge.inc",
+        "\
+voice_group village_bridge
+\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+
+    let location = index
+        .definition_at(
+            "sound/voice_groups.inc",
+            ".include \"sound/voicegroups/village_bridge.inc\"\n",
+            SourcePosition {
+                line: 1,
+                column: 24,
+            },
+        )
+        .expect("definition location for included voicegroup file");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/voicegroups/village_bridge.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition { line: 1, column: 1 },
+            end: SourcePosition { line: 1, column: 1 },
+        }
+    );
+}
+
+#[test]
+fn definition_at_directsound_argument_points_to_data_label() {
+    let root = temp_project("directsound-navigation");
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "\
+DirectSoundWaveData_Kick::
+\t.incbin \"sound/direct_sound_samples/kick.bin\"
+",
+    );
+    let index = ProjectIndex::load(&root).expect("load project index");
+    let text = "\
+voice_group route_one
+\tvoice_directsound 60, 0, DirectSoundWaveData_Kick, 255, 0, 255, 242
+";
+
+    let location = index
+        .definition_at(
+            "sound/voicegroups/route_one.inc",
+            text,
+            SourcePosition {
+                line: 2,
+                column: 34,
+            },
+        )
+        .expect("definition location for directsound sample");
+
+    fs::remove_dir_all(root).expect("remove temp project");
+    assert_eq!(location.relative_path, "sound/direct_sound_data.inc");
+    assert_eq!(
+        location.range,
+        SourceRange {
+            start: SourcePosition { line: 1, column: 1 },
+            end: SourcePosition {
+                line: 1,
+                column: 25,
+            },
+        }
+    );
+}
+
+#[test]
 fn lists_project_index_voicegroups_without_directory_scanning() {
     let root = temp_project("listed-voicegroups");
     write_file(

@@ -750,8 +750,10 @@ static void porya_voicegroup_do(t_porya* x, const char* rootPath, const char* ba
 
     x->voicegroupRootPath = gensym(rootPath)->s_name;
     x->voicegroupBankName = gensym(bankName)->s_name;
+    char watchPath[4096];
+    snprintf(watchPath, sizeof(watchPath), "%s/sound/voicegroups", rootPath);
     if (x->voicegroupReloadWatcher &&
-        !x->voicegroupReloadWatcher->start(rootPath, porya_voicegroup_reload_requested, x))
+        !x->voicegroupReloadWatcher->start(watchPath, porya_voicegroup_reload_requested, x))
     {
         object_error(
             (t_object*)x, "poryaaaa~: voicegroup watcher failed: %s", x->voicegroupReloadWatcher->last_error());

@@ -1,5 +1,17 @@
 # Scaffold the m4a-driver / hw_audio split
 
+> **SUPERSEDED HISTORICAL PLAN — DO NOT USE AS CURRENT IMPLEMENTATION
+> GUIDANCE.** Claims below about the internal-rate floor, the windowed-sinc
+> polyphase resampler, and still-open parity gates describe an earlier state.
+> The current engine uses the SOUNDBIAS-selected DAC cadence and an
+> mGBA-compatible blip-buffer output path, and isolated PSG comparisons have
+> supplied parity evidence. See
+> [`tools/mgba-reference/README.md`](tools/mgba-reference/README.md) for the
+> current comparison workflow and
+> [`.scratch/mgba-sq2-parity/CONTEXT.md`](../../.scratch/mgba-sq2-parity/CONTEXT.md)
+> for the current parity handoff. The original text is retained only as a
+> historical record.
+
 **Status:** §12 steps 1–9 + 10a closed.  Driver core (LFO advancement
 in `m4a_internal_lfo_tick`, PCM mixer + reverb audit with int8-clamp
 parity fix, CGB retrigger semantics fix — `freshStart` flag in
