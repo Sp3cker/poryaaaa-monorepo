@@ -54,17 +54,6 @@ void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32
     ch->status = M4A_CHN_ON | M4A_CHN_ENV_ATTACK;
     if (ch->isLoop)
         ch->status |= M4A_CHN_LOOP;
-
-    /* Pre-compute attack-step-1 envelope so the very first vblank's mix
-     * has audible signal — same trick as v1, justified by the gap
-     * between m4a's vblank cadence and the chip's per-sample read. */
-    uint32_t envVol = ch->attack;
-    if (envVol >= 0xFF)
-    {
-        envVol = 0xFF;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_DECAY | (ch->isLoop ? M4A_CHN_LOOP : 0);
-    }
-    ch->envelopeVolume = (uint8_t)envVol;
 }
 
 static bool pcm_can_pseudo_echo(const M4ADriverPcmChan* ch)
@@ -372,6 +361,10 @@ static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR)
     if (!(ch->status & M4A_CHN_ON) || (ch->status & M4A_CHN_START))
         return;
     if (!ch->wav || !ch->currentPointer || ch->count <= 0)
+        return;
+    /* SoundMainRAM packs the integer L/R volumes and skips all source
+     * processing when both halves are zero. */
+    if (ch->envelopeVolumeRight == 0 && ch->envelopeVolumeLeft == 0)
         return;
 
     PcmSource source = pcm_source_from_channel(ch);

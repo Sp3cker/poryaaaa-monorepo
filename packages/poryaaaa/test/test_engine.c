@@ -866,6 +866,127 @@ static void test_v2_song_volume_rescales(void)
     m4a_driver_destroy(drv);
 }
 
+/* Pokemon Emerald initializes the MP2K software mixer to master volume 12. */
+static void test_v2_pcm_default_master_volume_matches_rom(void)
+{
+    printf("Testing v2 PCM default master volume matches ROM...\n");
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "driver created for master-volume default test");
+    if (drv)
+    {
+        ASSERT_EQ(drv->master_volume, 12, "PCM master volume defaults to Pokemon Emerald's value");
+        m4a_driver_destroy(drv);
+    }
+}
+
+/* A fresh PCM channel starts with envelope zero; SoundMainRAM applies the
+ * first attack increment exactly once on its first mixer tick. */
+static void test_v2_pcm_first_tick_applies_one_attack_step(void)
+{
+    printf("Testing v2 PCM first tick applies one attack step...\n");
+
+    static int8_t data[513];
+    memset(data, 64, sizeof(data));
+
+    WaveData wav = {0};
+    wav.status = 0xC000;
+    wav.freq = 13379u << 10;
+    wav.loopStart = 0;
+    wav.size = 512;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_NO_RESAMPLE;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 64;
+    voices[0].decay = 188;
+    voices[0].sustain = 108;
+    voices[0].release = 244;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "attack-step voice starts a PCM channel");
+    if (ch)
+    {
+        ASSERT_EQ(ch->envelopeVolume, 0, "fresh PCM envelope starts at zero");
+        m4a_sound_main_ram(drv);
+        ASSERT_EQ(ch->envelopeVolume, 64, "first mixer tick applies one attack increment");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+/* SoundMainRAM skips source processing when its packed integer L/R mixer
+ * volume is zero, leaving every sample-cursor field untouched. */
+static void test_v2_pcm_zero_mix_volume_freezes_source_cursor(void)
+{
+    printf("Testing v2 PCM zero mix volume freezes source cursor...\n");
+
+    static int8_t data[513];
+    for (int i = 0; i < 512; ++i)
+        data[i] = (int8_t)(i - 128);
+    data[512] = data[511];
+
+    WaveData wav = {0};
+    wav.status = 0xC000;
+    wav.freq = 13379u << 10;
+    wav.loopStart = 0;
+    wav.size = 512;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_NO_RESAMPLE;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].decay = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "zero-volume voice starts a PCM channel");
+    if (ch)
+    {
+        ch->status = M4A_CHN_ON | M4A_CHN_LOOP | M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 1;
+        ch->leftVolume = 1;
+        ch->envelopeVolume = 0xFF;
+        ch->sampleStored = 17;
+        ch->fw = 12345;
+
+        int8_t* pointerBefore = ch->currentPointer;
+        int32_t countBefore = ch->count;
+        uint32_t fwBefore = ch->fw;
+        int8_t storedBefore = ch->sampleStored;
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ(ch->envelopeVolumeRight, 0, "right integer mix volume quantizes to zero");
+        ASSERT_EQ(ch->envelopeVolumeLeft, 0, "left integer mix volume quantizes to zero");
+        ASSERT(ch->currentPointer == pointerBefore, "zero packed volume freezes source pointer");
+        ASSERT_EQ(ch->count, countBefore, "zero packed volume freezes source count");
+        ASSERT_EQ((int)ch->fw, (int)fwBefore, "zero packed volume freezes fractional cursor");
+        ASSERT_EQ(ch->sampleStored, storedBefore, "zero packed volume freezes interpolation store");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
 /* SoundMainRAM acceptance: a DirectSound voice + note_on populates the
  * driver's PCM ring with non-zero post-clamp samples after a vblank,
  * with pcm_rate_hz set and write_cursor advanced by the canonical
@@ -6032,6 +6153,9 @@ int main(void)
     test_v2_cgb_alt_voice_quantizes_pitch_writes();
     test_v2_default_midi_volume_matches_mp2k();
     test_v2_song_volume_rescales();
+    test_v2_pcm_default_master_volume_matches_rom();
+    test_v2_pcm_first_tick_applies_one_attack_step();
+    test_v2_pcm_zero_mix_volume_freezes_source_cursor();
     test_v2_pcm_ring_fills();
     test_v2_pcm_frequency_scale();
     test_v2_pcm_resampled_starts_from_m4a_sample_store();

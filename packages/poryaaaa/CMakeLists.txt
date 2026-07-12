@@ -366,6 +366,35 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
     endif()
 endif()
 
+# ---- Headless VBA-M libretro reference recorder ----
+option(PORYAAAA_BUILD_VBAM_REFERENCE
+    "Build the headless VBA-M libretro reference recorder" OFF)
+set(PORYAAAA_VBAM_SOURCE "" CACHE PATH
+    "VBA-M source checkout containing src/libretro/libretro-common/include")
+
+if(PORYAAAA_BUILD_VBAM_REFERENCE)
+    find_path(PORYAAAA_LIBRETRO_INCLUDE_DIR libretro.h
+        HINTS "${PORYAAAA_VBAM_SOURCE}/src/libretro/libretro-common/include")
+    if(NOT PORYAAAA_LIBRETRO_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "PORYAAAA_BUILD_VBAM_REFERENCE requires a VBA-M source checkout; "
+            "set PORYAAAA_VBAM_SOURCE")
+    endif()
+
+    add_executable(vbam_mp2k_reference
+        tools/vbam-reference/vbam_mp2k_reference.c
+    )
+    poryaaaa_enable_project_warnings(vbam_mp2k_reference)
+    target_include_directories(vbam_mp2k_reference PRIVATE
+        "${PORYAAAA_LIBRETRO_INCLUDE_DIR}"
+    )
+    if(APPLE)
+        target_link_libraries(vbam_mp2k_reference PRIVATE dl)
+    elseif(UNIX)
+        target_link_libraries(vbam_mp2k_reference PRIVATE dl m)
+    endif()
+endif()
+
 # ---- Audio Engine Benchmark ----
 add_executable(poryaaaa_audio_bench
     bench/audio_engine_bench.c

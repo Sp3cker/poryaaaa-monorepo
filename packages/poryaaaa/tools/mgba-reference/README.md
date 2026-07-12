@@ -193,3 +193,19 @@ tools/mgba-reference/smoke_test.sh /Users/spencer/dev/hearth-test
 The recorder treats a silent capture, an MP2K initialization timeout, or a
 failed `MPlayStart` as errors. On success it prints the mGBA version, frontend
 rate, peak, and RMS.
+
+## Reproduce the isolated DirectSound mismatch
+
+The dedicated fixture keeps `se_pc_on`'s compiled notes and timing but replaces
+its voicegroup with one `voice_directsound` entry at program 0. It builds and
+captures private ROM/MIDI/project copies under `build/`; the source decomp is
+not modified. The comparison searches integer lag in the time domain, requires
+onset/sustain/release lag agreement, and writes aligned and difference WAVs.
+
+```bash
+tools/mgba-reference/capture_directsound_fixture.sh
+```
+
+The command is intentionally red until DirectSound parity meets the declared
+level, correlation, and gain-fitted-residual thresholds. A red comparison with
+`alignment_passed: true` means the captures match in time but not waveform.

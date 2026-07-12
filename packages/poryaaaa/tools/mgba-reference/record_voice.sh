@@ -31,6 +31,7 @@ Options:
   --volume N               Forwarded to the recorder
   --pan N                  Forwarded to the recorder
   --fixture-address ADDR   Forwarded to the recorder
+  --require-max-chans N    Require the ROM's observed MP2K PCM channel count
 EOF
 }
 
@@ -45,7 +46,7 @@ while (($#)); do
         --song) song="$2"; shift 2 ;;
         --output) output="$2"; shift 2 ;;
         --nm) nm_tool="$2"; shift 2 ;;
-        --duration-seconds|--boot-timeout-seconds|--note|--velocity|--volume|--pan|--fixture-address|--solo|--mute)
+        --duration-seconds|--boot-timeout-seconds|--note|--velocity|--volume|--pan|--fixture-address|--require-max-chans|--solo|--mute)
             forwarded+=("$1" "$2")
             shift 2
             ;;
@@ -158,6 +159,7 @@ if [[ -n "$song" ]]; then
 fi
 
 mplay_start="$(lookup_symbol MPlayStart)"
+mplay_all_stop="$(lookup_symbol m4aMPlayAllStop)"
 mplay_info="$(lookup_symbol gMPlayInfo_BGM)"
 voicegroup_address="$(lookup_symbol "$voicegroup")"
 voice_address="$(printf '0x%08X' "$((voicegroup_address + voice_index * 12))")"
@@ -167,6 +169,7 @@ exec "$recorder" \
     --rom "$rom" \
     --output "$output" \
     --mplay-start "$mplay_start" \
+    --mplay-all-stop "$mplay_all_stop" \
     --mplay-info "$mplay_info" \
     --sound-info "$sound_info" \
     --voice-address "$voice_address" \

@@ -19,7 +19,7 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
         return NULL;
     drv->host_rate = host_sample_rate;
     drv->song_volume = 127;
-    drv->master_volume = 15;
+    drv->master_volume = 12;
     drv->tempo_bpm = 120.0;
 
     /* Register-file defaults match what real m4a writes during init —

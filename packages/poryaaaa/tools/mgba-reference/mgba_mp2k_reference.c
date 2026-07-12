@@ -28,8 +28,10 @@
 #define AUDIO_BUFFER_FRAMES 2048u
 #define TONE_DATA_SIZE 12u
 #define GBA_REG_DISPSTAT 0x04000004u
+#define GBA_REG_SOUNDCNT_H 0x04000082u
 #define GBA_REG_IE 0x04000200u
 #define GBA_REG_IME 0x04000208u
+#define GBA_FIFO_RESET_BITS 0x8800u
 
 #define AUDIO_CHANNEL_SQ1 (1u << 0u)
 #define AUDIO_CHANNEL_SQ2 (1u << 1u)
@@ -51,6 +53,7 @@ typedef struct Options
     const char* romPath;
     const char* outputPath;
     uint32_t mplayStart;
+    uint32_t mplayAllStop;
     uint32_t songStart;
     uint32_t songAddress;
     uint32_t songId;
@@ -64,11 +67,13 @@ typedef struct Options
     uint8_t velocity;
     uint8_t volume;
     uint8_t pan;
+    uint8_t requiredMaxChans;
     uint32_t enabledChannels;
     bool hasSongId;
     bool bootSong;
     bool hasSolo;
     bool hasMute;
+    bool hasRequiredMaxChans;
 } Options;
 
 typedef struct Recorder
@@ -109,6 +114,8 @@ static void print_usage(const char* program)
             "  --mute LIST                Disable named hardware channels\n"
             "                             Names: sq1,sq2,wave,noise,fifo-a,fifo-b,\n"
             "                             psg,directsound,all (comma-separated)\n"
+            "  --mplay-all-stop ADDRESS    Stop existing players before a voice fixture\n"
+            "  --require-max-chans N       Fail unless MP2K configures this PCM channel count\n"
             "  --fixture-address ADDRESS  EWRAM scratch base (default: 0x0203F000)\n",
             program,
             program,
@@ -221,6 +228,11 @@ static bool parse_options(int argc, char** argv, Options* options)
             if (!parse_u32(value, &options->mplayStart))
                 return false;
         }
+        else if (strcmp(name, "--mplay-all-stop") == 0)
+        {
+            if (!parse_u32(value, &options->mplayAllStop))
+                return false;
+        }
         else if (strcmp(name, "--song-start") == 0)
         {
             if (!parse_u32(value, &options->songStart))
@@ -256,6 +268,14 @@ static bool parse_options(int argc, char** argv, Options* options)
         {
             if (!parse_u32(value, &options->fixtureAddress))
                 return false;
+        }
+        else if (strcmp(name, "--require-max-chans") == 0)
+        {
+            uint32_t maxChans = 0u;
+            if (!parse_u32(value, &maxChans) || maxChans == 0u || maxChans > 12u)
+                return false;
+            options->requiredMaxChans = (uint8_t)maxChans;
+            options->hasRequiredMaxChans = true;
         }
         else if (strcmp(name, "--duration-seconds") == 0)
         {
@@ -525,6 +545,33 @@ static bool start_fixture(struct mCore* core, const Options* options)
            core->writeRegister(core, "lr", &runnerAddress) && core->writeRegister(core, "pc", &startAddress);
 }
 
+static bool wait_for_runner(struct mCore* core, const Options* options);
+
+/* Stops boot-time players so a hardware FIFO capture contains only the injected voice. */
+static bool stop_existing_audio(struct mCore* core, const Options* options)
+{
+    if (options->mplayAllStop == 0u)
+        return true;
+
+    int32_t runnerAddress = (int32_t)(options->fixtureAddress + FIXTURE_RUNNER_OFFSET + 1u);
+    int32_t stopAddress = (int32_t)(options->mplayAllStop & ~1u);
+    if (!core->writeRegister(core, "lr", &runnerAddress) || !core->writeRegister(core, "pc", &stopAddress) ||
+        !wait_for_runner(core, options))
+    {
+        return false;
+    }
+
+    for (uint32_t channel = 0u; channel < 12u; ++channel)
+        core->busWrite8(core, options->soundInfo + 80u + channel * 64u, 0u);
+    core->busWrite8(core, options->soundInfo + 5u, 0u);
+    for (uint32_t sample = 0u; sample < 3168u; ++sample)
+        core->busWrite8(core, options->soundInfo + 848u + sample, 0u);
+    uint16_t soundControl = core->busRead16(core, GBA_REG_SOUNDCNT_H);
+    core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl | GBA_FIFO_RESET_BITS);
+    core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl);
+    return true;
+}
+
 /* Boots until MP2K and the ROM's real VBlank interrupt path are both live. */
 static bool wait_for_mp2k(struct mCore* core, const Options* options)
 {
@@ -648,12 +695,29 @@ static bool capture_boot_song(struct mCore* core, Recorder* recorder, const Opti
     bool sawSoundDriver = false;
     bool sawExpectedSong = false;
     bool trackAdvanced = false;
+    bool maxChansValidated = !options->hasRequiredMaxChans;
     uint32_t initialTrackAddress = core->busRead32(core, options->songAddress + 8u);
     while (recorder->framesWritten < recorder->targetFrames && !recorder->writeFailed)
     {
         core->runFrame(core);
         if (core->busRead32(core, options->soundInfo) == MP2K_MAGIC)
+        {
             sawSoundDriver = true;
+            if (!maxChansValidated)
+            {
+                uint8_t observedMaxChans = (uint8_t)core->busRead8(core, options->soundInfo + 6u);
+                if (observedMaxChans != options->requiredMaxChans)
+                {
+                    fprintf(stderr,
+                            "MP2K maxChans mismatch: expected %u, observed %u\n",
+                            options->requiredMaxChans,
+                            observedMaxChans);
+                    return false;
+                }
+                fprintf(stderr, "MP2K maxChans validated: %u\n", observedMaxChans);
+                maxChansValidated = true;
+            }
+        }
         if (core->busRead32(core, options->mplayInfo) == options->songAddress)
         {
             sawExpectedSong = true;
@@ -665,7 +729,7 @@ static bool capture_boot_song(struct mCore* core, Recorder* recorder, const Opti
 
     if (!finish_capture(recorder))
         return false;
-    if (!sawSoundDriver || !sawExpectedSong || !trackAdvanced)
+    if (!sawSoundDriver || !sawExpectedSong || !trackAdvanced || !maxChansValidated)
     {
         fprintf(stderr,
                 "Audio-only ROM validation failed (sound=%d, song=%d, advanced=%d)\n",
@@ -753,6 +817,11 @@ int main(int argc, char** argv)
         inject_song(core, &options);
     else
         core->busWrite16(core, options.fixtureAddress + FIXTURE_RUNNER_OFFSET, 0xE7FEu);
+    if (!stop_existing_audio(core, &options))
+    {
+        fprintf(stderr, "Could not stop boot-time audio before the reference fixture\n");
+        goto unload;
+    }
     if (!start_fixture(core, &options))
     {
         fprintf(stderr, "Could not transfer emulated CPU control to the ROM sound driver\n");
