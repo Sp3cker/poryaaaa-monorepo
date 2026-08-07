@@ -23,7 +23,7 @@ extern "C"
      *   ↓
      *   THIS MODULE — SOUNDCNT_L/H routing + scaling, SOUNDBIAS bias+clip
      *   ↓                 (operates at chip-internal rate post-§12.9)
-     *   Stereo float at chip-internal rate -> mGBA blip frontend -> host
+     *   Stereo float at chip-internal rate -> current mGBA sinc frontend -> host
      *
      * The PSG mix-bus levels are locked to mono mGBA capture pairs. PCM,
      * wave, and full-song parity require their own coverage before broader

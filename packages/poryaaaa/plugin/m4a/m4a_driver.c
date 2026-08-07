@@ -4,6 +4,89 @@
 #include <stdlib.h>
 #include <string.h>
 
+static float normalize_pcm_mix_rate(float rate)
+{
+    if (rate == 0.0f)
+        return 0.0f;
+    if (!(rate > 0.0f) || rate < 1000.0f)
+        return 1000.0f;
+    if (rate > (float)M4A_PCM_MAX_RATE_HZ)
+        return (float)M4A_PCM_MAX_RATE_HZ;
+    return rate;
+}
+
+static uint32_t pcm_active_rate(const M4ADriver* drv, float requested_rate)
+{
+    float rate = requested_rate == 0.0f ? drv->host_rate : requested_rate;
+    if (!(rate > 0.0f))
+        rate = (float)M4A_PCM_RATE_HZ;
+    if (rate > (float)M4A_PCM_MAX_RATE_HZ)
+        rate = (float)M4A_PCM_MAX_RATE_HZ;
+    if (rate < 1.0f)
+        rate = 1.0f;
+    return (uint32_t)(rate + 0.5f);
+}
+
+static uint32_t pcm_max_samples_per_vblank(uint32_t rate)
+{
+    const uint64_t numerator = (uint64_t)rate * M4A_PCM_VBLANK_RATE_DENOMINATOR;
+    uint32_t samples =
+        (uint32_t)((numerator + M4A_PCM_VBLANK_RATE_NUMERATOR - 1) / M4A_PCM_VBLANK_RATE_NUMERATOR);
+    if (samples == 0)
+        samples = 1;
+    if (samples > M4A_PCM_MAX_SAMPLES_PER_VBLANK)
+        samples = M4A_PCM_MAX_SAMPLES_PER_VBLANK;
+    return samples;
+}
+
+static uint32_t pcm_dma_buf_size(uint32_t rate, uint32_t samples_per_vblank)
+{
+    uint64_t scaled = (uint64_t)rate * M4A_PCM_DMA_BUF_SIZE;
+    uint32_t size = (uint32_t)(scaled / M4A_PCM_RATE_HZ);
+    if (size < samples_per_vblank)
+        size = samples_per_vblank;
+    if (size > M4A_PCM_MAX_DMA_BUF_SIZE)
+        size = M4A_PCM_MAX_DMA_BUF_SIZE;
+    return size;
+}
+
+static void m4a_reset_pcm_output_state(M4ADriver* drv)
+{
+    memset(drv->pcmMixL, 0, sizeof(drv->pcmMixL));
+    memset(drv->pcmMixR, 0, sizeof(drv->pcmMixR));
+    memset(drv->reverbBufL, 0, sizeof(drv->reverbBufL));
+    memset(drv->reverbBufR, 0, sizeof(drv->reverbBufR));
+    drv->reverbPos = 0;
+    drv->pcm_vblank_remainder = 0;
+    memset(&drv->pcm, 0, sizeof(drv->pcm));
+    drv->pcm.pcm_rate_hz = drv->pcm_rate_hz;
+    drv->pcm.pcm_dma_buf_size = drv->pcm_dma_buf_size;
+    drv->pcm_prefill_pending = true;
+}
+
+static void m4a_driver_configure_pcm(M4ADriver* drv, float requested_rate, bool publish_reset)
+{
+    requested_rate = normalize_pcm_mix_rate(requested_rate);
+    const uint32_t rate = pcm_active_rate(drv, requested_rate);
+    const uint32_t max_samples = pcm_max_samples_per_vblank(rate);
+    const uint32_t buffer_size = pcm_dma_buf_size(rate, max_samples);
+    const bool geometry_changed = drv->pcm_rate_hz != rate || drv->pcm_max_samples_per_vblank != max_samples
+        || drv->pcm_dma_buf_size != buffer_size;
+
+    drv->pcm_mix_rate = requested_rate;
+    if (!geometry_changed)
+        return;
+
+    drv->pcm_rate_hz = rate;
+    drv->pcm_max_samples_per_vblank = max_samples;
+    drv->pcm_dma_buf_size = buffer_size;
+    m4a_reset_pcm_output_state(drv);
+
+    m4a_internal_refresh_pcm_pitches(drv);
+    if (publish_reset)
+        m4a_internal_emit_event(drv, M4A_REG_PCM_RESET, 0);
+}
+
 void m4a_internal_recompute_vblank_step(M4ADriver* drv)
 {
     if (drv->host_rate > 0.0f)
@@ -18,9 +101,14 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     if (!drv)
         return NULL;
     drv->host_rate = host_sample_rate;
+    m4a_driver_configure_pcm(drv, (float)M4A_PCM_RATE_HZ, false);
     drv->song_volume = 127;
     drv->master_volume = 12;
     drv->tempo_bpm = 120.0;
+    drv->c15 = 14;
+    /* Raw v2 callers have the complete PCM pool unless they explicitly
+     * configure a narrower one.  The legacy facade applies its own default. */
+    drv->max_pcm_channels = M4A_MAX_PCM_CHANNELS;
 
     /* Register-file defaults match what real m4a writes during init —
      * NR50/NR51/SOUNDCNT_H/SOUNDBIAS  See
@@ -85,6 +173,15 @@ void m4a_driver_set_host_rate(M4ADriver* drv, float hz)
         return;
     drv->host_rate = hz;
     m4a_internal_recompute_vblank_step(drv);
+    if (drv->pcm_mix_rate == 0.0f)
+        m4a_driver_configure_pcm(drv, 0.0f, true);
+}
+
+void m4a_driver_set_pcm_mix_rate(M4ADriver* drv, float rate)
+{
+    if (!drv)
+        return;
+    m4a_driver_configure_pcm(drv, rate, true);
 }
 
 void m4a_driver_set_xcmd_callback(M4ADriver* drv, M4ADriverXcmdFn fn, void* ctx)
@@ -195,6 +292,25 @@ void m4a_internal_emit_event(M4ADriver* drv, M4ARegId reg, uint32_t value)
     ev->sample_offset = drv->event_vblank_offset;
     ev->reg = reg;
     ev->value = value;
+}
+
+void m4a_internal_reset_pcm_output(M4ADriver* drv)
+{
+    if (!drv)
+        return;
+
+    m4a_reset_pcm_output_state(drv);
+    if (drv->event_count == M4A_EVENT_QUEUE_CAP)
+    {
+        memmove(&drv->events[1], &drv->events[0], (M4A_EVENT_QUEUE_CAP - 1) * sizeof(drv->events[0]));
+        drv->events_dropped++;
+    }
+    else
+    {
+        memmove(&drv->events[1], &drv->events[0], drv->event_count * sizeof(drv->events[0]));
+        drv->event_count++;
+    }
+    drv->events[0] = (M4ARegWrite){.sample_offset = 0, .reg = M4A_REG_PCM_RESET, .value = 0};
 }
 
 const M4ARegWriteBatch* m4a_get_pending_writes(const M4ADriver* drv)

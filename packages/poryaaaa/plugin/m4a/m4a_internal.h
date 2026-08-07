@@ -16,7 +16,7 @@ extern "C"
 
 #define M4A_MAX_TRACKS 16
 #define M4A_MAX_CGB_CHANNELS 4  /* sq1, sq2, wave, noise */
-#define M4A_MAX_PCM_CHANNELS 12 /* DirectSound polyphony cap */
+#define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
 
 /* Layer 1.5 event-queue capacity.  Per render span (between consume
  * calls): at most ~5 NRxx writes per CGB channel × 4 channels = 20
@@ -31,6 +31,9 @@ extern "C"
 
 /* m4a runs at 59.7275 Hz vblank.  Use 1/this as the period for tick firing. */
 #define M4A_VBLANK_HZ 59.7275f
+/* 59.7275 Hz expressed exactly for the PCM block-size accumulator. */
+#define M4A_PCM_VBLANK_RATE_NUMERATOR 23891u
+#define M4A_PCM_VBLANK_RATE_DENOMINATOR 400u
 
 /* Channel `status` flag bits — match pokeemerald m4a_internal.h CHN_*.
  * We mirror the real m4a constants so disasm reads match. */
@@ -50,8 +53,9 @@ extern "C"
 #define M4A_CHN_ENV_ATTACK 0x03
 
 /* CgbSound `modify` bits — pokeemerald m4a_internal.h MO_*. */
-#define M4A_MO_PIT 0x1 /* re-emit NRx3 + NRx4 freq write */
-#define M4A_MO_VOL 0x2 /* re-emit NRx2 + NRx4-with-trigger */
+#define M4A_MO_PIT 0x1  /* re-emit NRx3 + NRx4 freq write */
+#define M4A_MO_VOL 0x2  /* re-emit NRx2 + NRx4-with-trigger */
+#define M4A_MO_DUTY 0x4 /* re-emit square NRx1 duty/length write */
 
     /* Driver-internal track state.  Shape mirrors v1's M4ATrack so the disasm
      * comparison path stays clean.  Field set is the minimum needed for Layer 1
@@ -88,6 +92,17 @@ extern "C"
 
         uint8_t pseudoEchoVolume;
         uint8_t pseudoEchoLength;
+
+        /* Legacy facade-only opt-in effect state. */
+        uint8_t portamentoDuration;
+        uint8_t portamentoPrevKey;
+        uint8_t portamentoTargetKey;
+        bool portamentoGliding;
+        uint32_t portamentoElapsed;
+        uint8_t pwmPattern;
+        uint8_t pwmSpeed;
+        uint8_t pwmSpeedCounter;
+        uint8_t pwmStep;
         uint8_t priority;
 
         /* xCmd (XCMD-via-MIDI-CC) state.  Two-CC protocol mirrors v1
@@ -186,7 +201,7 @@ extern "C"
         /* Sample-read state */
         WaveData* wav;
         int8_t* currentPointer; /* forward: current sample; reverse: one past next sample */
-        int8_t sampleStored;    /* M4A CHN_SAMPLE_STOR: previous resampled source byte */
+        int8_t sampleStored; /* preceding source byte for reverse interpolation */
         int32_t count;          /* remaining samples in current segment */
         uint32_t fw;            /* 23-bit fractional position accumulator */
         uint32_t frequency;     /* per-PCM-tick step, Q9.23 */
@@ -196,12 +211,24 @@ extern "C"
         int8_t* loopStart;
 
         int trackIndex;
+        /* Zero-length WaveData descriptors select Golden Sun's software
+         * oscillators.  `fw` is then the 32-bit oscillator phase and `count`
+         * is the pulse LFO accumulator or pseudo-saw filter state. */
+        uint8_t synthType;
+        uint32_t synthPulseDuty;
+
     } M4ADriverPcmChan;
 
     struct M4ADriver
     {
         /* Lifecycle / config */
         float host_rate;
+        float pcm_mix_rate; /* requested rate; zero follows host_rate */
+        uint32_t pcm_rate_hz;
+        uint32_t pcm_max_samples_per_vblank;
+        uint32_t pcm_dma_buf_size;
+        /* Remainder of rate * 400 / 23891, reset with each PCM epoch. */
+        uint32_t pcm_vblank_remainder;
         ToneData* voicegroup;
         M4ADriverXcmdFn xcmd_fn;
         void* xcmd_ctx;
@@ -214,6 +241,14 @@ extern "C"
         bool analog_filter;
         uint8_t max_pcm_channels;
         double tempo_bpm;
+        bool compat_respect_base_midi_key;
+        bool compat_portamento_enabled;
+        bool compat_pwm_enabled;
+        bool compat_pwm_active;
+        bool compat_shadow_note;
+        bool compat_zero_pcm_is_silent;
+        bool compat_skip_pwm_tick;
+
 
         /* m4a tempo accumulator (vblank-clocked).  Fires LFO ticks when tempoC
          * crosses 150.  Mirrors v1's tempoD/tempoU/tempoI/tempoC. */
@@ -259,16 +294,16 @@ extern "C"
 
         /* SoundMainRAM intermediate mix buffer (int16 stereo, pre-clamp,
          * pre-reverb).  Reverb runs in-place here; results are clamped to
-         * int8 and written into the public M4APcmRing.  Sized for one
-         * vblank's worth of PCM-rate samples. */
-        int16_t pcmMixL[M4A_PCM_SAMPLES_PER_VBLANK];
-        int16_t pcmMixR[M4A_PCM_SAMPLES_PER_VBLANK];
+         * int8 and written into the public M4APcmRing.  Active samples per
+         * vblank are bounded by the static capacity. */
+        int16_t pcmMixL[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
+        int16_t pcmMixR[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
 
         /* Reverb delay-line state.  Vanilla Sappy SoundMainRAM_Reverb is a
          * 4-tap design: read current L+R and (current+frameSize) L+R, sum,
-         * scale by amount>>9, write back.  Buffer size = canonical PCM DMA
-         * buffer (1584 samples per side, matches gPcmDmaBuffer); the "other"
-         * tap is one vblank (224 samples) ahead in the circular buffer.
+         * scale by amount>>9, write back.  The active buffer retains the
+         * canonical DMA buffer's duration as the PCM rate changes; the
+         * other tap remains one active vblank ahead.
          *
          * Type is int8 because real m4a's reverb buffer IS the int8 FIFO
          * buffer (gPcmDmaBuffer) — wet samples are clamped to int8 range
@@ -278,9 +313,13 @@ extern "C"
          * temporarily exceeds [-128, 127] before the final clamp-to-int8
          * stage; the delay line would feed those out-of-range values back
          * into subsequent reverb sums, drifting from real-hardware behavior. */
-        int8_t reverbBufL[M4A_PCM_DMA_BUF_SIZE];
-        int8_t reverbBufR[M4A_PCM_DMA_BUF_SIZE];
+        int8_t reverbBufL[M4A_PCM_MAX_DMA_BUF_SIZE];
+        int8_t reverbBufR[M4A_PCM_MAX_DMA_BUF_SIZE];
         uint16_t reverbPos;
+
+        /* The facade may publish one current-state PCM block for this fresh
+         * ring epoch before the next scheduled SoundMain tick. */
+        bool pcm_prefill_pending;
 
         /* Public contract output (driver→chip).  CgbSound writes regs each
          * tick; SoundMainRAM writes pcm.ring_a/ring_b each vblank. */
@@ -303,6 +342,19 @@ extern "C"
      * When modM changes, the track's derived state is recomputed and
      * active CGB / PCM channels on this track are refreshed. */
     void m4a_internal_lfo_tick(M4ADriver* drv);
+
+    /* Legacy facade-only control seams. */
+    void m4a_internal_compat_effects_tick(M4ADriver* drv);
+    void m4a_internal_reset_portamento(M4ADriver* drv);
+    void m4a_internal_disable_pwm(M4ADriver* drv);
+    void m4a_internal_compat_tick(M4ADriver* drv);
+
+    /* Recompute every active PCM channel's source step after its mix rate
+     * changes.  The next SoundMainRAM event consumes the corrected step. */
+    void m4a_internal_refresh_pcm_pitches(M4ADriver* drv);
+    /* Clears a driver's published PCM epoch and inserts a reset event at the
+     * start of the next hardware render span. */
+    void m4a_internal_reset_pcm_output(M4ADriver* drv);
 
 #ifdef __cplusplus
 }

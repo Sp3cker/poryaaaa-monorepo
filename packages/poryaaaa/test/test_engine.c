@@ -4485,10 +4485,10 @@ static void test_chip_canned_square_audible(void)
     hw_audio_destroy(hw);
 }
 
-/* Proves the public chip output includes mGBA blip_buf's DC-blocking pole. */
-static void test_chip_output_matches_mgba_frontend_highpass(void)
+/* Current mGBA's raw-buffer frontend has no blip_buf DC-blocking pole. */
+static void test_chip_output_preserves_dc(void)
 {
-    printf("Testing chip-only: output applies mGBA frontend high-pass...\n");
+    printf("Testing chip-only: current mGBA frontend preserves source DC...\n");
 
     HwAudio* hw = hw_audio_create(65536.0f);
     M4ARegWrite ev[] = {
@@ -4498,7 +4498,7 @@ static void test_chip_output_matches_mgba_frontend_highpass(void)
         {0, M4A_REG_SOUNDCNT_H, 0x02},
         {0, M4A_REG_NR21, 0xC0}, /* 75% duty has a positive raw-DAC mean */
         {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1984 & 0xFF}, /* exact 2048 Hz period at 65536 Hz */
+        {0, M4A_REG_NR23, 1984 & 0xFF},
         {0, M4A_REG_NR24, 0x80 | ((1984 >> 8) & 7)},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
@@ -4515,47 +4515,32 @@ static void test_chip_output_matches_mgba_frontend_highpass(void)
     for (int i = N - WINDOW; i < N; i++)
         mean += L[i];
     mean /= WINDOW;
-    if (mean < 0.0)
-        mean = -mean;
 
-    ASSERT(mean < 0.01, "mGBA frontend high-pass removes the square wave's positive DC mean");
+    ASSERT(mean > 0.02, "current mGBA frontend preserves the square wave's positive DC mean");
     hw_audio_destroy(hw);
 }
 
-/* Locks the frontend step response to mGBA's bundled blip_buf 1.1.0. */
-static void test_hw_resample_matches_mgba_blip_step(void)
+/* Locks the frontend impulse response to current mGBA's sinc interpolator. */
+static void test_hw_resample_matches_mgba_sinc_impulse(void)
 {
-    printf("Testing hw_resample step response matches mGBA blip_buf...\n");
+    printf("Testing hw_resample impulse response matches current mGBA sinc...\n");
 
     static const int16_t expected[] = {
-        0,
-        10,
-        -19,
-        69,
-        -53,
-        230,
-        3,
-        1459,
-        6711,
-        8173,
-        7927,
-        8196,
-        8058,
-        8130,
-        8085,
-        8080,
+        0,    0,    0,    0,    0,    0,    0,   -60, -776, -1217, 2927, 5923,
+        7888, 760,  5929, -687, 3460, -837, 347,  -314, 0,    0,     0,    0,
     };
-    float input[32], output[32];
-    for (int i = 0; i < 32; i++)
-        input[i] = 0.25f;
+    float input[24] = {0};
+    float output[24];
+    input[8] = 0.5f;
 
     HwResample resample;
-    hw_resample_init(&resample, 65536.0, 65536.0);
-    int produced = hw_resample_process(&resample, input, NULL, 32, output, NULL, 32);
+    hw_resample_init(&resample, 32768.0, 48000.0);
+    ASSERT_EQ(hw_resample_inputs_needed(&resample, 24), 24, "sinc frontend requests its eight-sample lookahead");
+    int produced = hw_resample_process(&resample, input, NULL, 24, output, NULL, 24);
 
-    ASSERT_EQ(produced, 32, "equal-rate blip frontend produces one sample per DAC sample");
+    ASSERT_EQ(produced, 24, "sinc frontend produces the requested host span");
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
-        ASSERT_NEAR(output[i], expected[i] / 32768.0f, 0.000001f, "blip frontend step sample matches mGBA");
+        ASSERT_NEAR(output[i], expected[i] / 32768.0f, 0.000001f, "sinc impulse sample matches current mGBA");
 }
 
 static void test_chip_canned_master_disable_silences(void)
@@ -4587,10 +4572,9 @@ static void test_chip_canned_master_disable_silences(void)
     float L[N], R[N];
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
-    /* First half: signal; after disable the blip impulse and frontend
-     * high-pass tail must decay to silence. A few dozen host samples
-     * past the event boundary clears the impulse; the longer tail follows
-     * the 511/512 pole. */
+    /* First half: signal; after disable the sinc kernel's short tail must
+     * decay to silence. A few dozen host samples past the event boundary
+     * comfortably clear its eight-sample source window. */
     float peakFirst = 0.0f;
     /* Stay clear of the smear at the boundary; the first few hundred
      * samples are plenty audible without including transition smear. */
@@ -4927,11 +4911,9 @@ static void test_chip_canned_noise_dac_off_silences(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
-    /* First half: signal; the resampler smear and frontend high-pass tail
-     * decay after the DAC turns off.
-     * See test_chip_canned_master_disable_silences for smear rationale.
-     * The mGBA blip impulse has a short ringing tail, so a 64-sample
-     * skip past the boundary is comfortable. */
+    /* First half: signal; the sinc kernel's short tail decays after the
+     * DAC turns off. See test_chip_canned_master_disable_silences for
+     * the smear rationale. A 64-sample skip is comfortable. */
     float peakFirst = 0.0f;
     for (int i = 64; i < 2048 - 64; i++)
     {
@@ -4964,7 +4946,7 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * routing/scaling math, SOUNDBIAS bias_level DC offset math, and the
  * 10-bit DAC bias-add+clip math (default + asymmetric).  All of these
  * tests run with the chip at its internal render rate and through the
- * mGBA blip frontend to host. Per-cadence tests live in the §12.10a
+ * current mGBA sinc frontend to host. Per-cadence tests live in the §12.10a
  * block below (cadence sweep + direct internal_rate switching assertion).
  *
  * They do NOT prove parity against mGBA / real-hardware captures —
@@ -5001,7 +4983,7 @@ static void test_chip_canned_soundbias_dc_offset(void)
     hw_audio_render_events(hw, &batch, NULL, L, R, N);
 
     /* Expect every post-warmup sample at 0 within kernel precision.
-     * The blip delta ring starts zero-filled, so this is zero-in-zero-out. */
+     * The sinc source buffer starts zero-filled, so this is zero-in-zero-out. */
     const float dc_eps = 5e-5f;
     const int warmup_host = 32;
     bool allOnTarget = true;
@@ -5072,7 +5054,7 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
      * R side: no PSG routed → input 0 → output 0 (mGBA _applyBias
      * subtracts bias back, no embedded DC in silent output).
      *
-     * Tolerances: the mGBA blip impulse rings on clipped square edges. */
+     * Tolerances: the current mGBA sinc kernel rings on clipped square edges. */
     const float clip_top = (1023.0f - 832.0f) * 48.0f / 32768.0f;
     const float ring_eps = 0.04f;
     const float dc_eps = 5e-5f;
@@ -5087,7 +5069,7 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
     }
     ASSERT(maxL <= clip_top + ring_eps, "L high side clipped at clip_top (within ringing)");
     ASSERT(maxL >= clip_top - ring_eps, "L high side reaches clip ceiling (clip path exercised)");
-    ASSERT(minL >= -clip_top - ring_eps, "frontend high-pass negative swing stays within the clipped step size");
+    ASSERT(minL >= -clip_top - ring_eps, "sinc frontend negative swing stays within the clipped step size");
     /* R side has no PSG signal AND mGBA _applyBias subtracts bias back,
      * so silent output stays at 0. */
     float dR = R[warmup];
@@ -5216,103 +5198,6 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
     ASSERT(ratio > 0.495f && ratio < 0.505f, "50% DMA vol scales peak by ½");
 }
 
-/* ---- §12 step 9: mGBA blip frontend quality ----
- *
- * Anti-aliasing check: at sampling_cycle=2 (131072 Hz chip cadence), a
- * square wave whose fundamental is above host Nyquist (22050 Hz @ 44100)
- * must be attenuated by the frontend's impulse kernel, NOT aliased
- * into the audible band.  Compares peak
- * at a low fundamental (~1300 Hz, well in passband) to peak at a high
- * fundamental (~26214 Hz, above host Nyquist).  A linear-interp or
- * zero-order-hold resampler would let aliasing leak through and the
- * ratio would be approximately 1. mGBA's blip frontend rejects it. */
-static void test_chip_canned_resample_antialias(void)
-{
-    printf("Testing chip-only: mGBA blip frontend attenuates above host Nyquist...\n");
-
-    /* Helper: render an SQ2 trigger at the given freq word and report
-     * post-warmup peak amplitude on the L channel. */
-    enum
-    {
-        N = 4096
-    };
-    float L[N], R[N];
-
-    /* Low-frequency reference: F=1947 → audio_hz = 131072/(2048-1947)
-     * = 131072/101 ≈ 1298 Hz, deep in passband. */
-    HwAudio* hw_low = hw_audio_create(44100.0f);
-    M4ARegWrite setup_sc2[] = {
-        {0, M4A_REG_SOUNDBIAS, 0x200u | (2u << 14)},
-    };
-    M4ARegWriteBatch setup_batch = {.events = setup_sc2, .count = sizeof(setup_sc2) / sizeof(setup_sc2[0])};
-    float setup_l[1], setup_r[1];
-    hw_audio_render_events(hw_low, &setup_batch, NULL, setup_l, setup_r, 1);
-    M4ARegWrite ev_low[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1947 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1947 >> 8) & 7)},
-    };
-    M4ARegWriteBatch batch_low = {.events = ev_low, .count = sizeof(ev_low) / sizeof(ev_low[0])};
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw_low, &batch_low, NULL, L, R, N);
-    float peak_low = 0.0f;
-    for (int i = 64; i < N; i++)
-    {
-        float a = L[i];
-        if (a < 0)
-            a = -a;
-        if (a > peak_low)
-            peak_low = a;
-    }
-    hw_audio_destroy(hw_low);
-
-    /* High-frequency: F=2043 → audio_hz = 131072/5 = 26214 Hz, above
-     * the host Nyquist of 22050 Hz.  Falls in the resampler's stopband. */
-    HwAudio* hw_high = hw_audio_create(44100.0f);
-    hw_audio_render_events(hw_high, &setup_batch, NULL, setup_l, setup_r, 1);
-    M4ARegWrite ev_high[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 2043 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((2043 >> 8) & 7)},
-    };
-    M4ARegWriteBatch batch_high = {.events = ev_high, .count = sizeof(ev_high) / sizeof(ev_high[0])};
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw_high, &batch_high, NULL, L, R, N);
-    float peak_high = 0.0f;
-    for (int i = 64; i < N; i++)
-    {
-        float a = L[i];
-        if (a < 0)
-            a = -a;
-        if (a > peak_high)
-            peak_high = a;
-    }
-    hw_audio_destroy(hw_high);
-
-    /* Sanity: low fundamental is audible. */
-    ASSERT(peak_low > 0.001f, "low-frequency square audible");
-    /* Anti-alias bound: a 26214 Hz square would, without filtering,
-     * produce ~0.3516 peak at the host (single PSG max after GBA output
-     * scale; square-wave
-     * amplitude is largely unaffected by aliasing — the alias just
-     * shifts the perceived frequency). With the mGBA blip impulse
-     * we expect heavy attenuation of the fundamental and odd
-     * harmonics; a ratio < 0.5 is a comfortable bound that linear
-     * interp would not satisfy. */
-    ASSERT(peak_high < peak_low * 0.5f, "high-freq sq attenuated by mGBA blip frontend");
-}
 
 /* ---- §12 step 9: cumulative sample-clock invariance ----
  *
@@ -5877,7 +5762,7 @@ static void test_chip_canned_pcm_constant_byte(void)
     /* Expected raw-DAC L step:
      *   mGBA sample count = +64 << 2 = 256
      *   final output = 256 × 48 / 32768 = +0.375
-     * The frontend high-pass reaches that step, then removes its DC. */
+     * The current mGBA frontend preserves that DC after its startup transient. */
     const float expected_L = 0.375f;
     float peakL = 0.0f;
     float latePeak = 0.0f;
@@ -5895,7 +5780,7 @@ static void test_chip_canned_pcm_constant_byte(void)
     }
     ASSERT(peakL >= expected_L - 0.04f, "L frontend step reaches the +0.375 raw-DAC level");
     ASSERT(peakL <= expected_L + 0.04f, "L frontend step stays near the +0.375 raw-DAC level");
-    ASSERT(latePeak < 0.02f, "frontend high-pass removes constant DMA DC");
+    ASSERT(latePeak >= expected_L - 0.01f, "sinc frontend preserves constant DMA DC");
     ASSERT(R_silent, "R is silent (no PCM routed there)");
 
     hw_audio_destroy(hw);
@@ -6054,7 +5939,7 @@ static void test_chip_canned_solo_mask_isolates_channels(void)
     /* PSG-only (SQ1+SQ2+wave+noise; only SQ2 active here): unipolar
      * SQ2 routed L+R produces AC peak around 0.03-0.07 in this
      * 2048-frame window because the chosen ~377 Hz fundamental fits
-     * less than 2 full periods, and the blip impulse transient
+     * less than 2 full periods, and the sinc startup transient
      * dominates much of the buffer.  Threshold 0.02 stays well above
      * the silent floor (~1e-4) while tolerating the rendered
      * amplitude. Isolated SQ1, SQ2, and noise levels match mGBA; combined
@@ -6219,8 +6104,8 @@ int main(void)
     /* Chip-only canned-event tests.  These also run under full v2, but their
      * value is the chip-only setup that does not depend on driver events. */
     test_chip_canned_square_audible();
-    test_chip_output_matches_mgba_frontend_highpass();
-    test_hw_resample_matches_mgba_blip_step();
+    test_chip_output_preserves_dc();
+    test_hw_resample_matches_mgba_sinc_impulse();
     test_chip_canned_master_disable_silences();
     test_chip_canned_after_playback_empty_blocks_stay_silent();
     test_chip_canned_pan_routing();
@@ -6233,7 +6118,6 @@ int main(void)
     test_hw_mix_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
-    test_chip_canned_resample_antialias();
     test_chip_canned_block_size_invariance();
     test_chip_canned_dc_streaming();
     test_chip_canned_soundbias_cycle_audible_sweep();

@@ -272,8 +272,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
  * into a 32-bit phase increment per render-rate sample.  audio_freq_hz
  * = RATE_NUM / (2048 - F); phase_inc = audio_hz / render_rate × 2^32.
  *
- * HwAudio sets render_rate to the SOUNDBIAS DAC cadence. The mGBA blip
- * frontend in hw_resample.c bridges that cadence to the host rate. */
+ * HwAudio sets render_rate to the SOUNDBIAS DAC cadence. The current mGBA
+ * sinc frontend in hw_resample.c bridges that cadence to the host rate. */
 static uint32_t phase_inc_from_freq(uint16_t freq_word, float rate_num, float render_rate)
 {
     int denom = 2048 - (int)(freq_word & 0x07FF);
@@ -547,8 +547,8 @@ void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_w
      * (advanced when noise_phase overflows).  At render rate (131072 Hz)
      * noise_freq can still exceed Nyquist by ~4× — we step the LFSR
      * through every whole clock but only sample the latest LSB per
-     * output frame. The downstream mGBA blip frontend band-limits the
-     * resulting DAC steps at the host rate. */
+     * output frame. The downstream current mGBA sinc frontend interpolates
+     * the resulting DAC samples at the host rate. */
     int noise_whole_clocks = 0;
     uint32_t noise_phase_inc = 0;
     if (psg->noise_enabled && psg->render_rate > 0.0f)

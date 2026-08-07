@@ -40,7 +40,7 @@ extern "C"
      * Noise follows the linked mGBA 0.10.5 GBA-mode path.  Each clock emits
      * the old low bit, shifts right, and XORs that bit with 0x60 (7-bit) or
      * 0x6000 (15-bit).  No sub-sample averaging is applied; the downstream
-     * mGBA blip frontend consumes the DAC steps.
+     * current mGBA sinc frontend consumes the DAC samples.
      *
      * Synth runs at mGBA's SOUNDBIAS-selected DAC cadence, set by HwAudio
      * to `32768 << sampling_cycle`, not at the host rate. Reference
@@ -114,8 +114,8 @@ extern "C"
         bool master_enabled;
 
         /* Synth render rate. Driven by HwAudio: this is
-         * `32768 << sampling_cycle`, not the host rate. The mGBA blip
-         * frontend downstream converts DAC-rate steps to the host rate. */
+         * `32768 << sampling_cycle`, not the host rate. The current mGBA sinc
+         * frontend downstream converts DAC-rate samples to the host rate. */
         float render_rate;
 
         /* Shared 512 Hz PSG frame sequencer.  Mirrors mGBA GBA-mode
@@ -161,7 +161,7 @@ extern "C"
      * Unipolar synth mirrors mGBA GBA-mode `GBAudioSamplePSG`
      * (gb_audio.c:743) which uses `dcOffset = 0` and unsigned channel
      * samples; the positive PSG DC passes through `_applyBias` into the
-     * raw mix before HwAudio's mGBA-style frontend high-pass removes it.
+     * raw mix and is preserved by the current mGBA frontend.
      * Earlier poryaaaa revisions used dipolar ±env_vol/15 synthesis,
      * which changed the signal before the GBA mix and clip stages.
      *

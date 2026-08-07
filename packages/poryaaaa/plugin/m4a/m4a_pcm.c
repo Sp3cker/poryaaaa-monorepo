@@ -6,9 +6,10 @@
  *
  * Per VBlank: walk every active PCM channel, fetch + interpolate samples
  * from the voice's WaveData using the channel's 23-bit fractional
- * accumulator, multiply by envelopeVolumeLeft/Right, sum into an int16
- * stereo mix buffer of M4A_PCM_SAMPLES_PER_VBLANK frames at PCM_RATE_HZ
- * (≈ 13379 Hz for Pokemon Emerald's sound mode).  After mix:
+ * accumulator, multiply by envelopeVolumeLeft/Right, and sum into an int16
+ * stereo mix buffer.  A bounded fractional accumulator selects each block's
+ * floor/ceil frame count, so the configured PCM rate is exact over a long
+ * run.  After mix:
  *   1) SoundMainRAM_Reverb runs in-place on the int16 buffer.
  *   2) The buffer is clamped to int8 and written into the public
  *      M4APcmRing at write_cursor.
@@ -16,39 +17,67 @@
  * dma_a_enable_left/right + dma_b_enable_left/right bits in the
  * register file. */
 
+static void pcm_synth_pulse_update(M4ADriverPcmChan* ch)
+{
+    const uint8_t* config = (const uint8_t*)ch->wav->data;
+    uint32_t lfo = (uint32_t)ch->count + ((uint32_t)config[3] << 24);
+    ch->count = (int32_t)lfo;
+    uint32_t folded = lfo + ((uint32_t)config[5] << 24);
+    if ((int32_t)folded < 0)
+        folded = ~folded;
+    ch->synthPulseDuty = ((uint32_t)config[2] << 24) + (folded >> 8) * config[4];
+}
+
 /* PCM channel start — pokeemerald m4a.c equivalent. */
 void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32_t startOffset)
 {
-    /* xcmd 0D starts DirectSound playback inside the source sample.  Reverse
-     * voices still keep m4a's one-past cursor convention, so the same offset
-     * is measured back from the sample end. */
-    if (startOffset > wav->size)
-        startOffset = wav->size;
-
     ch->wav = wav;
     ch->type = type;
-    ch->currentPointer = (type & VOICE_TYPE_REV) ? wav->data + wav->size - startOffset : wav->data + startOffset;
+    ch->currentPointer = NULL;
     ch->sampleStored = 0;
-    ch->count = (int32_t)(wav->size - startOffset);
+    ch->count = 0;
     ch->fw = 0;
     ch->envelopeVolume = 0;
+    ch->envelopeVolumeRight = 0;
+    ch->envelopeVolumeLeft = 0;
+    ch->isLoop = false;
+    ch->loopStart = NULL;
+    ch->loopLen = 0;
+    ch->synthType = 0;
+    ch->synthPulseDuty = 0;
 
-    /* Loop bits: WaveData status 0xC000 indicates a looping sample. */
-    ch->isLoop = (wav->status & 0xC000) != 0;
-    if (ch->isLoop)
+    if (!wav)
     {
-        ch->loopStart = wav->data + wav->loopStart;
-        ch->loopLen = (int32_t)wav->size - (int32_t)wav->loopStart;
-        if (ch->loopLen <= 0)
-        {
-            ch->isLoop = false;
-            ch->loopLen = 0;
-        }
+        ch->status = 0;
+        return;
+    }
+
+    if (wav->size == 0 && wav->data)
+    {
+        const uint8_t waveType = (uint8_t)wav->data[1];
+        ch->currentPointer = wav->data;
+        ch->synthType = waveType == 0 ? 1 : waveType == 1 ? 2 : 3;
+        if (waveType == 2)
+            ch->fw = 0x40000000u;
+        if (ch->synthType == 1)
+            pcm_synth_pulse_update(ch);
     }
     else
     {
-        ch->loopStart = NULL;
-        ch->loopLen = 0;
+        if (startOffset > wav->size)
+            startOffset = wav->size;
+        if (wav->data)
+        {
+            ch->currentPointer = (type & VOICE_TYPE_REV) ? wav->data + wav->size - startOffset
+                                                          : wav->data + startOffset;
+            if ((wav->status & 0xC000) && wav->loopStart < wav->size)
+            {
+                ch->isLoop = true;
+                ch->loopStart = wav->data + wav->loopStart;
+                ch->loopLen = (int32_t)wav->size - (int32_t)wav->loopStart;
+            }
+        }
+        ch->count = (int32_t)(wav->size - startOffset);
     }
 
     ch->status = M4A_CHN_ON | M4A_CHN_ENV_ATTACK;
@@ -161,6 +190,27 @@ static void pcm_channel_tick(M4ADriverPcmChan* ch, uint8_t masterVolume)
     uint32_t vol = ((uint32_t)(masterVolume + 1) * envVol) >> 4;
     ch->envelopeVolumeRight = (uint8_t)(((uint32_t)ch->rightVolume * vol) >> 8);
     ch->envelopeVolumeLeft = (uint8_t)(((uint32_t)ch->leftVolume * vol) >> 8);
+    if (ch->synthType == 1 && ch->wav && ch->wav->data)
+        pcm_synth_pulse_update(ch);
+}
+
+static int pcm_next_frame_size(M4ADriver* drv)
+{
+    const uint64_t numerator = (uint64_t)drv->pcm_rate_hz * M4A_PCM_VBLANK_RATE_DENOMINATOR;
+    const uint64_t total = (uint64_t)drv->pcm_vblank_remainder + numerator;
+    uint32_t samples = (uint32_t)(total / M4A_PCM_VBLANK_RATE_NUMERATOR);
+    drv->pcm_vblank_remainder = (uint32_t)(total % M4A_PCM_VBLANK_RATE_NUMERATOR);
+    if (samples > drv->pcm_max_samples_per_vblank)
+        samples = drv->pcm_max_samples_per_vblank;
+    return (int)samples;
+}
+
+static int pcm_active_dma_buf_size(const M4ADriver* drv)
+{
+    uint32_t size = drv->pcm_dma_buf_size;
+    if (size == 0 || size > M4A_PCM_MAX_DMA_BUF_SIZE)
+        size = M4A_PCM_DMA_BUF_SIZE;
+    return (int)size;
 }
 
 /* SoundMainRAM_Reverb (vanilla Sappy m4a) — separate post-pass on the
@@ -169,15 +219,14 @@ static void pcm_channel_tick(M4ADriverPcmChan* ch, uint8_t masterVolume)
  *   wet = (sum * amount) >> 9
  *   L[pos] += wet;  R[pos] += wet;
  *   write L[pos], R[pos] back into the delay line.
- * frameSize = M4A_PCM_SAMPLES_PER_VBLANK (one vblank ahead in the
- * circular buffer = canonical 1-frame "other" tap from m4a_1.s). */
-static void sound_main_ram_reverb(M4ADriver* drv)
+ * frameSize is the active one-vblank PCM block; the circular buffer
+ * retains the canonical DMA buffer duration at that PCM rate. */
+static void sound_main_ram_reverb(M4ADriver* drv, int frameSize)
 {
     if (drv->reverb_amount == 0)
         return;
 
-    const int frameSize = M4A_PCM_SAMPLES_PER_VBLANK;
-    const int bufSize = M4A_PCM_DMA_BUF_SIZE;
+    const int bufSize = pcm_active_dma_buf_size(drv);
     uint8_t amount = drv->reverb_amount;
     uint16_t pos = drv->reverbPos;
 
@@ -283,7 +332,7 @@ static PcmSource pcm_source_from_channel(M4ADriverPcmChan* ch)
     source.loopLen = ch->loopLen;
     source.step = 1;
     source.pointerBias = 0;
-    source.loopPrevious = ch->wav ? ch->wav->data[ch->wav->size - 1] : 0;
+    source.loopPrevious = ch->wav && ch->wav->data && ch->wav->size ? ch->wav->data[ch->wav->size - 1] : 0;
     source.endPaddingSample = 0;
     source.looped = ch->isLoop && ch->loopLen > 0 && ch->wav;
     source.padEnd = false;
@@ -291,7 +340,7 @@ static PcmSource pcm_source_from_channel(M4ADriverPcmChan* ch)
 
     if (ch->type & VOICE_TYPE_REV)
     {
-        int32_t loopStartOffset = source.looped ? (int32_t)(ch->loopStart - ch->wav->data) : 0;
+        const int32_t loopStartOffset = source.looped ? (int32_t)(ch->loopStart - ch->wav->data) : 0;
         source.ptr = ch->currentPointer - 1;
         source.loopFirst = ch->wav->data + ch->wav->size - 1;
         source.count = ch->count - loopStartOffset;
@@ -309,6 +358,7 @@ static int32_t pcm_source_current_sample(const PcmSource* source)
 {
     return source->ptr[0];
 }
+
 
 static bool pcm_source_advance(PcmSource* source, uint32_t advance, bool fixed, int32_t* sampleStored, bool* stopped)
 {
@@ -353,35 +403,73 @@ static bool pcm_source_advance(PcmSource* source, uint32_t advance, bool fixed, 
     return true;
 }
 
+static void render_synth_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR, int frameSize)
+{
+    uint32_t phase = ch->fw;
+    const uint32_t step = ch->frequency << 3;
+    const int32_t envR = ch->envelopeVolumeRight;
+    const int32_t envL = ch->envelopeVolumeLeft;
+
+    for (int i = 0; i < frameSize; i++)
+    {
+        int32_t value;
+        if (ch->synthType == 1)
+        {
+            value = phase < ch->synthPulseDuty ? 64 : -64;
+            phase += step;
+        }
+        else if (ch->synthType == 2)
+        {
+            phase += step;
+            const int32_t raw = (int32_t)(phase >> 24) - 0x70 - (int32_t)((phase << 1) >> 27);
+            ch->count = raw + (ch->count >> 1);
+            value = ch->count >> 1;
+        }
+        else
+        {
+            phase += step;
+            value = (int32_t)phase < 0 ? 0x180 - (int32_t)(phase >> 23) : (int32_t)(phase >> 23) - 0x80;
+        }
+        mix_pcm_sample(value, envR, envL, mixL, mixR, i);
+    }
+    ch->fw = phase;
+}
+
 /* Render one PCM channel into the mix buffer.  Reverse voices are mapped
  * into a playback-order cursor before the common mixer sees them, keeping
  * interpolation, loop/end handling, and sample-store updates in one path. */
-static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR)
+static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR, int frameSize)
 {
     if (!(ch->status & M4A_CHN_ON) || (ch->status & M4A_CHN_START))
         return;
+    if (ch->synthType != 0)
+    {
+        if (ch->wav && ch->wav->data)
+            render_synth_channel(ch, mixL, mixR, frameSize);
+        return;
+    }
     if (!ch->wav || !ch->currentPointer || ch->count <= 0)
         return;
-    /* SoundMainRAM packs the integer L/R volumes and skips all source
-     * processing when both halves are zero. */
+    /* Preserve the compatibility engine's packed-volume gate: an inaudible
+     * attack does not consume source data before its envelope opens. */
     if (ch->envelopeVolumeRight == 0 && ch->envelopeVolumeLeft == 0)
         return;
 
     PcmSource source = pcm_source_from_channel(ch);
     int32_t sampleStored = ch->sampleStored;
     uint32_t fw = ch->fw;
-    bool fixed = (ch->type & VOICE_TYPE_FIX) != 0;
-    uint32_t freq = ch->frequency;
-    int32_t envR = ch->envelopeVolumeRight;
-    int32_t envL = ch->envelopeVolumeLeft;
+    const bool fixed = (ch->type & VOICE_TYPE_FIX) != 0;
+    const uint32_t freq = ch->frequency;
+    const int32_t envR = ch->envelopeVolumeRight;
+    const int32_t envL = ch->envelopeVolumeLeft;
     bool stopped = false;
 
     if (source.count <= 0)
         return;
 
-    for (int i = 0; i < M4A_PCM_SAMPLES_PER_VBLANK; i++)
+    for (int i = 0; i < frameSize; i++)
     {
-        int32_t sourceSample = pcm_source_current_sample(&source);
+        const int32_t sourceSample = pcm_source_current_sample(&source);
         int32_t sample;
         if (fixed)
         {
@@ -389,22 +477,19 @@ static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR)
         }
         else
         {
-            int32_t s0 = sampleStored;
-            int32_t diff = sourceSample - s0;
-            sample = s0 + (int32_t)(((int64_t)diff * (int32_t)fw) >> 23);
+            const int32_t diff = sourceSample - sampleStored;
+            sample = sampleStored + (int32_t)(((int64_t)diff * (int32_t)fw) >> 23);
         }
 
         mix_pcm_sample(sample, envR, envL, mixL, mixR, i);
 
         fw += freq;
-        uint32_t advance = fw >> 23;
+        const uint32_t advance = fw >> 23;
         if (advance)
         {
             fw &= 0x7FFFFF;
             if (!pcm_source_advance(&source, advance, fixed, &sampleStored, &stopped))
-            {
                 break;
-            }
         }
     }
 
@@ -416,37 +501,42 @@ static void render_channel(M4ADriverPcmChan* ch, int16_t* mixL, int16_t* mixR)
         ch->status = 0;
 }
 
-/* SoundMainRAM — vanilla Sappy m4a per-vblank PCM mixer. */
-void m4a_sound_main_ram(M4ADriver* drv)
+/* Render and publish one PCM block.  Scheduled SoundMain calls tick channel
+ * state first; a fresh-epoch prefill intentionally renders the current state
+ * without an extra envelope or gate tick. */
+static void render_pcm_block(M4ADriver* drv, bool tick_channels)
 {
-    if (!drv)
-        return;
+    const int frameSize = pcm_next_frame_size(drv);
+    const int bufSize = pcm_active_dma_buf_size(drv);
 
-    /* 1. Envelope tick on every active channel. */
-    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    if (tick_channels)
     {
-        M4ADriverPcmChan* ch = &drv->pcmChans[i];
-        if (ch->gateTime > 0)
+        /* 1. Envelope tick on every active channel. */
+        for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
         {
-            ch->gateTime--;
-            if (ch->gateTime == 0)
-                ch->status |= M4A_CHN_STOP;
+            M4ADriverPcmChan* ch = &drv->pcmChans[i];
+            if (ch->gateTime > 0)
+            {
+                ch->gateTime--;
+                if (ch->gateTime == 0)
+                    ch->status |= M4A_CHN_STOP;
+            }
+            pcm_channel_tick(ch, drv->master_volume);
         }
-        pcm_channel_tick(ch, drv->master_volume);
     }
 
     /* 2. Zero the mix buffer.  SoundMainRAM accumulates per channel
      * into this scratch — not the ring directly, since reverb runs
      * before clamp. */
-    memset(drv->pcmMixL, 0, sizeof(drv->pcmMixL));
-    memset(drv->pcmMixR, 0, sizeof(drv->pcmMixR));
+    memset(drv->pcmMixL, 0, (size_t)frameSize * sizeof(*drv->pcmMixL));
+    memset(drv->pcmMixR, 0, (size_t)frameSize * sizeof(*drv->pcmMixR));
 
     /* 3. Mix every active channel. */
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
-        render_channel(&drv->pcmChans[i], drv->pcmMixL, drv->pcmMixR);
+        render_channel(&drv->pcmChans[i], drv->pcmMixL, drv->pcmMixR, frameSize);
 
     /* 4. SoundMainRAM_Reverb in-place on the int16 mix. */
-    sound_main_ram_reverb(drv);
+    sound_main_ram_reverb(drv, frameSize);
 
     /* 5. Clamp int16 → int8 and write into M4APcmRing at write_cursor.
      *
@@ -459,14 +549,13 @@ void m4a_sound_main_ram(M4ADriver* drv)
      *     SOUND_A_RIGHT_OUTPUT | SOUND_B_LEFT_OUTPUT
      * → DMA_A is routed to right output, DMA_B to left.
      *
-     * So m4a writes the right mix into the FIFO_A buffer
-     * (gPcmDmaBuffer[0..1583]) and the left mix into the FIFO_B
-     * buffer (gPcmDmaBuffer[1584..3167]).  We mirror that convention
-     * here: ring_a = right mix, ring_b = left mix.  Single source of
-     * truth for routing is now hw_pcm_render's reading of
-     * dma_*_enable_* — driver never sees those bits. */
-    uint64_t base = drv->pcm.write_cursor % M4A_PCM_DMA_BUF_SIZE;
-    for (int i = 0; i < M4A_PCM_SAMPLES_PER_VBLANK; i++)
+     * So m4a writes the right mix into the FIFO_A side and the left mix
+     * into the FIFO_B side.  We mirror that convention here: ring_a =
+     * right mix, ring_b = left mix.  Single source of truth for routing is
+     * now hw_pcm_render's reading of dma_*_enable_* — driver never sees
+     * those bits. */
+    const uint64_t base = drv->pcm.write_cursor % (uint64_t)bufSize;
+    for (int i = 0; i < frameSize; i++)
     {
         /* Per-channel contribution is already (sample × envVol) >> 8 →
          * int8-range; the int16 mix buffer is just saturation headroom
@@ -483,18 +572,48 @@ void m4a_sound_main_ram(M4ADriver* drv)
         else if (rr < -128)
             rr = -128;
 
-        size_t idx = (size_t)((base + (uint64_t)i) % M4A_PCM_DMA_BUF_SIZE);
+        const size_t idx = (size_t)((base + (uint64_t)i) % (uint64_t)bufSize);
         drv->pcm.ring_a[idx] = (int8_t)rr; /* FIFO_A: right mix */
         drv->pcm.ring_b[idx] = (int8_t)l;  /* FIFO_B: left  mix */
     }
-    drv->pcm.write_cursor += M4A_PCM_SAMPLES_PER_VBLANK;
-    drv->pcm.pcm_rate_hz = M4A_PCM_RATE_HZ;
+    if (frameSize > 0)
+    {
+        drv->pcm.write_cursor += (uint64_t)frameSize;
+        drv->pcm.pcm_rate_hz = drv->pcm_rate_hz;
+        drv->pcm.pcm_samples_per_vblank = (uint32_t)frameSize;
+        drv->pcm.pcm_dma_buf_size = (uint32_t)bufSize;
 
-    /* Publish gate: stamp this vblank's ring writes with the firing
-     * sample_offset so the chip's hw_pcm only treats this block as
-     * available from `event_vblank_offset` onwards within the
-     * current render span.  Without this, the chip read clock would
-     * see all of this advance call's ring writes from sample_offset
-     * 0 — leaking post-vblank PCM into pre-vblank time. */
-    m4a_internal_emit_event(drv, M4A_REG_PCM_PUBLISH, 0u);
+        /* Publish gate: stamp this block's exact write count with the firing
+         * sample_offset so the chip's hw_pcm only treats it as available from
+         * `event_vblank_offset` onwards within the current render span. */
+        m4a_internal_emit_event(drv, M4A_REG_PCM_PUBLISH, (uint32_t)frameSize);
+    }
+    drv->pcm_prefill_pending = false;
+}
+
+/* SoundMainRAM — vanilla Sappy m4a per-vblank PCM mixer. */
+void m4a_sound_main_ram(M4ADriver* drv)
+{
+    if (!drv)
+        return;
+    render_pcm_block(drv, true);
+}
+
+void m4a_driver_prefill_pcm(M4ADriver* drv)
+{
+    if (!drv || !drv->pcm_prefill_pending)
+        return;
+
+    /* A newly started voice has no derived envelope volume until its first
+     * SoundMain tick.  Seed only those untouched attack envelopes so the
+     * fresh ring epoch is audible immediately; established voices keep their
+     * envelope phase when a live mix-rate change rebuilds the ring. */
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if ((ch->status & M4A_CHN_ON) && (ch->status & M4A_CHN_ENV_MASK) == M4A_CHN_ENV_ATTACK
+            && ch->envelopeVolume == 0)
+            pcm_channel_tick(ch, drv->master_volume);
+    }
+    render_pcm_block(drv, false);
 }

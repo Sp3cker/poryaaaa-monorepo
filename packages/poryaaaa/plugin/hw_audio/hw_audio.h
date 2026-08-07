@@ -23,10 +23,10 @@ extern "C"
      *     quirk byte sign-extended.
      *   - Mix bus: full SOUNDCNT_L (NR50/NR51) + SOUNDCNT_H + SOUNDBIAS
      *     bias-add / clip pipeline at internal rate (§12 step 8 + 9).
-     *   - Output frontend: streaming port of mGBA 0.10.5's bundled
-     *     blip_buf 1.1.0 impulse kernel, clock mapping, clipping, and
-     *     511/512 DC-blocking pole. Cumulative sample-clock accounting
-     *     keeps output invariant under host block-size changes.
+     *   - Output frontend: streaming port of current mGBA's normalized
+     *     16-tap sinc kernel with a three-term Nuttall window. Cumulative
+     *     sample-clock accounting keeps output invariant under host
+     *     block-size changes.
      *
      * Mono mGBA capture pairs prove the square/noise waveform and level
      * path used by the reference tools. Whole-engine parity still depends
@@ -37,9 +37,21 @@ extern "C"
     void hw_audio_destroy(HwAudio* hw);
     void hw_audio_set_host_rate(HwAudio* hw, float hz);
 
+    /* Reinitializes chip runtime in place without allocating. */
+    void hw_audio_reset(HwAudio* hw);
+
+    /* Copies the shared PSG clock and mixer routing state without copying
+     * oscillator lanes or PCM FIFO/resampler state. */
+    void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source);
+
+    /* Copies one active PSG lane's oscillator, envelope, sweep/LFSR, length,
+     * and routing runtime without emitting a trigger.  `lane` is sq1..noise
+     * (0..3). */
+    void hw_audio_clone_psg_lane(HwAudio* destination, const HwAudio* source, int lane);
+
     /* DEBUG / TEST VISIBILITY ONLY - not part of the production chip
      * timing contract.  Returns the chip's current internal render rate
-     * (PSG/PCM/mix synth rate, before the mGBA blip frontend).  This is
+     * (PSG/PCM/mix synth rate, before the current mGBA sinc frontend). It is
      * `32768 << sampling_cycle`: 32768, 65536, 131072, or 262144 Hz.
      * Exposed because it caught
      * a real class of cadence-

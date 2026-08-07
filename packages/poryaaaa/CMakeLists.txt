@@ -165,6 +165,9 @@ add_subdirectory(plugin/recorder)
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
+# ---- Porydaw-compatible static engine core ----
+add_subdirectory(plugin/porydaw)
+
 # m4a audio engine sources (shared between plugin, renderer, tests).
 set(ENGINE_SOURCES
     plugin/m4a_engine.c

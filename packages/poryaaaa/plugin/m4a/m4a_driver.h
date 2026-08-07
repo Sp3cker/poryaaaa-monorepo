@@ -64,9 +64,11 @@ extern "C"
         /* Per §6c: wave RAM is byte-granular (16 events for a full rewrite,
          * matching m4a's STMIA write order).  value = (addr_in_wave_ram << 8) | byte. */
         M4A_REG_WAVE_RAM_BYTE,
-        /* PCM ring publish gate.   See HW_AUDIO_SCAFFOLD_PLAN.md
-         * "DirectSound PCM event/ring timing" blocking gate. */
+        /* PCM ring publication.  value is the exact count in this block;
+         * zero remains the canonical default for older event producers. */
         M4A_REG_PCM_PUBLISH,
+        /* Starts a fresh PCM ring/FIFO epoch after a mix-rate change. */
+        M4A_REG_PCM_RESET,
     } M4ARegId;
 
     typedef struct
@@ -86,8 +88,10 @@ extern "C"
     M4ADriver* m4a_driver_create(float host_sample_rate);
     void m4a_driver_destroy(M4ADriver* drv);
     void m4a_driver_set_host_rate(M4ADriver* drv, float hz);
+    /* `rate == 0` follows the driver's host rate.  The active geometry is
+     * bounded by the static PCM ring capacity. */
+    void m4a_driver_set_pcm_mix_rate(M4ADriver* drv, float rate);
     void m4a_driver_set_xcmd_callback(M4ADriver* drv, M4ADriverXcmdFn fn, void* ctx);
-
     /* Voicegroup wiring (driver receives an already-populated ToneData*). */
     void m4a_driver_set_voicegroup(M4ADriver* drv, ToneData* vg);
     void m4a_driver_refresh_voices(M4ADriver* drv);
@@ -123,6 +127,9 @@ extern "C"
      * render-event-consume cycle (chunk if larger).  m4a_get_events_dropped()
      * reports any overflow. */
     void m4a_advance(M4ADriver* drv, int host_frames);
+    /* Publish exactly one current-state PCM block for a fresh ring epoch.
+     * Unlike SoundMain, this does not advance gate, envelope, or LFO state. */
+    void m4a_driver_prefill_pcm(M4ADriver* drv);
 
     /* Read-only accessor for non-timing consumers (UI, params, debug). */
     const M4ARegisterFile* m4a_get_register_file(const M4ADriver* drv);

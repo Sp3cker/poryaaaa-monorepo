@@ -192,6 +192,26 @@ static uint16_t cgb_pitch_freq_for_registers(M4ADriver* drv, const M4ADriverCgbC
     return freq;
 }
 
+static void emit_duty_write(M4ADriver* drv, const M4ADriverCgbChan* ch)
+{
+    M4ARegisterFile* r = &drv->regs;
+    switch (ch->type)
+    {
+    case 1:
+        r->sq1_duty = ch->dutyCycle & 0x03;
+        r->sq1_length = ch->length & 0x3F;
+        m4a_internal_emit_event(drv, M4A_REG_NR11, ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
+        break;
+    case 2:
+        r->sq2_duty = ch->dutyCycle & 0x03;
+        r->sq2_length = ch->length & 0x3F;
+        m4a_internal_emit_event(drv, M4A_REG_NR21, ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
+        break;
+    default:
+        break;
+    }
+}
+
 /* Emit the channel initialization writes that CgbSound performs before pitch. */
 static void emit_start_write(M4ADriver* drv, M4ADriverCgbChan* ch)
 {
@@ -200,20 +220,16 @@ static void emit_start_write(M4ADriver* drv, M4ADriverCgbChan* ch)
     {
     case 1:
     {
-        r->sq1_duty = ch->dutyCycle & 0x03;
-        r->sq1_length = ch->length & 0x3F;
         r->sq1_sweep_pace = (ch->sweep >> 4) & 0x07;
         r->sq1_sweep_dir = (ch->sweep & 0x08) ? -1 : +1;
         r->sq1_sweep_step = ch->sweep & 0x07;
         m4a_internal_emit_event(drv, M4A_REG_NR10, ch->sweep);
-        m4a_internal_emit_event(drv, M4A_REG_NR11, ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
+        emit_duty_write(drv, ch);
         break;
     }
     case 2:
     {
-        r->sq2_duty = ch->dutyCycle & 0x03;
-        r->sq2_length = ch->length & 0x3F;
-        m4a_internal_emit_event(drv, M4A_REG_NR21, ((uint32_t)(ch->dutyCycle & 0x03) << 6) | (ch->length & 0x3F));
+        emit_duty_write(drv, ch);
         break;
     }
     case 3:
@@ -535,6 +551,9 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     }
 
 done:
+    if (ch->modify & M4A_MO_DUTY)
+        emit_duty_write(drv, ch);
+
     /* CgbSound applies pitch before pan/envelope writes on each tick. */
     if (ch->type == 3)
     {

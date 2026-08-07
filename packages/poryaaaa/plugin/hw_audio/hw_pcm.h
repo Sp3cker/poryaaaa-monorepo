@@ -55,7 +55,8 @@ extern "C"
          * pcm_pos is monotonic (cumulative pcm-samples consumed) so it
          * survives across hw_audio_render_events boundaries — no glitch
          * every host buffer.  M4APcmRing's write_cursor advances
-         * independently; we read at floor(pcm_pos) % M4A_PCM_DMA_BUF_SIZE.
+         * independently; we read at floor(pcm_pos) modulo the active
+         * `pcm_dma_buf_size` (or the canonical size when it is zero).
          * pcm_pos shared between A and B (single pcm-rate clock; the two
          * FIFOs differ only in which ring side they track).
          *
@@ -92,7 +93,7 @@ extern "C"
 
         /* Render rate (chip-internal). Driven by HwAudio: this is
          * `32768 << sampling_cycle`, not the host rate. Output then passes
-         * through the mGBA blip frontend in hw_resample.c. */
+         * through the current mGBA sinc frontend in hw_resample.c. */
         float render_rate;
 
         /* SOUNDBIAS-derived quirk rate (32k/65k/131k/262k Hz) at which
@@ -102,8 +103,9 @@ extern "C"
 
         /* Publish gate — cumulative PCM samples the driver has stamped
          * as "available" via M4A_REG_PCM_PUBLISH events.  Each PUBLISH
-         * event advances by M4A_PCM_SAMPLES_PER_VBLANK at its
-         * sample_offset; reads from the ring are clamped to
+         * event advances by its payload's active samples-per-vblank; zero
+         * retains the canonical default for older producers.  Reads from
+         * the ring are clamped to
          * `floor(pcm_pos) < pcm_published_through`.  When the read
          * clock overruns (PUBLISH events lagging behind pcm_pos), the
          * FIFO underruns and we hold the last byte read — matches
@@ -128,8 +130,8 @@ extern "C"
     void hw_pcm_set_quirk_rate(HwPcm* pcm, int quirk_rate);
 
     /* Apply the relevant subset of M4ARegWrite events.  PCM consumes
-     * PCM_PUBLISH and SOUNDCNT_H FIFO reset bits.  SOUNDCNT_H DMA routing
-     * + volume codes belong to HwMixBus (see hw_mix.h). */
+     * PCM_PUBLISH, PCM_RESET, and SOUNDCNT_H FIFO reset bits.  SOUNDCNT_H
+     * DMA routing + volume codes belong to HwMixBus (see hw_mix.h). */
     void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev);
 
     /* Render `frames` chip-internal-rate per-FIFO mono samples through

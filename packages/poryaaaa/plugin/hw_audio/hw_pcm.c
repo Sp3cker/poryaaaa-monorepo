@@ -8,6 +8,22 @@ enum
     HW_PCM_SOUND_B_FIFO_RESET = 0x8000,
 };
 
+static void hw_pcm_reset_timeline(HwPcm* pcm)
+{
+    pcm->pcm_pos = 0.0;
+    pcm->pcm_last_int_a = -1;
+    pcm->pcm_last_int_b = -1;
+    pcm->held_pcm_a = 0;
+    pcm->held_pcm_b = 0;
+    pcm->quirk_pos = 0.0;
+    pcm->quirk_last_int_a = -1;
+    pcm->quirk_last_int_b = -1;
+    pcm->held_quirk_a = 0;
+    pcm->held_quirk_b = 0;
+    pcm->pcm_published_through = 0;
+    pcm->publish_seen = false;
+}
+
 void hw_pcm_init(HwPcm* pcm, float render_rate)
 {
     memset(pcm, 0, sizeof(*pcm));
@@ -19,10 +35,7 @@ void hw_pcm_init(HwPcm* pcm, float render_rate)
      * held_pcm/held_quirk from ring[0] / pcm head before any output
      * is produced.  Without this, the read-on-integer-crossing model
      * would skip index 0 entirely. */
-    pcm->pcm_last_int_a = -1;
-    pcm->pcm_last_int_b = -1;
-    pcm->quirk_last_int_a = -1;
-    pcm->quirk_last_int_b = -1;
+    hw_pcm_reset_timeline(pcm);
 }
 
 void hw_pcm_set_render_rate(HwPcm* pcm, float render_rate)
@@ -41,16 +54,17 @@ void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev)
 {
     if (!pcm || !ev)
         return;
-    /* PCM_PUBLISH advances the publish gate by one vblank's worth of
-     * ring samples.  No payload — the increment is constant.  See
-     * the field doc on `pcm_published_through` in hw_pcm.h and the
-     * "DirectSound PCM event/ring timing" blocking gate in
-     * HW_AUDIO_SCAFFOLD_PLAN.md. */
+    /* PCM_PUBLISH advances the publish gate by this vblank's active ring
+     * sample count.  Older producers use zero, which retains the canonical
+     * default geometry. */
     if (ev->reg == M4A_REG_PCM_PUBLISH)
     {
-        pcm->pcm_published_through += (uint64_t)M4A_PCM_SAMPLES_PER_VBLANK;
+        uint32_t samples = ev->value ? ev->value : M4A_PCM_SAMPLES_PER_VBLANK;
+        pcm->pcm_published_through += samples;
         pcm->publish_seen = true;
     }
+    if (ev->reg == M4A_REG_PCM_RESET)
+        hw_pcm_reset_timeline(pcm);
     if (ev->reg == M4A_REG_SOUNDCNT_H)
     {
         if (ev->value & HW_PCM_SOUND_A_FIFO_RESET)
@@ -122,7 +136,11 @@ void hw_pcm_render(HwPcm* pcm, const M4APcmRing* ring, float* out_a, float* out_
      * essentially the same head byte until pcm advances.  For
      * ROMhacks pushing pcm above quirk Nyquist, the quirk-rate
      * S&H acts as a low-pass at quirk/2, matching real DAC cadence. */
-    double pcm_step = (double)ring->pcm_rate_hz / (double)pcm->render_rate;
+    uint32_t pcm_rate_hz = ring->pcm_rate_hz ? ring->pcm_rate_hz : M4A_PCM_RATE_HZ;
+    uint32_t pcm_dma_buf_size = ring->pcm_dma_buf_size;
+    if (pcm_dma_buf_size == 0 || pcm_dma_buf_size > M4A_PCM_MAX_DMA_BUF_SIZE)
+        pcm_dma_buf_size = M4A_PCM_DMA_BUF_SIZE;
+    double pcm_step = (double)pcm_rate_hz / (double)pcm->render_rate;
     double quirk_step = (double)pcm->quirk_rate / (double)pcm->render_rate;
 
     for (int i = 0; i < frames; i++)
@@ -142,7 +160,7 @@ void hw_pcm_render(HwPcm* pcm, const M4APcmRing* ring, float* out_a, float* out_
         bool pcm_published = (uint64_t)pcm_int < pcm->pcm_published_through;
         if (pcm_published)
         {
-            size_t idx = (size_t)pcm_int % M4A_PCM_DMA_BUF_SIZE;
+            size_t idx = (size_t)pcm_int % pcm_dma_buf_size;
             if (pcm_int != pcm->pcm_last_int_a)
             {
                 pcm->held_pcm_a = ring->ring_a[idx];

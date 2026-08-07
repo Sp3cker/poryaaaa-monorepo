@@ -30,8 +30,19 @@ static void m4a_sound_main(M4ADriver* drv)
         m4a_internal_lfo_tick(drv);
     }
 
+    m4a_internal_compat_effects_tick(drv);
+
     m4a_cgb_sound(drv);
     m4a_sound_main_ram(drv);
+}
+
+void m4a_internal_compat_tick(M4ADriver* drv)
+{
+    if (!drv)
+        return;
+
+    drv->event_vblank_offset = 0;
+    m4a_sound_main(drv);
 }
 
 /* Advance the driver's internal vblank clock by `host_frames` at the
