@@ -1,4 +1,6 @@
 build/
+build-*/
+.build/
 build-windows/
 build_pugl/
 *.wav
