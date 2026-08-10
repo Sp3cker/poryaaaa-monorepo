@@ -1,4 +1,5 @@
 #include "hw_audio.h"
+#include "hw_audio_trace.h"
 #include "hw_psg.h"
 #include "hw_pcm.h"
 #include "hw_mix.h"
@@ -14,6 +15,15 @@
  * HwAudio struct — at HW_AUDIO_INTERNAL_CHUNK=1024 the six per-channel
  * scratch buffers add up to 24 KB. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
+
+typedef struct
+{
+    uint8_t bytes[32];
+    uint8_t read_index;
+    uint8_t write_index;
+    uint8_t count;
+    int8_t held_sample;
+} HwAudioTraceFifo;
 
 struct HwAudio
 {
@@ -31,6 +41,16 @@ struct HwAudio
      * channel set so a single name selects the same channel on both
      * sides). */
     uint32_t solo_mask;
+
+    /* Absolute trace position is independent of the production host-frame
+     * renderer. It rejects reordered captures before they reach chip state. */
+    uint64_t trace_cycle;
+    uint32_t trace_order;
+    bool trace_position_valid;
+    HwAudioTraceFifo trace_fifo_a;
+    HwAudioTraceFifo trace_fifo_b;
+    uint8_t trace_timer_a;
+    uint8_t trace_timer_b;
 
     /* Per-channel scratch at internal rate.  PSG synth writes 4, PCM
      * drain writes 2, mix bus consumes all 6 to produce stereo into
@@ -107,6 +127,9 @@ void hw_audio_reset(HwAudio* hw)
     hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
     hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
     hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    hw->trace_cycle = 0;
+    hw->trace_order = 0;
+    hw->trace_position_valid = false;
 }
 
 void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
@@ -234,6 +257,30 @@ void hw_audio_set_host_rate(HwAudio* hw, float hz)
     hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hz);
 }
 
+/* Apply the shared routing and DAC stage after a producer fills channel scratch. */
+static void mix_chip_chunk(HwAudio* hw, int internal_count)
+{
+    const uint32_t mask = hw->solo_mask;
+    hw_mix_render(&hw->mix,
+                  (mask & HW_AUDIO_SOLO_SQ1) ? hw->scratch_sq1 : NULL,
+                  (mask & HW_AUDIO_SOLO_SQ2) ? hw->scratch_sq2 : NULL,
+                  (mask & HW_AUDIO_SOLO_WAVE) ? hw->scratch_wave : NULL,
+                  (mask & HW_AUDIO_SOLO_NOISE) ? hw->scratch_noise : NULL,
+                  (mask & HW_AUDIO_SOLO_DMA_A) ? hw->scratch_dma_a : NULL,
+                  (mask & HW_AUDIO_SOLO_DMA_B) ? hw->scratch_dma_b : NULL,
+                  hw->mix_l,
+                  hw->mix_r,
+                  internal_count);
+}
+
+/* Produce chip-native stereo without involving the sinc frontend. */
+static void render_chip_chunk(HwAudio* hw, const M4APcmRing* pcm_ring, int internal_count)
+{
+    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, internal_count);
+    hw_pcm_render(&hw->pcm, pcm_ring, hw->scratch_dma_a, hw->scratch_dma_b, internal_count);
+    mix_chip_chunk(hw, internal_count);
+}
+
 /* Render `internal_count` chip-internal samples through PSG → PCM →
  * mix-bus into mix_l/mix_r, feed them to the resampler, and drain up
  * to `max_host` host outputs into outL/outR + offset.  Returns the
@@ -249,24 +296,7 @@ static int render_internal_chunk(HwAudio* hw,
     if (internal_count <= 0 || max_host <= 0)
         return 0;
 
-    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, internal_count);
-    hw_pcm_render(&hw->pcm, pcm_ring, hw->scratch_dma_a, hw->scratch_dma_b, internal_count);
-    /* Solo mask: zero the buffer pointer for any channel whose
-     * solo bit is clear so hw_mix_render treats it as silent.  PSG
-     * and PCM are still rendered unconditionally so their internal
-     * state (envelopes, LFSR, pcm_pos, etc) stays in sync with the
-     * cumulative input timeline regardless of solo selection. */
-    const uint32_t m = hw->solo_mask;
-    hw_mix_render(&hw->mix,
-                  (m & HW_AUDIO_SOLO_SQ1) ? hw->scratch_sq1 : NULL,
-                  (m & HW_AUDIO_SOLO_SQ2) ? hw->scratch_sq2 : NULL,
-                  (m & HW_AUDIO_SOLO_WAVE) ? hw->scratch_wave : NULL,
-                  (m & HW_AUDIO_SOLO_NOISE) ? hw->scratch_noise : NULL,
-                  (m & HW_AUDIO_SOLO_DMA_A) ? hw->scratch_dma_a : NULL,
-                  (m & HW_AUDIO_SOLO_DMA_B) ? hw->scratch_dma_b : NULL,
-                  hw->mix_l,
-                  hw->mix_r,
-                  internal_count);
+    render_chip_chunk(hw, pcm_ring, internal_count);
 
     return hw_resample_process(&hw->resample,
                                hw->mix_l,
@@ -482,4 +512,261 @@ void hw_audio_render_events(
     }
 
     render_to_host_offset(hw, pcm, outL, outR, frames, &rendered_host);
+}
+
+/* Apply one existing poryaaaa register event to every owning chip module. */
+static void apply_chip_event(HwAudio* hw, M4ARegId reg, uint32_t value)
+{
+    M4ARegWrite event = {0, reg, value};
+    hw_psg_apply_event(&hw->psg, &event);
+    hw_pcm_apply_event(&hw->pcm, &event);
+    hw_mix_apply_event(&hw->mix, &event);
+    if (reg == M4A_REG_SOUNDBIAS)
+        hw_audio_sync_rates_from_mix(hw);
+}
+
+/* Decode the halfword audio-register calls exposed by mGBA's GBA audio module. */
+static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t address, uint8_t width, uint32_t value)
+{
+    if (width != 2)
+        return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+
+    switch (address)
+    {
+    case HW_AUDIO_GBA_IO_BASE + 0x60:
+        apply_chip_event(hw, M4A_REG_NR10, value & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x62:
+        apply_chip_event(hw, M4A_REG_NR11, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR12, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x64:
+        apply_chip_event(hw, M4A_REG_NR13, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR14, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x68:
+        apply_chip_event(hw, M4A_REG_NR21, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR22, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x6C:
+        apply_chip_event(hw, M4A_REG_NR23, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR24, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x70:
+        apply_chip_event(hw, M4A_REG_NR30, value & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x72:
+        apply_chip_event(hw, M4A_REG_NR31, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR32, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x74:
+        apply_chip_event(hw, M4A_REG_NR33, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR34, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x78:
+        apply_chip_event(hw, M4A_REG_NR41, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR42, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x7C:
+        apply_chip_event(hw, M4A_REG_NR43, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR44, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x80:
+        apply_chip_event(hw, M4A_REG_NR50, value & 0xFFu);
+        apply_chip_event(hw, M4A_REG_NR51, (value >> 8) & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x82:
+        apply_chip_event(hw, M4A_REG_SOUNDCNT_H, value & 0xFFFFu);
+        hw->trace_timer_a = (uint8_t)((value >> 10) & 1u);
+        hw->trace_timer_b = (uint8_t)((value >> 14) & 1u);
+        if (value & (1u << 11))
+            memset(&hw->trace_fifo_a, 0, sizeof(hw->trace_fifo_a));
+        if (value & (1u << 15))
+            memset(&hw->trace_fifo_b, 0, sizeof(hw->trace_fifo_b));
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x84:
+        apply_chip_event(hw, M4A_REG_NR52, value & 0xFFu);
+        break;
+    case HW_AUDIO_GBA_IO_BASE + 0x88:
+        apply_chip_event(hw, M4A_REG_SOUNDBIAS, value & 0xFFFFu);
+        break;
+    default:
+        return HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+    }
+    return HW_AUDIO_TRACE_OK;
+}
+
+/* Apply a visible-bank Wave RAM write in little-endian bus order. */
+static HwAudioTraceStatus apply_trace_wave_write(HwAudio* hw, uint32_t address, uint8_t width, uint32_t value)
+{
+    if (width != 1 && width != 2 && width != 4)
+        return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+    if (address < HW_AUDIO_GBA_IO_BASE + 0x90 || address + width > HW_AUDIO_GBA_IO_BASE + 0xA0)
+        return HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+
+    for (uint8_t byte_index = 0; byte_index < width; byte_index++)
+    {
+        uint32_t wave_offset = address - (HW_AUDIO_GBA_IO_BASE + 0x90) + byte_index;
+        uint32_t byte = (value >> (byte_index * 8u)) & 0xFFu;
+        apply_chip_event(hw, M4A_REG_WAVE_RAM_BYTE, (wave_offset << 8) | byte);
+    }
+    return HW_AUDIO_TRACE_OK;
+}
+
+/* Push one DMA word into a trace FIFO without silently overwriting samples. */
+static HwAudioTraceStatus apply_trace_fifo_write(HwAudioTraceFifo* fifo, uint8_t width, uint32_t value)
+{
+    if (width != 4)
+        return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+    if (fifo->count > 28)
+        return HW_AUDIO_TRACE_FIFO_OVERFLOW;
+
+    for (unsigned byte_index = 0; byte_index < 4; byte_index++)
+    {
+        fifo->bytes[fifo->write_index] = (uint8_t)(value >> (byte_index * 8u));
+        fifo->write_index = (uint8_t)((fifo->write_index + 1u) & 31u);
+        fifo->count++;
+    }
+    return HW_AUDIO_TRACE_OK;
+}
+
+/* A selected timer consumes one signed byte and otherwise preserves the hold. */
+static void clock_trace_fifo(HwAudioTraceFifo* fifo)
+{
+    if (!fifo->count)
+        return;
+    fifo->held_sample = (int8_t)fifo->bytes[fifo->read_index];
+    fifo->read_index = (uint8_t)((fifo->read_index + 1u) & 31u);
+    fifo->count--;
+}
+
+/* Render one explicit native SAMPLE using the trace-driven FIFO holds. */
+static void render_trace_sample(HwAudio* hw)
+{
+    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, 1);
+    hw->scratch_dma_a[0] = (float)hw->trace_fifo_a.held_sample / 128.0f;
+    hw->scratch_dma_b[0] = (float)hw->trace_fifo_b.held_sample / 128.0f;
+    mix_chip_chunk(hw, 1);
+}
+
+/* Quantize the current native float representation into mGBA's signed PCM16 unit. */
+static int16_t native_float_to_pcm16(float sample)
+{
+    float scaled = sample * 32768.0f;
+    if (scaled >= 32767.0f)
+        return INT16_MAX;
+    if (scaled <= -32768.0f)
+        return INT16_MIN;
+    return (int16_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+}
+
+void hw_audio_trace_reset(HwAudio* hw)
+{
+    if (!hw)
+        return;
+
+    memset(&hw->mix, 0, sizeof(hw->mix));
+    hw->mix.bias_level = 0x200;
+    hw->mix.sampling_cycle = 0;
+    hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
+    hw_psg_init(&hw->psg, (float)hw->internal_rate);
+    apply_chip_event(hw, M4A_REG_NR52, 0);
+    hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
+    hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
+    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    hw->trace_cycle = 0;
+    hw->trace_order = 0;
+    hw->trace_position_valid = false;
+    memset(&hw->trace_fifo_a, 0, sizeof(hw->trace_fifo_a));
+    memset(&hw->trace_fifo_b, 0, sizeof(hw->trace_fifo_b));
+    hw->trace_timer_a = 0;
+    hw->trace_timer_b = 0;
+}
+
+HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame)
+{
+    if (!hw || !event || !frame)
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    memset(frame, 0, sizeof(*frame));
+
+    if (hw->trace_position_valid &&
+        (event->cycle < hw->trace_cycle || (event->cycle == hw->trace_cycle && event->order <= hw->trace_order)))
+        return HW_AUDIO_TRACE_OUT_OF_ORDER;
+
+    HwAudioTraceStatus status = HW_AUDIO_TRACE_OK;
+    if (event->kind == HW_AUDIO_TRACE_WRITE)
+    {
+        if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)
+        {
+            status = apply_trace_wave_write(hw, event->address, event->width, event->value);
+        }
+        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0)
+        {
+            status = apply_trace_fifo_write(&hw->trace_fifo_a, event->width, event->value);
+        }
+        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
+        {
+            status = apply_trace_fifo_write(&hw->trace_fifo_b, event->width, event->value);
+        }
+        else
+        {
+            status = apply_trace_register_write(hw, event->address, event->width, event->value);
+        }
+    }
+    else if (event->kind == HW_AUDIO_TRACE_SAMPLE)
+    {
+        if (event->width != 0 || event->address != 0 || event->value != 0)
+            status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
+        else
+        {
+            render_trace_sample(hw);
+            frame->cycle = event->cycle;
+            frame->left = native_float_to_pcm16(hw->mix_l[0]);
+            frame->right = native_float_to_pcm16(hw->mix_r[0]);
+        }
+    }
+    else if (event->kind == HW_AUDIO_TRACE_TIMER)
+    {
+        if (event->width != 0 || event->address != 0 || event->value > 1)
+            status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
+        else
+        {
+            if (hw->trace_timer_a == event->value)
+                clock_trace_fifo(&hw->trace_fifo_a);
+            if (hw->trace_timer_b == event->value)
+                clock_trace_fifo(&hw->trace_fifo_b);
+        }
+    }
+    else
+    {
+        status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    }
+
+    if (status == HW_AUDIO_TRACE_OK)
+    {
+        hw->trace_cycle = event->cycle;
+        hw->trace_order = event->order;
+        hw->trace_position_valid = true;
+    }
+    return status;
+}
+
+const char* hw_audio_trace_status_string(HwAudioTraceStatus status)
+{
+    switch (status)
+    {
+    case HW_AUDIO_TRACE_OK:
+        return "ok";
+    case HW_AUDIO_TRACE_INVALID_ARGUMENT:
+        return "invalid argument";
+    case HW_AUDIO_TRACE_OUT_OF_ORDER:
+        return "event is not strictly ordered";
+    case HW_AUDIO_TRACE_UNSUPPORTED_WIDTH:
+        return "unsupported write width";
+    case HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS:
+        return "unsupported audio address";
+    case HW_AUDIO_TRACE_FIFO_OVERFLOW:
+        return "FIFO write exceeds 32-byte capacity";
+    }
+    return "unknown trace status";
 }

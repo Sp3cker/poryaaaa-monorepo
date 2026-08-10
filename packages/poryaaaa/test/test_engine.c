@@ -22,6 +22,7 @@ extern void m4a_sound_main_ram(M4ADriver* drv);
 
 extern void m4a_trk_vol_pit_set(M4ADriverTrack* track);
 void test_hw_mix_run_all(void);
+void test_hw_audio_trace_run_all(void);
 void test_voicegroup_loader_run_all(void);
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY
 void test_voicegroup_core_parity_run_all(void);
@@ -6116,6 +6117,7 @@ int main(void)
     test_chip_canned_soundbias_dc_offset();
     test_chip_canned_soundbias_clip_asymmetric();
     test_hw_mix_run_all();
+    test_hw_audio_trace_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();

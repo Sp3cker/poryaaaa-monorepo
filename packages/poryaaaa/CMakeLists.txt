@@ -329,6 +329,31 @@ if(WIN32)
     endif()
 endif()
 
+# ---- Cycle-domain native audio trace recorder ----
+add_executable(poryaaaa_audio_trace
+    cmd/poryaaaa_audio_trace.c
+)
+poryaaaa_enable_project_warnings(poryaaaa_audio_trace)
+target_include_directories(poryaaaa_audio_trace PRIVATE plugin)
+target_link_libraries(poryaaaa_audio_trace PRIVATE hw_audio)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_audio_trace PRIVATE m)
+endif()
+
+# ---- Focused native audio trace tests ----
+add_executable(poryaaaa_hw_audio_trace_tests
+    test/test_hw_audio_trace.c
+)
+poryaaaa_enable_project_warnings(poryaaaa_hw_audio_trace_tests)
+target_compile_definitions(poryaaaa_hw_audio_trace_tests PRIVATE
+    PORYAAAA_HW_AUDIO_TRACE_TEST_MAIN=1
+)
+target_include_directories(poryaaaa_hw_audio_trace_tests PRIVATE plugin test)
+target_link_libraries(poryaaaa_hw_audio_trace_tests PRIVATE hw_audio)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_hw_audio_trace_tests PRIVATE m)
+endif()
+
 # ---- Full mGBA MP2K reference recorder ----
 option(PORYAAAA_BUILD_MGBA_REFERENCE
     "Build the full-ROM mGBA reference recorder" OFF)
@@ -443,6 +468,7 @@ add_executable(poryaaaa_unit_tests
     test/test_engine.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
+    test/test_hw_audio_trace.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
     ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}

@@ -65,6 +65,59 @@ The WAV is 65536 Hz PCM drained from mGBA's `postAudioBuffer` blip buffers,
 the same band-limited, DC-blocked signal consumed by mGBA frontends. It is not
 the raw `postAudioFrame` DAC stream.
 
+## Cycle-domain native comparison
+
+Hardware comparisons use a cycle-stamped trace rather than separately timed
+WAV recordings. `poryaaaa_audio_trace` consumes the same trace that the pinned
+mGBA replay adapter will consume and bypasses the sinc frontend:
+
+```bash
+cmake --build build --target poryaaaa_audio_trace
+./build/poryaaaa_audio_trace \
+  --input /tmp/song-audio.trace \
+  --output-prefix /tmp/poryaaaa-native \
+  --solo sq1
+```
+
+The text trace is deliberately narrow and versioned:
+
+```text
+PORYAAAA_AUDIO_TRACE 1
+CLOCK 16777216
+WRITE 0 0 2 04000088 00000200
+BEGIN 0 1
+SAMPLE 0 2
+END 1 0
+```
+
+Each event is ordered by `(absolute_gba_cycle, same_cycle_order)`. `WRITE`
+accepts mGBA's halfword audio-register calls, visible Wave RAM writes, and
+32-bit FIFO A/B writes. `TIMER cycle order 0|1` drains the DirectSound channels
+selecting that timer. `SAMPLE` records one native DAC frame at the exact point
+where mGBA emitted it. Events before `BEGIN` establish chip state without being
+included in the measured output.
+
+The recorder writes three sibling artifacts:
+
+- `.pcm`: interleaved little-endian signed PCM16, left then right.
+- `.cycles`: one little-endian `uint64` GBA cycle per stereo frame.
+- `.json`: versioned format, clock, frame count, cycle range, and channel mask.
+
+Compare a validated mGBA-clone capture against poryaaaa without altering either
+signal:
+
+```bash
+python3 tools/mgba-reference/native_compare.py \
+  /tmp/mgba-native.json \
+  /tmp/poryaaaa-native.json
+```
+
+The native gate requires identical frame counts, cycles, left samples, and
+right samples. It reports the first mismatch, mismatch counts, maximum integer
+errors, and artifact hashes. It never folds to mono, searches lag, removes DC,
+or fits gain. `waveform_compare.py` remains a diagnostic frontend-WAV tool and
+cannot pass the native hardware gate.
+
 Hardware-channel isolation uses mGBA's channel controls after reset. `--solo`
 keeps a comma-separated channel list; `--mute` removes it. Supported names are
 `sq1`, `sq2`, `wave`, `noise`, `fifo-a`, `fifo-b`, `psg`, `directsound`, and
