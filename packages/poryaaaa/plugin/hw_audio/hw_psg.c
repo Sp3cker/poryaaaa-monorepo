@@ -23,6 +23,7 @@ static const uint8_t kDutyPatterns[4] = {
 static void hw_psg_reset_frame_sequencer(HwPsgSynth* psg, uint8_t step)
 {
     psg->frame_seq_step = (uint8_t)(step & 7u);
+    psg->frame_seq_cycle_remainder = 0;
     psg->frame_seq_accum = 0.0;
     psg->frame_seq_ticks = 0;
     psg->frame_seq_length_ticks = 0;
@@ -217,13 +218,12 @@ static void hw_psg_advance_frame_sequencer(HwPsgSynth* psg)
     }
 }
 
+/* Power-off clears channel registers but preserves mGBA's lazy square-clock origin. */
 static void hw_psg_clear_channel_state(HwPsgSynth* psg)
 {
-    psg->sq1_timer_cycles = 0;
-    psg->sq2_timer_cycles = 0;
-    psg->sq1_duty_index = 0;
-    psg->sq2_duty_index = 0;
-    psg->wave_phase = 0;
+    psg->wave_cycles_until_update = 0;
+    psg->wave_pending_cycles = 0;
+    psg->wave_sample = 0;
 
     psg->sq1_freq = 0;
     psg->sq2_freq = 0;
@@ -247,6 +247,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
     psg->sq1_envelope = (HwPsgEnvelope){.dead = 2};
     psg->sq2_envelope = (HwPsgEnvelope){.dead = 2};
     psg->wave_vol_code = 0;
+    psg->wave_bank = false;
+    psg->wave_size = false;
 
     psg->sq1_dac_enabled = false;
     psg->sq1_enabled = false;
@@ -259,6 +261,7 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
     psg->noise_lfsr = 0;
     psg->noise_phase = 0;
     psg->noise_clock_shift = 0;
+    psg->noise_timer_cycles = 0;
     psg->noise_divisor_code = 0;
     psg->noise_last_sample = 0;
     psg->noise_width_7bit = false;
@@ -268,26 +271,162 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
     psg->noise_length_enabled = false;
 }
 
-/* Convert the 11-bit GB freq word + audio-rate constant + render_rate
- * into a 32-bit phase increment per render-rate sample.  audio_freq_hz
- * = RATE_NUM / (2048 - F); phase_inc = audio_hz / render_rate × 2^32.
- *
- * HwAudio sets render_rate to the SOUNDBIAS DAC cadence. The current mGBA
- * sinc frontend in hw_resample.c bridges that cadence to the host rate. */
-static uint32_t phase_inc_from_freq(uint16_t freq_word, float rate_num, float render_rate)
+/* Apply mGBA's integer GBA wave-volume transform to one 4-bit sample. */
+static uint8_t hw_psg_apply_wave_volume(uint8_t sample, uint8_t volume_code)
 {
-    int denom = 2048 - (int)(freq_word & 0x07FF);
-    if (denom <= 0)
-        denom = 1;
-    if (render_rate <= 0.0f)
-        return 0;
-    double audio_hz = (double)rate_num / (double)denom;
-    double inc = audio_hz / (double)render_rate * 4294967296.0;
-    if (inc < 0.0)
-        inc = 0.0;
-    if (inc > 4294967295.0)
-        inc = 4294967295.0;
-    return (uint32_t)inc;
+    uint8_t volume = (uint8_t)((volume_code >> 5) & 7u);
+    if (volume > 3)
+        sample = (uint8_t)(sample + (sample << 1));
+
+    switch (volume)
+    {
+    case 0:
+        return sample >> 4;
+    case 1:
+        return sample;
+    case 2:
+        return sample >> 1;
+    default:
+        return sample >> 2;
+    }
+}
+
+/* Retain elapsed cycles while mGBA's lazy square clock is inactive, then
+ * consume them with the frequency in effect at the next forced update. */
+static void hw_psg_advance_square_cycles(
+    uint64_t* timer_cycles, uint8_t* duty_index, uint16_t frequency, uint64_t cycles, bool clock)
+{
+    *timer_cycles += cycles;
+    if (!clock || frequency >= 2048)
+        return;
+
+    uint32_t period = 16u * (2048u - (frequency & 0x07FFu));
+    uint64_t steps = *timer_cycles / period;
+    *timer_cycles %= period;
+    *duty_index = (uint8_t)((*duty_index + steps) & 7u);
+}
+
+/* Load one GBA Wave RAM word without depending on host byte order. */
+static uint32_t hw_psg_read_wave_word(const HwPsgSynth* psg, int index)
+{
+    const uint8_t* bytes = &psg->wave_ram[index * 4];
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+/* Store one rotated GBA Wave RAM word in bus little-endian order. */
+static void hw_psg_write_wave_word(HwPsgSynth* psg, int index, uint32_t value)
+{
+    uint8_t* bytes = &psg->wave_ram[index * 4];
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8);
+    bytes[2] = (uint8_t)(value >> 16);
+    bytes[3] = (uint8_t)(value >> 24);
+}
+
+/* Rotate the selected GBA wave bank once and latch its newly exposed nibble. */
+static void hw_psg_clock_wave(HwPsgSynth* psg)
+{
+    int start = 7;
+    int end = 0;
+    if (!psg->wave_size)
+    {
+        if (psg->wave_bank)
+            end = 4;
+        else
+            start = 3;
+    }
+
+    uint32_t bits_carry = hw_psg_read_wave_word(psg, end) & 0x000000F0u;
+    for (int index = start; index >= end; index--)
+    {
+        uint32_t word = hw_psg_read_wave_word(psg, index);
+        uint32_t bits = word & 0x000000F0u;
+        word = ((word & 0x0F0F0F0Fu) << 4) | ((word & 0xF0F0F000u) >> 12);
+        word |= bits_carry << 20;
+        hw_psg_write_wave_word(psg, index, word);
+        bits_carry = bits;
+    }
+    psg->wave_sample = hw_psg_apply_wave_volume((uint8_t)(bits_carry >> 4), psg->wave_vol_code);
+}
+
+/* Run mGBA's delayed GBA wave clock, including its 24-cycle trigger latency. */
+static void hw_psg_advance_wave_cycles(HwPsgSynth* psg, uint64_t cycles)
+{
+    if (!psg->wave_enabled || !psg->wave_dac_on || psg->wave_freq >= 2048 || !psg->wave_cycles_until_update)
+        return;
+    if (cycles < psg->wave_cycles_until_update)
+    {
+        psg->wave_cycles_until_update -= (uint32_t)cycles;
+        return;
+    }
+
+    uint32_t period = 8u * (2048u - (psg->wave_freq & 0x07FFu));
+    uint64_t elapsed = cycles - psg->wave_cycles_until_update;
+    uint64_t clocks = 1u + elapsed / period;
+    psg->wave_cycles_until_update = period - (uint32_t)(elapsed % period);
+    uint64_t clocks_to_apply = clocks & (psg->wave_size ? 0x3Fu : 0x1Fu);
+    while (clocks_to_apply > 0)
+    {
+        hw_psg_clock_wave(psg);
+        clocks_to_apply--;
+    }
+}
+
+static void hw_psg_clock_noise(HwPsgSynth* psg)
+{
+    uint16_t lsb = psg->noise_lfsr & 1u;
+    uint16_t coeff = psg->noise_width_7bit ? 0x0060u : 0x6000u;
+    psg->noise_lfsr >>= 1;
+    psg->noise_lfsr ^= (uint16_t)(lsb * coeff);
+    psg->noise_last_sample = (uint8_t)lsb;
+}
+
+static void hw_psg_advance_noise_cycles(HwPsgSynth* psg, uint64_t cycles)
+{
+    if (!psg->noise_enabled)
+        return;
+
+    uint32_t period = (psg->noise_divisor_code ? 64u * psg->noise_divisor_code : 32u) << psg->noise_clock_shift;
+    uint64_t clocks = cycles / period;
+    uint64_t elapsed = (uint64_t)psg->noise_timer_cycles + cycles % period;
+    clocks += elapsed / period;
+    psg->noise_timer_cycles = (uint32_t)(elapsed % period);
+
+    while (clocks > 0)
+    {
+        hw_psg_clock_noise(psg);
+        clocks--;
+    }
+}
+
+/* Consume every Wave cycle retained since mGBA last ran channel 3. */
+static void hw_psg_force_wave(HwPsgSynth* psg)
+{
+    hw_psg_advance_wave_cycles(psg, psg->wave_pending_cycles);
+    psg->wave_pending_cycles = 0;
+}
+
+/* Retain lazy Wave cycles between forced events, but consume them before
+ * each frame tick so length expiry gates the remaining suffix. */
+static void hw_psg_advance_wave_and_frame_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_wave)
+{
+    const uint32_t frame_period = 16777216u / 512u;
+    while (cycles > 0)
+    {
+        uint32_t until_frame = frame_period - psg->frame_seq_cycle_remainder;
+        uint64_t chunk = cycles < until_frame ? cycles : until_frame;
+        psg->wave_pending_cycles += chunk;
+        psg->frame_seq_cycle_remainder = (uint16_t)(psg->frame_seq_cycle_remainder + chunk);
+        cycles -= chunk;
+        if (psg->frame_seq_cycle_remainder == frame_period)
+        {
+            hw_psg_force_wave(psg);
+            psg->frame_seq_cycle_remainder = 0;
+            hw_psg_tick_frame_sequencer(psg);
+        }
+    }
+    if (clock_wave)
+        hw_psg_force_wave(psg);
 }
 
 void hw_psg_init(HwPsgSynth* psg, float render_rate)
@@ -312,6 +451,22 @@ void hw_psg_set_render_rate(HwPsgSynth* psg, float render_rate)
     psg->render_rate = render_rate;
 }
 
+void hw_psg_advance_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave)
+{
+    if (!psg)
+        return;
+
+    hw_psg_advance_square_cycles(
+        &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, cycles, psg->master_enabled && clock_sq1);
+    hw_psg_advance_square_cycles(
+        &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, cycles, psg->master_enabled && clock_sq2);
+    if (!psg->master_enabled)
+        return;
+    if (cycles)
+        hw_psg_advance_noise_cycles(psg, cycles);
+    hw_psg_advance_wave_and_frame_cycles(psg, cycles, clock_wave);
+}
+
 void hw_psg_get_frame_sequencer_debug(const HwPsgSynth* psg, HwPsgFrameSequencerDebug* out)
 {
     if (!out)
@@ -324,29 +479,40 @@ void hw_psg_get_frame_sequencer_debug(const HwPsgSynth* psg, HwPsgFrameSequencer
     out->envelope_ticks = psg->frame_seq_envelope_ticks;
 }
 
-/* Convert NR32 byte → linear gain in [0..1].  Real GB shifts the wave
- * sample right by code; we mirror that with a fixed factor table.
- *   0x00       → mute
- *   bits 6-5 = 01 (0x20) → 100% (no shift)
- *   bits 6-5 = 10 (0x40) →  50% (>>1)
- *   bits 6-5 = 11 (0x60) →  25% (>>2)
- *   bit 7 = 1 (0x80)      →  75% (specific GBA mode) */
-static float wave_vol_factor(uint8_t code)
+void hw_psg_sample(const HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_wave, float* out_noise)
 {
-    if (code == 0)
-        return 0.0f;
-    if (code & 0x80)
-        return 0.75f;
-    switch ((code >> 5) & 3)
+    if (!psg->master_enabled)
     {
-    case 1:
-        return 1.00f;
-    case 2:
-        return 0.50f;
-    case 3:
-        return 0.25f;
-    default:
-        return 0.0f;
+        if (out_sq1)
+            *out_sq1 = 0.0f;
+        if (out_sq2)
+            *out_sq2 = 0.0f;
+        if (out_wave)
+            *out_wave = 0.0f;
+        if (out_noise)
+            *out_noise = 0.0f;
+        return;
+    }
+
+    if (out_sq1)
+    {
+        float bit = (kDutyPatterns[psg->sq1_duty] >> psg->sq1_duty_index) & 1u ? 1.0f : 0.0f;
+        *out_sq1 = psg->sq1_enabled ? bit * (psg->sq1_envelope.current_volume / 15.0f) : 0.0f;
+    }
+    if (out_sq2)
+    {
+        float bit = (kDutyPatterns[psg->sq2_duty] >> psg->sq2_duty_index) & 1u ? 1.0f : 0.0f;
+        *out_sq2 = psg->sq2_enabled ? bit * (psg->sq2_envelope.current_volume / 15.0f) : 0.0f;
+    }
+    if (out_wave)
+    {
+        *out_wave =
+            psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048 ? (float)psg->wave_sample / 15.0f : 0.0f;
+    }
+    if (out_noise)
+    {
+        float bit = psg->noise_last_sample ? 1.0f : 0.0f;
+        *out_noise = psg->noise_enabled ? bit * (psg->noise_envelope.current_volume / 15.0f) : 0.0f;
     }
 }
 
@@ -432,6 +598,8 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
 
     /* ---- Wave (NR30..NR34) + wave RAM ---- */
     case M4A_REG_NR30:
+        psg->wave_size = (v & 0x20) != 0;
+        psg->wave_bank = (v & 0x40) != 0;
         psg->wave_dac_on = (v & 0x80) != 0;
         if (!psg->wave_dac_on)
             psg->wave_enabled = false;
@@ -450,19 +618,21 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
         psg->wave_length_enabled = (v & 0x40) != 0;
         if (v & 0x80)
         {
-            /* Wave channel trigger: real GB resets wave position to 0. */
-            psg->wave_phase = 0;
             if (psg->wave_length_counter == 0)
                 psg->wave_length_counter = 256;
-            if (psg->wave_dac_on)
-                psg->wave_enabled = true;
+            psg->wave_enabled = psg->wave_dac_on;
         }
+        if (psg->wave_enabled)
+            psg->wave_cycles_until_update = 24u + 8u * (2048u - (psg->wave_freq & 0x07FFu));
+        else if (v & 0x80)
+            psg->wave_cycles_until_update = 0;
         break;
     case M4A_REG_WAVE_RAM_BYTE:
     {
         uint32_t addr = (v >> 8) & 0x0F;
         uint8_t byte = (uint8_t)(v & 0xFF);
-        psg->wave_ram[addr] = byte;
+        uint32_t bank = psg->master_enabled ? !psg->wave_bank : 1u;
+        psg->wave_ram[bank * 16u + addr] = byte;
         break;
     }
 
@@ -500,12 +670,11 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
     case M4A_REG_NR52:
         if ((v & 0x80) == 0)
         {
-            if (psg->master_enabled)
-            {
-                psg->master_enabled = false;
-                hw_psg_clear_channel_state(psg);
+            bool was_enabled = psg->master_enabled;
+            psg->master_enabled = false;
+            hw_psg_clear_channel_state(psg);
+            if (was_enabled)
                 hw_psg_reset_frame_sequencer(psg, 7);
-            }
         }
         else if (!psg->master_enabled)
         {
@@ -536,9 +705,6 @@ void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_w
         return;
     }
 
-    uint32_t wave_inc = (psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048)
-                            ? phase_inc_from_freq(psg->wave_freq, 65536.0f, psg->render_rate)
-                            : 0;
     uint32_t gba_cycles_per_sample = psg->render_rate > 0.0f ? (uint32_t)(16777216.0f / psg->render_rate + 0.5f) : 0;
 
     /* Noise timer: noise_freq_hz = 524288 / divisor / 2^(shift+1), where
@@ -566,8 +732,6 @@ void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_w
             frac = 1.0;
         noise_phase_inc = (uint32_t)(frac * 4294967296.0);
     }
-
-    float wave_factor = wave_vol_factor(psg->wave_vol_code);
 
     for (int i = 0; i < frames; i++)
     {
@@ -609,7 +773,7 @@ void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_w
             psg->sq1_timer_cycles += gba_cycles_per_sample;
             if (psg->sq1_timer_cycles >= period)
             {
-                uint32_t steps = psg->sq1_timer_cycles / period;
+                uint64_t steps = psg->sq1_timer_cycles / period;
                 psg->sq1_timer_cycles -= steps * period;
                 psg->sq1_duty_index = (uint8_t)((psg->sq1_duty_index + steps) & 7u);
             }
@@ -620,30 +784,21 @@ void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_w
             psg->sq2_timer_cycles += gba_cycles_per_sample;
             if (psg->sq2_timer_cycles >= period)
             {
-                uint32_t steps = psg->sq2_timer_cycles / period;
+                uint64_t steps = psg->sq2_timer_cycles / period;
                 psg->sq2_timer_cycles -= steps * period;
                 psg->sq2_duty_index = (uint8_t)((psg->sq2_duty_index + steps) & 7u);
             }
         }
 
-        /* Wave — mGBA GBA-mode unipolar.  Wave RAM nibble is the
-         * unsigned 4-bit value (0..15); applying the NR32 volume
-         * shift (wave_factor: 0=mute, 1=100%, 2=50%, 3=25%, 4=75%)
-         * scales it.  Output is unsigned [0, wave_factor]. */
+        /* Wave — mGBA clocks the selected GBA bank before observing the
+         * DAC sample at this internal timestamp. */
+        if (gba_cycles_per_sample)
+            hw_psg_advance_wave_cycles(psg, gba_cycles_per_sample);
         if (out_wave)
         {
-            float s = 0.0f;
-            if (wave_inc)
-            {
-                uint8_t pos = (uint8_t)(psg->wave_phase >> 27); /* 0..31 */
-                uint8_t byte = psg->wave_ram[pos >> 1];
-                uint8_t nib = (pos & 1) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                s = ((float)nib / 15.0f) * wave_factor;
-            }
-            out_wave[i] = s;
+            out_wave[i] =
+                psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048 ? (float)psg->wave_sample / 15.0f : 0.0f;
         }
-        if (wave_inc)
-            psg->wave_phase += wave_inc;
 
         /* Noise follows mGBA 0.10.5: emit the old low bit, shift, then
          * XOR that bit into taps 5/6 or 13/14. */

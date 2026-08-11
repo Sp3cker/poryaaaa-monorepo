@@ -8,23 +8,30 @@ decomp=""
 rom=""
 elf=""
 voicegroup=""
-voice_index=""
 song=""
 output=""
+capture_stage="frontend"
+trace_output=""
+native_output_prefix=""
+voice_index=""
 nm_tool="${ARM_NONE_EABI_NM:-arm-none-eabi-nm}"
 forwarded=()
 
 usage() {
     cat >&2 <<'EOF'
-Usage: record_voice.sh --decomp DIR --voicegroup NAME --voice INDEX --output FILE [options]
-   or: record_voice.sh --decomp DIR --song NAME --output FILE [options]
+Usage: record_voice.sh --decomp DIR --voicegroup NAME --voice INDEX [--output FILE] [options]
+   or: record_voice.sh --decomp DIR --song NAME [--output FILE] [options]
 
 Options:
   --recorder FILE          mgba_mp2k_reference executable
   --rom FILE               Built GBA ROM (default: DECOMP/pokeemerald-hearth.gba)
   --elf FILE               Matching ELF (default: DECOMP/pokeemerald-hearth.elf)
   --nm FILE                ARM nm executable (default: arm-none-eabi-nm)
-  --duration-seconds S     Forwarded to the recorder
+  --capture-stage STAGE    frontend (default), native, or both
+                           Native/both require an authoritative pinned-source recorder.
+  --trace-output FILE      Required for native/both; forwarded to the recorder
+  --native-output-prefix P Required for native/both; forwarded to the recorder
+  --duration-seconds S      Forwarded to the recorder
   --boot-timeout-seconds S Forwarded to the recorder
   --note N                 Forwarded to the recorder
   --velocity N             Forwarded to the recorder
@@ -46,6 +53,21 @@ while (($#)); do
         --song) song="$2"; shift 2 ;;
         --output) output="$2"; shift 2 ;;
         --nm) nm_tool="$2"; shift 2 ;;
+        --capture-stage)
+            capture_stage="$2"
+            forwarded+=("$1" "$2")
+            shift 2
+            ;;
+        --trace-output)
+            trace_output="$2"
+            forwarded+=("$1" "$2")
+            shift 2
+            ;;
+        --native-output-prefix)
+            native_output_prefix="$2"
+            forwarded+=("$1" "$2")
+            shift 2
+            ;;
         --duration-seconds|--boot-timeout-seconds|--note|--velocity|--volume|--pan|--fixture-address|--require-max-chans|--solo|--mute)
             forwarded+=("$1" "$2")
             shift 2
@@ -55,10 +77,26 @@ while (($#)); do
     esac
 done
 
-if [[ -z "$decomp" || -z "$output" ]]; then
+if [[ -z "$decomp" ]]; then
     usage
     exit 2
 fi
+case "$capture_stage" in
+    frontend)
+        [[ -n "$output" ]] || { usage; exit 2; }
+        ;;
+    native)
+        [[ -n "$trace_output" && -n "$native_output_prefix" ]] || { usage; exit 2; }
+        ;;
+    both)
+        [[ -n "$output" && -n "$trace_output" && -n "$native_output_prefix" ]] || { usage; exit 2; }
+        ;;
+    *)
+        echo "Invalid capture stage: $capture_stage" >&2
+        usage
+        exit 2
+        ;;
+esac
 if [[ -n "$song" && ( -n "$voicegroup" || -n "$voice_index" ) ]]; then
     echo "Choose either --song or --voicegroup/--voice" >&2
     exit 2
@@ -107,6 +145,11 @@ lookup_symbol() {
 }
 
 sound_info="$(lookup_symbol gSoundInfo)"
+output_args=()
+if [[ -n "$output" ]]; then
+    output_args=(--output "$output")
+fi
+
 
 if [[ -n "$song" ]]; then
     song_table="$decomp/sound/song_table.inc"
@@ -149,7 +192,7 @@ if [[ -n "$song" ]]; then
     echo "Recording $song (song $song_id, $music_player) through audio-only ROM + mGBA" >&2
     "$recorder" \
         --rom "$fixture_rom" \
-        --output "$output" \
+        ${output_args[@]+"${output_args[@]}"} \
         --boot-song \
         --song-address "$song_address" \
         --mplay-info "$mplay_info" \
@@ -167,7 +210,7 @@ voice_address="$(printf '0x%08X' "$((voicegroup_address + voice_index * 12))")"
 echo "Recording $voicegroup[$voice_index] at $voice_address through ROM MP2K + mGBA" >&2
 exec "$recorder" \
     --rom "$rom" \
-    --output "$output" \
+    ${output_args[@]+"${output_args[@]}"} \
     --mplay-start "$mplay_start" \
     --mplay-all-stop "$mplay_all_stop" \
     --mplay-info "$mplay_info" \

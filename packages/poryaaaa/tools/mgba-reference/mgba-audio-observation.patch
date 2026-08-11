@@ -1,0 +1,461 @@
+diff --git a/include/mgba/internal/gba/audio.h b/include/mgba/internal/gba/audio.h
+index fba5090bf..a8a1d5eff 100644
+--- a/include/mgba/internal/gba/audio.h
++++ b/include/mgba/internal/gba/audio.h
+@@ -10,11 +10,11 @@
+ 
+ CXX_GUARD_START
+ 
++#include <mgba-util/circle-buffer.h>
+ #include <mgba/core/cpu.h>
+ #include <mgba/core/interface.h>
+ #include <mgba/core/log.h>
+ #include <mgba/internal/gb/audio.h>
+-#include <mgba-util/circle-buffer.h>
+ 
+ #define GBA_AUDIO_FIFO_SIZE 8
+ #define GBA_MAX_SAMPLES 16
+@@ -29,6 +29,25 @@ struct GBADMA;
+ extern const unsigned GBA_AUDIO_SAMPLES;
+ extern const int GBA_AUDIO_VOLUME_MAX;
+ 
++enum GBAAudioObservationKind { GBA_AUDIO_OBSERVATION_WRITE, GBA_AUDIO_OBSERVATION_TIMER, GBA_AUDIO_OBSERVATION_SAMPLE };
++
++struct GBAAudioObservation {
++	uint64_t cycle;
++	enum GBAAudioObservationKind kind;
++	uint8_t width;
++	uint32_t address;
++	uint32_t value;
++	uint32_t cyclesLate;
++	int16_t left;
++	int16_t right;
++};
++
++struct GBAAudioObservationSink {
++	void* context;
++	void (*reset)(void* context);
++	void (*emit)(void* context, const struct GBAAudioObservation* observation);
++};
++
+ struct GBAAudioFIFO {
+ 	uint32_t fifo[GBA_AUDIO_FIFO_SIZE];
+ 	int fifoWrite;
+@@ -58,6 +77,7 @@ DECL_BITS(GBARegisterSOUNDBIAS, Resolution, 14, 2);
+ 
+ struct GBAAudio {
+ 	struct GBA* p;
++	const struct GBAAudioObservationSink* observationSink;
+ 
+ 	struct GBAudio psg;
+ 	struct GBAAudioFIFO chA;
+@@ -253,6 +273,9 @@ struct GBAMP2kTrack {
+ };
+ 
+ void GBAAudioInit(struct GBAAudio* audio, size_t samples);
++
++void GBAAudioSetObservationSink(struct GBAAudio* audio, const struct GBAAudioObservationSink* sink);
++void GBAAudioObserveWrite(struct GBAAudio* audio, uint32_t address, uint8_t width, uint32_t value);
+ void GBAAudioReset(struct GBAAudio* audio);
+ void GBAAudioDeinit(struct GBAAudio* audio);
+ 
+@@ -279,6 +302,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value);
+ uint32_t GBAAudioReadWaveRAM(struct GBAAudio* audio, int address);
+ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value);
+ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles);
++void GBAAudioSampleFIFOWithSampleEvent(struct GBAAudio* audio, int fifoId, int32_t cycles, int32_t sampleEventUntil);
+ 
+ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp);
+ 
+diff --git a/src/gba/audio.c b/src/gba/audio.c
+index 1e913554f..9c4b1d6c7 100644
+--- a/src/gba/audio.c
++++ b/src/gba/audio.c
+@@ -5,8 +5,8 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ #include <mgba/internal/gba/audio.h>
+ 
+-#include <mgba/internal/arm/macros.h>
+ #include <mgba/core/sync.h>
++#include <mgba/internal/arm/macros.h>
+ #include <mgba/internal/gba/dma.h>
+ #include <mgba/internal/gba/gba.h>
+ #include <mgba/internal/gba/io.h>
+@@ -25,7 +25,78 @@ static const int SAMPLE_INTERVAL = GBA_ARM7TDMI_FREQUENCY / 0x4000;
+ static int _applyBias(struct GBAAudio* audio, int sample);
+ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate);
+ 
++static void _observeTimer(struct GBAAudio* audio, int fifoId, uint32_t cyclesLate) {
++	const struct GBAAudioObservationSink* sink = audio->observationSink;
++	if (!sink) {
++		return;
++	}
++
++	uint64_t cycle = mTimingGlobalTime(&audio->p->timing);
++	if (cyclesLate > cycle) {
++		cycle = 0;
++	} else {
++		cycle -= cyclesLate;
++	}
++	struct GBAAudioObservation observation;
++	observation.cycle = cycle;
++	observation.kind = GBA_AUDIO_OBSERVATION_TIMER;
++	observation.width = 0;
++	observation.address = GBA_BASE_IO | (fifoId ? GBA_REG_FIFO_B_LO : GBA_REG_FIFO_A_LO);
++	observation.value = fifoId ? audio->chBTimer : audio->chATimer;
++	observation.cyclesLate = cyclesLate;
++	observation.left = 0;
++	observation.right = 0;
++	sink->emit(sink->context, &observation);
++}
++
++static void _observeSample(struct GBAAudio* audio, int32_t timestamp, int16_t left, int16_t right) {
++	const struct GBAAudioObservationSink* sink = audio->observationSink;
++	if (!sink) {
++		return;
++	}
++
++	int64_t cycle = (int64_t) mTimingGlobalTime(&audio->p->timing) +
++	    ((int64_t) timestamp - (int64_t) mTimingCurrentTime(&audio->p->timing));
++	if (cycle < 0) {
++		return;
++	}
++
++	struct GBAAudioObservation observation;
++	observation.cycle = (uint64_t) cycle;
++	observation.kind = GBA_AUDIO_OBSERVATION_SAMPLE;
++	observation.width = 0;
++	observation.address = 0;
++	observation.value = 0;
++	observation.cyclesLate = 0;
++	observation.left = left;
++	observation.right = right;
++	sink->emit(sink->context, &observation);
++}
++
++void GBAAudioSetObservationSink(struct GBAAudio* audio, const struct GBAAudioObservationSink* sink) {
++	audio->observationSink = sink;
++}
++
++void GBAAudioObserveWrite(struct GBAAudio* audio, uint32_t address, uint8_t width, uint32_t value) {
++	const struct GBAAudioObservationSink* sink = audio->observationSink;
++	if (!sink) {
++		return;
++	}
++
++	struct GBAAudioObservation observation;
++	observation.cycle = mTimingGlobalTime(&audio->p->timing);
++	observation.kind = GBA_AUDIO_OBSERVATION_WRITE;
++	observation.width = width;
++	observation.address = address;
++	observation.value = value;
++	observation.cyclesLate = 0;
++	observation.left = 0;
++	observation.right = 0;
++	sink->emit(sink->context, &observation);
++}
++
+ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
++	audio->observationSink = NULL;
+ 	audio->sampleEvent.context = audio;
+ 	audio->sampleEvent.name = "GBA Audio Sample";
+ 	audio->sampleEvent.callback = _sample;
+@@ -47,6 +118,10 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
+ }
+ 
+ void GBAAudioReset(struct GBAAudio* audio) {
++	if (audio->observationSink) {
++		audio->observationSink->reset(audio->observationSink->context);
++	}
++
+ 	GBAudioReset(&audio->psg);
+ 	mTimingDeschedule(&audio->p->timing, &audio->psg.frameEvent);
+ 	mTimingSchedule(&audio->p->timing, &audio->psg.frameEvent, 0);
+@@ -121,35 +196,41 @@ void GBAAudioScheduleFifoDma(struct GBAAudio* audio, int number, struct GBADMA*
+ 
+ void GBAAudioWriteSOUND1CNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND1CNT_LO, 2, value);
+ 	GBAudioWriteNR10(&audio->psg, value);
+ }
+ 
+ void GBAAudioWriteSOUND1CNT_HI(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND1CNT_HI, 2, value);
+ 	GBAudioWriteNR11(&audio->psg, value);
+ 	GBAudioWriteNR12(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND1CNT_X(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND1CNT_X, 2, value);
+ 	GBAudioWriteNR13(&audio->psg, value);
+ 	GBAudioWriteNR14(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND2CNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND2CNT_LO, 2, value);
+ 	GBAudioWriteNR21(&audio->psg, value);
+ 	GBAudioWriteNR22(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND2CNT_HI(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND2CNT_HI, 2, value);
+ 	GBAudioWriteNR23(&audio->psg, value);
+ 	GBAudioWriteNR24(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND3CNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND3CNT_LO, 2, value);
+ 	audio->psg.ch3.size = GBAudioRegisterBankGetSize(value);
+ 	audio->psg.ch3.bank = GBAudioRegisterBankGetBank(value);
+ 	GBAudioWriteNR30(&audio->psg, value);
+@@ -157,35 +238,41 @@ void GBAAudioWriteSOUND3CNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 
+ void GBAAudioWriteSOUND3CNT_HI(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND3CNT_HI, 2, value);
+ 	GBAudioWriteNR31(&audio->psg, value);
+ 	audio->psg.ch3.volume = GBAudioRegisterBankVolumeGetVolumeGBA(value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND3CNT_X(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND3CNT_X, 2, value);
+ 	GBAudioWriteNR33(&audio->psg, value);
+ 	GBAudioWriteNR34(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND4CNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND4CNT_LO, 2, value);
+ 	GBAudioWriteNR41(&audio->psg, value);
+ 	GBAudioWriteNR42(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUND4CNT_HI(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUND4CNT_HI, 2, value);
+ 	GBAudioWriteNR43(&audio->psg, value);
+ 	GBAudioWriteNR44(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUNDCNT_LO(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUNDCNT_LO, 2, value);
+ 	GBAudioWriteNR50(&audio->psg, value);
+ 	GBAudioWriteNR51(&audio->psg, value >> 8);
+ }
+ 
+ void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUNDCNT_HI, 2, value);
+ 	audio->volume = GBARegisterSOUNDCNT_HIGetVolume(value);
+ 	audio->volumeChA = GBARegisterSOUNDCNT_HIGetVolumeChA(value);
+ 	audio->volumeChB = GBARegisterSOUNDCNT_HIGetVolumeChB(value);
+@@ -207,6 +294,7 @@ void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
+ 
+ void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
+ 	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUNDCNT_X, 2, value);
+ 	audio->enable = GBAudioEnableGetEnable(value);
+ 	GBAudioWriteNR52(&audio->psg, value);
+ 	if (!audio->enable) {
+@@ -227,6 +315,7 @@ void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
+ void GBAAudioWriteSOUNDBIAS(struct GBAAudio* audio, uint16_t value) {
+ 	int32_t timestamp = mTimingCurrentTime(&audio->p->timing);
+ 	GBAAudioSample(audio, timestamp);
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_SOUNDBIAS, 2, value);
+ 	audio->soundbias = value;
+ 	int32_t oldSampleInterval = audio->sampleInterval;
+ 	audio->sampleInterval = 0x200 >> GBARegisterSOUNDBIASGetResolution(value);
+@@ -252,6 +341,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value) {
+ 	}
+ 
+ 	GBAudioRun(&audio->psg, mTimingCurrentTime(audio->psg.timing), 0x4);
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | GBA_REG_WAVE_RAM0_LO + address * 4, 4, value);
+ 	audio->psg.ch3.wavedata32[address | (bank * 4)] = value;
+ }
+ 
+@@ -281,6 +371,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
+ 		mLOG(GBA_AUDIO, ERROR, "Bad FIFO write to address 0x%03x", address);
+ 		return value;
+ 	}
++	GBAAudioObserveWrite(audio, GBA_BASE_IO | address, 4, value);
+ 	channel->fifo[channel->fifoWrite] = value;
+ 	++channel->fifoWrite;
+ 	if (channel->fifoWrite == GBA_AUDIO_FIFO_SIZE) {
+@@ -289,7 +380,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
+ 	return channel->fifo[channel->fifoWrite];
+ }
+ 
+-void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
++void GBAAudioSampleFIFOWithSampleEvent(struct GBAAudio* audio, int fifoId, int32_t cycles, int32_t sampleEventUntil) {
+ 	struct GBAAudioFIFO* channel;
+ 	if (fifoId == 0) {
+ 		channel = &audio->chA;
+@@ -323,7 +414,7 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
+ 			channel->fifoRead = 0;
+ 		}
+ 	}
+-	int32_t until = mTimingUntil(&audio->p->timing, &audio->sampleEvent) - 1;
++	int32_t until = sampleEventUntil - 1;
+ 	int bits = 2 << GBARegisterSOUNDBIASGetResolution(audio->soundbias);
+ 	until += 1 << (9 - GBARegisterSOUNDBIASGetResolution(audio->soundbias));
+ 	until >>= 9 - GBARegisterSOUNDBIASGetResolution(audio->soundbias);
+@@ -335,11 +426,16 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
+ 		channel->samples[i] = channel->internalSample;
+ 	}
+ 	if (channel->internalRemaining) {
++		_observeTimer(audio, fifoId, cycles);
+ 		channel->internalSample >>= 8;
+ 		--channel->internalRemaining;
+ 	}
+ }
+ 
++void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
++	GBAAudioSampleFIFOWithSampleEvent(audio, fifoId, cycles, mTimingUntil(&audio->p->timing, &audio->sampleEvent));
++}
++
+ static int _applyBias(struct GBAAudio* audio, int sample) {
+ 	sample += GBARegisterSOUNDBIASGetBias(audio->soundbias);
+ 	if (sample >= 0x400) {
+@@ -352,11 +448,13 @@ static int _applyBias(struct GBAAudio* audio, int sample) {
+ 
+ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
+ 	timestamp -= audio->lastSample;
+-	timestamp -= audio->sampleIndex * audio->sampleInterval; // TODO: This can break if the interval changes between samples
++	timestamp -=
++	    audio->sampleIndex * audio->sampleInterval; // TODO: This can break if the interval changes between samples
+ 
+ 	int maxSample = 2 << GBARegisterSOUNDBIASGetResolution(audio->soundbias);
+ 	int sample;
+-	for (sample = audio->sampleIndex; timestamp >= audio->sampleInterval && sample < maxSample; ++sample, timestamp -= audio->sampleInterval) {
++	for (sample = audio->sampleIndex; timestamp >= audio->sampleInterval && sample < maxSample;
++	     ++sample, timestamp -= audio->sampleInterval) {
+ 		int16_t sampleLeft = 0;
+ 		int16_t sampleRight = 0;
+ 		int psgShift = 4 - audio->volume;
+@@ -389,6 +487,8 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
+ 		sampleRight = _applyBias(audio, sampleRight);
+ 		audio->currentSamples[sample].left = sampleLeft;
+ 		audio->currentSamples[sample].right = sampleRight;
++		_observeSample(audio, sample * audio->sampleInterval + audio->lastSample, audio->currentSamples[sample].left,
++		               audio->currentSamples[sample].right);
+ 	}
+ 
+ 	audio->sampleIndex = sample;
+@@ -412,7 +512,8 @@ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+ 		if (audio->p->stream->postAudioFrame) {
+ 			int i;
+ 			for (i = 0; i < samples; ++i) {
+-				audio->p->stream->postAudioFrame(audio->p->stream, audio->currentSamples[i].left,audio->currentSamples[i].right);
++				audio->p->stream->postAudioFrame(audio->p->stream, audio->currentSamples[i].left,
++				                                 audio->currentSamples[i].right);
+ 			}
+ 		}
+ 		if (audio->p->stream->postAudioBuffer) {
+diff --git a/src/gba/io.c b/src/gba/io.c
+index 658036e4c..7c4305502 100644
+--- a/src/gba/io.c
++++ b/src/gba/io.c
+@@ -586,81 +586,97 @@ void GBAIOWrite8(struct GBA* gba, uint32_t address, uint8_t value) {
+ 	switch (address) {
+ 	case GBA_REG_SOUND1CNT_HI:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR11(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND1CNT_HI)] &= 0xFF00;
+ 		gba->memory.io[GBA_REG(SOUND1CNT_HI)] |= value & 0xC0;
+ 		break;
+ 	case GBA_REG_SOUND1CNT_HI + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR12(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND1CNT_HI)] &= 0x00C0;
+ 		gba->memory.io[GBA_REG(SOUND1CNT_HI)] |= value << 8;
+ 		break;
+ 	case GBA_REG_SOUND1CNT_X:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR13(&gba->audio.psg, value);
+ 		break;
+ 	case GBA_REG_SOUND1CNT_X + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR14(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND1CNT_X)] = (value & 0x40) << 8;
+ 		break;
+ 	case GBA_REG_SOUND2CNT_LO:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR21(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND2CNT_LO)] &= 0xFF00;
+ 		gba->memory.io[GBA_REG(SOUND2CNT_LO)] |= value & 0xC0;
+ 		break;
+ 	case GBA_REG_SOUND2CNT_LO + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR22(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND2CNT_LO)] &= 0x00C0;
+ 		gba->memory.io[GBA_REG(SOUND2CNT_LO)] |= value << 8;
+ 		break;
+ 	case GBA_REG_SOUND2CNT_HI:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR23(&gba->audio.psg, value);
+ 		break;
+ 	case GBA_REG_SOUND2CNT_HI + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR24(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND2CNT_HI)] = (value & 0x40) << 8;
+ 		break;
+ 	case GBA_REG_SOUND3CNT_HI:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR31(&gba->audio.psg, value);
+ 		break;
+ 	case GBA_REG_SOUND3CNT_HI + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		gba->audio.psg.ch3.volume = GBAudioRegisterBankVolumeGetVolumeGBA(value);
+ 		gba->memory.io[GBA_REG(SOUND3CNT_HI)] = (value & 0xE0) << 8;
+ 		break;
+ 	case GBA_REG_SOUND3CNT_X:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR33(&gba->audio.psg, value);
+ 		break;
+ 	case GBA_REG_SOUND3CNT_X + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR34(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND3CNT_X)] = (value & 0x40) << 8;
+ 		break;
+ 	case GBA_REG_SOUND4CNT_LO:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR41(&gba->audio.psg, value);
+ 		break;
+ 	case GBA_REG_SOUND4CNT_LO + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR42(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND4CNT_LO)] = value << 8;
+ 		break;
+ 	case GBA_REG_SOUND4CNT_HI:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR43(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND4CNT_HI)] &= 0x4000;
+ 		gba->memory.io[GBA_REG(SOUND4CNT_HI)] |= value;
+ 		break;
+ 	case GBA_REG_SOUND4CNT_HI + 1:
+ 		GBAAudioSample(&gba->audio, mTimingCurrentTime(&gba->timing));
++		GBAAudioObserveWrite(&gba->audio, GBA_BASE_IO | address, 1, value);
+ 		GBAudioWriteNR44(&gba->audio.psg, value);
+ 		gba->memory.io[GBA_REG(SOUND4CNT_HI)] &= 0x00FF;
+ 		gba->memory.io[GBA_REG(SOUND4CNT_HI)] |= (value & 0x40) << 8;

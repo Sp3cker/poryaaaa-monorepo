@@ -25,17 +25,18 @@ extern "C"
      * of mGBA gb_audio.c hardware state: envelope volume + duty/wave-RAM/
      * LFSR + clock state + DAC + pan masks.
      *
-     * Frequency / phase model (per real GB hardware):
+     * Frequency / clock model (per real GBA hardware):
      *   audio_hz_square = 131072 / (2048 - F)
      *   audio_hz_wave   =  65536 / (2048 - F)
      *   audio_hz_noise  = 524288 / divisor / 2^(shift+1)   [divisor 0→0.5, 1..7→1..7]
      *   square duty index advances every 16 * (2048 - F) GBA CPU cycles
      *   and is preserved across both MO_PIT (NRx3+NRx4-no-trigger) and
      *     NRx4-with-trigger writes; a trigger does not reset that timer.
-     *   wave RAM position resets to 0 on NR34-with-trigger (real GB GBATEK).
+     *   GBA wave clocks rotate the selected 32- or 64-nibble bank every
+     *     8 * (2048 - F) cycles. NR34 leaves the prior sample latched and
+     *     schedules the first clock 24 cycles after one full wave period.
+     *   Wave RAM writes target the bank opposite NR30's playback bank.
      *   noise LFSR resets to 0x7F or 0x7FFF on NR44-with-trigger.
-     *   The ROM retriggers square/noise on envelope writes but limits wave
-     *     retriggers to fresh notes so NR34 does not reset the wave position.
      *
      * Noise follows the linked mGBA 0.10.5 GBA-mode path.  Each clock emits
      * the old low bit, shifts right, and XORs that bit with 0x60 (7-bit) or
@@ -45,21 +46,22 @@ extern "C"
      * Synth runs at mGBA's SOUNDBIAS-selected DAC cadence, set by HwAudio
      * to `32768 << sampling_cycle`, not at the host rate. Reference
      * captures cover both square channels, all four duty patterns, normal
-     * and alternate CGB voices, hardware envelopes, sweep, and noise.
-     * Isolated stereo captures also verify left-only, right-only, and
-     * centered routing against mGBA.
+     * and alternate CGB voices, hardware envelopes, sweep, GBA wave-bank
+     * timing, and noise. Isolated stereo captures also verify left-only,
+     * right-only, and centered routing against mGBA.
      *
-     * These captures establish PSG voice parity, not whole-engine parity;
-     * parser timing, PCM, wave, and reverb remain separate boundaries. */
+     * These captures establish native hardware-voice parity, not whole-engine
+     * parity; parser timing and reverb remain separate boundaries. */
 
     typedef struct
     {
         /* Per-channel runtime state */
-        uint32_t sq1_timer_cycles;
-        uint32_t sq2_timer_cycles;
+        uint64_t sq1_timer_cycles;
+        uint64_t sq2_timer_cycles;
         uint8_t sq1_duty_index;
         uint8_t sq2_duty_index;
-        uint32_t wave_phase;
+        uint32_t wave_cycles_until_update;
+        uint64_t wave_pending_cycles;
 
         uint16_t sq1_freq; /* 11-bit freq word */
         uint16_t sq2_freq;
@@ -84,20 +86,24 @@ extern "C"
         HwPsgEnvelope sq1_envelope;
         HwPsgEnvelope sq2_envelope;
         uint8_t wave_vol_code; /* NR32 byte */
+        uint8_t wave_sample;
 
         bool sq1_dac_enabled;
         bool sq1_enabled;
         bool sq2_enabled;
         bool wave_enabled;
         bool wave_dac_on; /* NR30 bit 7 */
+        bool wave_bank;   /* NR30 bit 6: playback bank */
+        bool wave_size;   /* NR30 bit 5: both banks */
         uint16_t wave_length_counter;
         bool wave_length_enabled;
 
-        uint8_t wave_ram[16];
+        uint8_t wave_ram[32];
 
         /* Noise (NR41..NR44) */
-        uint16_t noise_lfsr;        /* shift register; width-specific NR44 reset */
-        uint32_t noise_phase;       /* fractional-clocks accumulator (2^32 = 1 clock) */
+        uint16_t noise_lfsr;  /* shift register; width-specific NR44 reset */
+        uint32_t noise_phase; /* fractional-clocks accumulator (2^32 = 1 clock) */
+        uint32_t noise_timer_cycles;
         uint8_t noise_clock_shift;  /* NR43 bits 7-4 */
         uint8_t noise_divisor_code; /* NR43 bits 2-0 */
         uint8_t noise_last_sample;  /* last emitted old LFSR low bit */
@@ -123,6 +129,7 @@ extern "C"
          * (0/2/4/6), SQ1 sweep (2/6), and envelope (7). */
         uint8_t frame_seq_step;
         double frame_seq_accum;
+        uint16_t frame_seq_cycle_remainder;
         uint64_t frame_seq_ticks;
         uint64_t frame_seq_length_ticks;
         uint64_t frame_seq_sweep_ticks;
@@ -131,6 +138,11 @@ extern "C"
 
     void hw_psg_init(HwPsgSynth* psg, float render_rate);
     void hw_psg_set_render_rate(HwPsgSynth* psg, float render_rate);
+
+    /* Accumulate exact trace cycles and clock only channels mGBA would
+     * update for the current event. Normal host rendering does not use
+     * this path. */
+    void hw_psg_advance_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave);
 
     typedef struct
     {
@@ -149,6 +161,10 @@ extern "C"
      * GB hardware register layout.  NR50/51 and SOUNDCNT_H PSG vol bits
      * land on HwMixBus, NOT on the synth — see hw_mix.h. */
     void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev);
+
+    /* Read the current PSG DAC inputs without advancing any oscillator or
+     * frame-sequencer state. Trace SAMPLE events use this exact observation. */
+    void hw_psg_sample(const HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_wave, float* out_noise);
 
     /* Render `frames` host-rate per-channel mono samples into the four
      * provided buffers.  Each output is the channel's pre-mix UNIPOLAR

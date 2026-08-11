@@ -23,6 +23,7 @@ extern void m4a_sound_main_ram(M4ADriver* drv);
 extern void m4a_trk_vol_pit_set(M4ADriverTrack* track);
 void test_hw_mix_run_all(void);
 void test_hw_audio_trace_run_all(void);
+void test_hw_audio_trace_contracts_run_all(void);
 void test_voicegroup_loader_run_all(void);
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY
 void test_voicegroup_core_parity_run_all(void);
@@ -2115,9 +2116,9 @@ static void test_v2_consume_clears_triggers(void)
     m4a_driver_destroy(drv);
 }
 
-/* Wave RAM byte-granular event sequence.  A wave-channel note-start
- * must emit 16 WAVE_RAM_BYTE events (one per nibble pair) interleaved
- * between NR30 (DAC off so writes are safe) and NR31/NR32/NR33/NR34. */
+/* Wave RAM byte-granular event sequence. A wave-channel note-start must
+ * select bank one with the DAC off, write 16 bytes into the opposite bank
+ * zero, then emit NR31/NR32/NR33/NR34. */
 static void test_v2_wave_ram_events(void)
 {
     printf("Testing v2 wave-RAM byte-granular events on note start...\n");
@@ -2165,12 +2166,12 @@ static void test_v2_wave_ram_events(void)
     }
     ASSERT_EQ(waveBytes, 16, "exactly 16 WAVE_RAM_BYTE events on start");
 
-    /* NR30 must drop to 0 (DAC off) immediately before the byte block —
-     * real m4a / GB hardware glitches if wave RAM is written with DAC
-     * on.  Then NR30=0x80 (DAC on) must come right after the bytes. */
+    /* NR30 must select bank one with the DAC off immediately before the byte
+     * block. GBA Wave RAM writes target the bank opposite NR30, so this
+     * populates bank zero for the following NR30=0x80 playback selection. */
     ASSERT(firstByteIdx > 0, "WAVE_RAM_BYTE not at start of queue");
     const M4ARegWrite* prev = &b->events[firstByteIdx - 1];
-    ASSERT(prev->reg == M4A_REG_NR30 && prev->value == 0, "NR30=0 immediately before wave bytes");
+    ASSERT(prev->reg == M4A_REG_NR30 && prev->value == 0x40, "NR30 selects the opposite bank before wave bytes");
 
     bool foundDacOn = false;
     for (size_t i = (size_t)lastByteIdx + 1; i < b->count; i++)
@@ -4315,7 +4316,9 @@ static void test_hw_psg_nr52_power_cycle_preserves_wave_ram(void)
     M4ARegWrite off = {0, M4A_REG_NR52, 0x00};
     M4ARegWrite on = {0, M4A_REG_NR52, 0x80};
 
+    M4ARegWrite select_opposite_bank = {0, M4A_REG_NR30, 0x40};
     hw_psg_init(&psg, 131072.0f);
+    hw_psg_apply_event(&psg, &select_opposite_bank);
     for (uint32_t i = 0; i < 16; i++)
     {
         M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | (uint8_t)(0xA0u | i)};
@@ -4527,8 +4530,7 @@ static void test_hw_resample_matches_mgba_sinc_impulse(void)
     printf("Testing hw_resample impulse response matches current mGBA sinc...\n");
 
     static const int16_t expected[] = {
-        0,    0,    0,    0,    0,    0,    0,   -60, -776, -1217, 2927, 5923,
-        7888, 760,  5929, -687, 3460, -837, 347,  -314, 0,    0,     0,    0,
+        0, 0, 0, 0, 0, 0, 0, -60, -776, -1217, 2927, 5923, 7888, 760, 5929, -687, 3460, -837, 347, -314, 0, 0, 0, 0,
     };
     float input[24] = {0};
     float output[24];
@@ -4734,16 +4736,15 @@ static void test_chip_canned_wave_audible(void)
 
     HwAudio* hw = hw_audio_create(44100.0f);
 
-    /* Build 16-byte wave RAM events (alternating 0xF/0x0 pattern for a
-     * loud square-ish wave), then NR30=DAC-on + NR32=100% + NR34
-     * trigger. */
+    /* Select bank one with the DAC off, write the opposite bank zero, then
+     * enable bank-zero playback at full volume. */
     M4ARegWrite ev[40];
     size_t n = 0;
     ev[n++] = (M4ARegWrite){0, M4A_REG_NR52, 0x80};
     ev[n++] = (M4ARegWrite){0, M4A_REG_NR50, 0x77};
     ev[n++] = (M4ARegWrite){0, M4A_REG_NR51, 0x44}; /* wave → both */
     ev[n++] = (M4ARegWrite){0, M4A_REG_SOUNDCNT_H, 0x02};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x00}; /* DAC off for write */
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x40}; /* bank 1, DAC off */
     for (uint32_t i = 0; i < 16; i++)
         ev[n++] = (M4ARegWrite){0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | ((i & 1) ? 0x00 : 0xFF)};
     ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x80}; /* DAC on */
@@ -5198,7 +5199,6 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
     float ratio = peak[0] / peak[1];
     ASSERT(ratio > 0.495f && ratio < 0.505f, "50% DMA vol scales peak by ½");
 }
-
 
 /* ---- §12 step 9: cumulative sample-clock invariance ----
  *
@@ -6118,6 +6118,7 @@ int main(void)
     test_chip_canned_soundbias_clip_asymmetric();
     test_hw_mix_run_all();
     test_hw_audio_trace_run_all();
+    test_hw_audio_trace_contracts_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();

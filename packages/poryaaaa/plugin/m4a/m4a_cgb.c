@@ -292,7 +292,7 @@ static void emit_vol_write(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
             memcpy(r->wave_ram, ch->wavePointer, sizeof(r->wave_ram));
         if (ch->waveRamPending && ch->wavePointer)
         {
-            m4a_internal_emit_event(drv, M4A_REG_NR30, 0u);
+            m4a_internal_emit_event(drv, M4A_REG_NR30, 0x40u);
             const uint8_t* wb = (const uint8_t*)ch->wavePointer;
             for (uint32_t i = 0; i < 16; i++)
                 m4a_internal_emit_event(drv, M4A_REG_WAVE_RAM_BYTE, (i << 8) | wb[i]);

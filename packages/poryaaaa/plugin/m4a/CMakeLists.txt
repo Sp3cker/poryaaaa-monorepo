@@ -1,6 +1,7 @@
 add_library(m4a_driver STATIC
     ../m4a_tables.c
     m4a_driver.c
+    m4a_driver_trace.c
     m4a_freq.c
     m4a_track.c
     m4a_cgb.c

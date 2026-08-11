@@ -18,10 +18,11 @@
 
 typedef struct
 {
-    uint8_t bytes[32];
+    uint32_t words[8];
+    uint32_t internal_sample;
     uint8_t read_index;
     uint8_t write_index;
-    uint8_t count;
+    uint8_t internal_remaining;
     int8_t held_sample;
 } HwAudioTraceFifo;
 
@@ -149,6 +150,7 @@ void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
     destination->psg.master_enabled = source->psg.master_enabled;
     destination->psg.frame_seq_step = source->psg.frame_seq_step;
     destination->psg.frame_seq_accum = source->psg.frame_seq_accum;
+    destination->psg.frame_seq_cycle_remainder = source->psg.frame_seq_cycle_remainder;
     destination->psg.frame_seq_ticks = source->psg.frame_seq_ticks;
     destination->psg.frame_seq_length_ticks = source->psg.frame_seq_length_ticks;
     destination->psg.frame_seq_sweep_ticks = source->psg.frame_seq_sweep_ticks;
@@ -192,11 +194,15 @@ void hw_audio_clone_psg_lane(HwAudio* destination, const HwAudio* source, int la
         destination->psg.sq2_enabled = source->psg.sq2_enabled;
         break;
     case 2:
-        destination->psg.wave_phase = source->psg.wave_phase;
+        destination->psg.wave_cycles_until_update = source->psg.wave_cycles_until_update;
+        destination->psg.wave_pending_cycles = source->psg.wave_pending_cycles;
         destination->psg.wave_freq = source->psg.wave_freq;
         destination->psg.wave_vol_code = source->psg.wave_vol_code;
+        destination->psg.wave_sample = source->psg.wave_sample;
         destination->psg.wave_enabled = source->psg.wave_enabled;
         destination->psg.wave_dac_on = source->psg.wave_dac_on;
+        destination->psg.wave_bank = source->psg.wave_bank;
+        destination->psg.wave_size = source->psg.wave_size;
         destination->psg.wave_length_counter = source->psg.wave_length_counter;
         destination->psg.wave_length_enabled = source->psg.wave_length_enabled;
         memcpy(destination->psg.wave_ram, source->psg.wave_ram, sizeof(destination->psg.wave_ram));
@@ -204,6 +210,7 @@ void hw_audio_clone_psg_lane(HwAudio* destination, const HwAudio* source, int la
     case 3:
         destination->psg.noise_lfsr = source->psg.noise_lfsr;
         destination->psg.noise_phase = source->psg.noise_phase;
+        destination->psg.noise_timer_cycles = source->psg.noise_timer_cycles;
         destination->psg.noise_clock_shift = source->psg.noise_clock_shift;
         destination->psg.noise_divisor_code = source->psg.noise_divisor_code;
         destination->psg.noise_last_sample = source->psg.noise_last_sample;
@@ -525,12 +532,69 @@ static void apply_chip_event(HwAudio* hw, M4ARegId reg, uint32_t value)
         hw_audio_sync_rates_from_mix(hw);
 }
 
-/* Decode the halfword audio-register calls exposed by mGBA's GBA audio module. */
+/* Decode the byte and halfword audio-register calls exposed by mGBA's GBA audio module. */
 static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t address, uint8_t width, uint32_t value)
 {
+    if (width == 1)
+    {
+        switch (address)
+        {
+        case HW_AUDIO_GBA_IO_BASE + 0x62:
+            apply_chip_event(hw, M4A_REG_NR11, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x63:
+            apply_chip_event(hw, M4A_REG_NR12, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x64:
+            apply_chip_event(hw, M4A_REG_NR13, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x65:
+            apply_chip_event(hw, M4A_REG_NR14, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x68:
+            apply_chip_event(hw, M4A_REG_NR21, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x69:
+            apply_chip_event(hw, M4A_REG_NR22, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x6C:
+            apply_chip_event(hw, M4A_REG_NR23, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x6D:
+            apply_chip_event(hw, M4A_REG_NR24, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x72:
+            apply_chip_event(hw, M4A_REG_NR31, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x73:
+            apply_chip_event(hw, M4A_REG_NR32, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x74:
+            apply_chip_event(hw, M4A_REG_NR33, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x75:
+            apply_chip_event(hw, M4A_REG_NR34, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x78:
+            apply_chip_event(hw, M4A_REG_NR41, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x79:
+            apply_chip_event(hw, M4A_REG_NR42, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x7C:
+            apply_chip_event(hw, M4A_REG_NR43, value & 0xFFu);
+            break;
+        case HW_AUDIO_GBA_IO_BASE + 0x7D:
+            apply_chip_event(hw, M4A_REG_NR44, value & 0xFFu);
+            break;
+        default:
+            return HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+        }
+        return HW_AUDIO_TRACE_OK;
+    }
+
     if (width != 2)
         return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
-
     switch (address)
     {
     case HW_AUDIO_GBA_IO_BASE + 0x60:
@@ -580,9 +644,15 @@ static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t addre
         hw->trace_timer_a = (uint8_t)((value >> 10) & 1u);
         hw->trace_timer_b = (uint8_t)((value >> 14) & 1u);
         if (value & (1u << 11))
-            memset(&hw->trace_fifo_a, 0, sizeof(hw->trace_fifo_a));
+        {
+            hw->trace_fifo_a.read_index = 0;
+            hw->trace_fifo_a.write_index = 0;
+        }
         if (value & (1u << 15))
-            memset(&hw->trace_fifo_b, 0, sizeof(hw->trace_fifo_b));
+        {
+            hw->trace_fifo_b.read_index = 0;
+            hw->trace_fifo_b.write_index = 0;
+        }
         break;
     case HW_AUDIO_GBA_IO_BASE + 0x84:
         apply_chip_event(hw, M4A_REG_NR52, value & 0xFFu);
@@ -613,39 +683,41 @@ static HwAudioTraceStatus apply_trace_wave_write(HwAudio* hw, uint32_t address, 
     return HW_AUDIO_TRACE_OK;
 }
 
-/* Push one DMA word into a trace FIFO without silently overwriting samples. */
+/* Push one DMA word through the GBA FIFO's modulo-8 write pointer. */
 static HwAudioTraceStatus apply_trace_fifo_write(HwAudioTraceFifo* fifo, uint8_t width, uint32_t value)
 {
     if (width != 4)
         return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
-    if (fifo->count > 28)
-        return HW_AUDIO_TRACE_FIFO_OVERFLOW;
-
-    for (unsigned byte_index = 0; byte_index < 4; byte_index++)
-    {
-        fifo->bytes[fifo->write_index] = (uint8_t)(value >> (byte_index * 8u));
-        fifo->write_index = (uint8_t)((fifo->write_index + 1u) & 31u);
-        fifo->count++;
-    }
+    fifo->words[fifo->write_index] = value;
+    fifo->write_index = (uint8_t)((fifo->write_index + 1u) & 7u);
     return HW_AUDIO_TRACE_OK;
 }
 
-/* A selected timer consumes one signed byte and otherwise preserves the hold. */
+/* A selected timer exposes one internal byte while preserving the empty hold. */
 static void clock_trace_fifo(HwAudioTraceFifo* fifo)
 {
-    if (!fifo->count)
-        return;
-    fifo->held_sample = (int8_t)fifo->bytes[fifo->read_index];
-    fifo->read_index = (uint8_t)((fifo->read_index + 1u) & 31u);
-    fifo->count--;
+    if (!fifo->internal_remaining && fifo->read_index != fifo->write_index)
+    {
+        fifo->internal_sample = fifo->words[fifo->read_index];
+        fifo->read_index = (uint8_t)((fifo->read_index + 1u) & 7u);
+        fifo->internal_remaining = 4;
+    }
+    fifo->held_sample = (int8_t)fifo->internal_sample;
+    if (fifo->internal_remaining)
+    {
+        fifo->internal_sample >>= 8u;
+        fifo->internal_remaining--;
+    }
 }
 
-/* Render one explicit native SAMPLE using the trace-driven FIFO holds. */
-static void render_trace_sample(HwAudio* hw)
+/* Expose one explicit native SAMPLE without advancing the trace clock. */
+static void render_trace_sample(HwAudio* hw, const HwAudioTraceFifoSample* fifo_sample)
 {
-    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, 1);
-    hw->scratch_dma_a[0] = (float)hw->trace_fifo_a.held_sample / 128.0f;
-    hw->scratch_dma_b[0] = (float)hw->trace_fifo_b.held_sample / 128.0f;
+    hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
+    int8_t fifo_a = fifo_sample ? fifo_sample->fifo_a : hw->trace_fifo_a.held_sample;
+    int8_t fifo_b = fifo_sample ? fifo_sample->fifo_b : hw->trace_fifo_b.held_sample;
+    hw->scratch_dma_a[0] = (float)fifo_a / 128.0f;
+    hw->scratch_dma_b[0] = (float)fifo_b / 128.0f;
     mix_chip_chunk(hw, 1);
 }
 
@@ -683,7 +755,99 @@ void hw_audio_trace_reset(HwAudio* hw)
     hw->trace_timer_b = 0;
 }
 
-HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame)
+static bool trace_supports_byte_register(uint32_t address)
+{
+    switch (address)
+    {
+    case HW_AUDIO_GBA_IO_BASE + 0x62:
+    case HW_AUDIO_GBA_IO_BASE + 0x63:
+    case HW_AUDIO_GBA_IO_BASE + 0x64:
+    case HW_AUDIO_GBA_IO_BASE + 0x65:
+    case HW_AUDIO_GBA_IO_BASE + 0x68:
+    case HW_AUDIO_GBA_IO_BASE + 0x69:
+    case HW_AUDIO_GBA_IO_BASE + 0x6C:
+    case HW_AUDIO_GBA_IO_BASE + 0x6D:
+    case HW_AUDIO_GBA_IO_BASE + 0x72:
+    case HW_AUDIO_GBA_IO_BASE + 0x73:
+    case HW_AUDIO_GBA_IO_BASE + 0x74:
+    case HW_AUDIO_GBA_IO_BASE + 0x75:
+    case HW_AUDIO_GBA_IO_BASE + 0x78:
+    case HW_AUDIO_GBA_IO_BASE + 0x79:
+    case HW_AUDIO_GBA_IO_BASE + 0x7C:
+    case HW_AUDIO_GBA_IO_BASE + 0x7D:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool trace_supports_halfword_register(uint32_t address)
+{
+    switch (address)
+    {
+    case HW_AUDIO_GBA_IO_BASE + 0x60:
+    case HW_AUDIO_GBA_IO_BASE + 0x62:
+    case HW_AUDIO_GBA_IO_BASE + 0x64:
+    case HW_AUDIO_GBA_IO_BASE + 0x68:
+    case HW_AUDIO_GBA_IO_BASE + 0x6C:
+    case HW_AUDIO_GBA_IO_BASE + 0x70:
+    case HW_AUDIO_GBA_IO_BASE + 0x72:
+    case HW_AUDIO_GBA_IO_BASE + 0x74:
+    case HW_AUDIO_GBA_IO_BASE + 0x78:
+    case HW_AUDIO_GBA_IO_BASE + 0x7C:
+    case HW_AUDIO_GBA_IO_BASE + 0x80:
+    case HW_AUDIO_GBA_IO_BASE + 0x82:
+    case HW_AUDIO_GBA_IO_BASE + 0x84:
+    case HW_AUDIO_GBA_IO_BASE + 0x88:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static HwAudioTraceStatus validate_trace_write(const HwAudioTraceEvent* event)
+{
+    if ((event->width == 1 && event->value > UINT8_MAX) || (event->width == 2 && event->value > UINT16_MAX))
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)
+    {
+        if (event->width != 1 && event->width != 2 && event->width != 4)
+            return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+        return event->address + event->width <= HW_AUDIO_GBA_IO_BASE + 0xA0 ? HW_AUDIO_TRACE_OK
+                                                                            : HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+    }
+    if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0 || event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
+        return event->width == 4 ? HW_AUDIO_TRACE_OK : HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+    if (event->width == 1)
+        return trace_supports_byte_register(event->address) ? HW_AUDIO_TRACE_OK : HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+    if (event->width != 2)
+        return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
+    return trace_supports_halfword_register(event->address) ? HW_AUDIO_TRACE_OK : HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
+}
+
+static HwAudioTraceStatus validate_trace_event(const HwAudioTraceEvent* event)
+{
+    if (event->cycle > INT32_MAX)
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    switch (event->kind)
+    {
+    case HW_AUDIO_TRACE_WRITE:
+        return validate_trace_write(event);
+    case HW_AUDIO_TRACE_SAMPLE:
+        return event->width == 0 && event->address == 0 && event->value == 0 ? HW_AUDIO_TRACE_OK
+                                                                             : HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    case HW_AUDIO_TRACE_TIMER:
+        return event->width == 0 && event->address == 0 && event->value <= 1 ? HW_AUDIO_TRACE_OK
+                                                                             : HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    default:
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    }
+}
+
+static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
+                                            const HwAudioTraceEvent* event,
+                                            const HwAudioTraceFifoSample* fifo_sample,
+                                            HwAudioNativeFrame* frame)
 {
     if (!hw || !event || !frame)
         return HW_AUDIO_TRACE_INVALID_ARGUMENT;
@@ -693,7 +857,50 @@ HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* ev
         (event->cycle < hw->trace_cycle || (event->cycle == hw->trace_cycle && event->order <= hw->trace_order)))
         return HW_AUDIO_TRACE_OUT_OF_ORDER;
 
-    HwAudioTraceStatus status = HW_AUDIO_TRACE_OK;
+    HwAudioTraceStatus status = validate_trace_event(event);
+    if (status != HW_AUDIO_TRACE_OK)
+        return status;
+
+    uint64_t prior_cycle = hw->trace_position_valid ? hw->trace_cycle : 0;
+    uint64_t cycle_delta = event->cycle - prior_cycle;
+    bool stale_sq1 = hw->psg.sq1_timer_cycles + cycle_delta > 0x40000000u;
+    bool stale_sq2 = hw->psg.sq2_timer_cycles + cycle_delta > 0x40000000u;
+    bool clock_sq1 = false;
+    bool clock_sq2 = false;
+    bool clock_wave = false;
+    bool preapply_wave_bank = false;
+    if (event->kind == HW_AUDIO_TRACE_SAMPLE)
+    {
+        clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
+        clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
+        clock_wave = true;
+    }
+    else if (event->kind == HW_AUDIO_TRACE_WRITE)
+    {
+        if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x60 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x65)
+            clock_sq1 = true;
+        else if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x68 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x6D)
+            clock_sq2 = true;
+        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0x80)
+        {
+            clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
+            clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
+        }
+        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75) ||
+            event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
+            (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0))
+            clock_wave = true;
+        preapply_wave_bank = event->address == HW_AUDIO_GBA_IO_BASE + 0x70;
+    }
+    hw_psg_advance_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave);
+    if (preapply_wave_bank)
+    {
+        /* Frame events consume the old bank first; NR30 then selects bank
+         * and size before its terminal forced Wave run. */
+        hw->psg.wave_size = (event->value & 0x20u) != 0;
+        hw->psg.wave_bank = (event->value & 0x40u) != 0;
+        hw_psg_advance_cycles(&hw->psg, 0, false, false, true);
+    }
     if (event->kind == HW_AUDIO_TRACE_WRITE)
     {
         if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)
@@ -719,7 +926,7 @@ HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* ev
             status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
         else
         {
-            render_trace_sample(hw);
+            render_trace_sample(hw, fifo_sample);
             frame->cycle = event->cycle;
             frame->left = native_float_to_pcm16(hw->mix_l[0]);
             frame->right = native_float_to_pcm16(hw->mix_r[0]);
@@ -751,6 +958,21 @@ HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* ev
     return status;
 }
 
+HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame)
+{
+    return apply_trace_event(hw, event, NULL, frame);
+}
+
+HwAudioTraceStatus hw_audio_trace_apply_fifo_sample(HwAudio* hw,
+                                                    const HwAudioTraceEvent* event,
+                                                    const HwAudioTraceFifoSample* fifo_sample,
+                                                    HwAudioNativeFrame* frame)
+{
+    if (!fifo_sample || !event || event->kind != HW_AUDIO_TRACE_SAMPLE)
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    return apply_trace_event(hw, event, fifo_sample, frame);
+}
+
 const char* hw_audio_trace_status_string(HwAudioTraceStatus status)
 {
     switch (status)
@@ -765,8 +987,6 @@ const char* hw_audio_trace_status_string(HwAudioTraceStatus status)
         return "unsupported write width";
     case HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS:
         return "unsupported audio address";
-    case HW_AUDIO_TRACE_FIFO_OVERFLOW:
-        return "FIFO write exceeds 32-byte capacity";
     }
     return "unknown trace status";
 }

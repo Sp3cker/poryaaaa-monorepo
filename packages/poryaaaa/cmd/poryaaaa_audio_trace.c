@@ -1,4 +1,6 @@
-#include "hw_audio/hw_audio_trace.h"
+#include "hw_audio/hw_audio_trace_text.h"
+
+#include <limits.h>
 
 #include <errno.h>
 #include <inttypes.h>
@@ -7,28 +9,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TRACE_LINE_CAPACITY 512
-
 typedef struct
 {
     const char* input_path;
     const char* output_prefix;
+    const char* oracle_path;
+    const char* driver_path;
     uint32_t solo_mask;
+    bool compare_driver;
 } Options;
 
-typedef struct
-{
-    bool valid;
-    uint64_t cycle;
-    uint32_t order;
-} TracePosition;
-
-/* Keep the recorder interface narrow enough for shell automation. */
+/* Keep replay and event comparison interface narrow enough for shell automation. */
 static void print_usage(const char* program)
 {
     fprintf(stderr,
             "Usage: %s --input TRACE --output-prefix PATH [--solo CHANNELS]\n"
+            "       %s --compare-driver --oracle TRACE --driver TRACE\n"
             "CHANNELS: sq1,sq2,wave,noise,fifo-a,fifo-b,psg,directsound,all\n",
+            program,
             program);
 }
 
@@ -86,6 +84,12 @@ static bool parse_options(int argc, char** argv, Options* options)
             options->input_path = argv[++index];
         else if (strcmp(argv[index], "--output-prefix") == 0 && index + 1 < argc)
             options->output_prefix = argv[++index];
+        else if (strcmp(argv[index], "--oracle") == 0 && index + 1 < argc)
+            options->oracle_path = argv[++index];
+        else if (strcmp(argv[index], "--driver") == 0 && index + 1 < argc)
+            options->driver_path = argv[++index];
+        else if (strcmp(argv[index], "--compare-driver") == 0)
+            options->compare_driver = true;
         else if (strcmp(argv[index], "--solo") == 0 && index + 1 < argc)
         {
             if (!parse_solo_mask(argv[++index], &options->solo_mask))
@@ -94,7 +98,11 @@ static bool parse_options(int argc, char** argv, Options* options)
         else
             return false;
     }
-    return options->input_path && options->output_prefix;
+    if (options->compare_driver)
+    {
+        return options->oracle_path && options->driver_path && !options->input_path && !options->output_prefix;
+    }
+    return options->input_path && options->output_prefix && !options->oracle_path && !options->driver_path;
 }
 
 /* Allocate an output path without imposing a platform PATH_MAX. */
@@ -133,17 +141,6 @@ static bool write_cycle(FILE* output, uint64_t cycle)
     return fwrite(bytes, sizeof(bytes), 1u, output) == 1u;
 }
 
-/* Require one total order across writes, samples, and measurement markers. */
-static bool advance_position(TracePosition* position, uint64_t cycle, uint32_t order)
-{
-    if (position->valid && (cycle < position->cycle || (cycle == position->cycle && order <= position->order)))
-        return false;
-    position->valid = true;
-    position->cycle = cycle;
-    position->order = order;
-    return true;
-}
-
 /* Emit the canonical metadata consumed by native_compare.py. */
 static bool
 write_manifest(const char* path, uint64_t frame_count, uint64_t first_cycle, uint64_t last_cycle, uint32_t solo_mask)
@@ -180,22 +177,167 @@ write_manifest(const char* path, uint64_t frame_count, uint64_t first_cycle, uin
     return ok;
 }
 
-/* Convert one validated trace into atomic PCM, cycle, and manifest artifacts. */
+typedef struct
+{
+    HwAudioTraceEvent* events;
+    size_t count;
+    size_t capacity;
+    bool allocation_failed;
+    bool cycle_out_of_range;
+} ReplayEvents;
+/* Retain hardware events so FIFO sample bins can be resolved before replay. */
+static bool collect_replay_event(void* context, const HwAudioTraceTextRecord* record)
+{
+    ReplayEvents* collected = context;
+    if (record->cycle > (uint64_t)INT32_MAX)
+    {
+        collected->cycle_out_of_range = true;
+        return false;
+    }
+    if (record->kind == HW_AUDIO_TRACE_TEXT_BEGIN || record->kind == HW_AUDIO_TRACE_TEXT_END)
+        return true;
+    if (collected->count == collected->capacity)
+    {
+        size_t capacity = collected->capacity ? collected->capacity * 2u : 1024u;
+        if (capacity < collected->capacity || capacity > SIZE_MAX / sizeof(*collected->events))
+        {
+            collected->allocation_failed = true;
+            return false;
+        }
+        HwAudioTraceEvent* events = realloc(collected->events, capacity * sizeof(*collected->events));
+        if (!events)
+        {
+            collected->allocation_failed = true;
+            return false;
+        }
+        collected->events = events;
+        collected->capacity = capacity;
+    }
+    collected->events[collected->count++] = record->event;
+    return true;
+}
+
+typedef struct
+{
+    HwAudio* audio;
+    FILE* pcm;
+    FILE* cycles;
+    const HwAudioTraceFifoSample* fifo_samples;
+    size_t fifo_sample_count;
+    size_t fifo_sample_index;
+    bool measurement_open;
+    uint64_t frame_count;
+    uint64_t first_cycle;
+    uint64_t last_cycle;
+    HwAudioTraceStatus apply_status;
+    bool output_failed;
+} ReplayContext;
+
+/* Replay each parsed event while preserving the trace interval for PCM output. */
+static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
+{
+    ReplayContext* replay = context;
+    if (record->kind == HW_AUDIO_TRACE_TEXT_BEGIN)
+    {
+        replay->measurement_open = true;
+        return true;
+    }
+    if (record->kind == HW_AUDIO_TRACE_TEXT_END)
+    {
+        replay->measurement_open = false;
+        return true;
+    }
+
+    HwAudioNativeFrame frame;
+    if (record->event.kind == HW_AUDIO_TRACE_SAMPLE)
+    {
+        if (replay->fifo_sample_index >= replay->fifo_sample_count)
+        {
+            replay->apply_status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
+            return false;
+        }
+        replay->apply_status = hw_audio_trace_apply_fifo_sample(
+            replay->audio, &record->event, &replay->fifo_samples[replay->fifo_sample_index++], &frame);
+    }
+    else
+    {
+        replay->apply_status = hw_audio_trace_apply(replay->audio, &record->event, &frame);
+    }
+    if (replay->apply_status != HW_AUDIO_TRACE_OK)
+        return false;
+    if (record->event.kind != HW_AUDIO_TRACE_SAMPLE || !replay->measurement_open)
+        return true;
+    if (!write_pcm16_frame(replay->pcm, &frame) || !write_cycle(replay->cycles, frame.cycle))
+    {
+        replay->output_failed = true;
+        return false;
+    }
+    if (replay->frame_count == 0)
+        replay->first_cycle = frame.cycle;
+    replay->last_cycle = frame.cycle;
+    replay->frame_count++;
+    return true;
+}
+
+/* Convert one shared-grammar trace into atomic PCM, cycle, and manifest artifacts. */
 static bool
 replay_trace(const Options* options, const char* pcm_temp, const char* cycles_temp, const char* manifest_temp)
 {
     FILE* input = fopen(options->input_path, "rb");
+    if (!input)
+    {
+        fprintf(stderr, "Could not open trace input: %s\n", strerror(errno));
+        return false;
+    }
+
+    ReplayEvents collected = {0};
+    unsigned error_line = 0;
+    HwAudioTraceTextStatus parse_status =
+        hw_audio_trace_text_read(input, collect_replay_event, &collected, &error_line);
+    if (parse_status != HW_AUDIO_TRACE_TEXT_OK)
+    {
+        if (collected.cycle_out_of_range)
+            fprintf(stderr, "Invalid trace line %u: event cycle exceeds INT32_MAX\n", error_line);
+        else if (collected.allocation_failed)
+            fprintf(stderr, "Could not allocate replay event timeline\n");
+        else if (error_line)
+            fprintf(stderr, "Invalid trace line %u: %s\n", error_line, hw_audio_trace_text_status_string(parse_status));
+        else
+            fprintf(stderr, "Invalid trace: %s\n", hw_audio_trace_text_status_string(parse_status));
+        free(collected.events);
+        fclose(input);
+        return false;
+    }
+
+    HwAudioTraceFifoSample* fifo_samples = calloc(collected.count ? collected.count : 1u, sizeof(*fifo_samples));
+    size_t fifo_sample_count = 0;
+    HwAudioTraceStatus schedule_status =
+        fifo_samples ? hw_audio_trace_schedule_fifo_samples(
+                           collected.events, collected.count, fifo_samples, collected.count, &fifo_sample_count)
+                     : HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    if (schedule_status != HW_AUDIO_TRACE_OK || fseek(input, 0, SEEK_SET) != 0)
+    {
+        fprintf(stderr,
+                "Could not schedule DirectSound native samples: %s\n",
+                hw_audio_trace_status_string(schedule_status));
+        free(fifo_samples);
+        free(collected.events);
+        fclose(input);
+        return false;
+    }
+    free(collected.events);
+
     FILE* pcm = fopen(pcm_temp, "wb");
     FILE* cycles = fopen(cycles_temp, "wb");
-    if (!input || !pcm || !cycles)
+    if (!pcm || !cycles)
     {
         fprintf(stderr, "Could not open trace artifacts: %s\n", strerror(errno));
-        if (input)
-            fclose(input);
         if (pcm)
             fclose(pcm);
         if (cycles)
             fclose(cycles);
+        free(fifo_samples);
+        fclose(input);
         return false;
     }
 
@@ -206,182 +348,53 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         fclose(input);
         fclose(pcm);
         fclose(cycles);
+        free(fifo_samples);
         return false;
     }
     hw_audio_trace_reset(audio);
     hw_audio_set_solo_mask(audio, options->solo_mask);
 
-    bool ok = true;
-    bool clock_seen = false;
-    bool measurement_open = false;
-    bool measurement_closed = false;
-    uint64_t frame_count = 0;
-    uint64_t first_cycle = 0;
-    uint64_t last_cycle = 0;
-    TracePosition position = {0};
-    char line[TRACE_LINE_CAPACITY];
-    unsigned line_number = 0;
-
-    if (!fgets(line, sizeof(line), input) || strcmp(line, "PORYAAAA_AUDIO_TRACE 1\n") != 0)
+    ReplayContext replay = {
+        .audio = audio,
+        .pcm = pcm,
+        .cycles = cycles,
+        .fifo_samples = fifo_samples,
+        .fifo_sample_count = fifo_sample_count,
+        .apply_status = HW_AUDIO_TRACE_OK,
+    };
+    error_line = 0;
+    parse_status = hw_audio_trace_text_read(input, replay_record, &replay, &error_line);
+    bool ok = parse_status == HW_AUDIO_TRACE_TEXT_OK;
+    if (!ok)
     {
-        fprintf(stderr, "Trace must begin with PORYAAAA_AUDIO_TRACE 1\n");
-        ok = false;
-    }
-    line_number++;
-
-    while (ok && fgets(line, sizeof(line), input))
-    {
-        line_number++;
-        if (!strchr(line, '\n') && !feof(input))
+        if (replay.apply_status != HW_AUDIO_TRACE_OK)
         {
-            fprintf(stderr, "Trace line %u exceeds %d bytes\n", line_number, TRACE_LINE_CAPACITY - 1);
-            ok = false;
-            break;
+            fprintf(stderr,
+                    "Trace line %u cannot be replayed: %s\n",
+                    error_line,
+                    hw_audio_trace_status_string(replay.apply_status));
         }
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
-            continue;
-
-        uint64_t cycle = 0;
-        uint32_t order = 0;
-        uint32_t address = 0;
-        uint32_t value = 0;
-        unsigned width = 0;
-        unsigned clock = 0;
-        char extra = 0;
-
-        if (sscanf(line, "CLOCK %u %c", &clock, &extra) == 1)
+        else if (replay.output_failed)
         {
-            if (clock_seen || position.valid || clock != HW_AUDIO_GBA_CLOCK_HZ)
-            {
-                fprintf(stderr, "Invalid CLOCK declaration on trace line %u\n", line_number);
-                ok = false;
-            }
-            clock_seen = true;
-            continue;
+            fprintf(stderr, "Could not write native capture: %s\n", strerror(errno));
         }
-
-        if (!clock_seen)
+        else if (error_line)
         {
-            fprintf(stderr, "Trace line %u precedes CLOCK declaration\n", line_number);
-            ok = false;
-            break;
-        }
-
-        if (sscanf(line, "BEGIN %" SCNu64 " %" SCNu32 " %c", &cycle, &order, &extra) == 2)
-        {
-            if (measurement_open || measurement_closed || !advance_position(&position, cycle, order))
-            {
-                fprintf(stderr, "Invalid BEGIN marker on trace line %u\n", line_number);
-                ok = false;
-            }
-            measurement_open = true;
-            continue;
-        }
-        if (sscanf(line, "END %" SCNu64 " %" SCNu32 " %c", &cycle, &order, &extra) == 2)
-        {
-            if (!measurement_open || measurement_closed || !advance_position(&position, cycle, order))
-            {
-                fprintf(stderr, "Invalid END marker on trace line %u\n", line_number);
-                ok = false;
-            }
-            measurement_open = false;
-            measurement_closed = true;
-            continue;
-        }
-        if (measurement_closed)
-        {
-            fprintf(stderr, "Trace event follows END on line %u\n", line_number);
-            ok = false;
-            break;
-        }
-
-        HwAudioTraceEvent event = {0};
-        if (sscanf(line,
-                   "WRITE %" SCNu64 " %" SCNu32 " %u %" SCNx32 " %" SCNx32 " %c",
-                   &cycle,
-                   &order,
-                   &width,
-                   &address,
-                   &value,
-                   &extra) == 5)
-        {
-            if (width > UINT8_MAX || !advance_position(&position, cycle, order))
-            {
-                fprintf(stderr, "Invalid WRITE ordering or width on trace line %u\n", line_number);
-                ok = false;
-                break;
-            }
-            event.cycle = cycle;
-            event.order = order;
-            event.kind = HW_AUDIO_TRACE_WRITE;
-            event.width = (uint8_t)width;
-            event.address = address;
-            event.value = value;
-        }
-        else if (sscanf(line, "SAMPLE %" SCNu64 " %" SCNu32 " %c", &cycle, &order, &extra) == 2)
-        {
-            if (!advance_position(&position, cycle, order))
-            {
-                fprintf(stderr, "Invalid SAMPLE ordering on trace line %u\n", line_number);
-                ok = false;
-                break;
-            }
-            event.cycle = cycle;
-            event.order = order;
-            event.kind = HW_AUDIO_TRACE_SAMPLE;
-        }
-        else if (sscanf(line, "TIMER %" SCNu64 " %" SCNu32 " %" SCNu32 " %c", &cycle, &order, &value, &extra) == 3)
-        {
-            if (value > 1 || !advance_position(&position, cycle, order))
-            {
-                fprintf(stderr, "Invalid TIMER value or ordering on trace line %u\n", line_number);
-                ok = false;
-                break;
-            }
-            event.cycle = cycle;
-            event.order = order;
-            event.kind = HW_AUDIO_TRACE_TIMER;
-            event.value = value;
+            fprintf(stderr, "Invalid trace line %u: %s\n", error_line, hw_audio_trace_text_status_string(parse_status));
         }
         else
         {
-            fprintf(stderr, "Unrecognized trace line %u\n", line_number);
-            ok = false;
-            break;
-        }
-
-        HwAudioNativeFrame frame;
-        HwAudioTraceStatus status = hw_audio_trace_apply(audio, &event, &frame);
-        if (status != HW_AUDIO_TRACE_OK)
-        {
-            fprintf(
-                stderr, "Trace line %u cannot be replayed: %s\n", line_number, hw_audio_trace_status_string(status));
-            ok = false;
-            break;
-        }
-        if (event.kind == HW_AUDIO_TRACE_SAMPLE && measurement_open)
-        {
-            if (!write_pcm16_frame(pcm, &frame) || !write_cycle(cycles, frame.cycle))
-            {
-                fprintf(stderr, "Could not write native capture: %s\n", strerror(errno));
-                ok = false;
-                break;
-            }
-            if (frame_count == 0)
-                first_cycle = frame.cycle;
-            last_cycle = frame.cycle;
-            frame_count++;
+            fprintf(stderr, "Invalid trace: %s\n", hw_audio_trace_text_status_string(parse_status));
         }
     }
-
-    if (ok && ferror(input))
+    if (ok && replay.fifo_sample_index != replay.fifo_sample_count)
     {
-        fprintf(stderr, "Could not read trace: %s\n", strerror(errno));
+        fprintf(stderr, "Trace replay did not consume every scheduled DirectSound sample\n");
         ok = false;
     }
-    if (ok && (!clock_seen || measurement_open || !measurement_closed || frame_count == 0))
+    if (ok && replay.frame_count == 0)
     {
-        fprintf(stderr, "Trace requires CLOCK, one closed measurement, and at least one captured SAMPLE\n");
+        fprintf(stderr, "Trace requires at least one captured SAMPLE\n");
         ok = false;
     }
     if (fflush(pcm) != 0)
@@ -395,9 +408,294 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
     if (fclose(cycles) != 0)
         ok = false;
     hw_audio_destroy(audio);
+    free(fifo_samples);
 
     if (ok)
-        ok = write_manifest(manifest_temp, frame_count, first_cycle, last_cycle, options->solo_mask);
+        ok = write_manifest(
+            manifest_temp, replay.frame_count, replay.first_cycle, replay.last_cycle, options->solo_mask);
+    return ok;
+}
+
+typedef struct
+{
+    HwAudioTraceTextRecord* records;
+    size_t count;
+    size_t capacity;
+    uint64_t retained_cycle;
+    uint32_t retained_order;
+    bool measurement_open;
+    bool retained_position_valid;
+    bool allocation_failed;
+    bool order_overflow;
+} DriverTraceRecords;
+
+/* Retain interval markers and hardware bus events while deliberately omitting SAMPLE. */
+static bool collect_driver_record(void* context, const HwAudioTraceTextRecord* record)
+{
+    DriverTraceRecords* collected = context;
+    bool include = record->kind == HW_AUDIO_TRACE_TEXT_BEGIN || record->kind == HW_AUDIO_TRACE_TEXT_END ||
+                   (collected->measurement_open && record->event.kind != HW_AUDIO_TRACE_SAMPLE);
+    if (include)
+    {
+        HwAudioTraceTextRecord retained = *record;
+        if (!collected->retained_position_valid || record->cycle > collected->retained_cycle)
+        {
+            collected->retained_cycle = record->cycle;
+            collected->retained_order = 0u;
+            collected->retained_position_valid = true;
+        }
+        else if (record->cycle == collected->retained_cycle)
+        {
+            if (collected->retained_order == UINT32_MAX)
+            {
+                collected->order_overflow = true;
+                return false;
+            }
+            collected->retained_order++;
+        }
+        else
+        {
+            collected->order_overflow = true;
+            return false;
+        }
+        retained.order = collected->retained_order;
+        if (collected->count == collected->capacity)
+        {
+            size_t capacity = collected->capacity ? collected->capacity * 2u : 256u;
+            if (capacity < collected->capacity || capacity > SIZE_MAX / sizeof(*collected->records))
+            {
+                collected->allocation_failed = true;
+                return false;
+            }
+            HwAudioTraceTextRecord* records =
+                (HwAudioTraceTextRecord*)realloc(collected->records, capacity * sizeof(*collected->records));
+            if (!records)
+            {
+                collected->allocation_failed = true;
+                return false;
+            }
+            collected->records = records;
+            collected->capacity = capacity;
+        }
+        collected->records[collected->count++] = retained;
+    }
+    if (record->kind == HW_AUDIO_TRACE_TEXT_BEGIN)
+        collected->measurement_open = true;
+    else if (record->kind == HW_AUDIO_TRACE_TEXT_END)
+        collected->measurement_open = false;
+    return true;
+}
+
+/* Use the same trace reader as replay before the driver-equivalence gate. */
+static bool read_driver_trace(const char* path, DriverTraceRecords* records)
+{
+    FILE* input = fopen(path, "rb");
+    if (!input)
+    {
+        fprintf(stderr, "Could not open driver trace '%s': %s\n", path, strerror(errno));
+        return false;
+    }
+    unsigned error_line = 0;
+    HwAudioTraceTextStatus status = hw_audio_trace_text_read(input, collect_driver_record, records, &error_line);
+    bool ok = fclose(input) == 0 && status == HW_AUDIO_TRACE_TEXT_OK;
+    if (!ok)
+    {
+        if (records->allocation_failed)
+            fprintf(stderr, "Could not allocate driver trace comparison records\n");
+        else if (records->order_overflow)
+            fprintf(stderr, "Driver trace has too many retained same-cycle hardware records\n");
+        else if (error_line)
+            fprintf(stderr,
+                    "Invalid driver trace '%s' line %u: %s\n",
+                    path,
+                    error_line,
+                    hw_audio_trace_text_status_string(status));
+        else
+            fprintf(stderr, "Invalid driver trace '%s': %s\n", path, hw_audio_trace_text_status_string(status));
+    }
+    return ok;
+}
+
+static const char* trace_record_name(const HwAudioTraceTextRecord* record)
+{
+    if (record->kind == HW_AUDIO_TRACE_TEXT_BEGIN)
+        return "BEGIN";
+    if (record->kind == HW_AUDIO_TRACE_TEXT_END)
+        return "END";
+    if (record->event.kind == HW_AUDIO_TRACE_WRITE)
+        return "WRITE";
+    if (record->event.kind == HW_AUDIO_TRACE_TIMER)
+        return "TIMER";
+    return "SAMPLE";
+}
+
+/* DirectSound is not represented by the driver's PCM publication signals. */
+static bool is_directsound_record(const HwAudioTraceTextRecord* record)
+{
+    return record->kind == HW_AUDIO_TRACE_TEXT_EVENT &&
+           (record->event.kind == HW_AUDIO_TRACE_TIMER ||
+            (record->event.kind == HW_AUDIO_TRACE_WRITE && (record->event.address == HW_AUDIO_GBA_IO_BASE + 0xA0u ||
+                                                            record->event.address == HW_AUDIO_GBA_IO_BASE + 0xA4u)));
+}
+
+static bool report_unsupported_directsound(const char* source, const HwAudioTraceTextRecord* record, size_t index)
+{
+    if (!is_directsound_record(record))
+        return false;
+    fprintf(stderr,
+            "driver-event compare: first divergence at record %zu (%s trace line %u): %s is DirectSound FIFO/TIMER "
+            "hardware activity, which poryaaaa's driver does not emit from PCM_PUBLISH/PCM_RESET\n",
+            index + 1u,
+            source,
+            record->line_number,
+            trace_record_name(record));
+    return true;
+}
+
+static bool compare_position(const char* name,
+                             size_t index,
+                             const HwAudioTraceTextRecord* oracle,
+                             const HwAudioTraceTextRecord* driver)
+{
+    if (oracle->cycle != driver->cycle)
+    {
+        fprintf(stderr,
+                "driver-event compare: first divergence at record %zu %s cycle: oracle=%" PRIu64 " driver=%" PRIu64
+                "\n",
+                index + 1u,
+                name,
+                oracle->cycle,
+                driver->cycle);
+        return false;
+    }
+    if (oracle->order != driver->order)
+    {
+        fprintf(stderr,
+                "driver-event compare: first divergence at record %zu %s order: oracle=%" PRIu32 " driver=%" PRIu32
+                "\n",
+                index + 1u,
+                name,
+                oracle->order,
+                driver->order);
+        return false;
+    }
+    return true;
+}
+
+/* Compare the interval markers and every normalized non-SAMPLE hardware event. */
+static bool compare_driver_traces(const char* oracle_path, const char* driver_path)
+{
+    DriverTraceRecords oracle = {0};
+    DriverTraceRecords driver = {0};
+    bool ok = read_driver_trace(oracle_path, &oracle) && read_driver_trace(driver_path, &driver);
+    if (!ok)
+    {
+        free(oracle.records);
+        free(driver.records);
+        return false;
+    }
+
+    size_t shared = oracle.count < driver.count ? oracle.count : driver.count;
+    for (size_t index = 0; index < shared; index++)
+    {
+        const HwAudioTraceTextRecord* expected = &oracle.records[index];
+        const HwAudioTraceTextRecord* actual = &driver.records[index];
+        if (report_unsupported_directsound("oracle", expected, index) ||
+            report_unsupported_directsound("driver", actual, index))
+        {
+            ok = false;
+            break;
+        }
+        if (expected->kind != actual->kind)
+        {
+            fprintf(stderr,
+                    "driver-event compare: first divergence at record %zu kind: oracle=%s driver=%s\n",
+                    index + 1u,
+                    trace_record_name(expected),
+                    trace_record_name(actual));
+            ok = false;
+            break;
+        }
+        if (expected->kind == HW_AUDIO_TRACE_TEXT_EVENT && expected->event.kind != actual->event.kind)
+        {
+            fprintf(stderr,
+                    "driver-event compare: first divergence at record %zu event kind: oracle=%s driver=%s\n",
+                    index + 1u,
+                    trace_record_name(expected),
+                    trace_record_name(actual));
+            ok = false;
+            break;
+        }
+        if (!compare_position(trace_record_name(expected), index, expected, actual))
+        {
+            ok = false;
+            break;
+        }
+        if (expected->kind != HW_AUDIO_TRACE_TEXT_EVENT)
+            continue;
+        if (expected->event.kind == HW_AUDIO_TRACE_WRITE)
+        {
+            if (expected->event.address != actual->event.address)
+            {
+                fprintf(stderr,
+                        "driver-event compare: first divergence at record %zu WRITE address: oracle=0x%08" PRIX32
+                        " driver=0x%08" PRIX32 "\n",
+                        index + 1u,
+                        expected->event.address,
+                        actual->event.address);
+                ok = false;
+                break;
+            }
+            if (expected->event.width != actual->event.width)
+            {
+                fprintf(stderr,
+                        "driver-event compare: first divergence at record %zu WRITE width: oracle=%u driver=%u\n",
+                        index + 1u,
+                        (unsigned)expected->event.width,
+                        (unsigned)actual->event.width);
+                ok = false;
+                break;
+            }
+        }
+        if (expected->event.value != actual->event.value)
+        {
+            fprintf(stderr,
+                    "driver-event compare: first divergence at record %zu %s value: oracle=0x%08" PRIX32
+                    " driver=0x%08" PRIX32 "\n",
+                    index + 1u,
+                    trace_record_name(expected),
+                    expected->event.value,
+                    actual->event.value);
+            ok = false;
+            break;
+        }
+    }
+    if (ok && oracle.count != driver.count)
+    {
+        const bool oracle_extra = oracle.count > driver.count;
+        const HwAudioTraceTextRecord* extra = oracle_extra ? &oracle.records[shared] : &driver.records[shared];
+        const char* source = oracle_extra ? "oracle" : "driver";
+        if (report_unsupported_directsound(source, extra, shared))
+        {
+            ok = false;
+        }
+        else
+        {
+            fprintf(stderr,
+                    "driver-event compare: first divergence at record %zu: %s has %s after the other trace ends\n",
+                    shared + 1u,
+                    source,
+                    trace_record_name(extra));
+            ok = false;
+        }
+    }
+    if (ok)
+    {
+        size_t hardware_events = oracle.count >= 2u ? oracle.count - 2u : 0u;
+        printf("driver-event compare: exact match (%zu WRITE/TIMER events; SAMPLE excluded)\n", hardware_events);
+    }
+    free(oracle.records);
+    free(driver.records);
     return ok;
 }
 
@@ -410,6 +708,8 @@ int main(int argc, char** argv)
         print_usage(argv[0]);
         return 2;
     }
+    if (options.compare_driver)
+        return compare_driver_traces(options.oracle_path, options.driver_path) ? 0 : 1;
 
     char* pcm_path = path_with_suffix(options.output_prefix, ".pcm");
     char* cycles_path = path_with_suffix(options.output_prefix, ".cycles");

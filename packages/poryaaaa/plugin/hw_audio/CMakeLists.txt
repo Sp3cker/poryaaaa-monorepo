@@ -3,6 +3,8 @@ add_library(hw_audio STATIC
     hw_psg.c
     hw_pcm.c
     hw_mix.c
+    hw_audio_trace_text.c
+    hw_audio_trace_schedule.c
     hw_resample.c
 )
 if(COMMAND poryaaaa_enable_project_warnings)

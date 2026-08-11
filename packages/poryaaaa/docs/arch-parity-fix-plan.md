@@ -75,6 +75,14 @@ underflow requests DMA, the resulting FIFO writes must appear first at that
 same cycle with lower order values. This flattens mGBA's synchronous DMA call
 without changing the order seen by the audio module.
 
+New traces encode scheduler lateness without adding a grammar token: bit 31 of
+`order` marks the extended layout, bits 30 through 16 hold the strictly
+increasing same-cycle sequence, and bits 15 through 0 hold `cyclesLate` for
+`TIMER` (zero for every other event). Recorder output rejects more than 32,768
+events at one cycle or lateness above 65,535 cycles. Unmarked legacy traces
+replay with zero lateness. This preserves the logical timer-underflow cycle
+while reconstructing mGBA's sample-event offset when its callback ran late.
+
 ### 2.3 Capture artifacts
 
 Each adapter writes sibling files with one prefix:
@@ -126,10 +134,11 @@ No mono fold, onset alignment, lag search, DC removal, gain fitting, polarity
 correction, or amplitude normalization is allowed. Those remain diagnostic
 operations in `waveform_compare.py` after the exact gate fails.
 
-## 3. Existing poryaaaa-side seam
+## 3. Existing full-ROM recorder and poryaaaa-side seam
 
-The mGBA work must target these checked-in poryaaaa interfaces rather than
-inventing a second format:
+This plan extends the checked-in headless full-ROM mGBA recorder; it does not
+create another emulator frontend. The mGBA work must target these existing
+interfaces rather than inventing a second format:
 
 - `plugin/hw_audio/hw_audio_trace.h`
   - `HwAudioTraceEvent`
@@ -141,6 +150,10 @@ inventing a second format:
 - `tools/mgba-reference/native_compare.py`
   - exact cycle/stereo comparison
   - first mismatch and artifact hashes
+- `tools/mgba-reference/mgba_mp2k_reference.c`
+  - existing headless recorder that boots and runs a complete ROM in mGBA
+  - existing frontend capture through `postAudioBuffer`
+  - oracle process to extend with trace and native-sample capture
 
 Build and replay:
 
@@ -156,21 +169,35 @@ cmake --build build --target poryaaaa_audio_trace
 
 ## 4. mGBA source policy
 
-Use a dedicated clone checked out at `afd6f14`. Do not build against an
-arbitrary package-manager `libmgba` for parity evidence.
+Use the existing mGBA repository as the source clone. Fetch `afd6f14`, then
+create a dedicated worktree at that revision for the audio-reference changes.
+Cloning again is acceptable when no existing clone is available, but it is not
+part of the harness design. Do not build against an arbitrary package-manager
+`libmgba` for parity evidence.
 
 Recommended layout outside generated build output:
 
 ```text
-<workspace>/mgba-audio-reference/   # clone at afd6f14 plus reviewed patch
+<workspace>/mgba/                   # existing upstream clone
+<workspace>/mgba-audio-reference/   # worktree at afd6f14 plus reviewed patch
 packages/poryaaaa/build/            # poryaaaa and reference binaries
 ```
 
-CMake receives the clone explicitly:
+CMake receives the worktree explicitly:
 
 ```text
 -DPORYAAAA_MGBA_SOURCE=/absolute/path/to/mgba-audio-reference
 ```
+
+The pinned mGBA source must be modified to add the observation sink described
+in Phase B. That is the required tracing change. Apply it in the dedicated
+worktree and compile the existing headless recorder directly against that
+source; do not patch or replace the installed mGBA library.
+
+Before Phase B, the worktree must be a clean `afd6f14`. After Phase B, only the
+reviewed observation patch is allowed. Record the base commit, patch hash, and
+any unexpected dirty paths separately so the expected patch is not confused
+with an uncontrolled dirty checkout.
 
 Do not copy or translate arithmetic into the recorder. Keep mGBA's PSG, GBA
 mixer, timing scheduler, FIFO logic, and bias arithmetic compiled from the
@@ -179,28 +206,38 @@ Retain MPL-2.0 notices in every modified/copied mGBA source.
 
 ## 5. Implementation phases
 
-### Phase A — Pin and reproduce unmodified mGBA
+### Phase A — Pin mGBA and baseline the existing recorder
 
 Role: dispatch a `task` implementer; use a `reviewer` for provenance review.
 
-1. Clone mGBA and checkout `afd6f14` detached.
-2. Record commit, dirty state, compiler, and build flags in recorder output.
-3. Change `packages/poryaaaa/CMakeLists.txt` reference configuration to require
+1. Fetch `afd6f14` in the existing mGBA clone and create a dedicated worktree
+   at that revision.
+2. Build the existing `mgba_mp2k_reference` headless full-ROM recorder against
+   the unmodified worktree.
+3. Record commit, dirty state, compiler, and build flags in recorder output.
+4. Change `packages/poryaaaa/CMakeLists.txt` reference configuration to require
    `PORYAAAA_MGBA_SOURCE` for native parity targets.
-4. Keep the existing installed-library recorder available only for legacy
-   frontend WAV diagnostics; label its output non-authoritative.
-5. Capture one existing ROM fixture twice and require identical hashes.
+5. Keep the installed-library configuration of the same recorder available
+   only for legacy frontend WAV diagnostics; label its output non-authoritative.
+6. Capture one existing ROM fixture twice through the frontend path and require
+   identical WAV hashes.
 
 Acceptance:
 
-- Two unmodified full-ROM runs produce identical native PCM and trace hashes.
-- The manifest identifies the exact source revision and ROM.
-- A dirty or wrong mGBA checkout makes the native target fail configuration.
+- Two unmodified full-ROM runs through the existing recorder produce identical
+  frontend WAV hashes.
+- The baseline record identifies the exact source revision and ROM hash.
+- A wrong base commit or unexpected dirty path makes the native parity
+  configuration fail.
 
-### Phase B — Add an observation sink to mGBA
+### Phase B — Add the required observation sink to mGBA
 
 Role: dispatch a `task` implementer familiar with C timing code; review with a
 `reviewer` before accepting any edit in mGBA arithmetic.
+
+This phase modifies the pinned mGBA worktree. The existing recorder can already
+run a ROM headlessly, but it cannot produce the cycle-ordered hardware trace
+until mGBA exposes these observation points.
 
 Target mGBA files:
 
@@ -243,17 +280,18 @@ Ordering rule:
 
 Acceptance:
 
-- Enabling the sink does not change a frontend WAV or native PCM hash.
+- Enabling the sink does not change the existing frontend WAV hash.
 - Disabling the sink executes no callback and requires no allocation.
 - Trace positions are strictly ordered.
 - Register and FIFO payloads match mGBA's input values exactly.
 
-### Phase C — Extend the full-ROM oracle recorder
+### Phase C — Extend the existing headless full-ROM recorder
 
 Role: dispatch a `task` implementer; use a `sonic` implementer for mechanical
 manifest fields after the capture contract is fixed.
 
-Target poryaaaa file:
+Modify the recorder already used for frontend WAV capture; do not create a new
+full-ROM frontend:
 
 - `tools/mgba-reference/mgba_mp2k_reference.c`
 
@@ -282,14 +320,20 @@ Acceptance:
 - SOUNDBIAS changes appear as register writes and changed SAMPLE cycle spacing.
 - Left and right samples remain independent.
 - Silent captures, missing markers, unordered events, and partial files fail.
+- Two identical full-ROM native runs produce identical native PCM and trace
+  hashes.
+- The native manifest identifies the exact mGBA base revision, observation
+  patch, and ROM.
 
-### Phase D — Build the mGBA clone replay adapter
+### Phase D — Build the separate mGBA trace replay adapter
 
 Role: dispatch a `task` implementer; require a `reviewer` to compare every
 adapter call with the corresponding full-core call.
 
 Create a standalone reference target in `tools/mgba-reference/` that links the
-pinned clone and consumes the trace grammar from section 2.
+same pinned, patched mGBA worktree and consumes the trace grammar from section
+2. This audio-only replay adapter is separate from the existing headless
+full-ROM recorder.
 
 Required behavior:
 
@@ -432,9 +476,10 @@ python3 tools/mgba-reference/test_native_compare.py
 ./build/poryaaaa_unit_tests
 ```
 
-Run the full-ROM recorder twice, validate full mGBA against clone, then compare
-clone against poryaaaa. Archive the three manifests and comparator JSON for
-each accepted fixture.
+Run the existing headless full-ROM recorder twice, validate full mGBA against
+the separate mGBA trace replay adapter, then compare that adapter against
+poryaaaa. Archive the three manifests and comparator JSON for each accepted
+fixture.
 
 ## 7. Stop conditions
 

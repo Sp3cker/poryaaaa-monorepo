@@ -79,7 +79,7 @@ static void test_trace_square_register_replay_is_audible(void)
     hw_audio_destroy(audio);
 }
 
-/* Prove FIFO writes drain only on the selected timer and preserve signed bytes. */
+/* Prove recorder-ordered FIFO writes and timer clocks have the intended same-cycle result. */
 static void test_trace_fifo_timer_replay(void)
 {
     printf("Testing hw_audio trace: FIFO drains on selected timer...\n");
@@ -93,19 +93,19 @@ static void test_trace_fifo_timer_replay(void)
     ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 4, 0x040000A0, 0x7F0100FF, &frame),
               HW_AUDIO_TRACE_OK,
               "FIFO A accepts one little-endian DMA word");
-    ASSERT_EQ(apply_event(audio, 1, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_TIMER, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
-              "unselected timer 0 is accepted");
-    ASSERT_EQ(apply_event(audio, 1, 1, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              "unselected timer after its same-cycle DMA write is accepted");
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "sample after unselected timer is accepted");
     ASSERT_EQ(frame.left, 0, "unselected timer leaves FIFO A hold silent");
     ASSERT_EQ(frame.right, 0, "unselected timer leaves both sides silent");
 
-    ASSERT_EQ(apply_event(audio, 2, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 1, &frame),
+    ASSERT_EQ(apply_event(audio, 1, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 1, &frame),
               HW_AUDIO_TRACE_OK,
               "selected timer 1 drains FIFO A");
-    ASSERT_EQ(apply_event(audio, 2, 1, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 1, 1, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "sample after selected timer is accepted");
     ASSERT_EQ(frame.left, -192, "FIFO byte -1 uses mGBA DirectSound integer scale on left");
@@ -113,10 +113,101 @@ static void test_trace_fifo_timer_replay(void)
     hw_audio_destroy(audio);
 }
 
-/* Prove malformed ordering and FIFO overflow fail instead of corrupting a capture. */
+/* Prove every PSG byte address handled directly by mGBA can be replayed. */
+static void test_trace_byte_psg_register_writes_are_accepted(void)
+{
+    printf("Testing hw_audio trace: direct PSG byte writes are accepted...\n");
+    static const struct
+    {
+        uint32_t address;
+        uint8_t value;
+    } writes[] = {
+        {0x04000062, 0x80},
+        {0x04000063, 0xF0},
+        {0x04000064, 0xF8},
+        {0x04000065, 0x87},
+        {0x04000068, 0x80},
+        {0x04000069, 0xF0},
+        {0x0400006C, 0xF8},
+        {0x0400006D, 0x87},
+        {0x04000072, 0xFF},
+        {0x04000073, 0x20},
+        {0x04000074, 0xF8},
+        {0x04000075, 0x87},
+        {0x04000078, 0x3F},
+        {0x04000079, 0xF0},
+        {0x0400007C, 0x00},
+        {0x0400007D, 0x80},
+    };
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    for (size_t index = 0; index < sizeof(writes) / sizeof(writes[0]); index++)
+    {
+        ASSERT_EQ(
+            apply_event(
+                audio, 0, (uint32_t)index, HW_AUDIO_TRACE_WRITE, 1, writes[index].address, writes[index].value, &frame),
+            HW_AUDIO_TRACE_OK,
+            "mGBA direct PSG byte write is accepted");
+    }
+    hw_audio_destroy(audio);
+}
+
+/* Prove byte routing preserves independent low/high writes and a high-byte trigger. */
+static void test_trace_byte_psg_trigger_is_not_a_halfword_write(void)
+{
+    printf("Testing hw_audio trace: byte PSG writes route independently...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, 0x04000080, 0x1177, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_L routes square 1 to both sides");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, 0x04000084, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_X enables PSG");
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 1, 0x04000062, 0x40, &frame),
+              HW_AUDIO_TRACE_OK,
+              "low byte routes to NR11");
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_WRITE, 1, 0x04000063, 0xF0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "high byte routes to NR12");
+    ASSERT_EQ(apply_event(audio, 0, 4, HW_AUDIO_TRACE_WRITE, 1, 0x04000064, 0x00, &frame),
+              HW_AUDIO_TRACE_OK,
+              "low byte routes to NR13");
+    ASSERT_EQ(apply_event(audio, 0, 5, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "sample before high-byte trigger is accepted");
+    ASSERT_EQ(frame.left, 0, "frequency low byte alone does not trigger square 1");
+    ASSERT_EQ(frame.right, 0, "frequency low byte leaves both sides silent");
+    ASSERT_EQ(apply_event(audio, 1, 0, HW_AUDIO_TRACE_WRITE, 1, 0x04000065, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "high byte routes directly to NR14");
+    ASSERT_EQ(apply_event(audio, 2, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "first sample after high-byte trigger is accepted");
+    ASSERT(frame.left > 0 && frame.right > 0,
+           "low-byte duty and high-byte trigger both affect the first square sample");
+
+    bool audible = false;
+    for (uint32_t index = 0; index < 32; index++)
+    {
+        ASSERT_EQ(apply_event(audio, index + 3u, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+                  HW_AUDIO_TRACE_OK,
+                  "sample after high-byte trigger is accepted");
+        ASSERT_EQ(frame.left, frame.right, "centered square byte trace has equal stereo sides");
+        audible |= frame.left != 0;
+    }
+    ASSERT(audible, "high-byte NR14 trigger starts square 1 without a reconstructed halfword");
+    hw_audio_destroy(audio);
+}
+
+/* Prove malformed ordering is rejected while mGBA's FIFO pointer wraps. */
 static void test_trace_validation_rejects_ambiguous_input(void)
 {
-    printf("Testing hw_audio trace: invalid ordering and FIFO overflow are rejected...\n");
+    printf("Testing hw_audio trace: invalid ordering is rejected and FIFO pointers wrap...\n");
     HwAudio* audio = hw_audio_create(48000.0f);
     HwAudioNativeFrame frame;
     hw_audio_trace_reset(audio);
@@ -127,6 +218,10 @@ static void test_trace_validation_rejects_ambiguous_input(void)
     ASSERT_EQ(apply_event(audio, 10, 4, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OUT_OF_ORDER,
               "duplicate same-cycle order is rejected");
+    hw_audio_trace_reset(audio);
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 1, 0x04000060, 0x12, &frame),
+              HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS,
+              "PSG byte addresses not handled directly by mGBA are rejected");
 
     hw_audio_trace_reset(audio);
     for (uint32_t index = 0; index < 8; index++)
@@ -136,8 +231,8 @@ static void test_trace_validation_rejects_ambiguous_input(void)
                   "32-byte FIFO capacity accepts eight words");
     }
     ASSERT_EQ(apply_event(audio, 8, 0, HW_AUDIO_TRACE_WRITE, 4, 0x040000A0, 8, &frame),
-              HW_AUDIO_TRACE_FIFO_OVERFLOW,
-              "ninth word is rejected before overwriting unread FIFO data");
+              HW_AUDIO_TRACE_OK,
+              "ninth word wraps mGBA's modulo-8 FIFO write pointer");
     hw_audio_destroy(audio);
 }
 
@@ -147,6 +242,8 @@ void test_hw_audio_trace_run_all(void)
     test_trace_reset_starts_silent();
     test_trace_square_register_replay_is_audible();
     test_trace_fifo_timer_replay();
+    test_trace_byte_psg_register_writes_are_accepted();
+    test_trace_byte_psg_trigger_is_not_a_halfword_write();
     test_trace_validation_rejects_ambiguous_input();
 }
 

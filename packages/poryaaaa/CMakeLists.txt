@@ -354,41 +354,188 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_hw_audio_trace_tests PRIVATE m)
 endif()
 
+# ---- Focused native audio trace contract tests ----
+add_executable(poryaaaa_hw_audio_trace_contract_tests
+    test/test_hw_audio_trace_contracts.c
+)
+poryaaaa_enable_project_warnings(poryaaaa_hw_audio_trace_contract_tests)
+target_compile_definitions(poryaaaa_hw_audio_trace_contract_tests PRIVATE
+    PORYAAAA_HW_AUDIO_TRACE_CONTRACTS_TEST_MAIN=1
+)
+target_include_directories(poryaaaa_hw_audio_trace_contract_tests PRIVATE plugin test)
+target_link_libraries(poryaaaa_hw_audio_trace_contract_tests PRIVATE hw_audio)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_hw_audio_trace_contract_tests PRIVATE m)
+endif()
+
 # ---- Full mGBA MP2K reference recorder ----
 option(PORYAAAA_BUILD_MGBA_REFERENCE
     "Build the full-ROM mGBA reference recorder" OFF)
+set(PORYAAAA_MGBA_SOURCE "" CACHE PATH
+    "Authoritative patched mGBA afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9 source checkout")
 set(PORYAAAA_MGBA_ROOT "" CACHE PATH
-    "mGBA installation prefix for the reference recorder")
+    "Non-authoritative installed mGBA prefix for the reference recorder")
+set(PORYAAAA_MGBA_EXPECTED_REVISION "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9")
 
 if(PORYAAAA_BUILD_MGBA_REFERENCE)
-    find_path(PORYAAAA_MGBA_INCLUDE_DIR mgba/core/core.h
-        HINTS
-            "${PORYAAAA_MGBA_ROOT}/include"
-            /usr/local/include
-            /opt/homebrew/include)
-    find_library(PORYAAAA_MGBA_LIBRARY mgba
-        HINTS
-            "${PORYAAAA_MGBA_ROOT}/lib"
-            /usr/local/lib
-            /opt/homebrew/lib)
-
-    if(NOT PORYAAAA_MGBA_INCLUDE_DIR OR NOT PORYAAAA_MGBA_LIBRARY)
-        message(FATAL_ERROR
-            "PORYAAAA_BUILD_MGBA_REFERENCE requires an mGBA development install; "
-            "set PORYAAAA_MGBA_ROOT to its prefix")
-    endif()
-
     add_executable(mgba_mp2k_reference
         tools/mgba-reference/mgba_mp2k_reference.c
     )
+    set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD 11)
+    set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD_REQUIRED ON)
     poryaaaa_enable_project_warnings(mgba_mp2k_reference)
-    target_include_directories(mgba_mp2k_reference PRIVATE
-        "${PORYAAAA_MGBA_INCLUDE_DIR}"
-    )
+    get_target_property(_mgba_recorder_compile_options mgba_mp2k_reference COMPILE_OPTIONS)
+    if(_mgba_recorder_compile_options STREQUAL "_mgba_recorder_compile_options-NOTFOUND")
+        set(_mgba_recorder_compile_options)
+    endif()
+    string(JOIN " " _mgba_recorder_compiler_flags
+        "${CMAKE_C_FLAGS}" ${_mgba_recorder_compile_options})
+    string(REPLACE ";" " " _mgba_recorder_compiler_flags "${_mgba_recorder_compiler_flags}")
+    string(REPLACE "\"" "\\\"" _mgba_recorder_compiler_flags "${_mgba_recorder_compiler_flags}")
+    target_compile_definitions(mgba_mp2k_reference PRIVATE
+        "PORYAAAA_MGBA_RECORDER_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
+        "PORYAAAA_MGBA_RECORDER_COMPILE_FLAGS=\"${_mgba_recorder_compiler_flags}\"")
     target_compile_definitions(mgba_mp2k_reference PRIVATE ENABLE_VFS=1)
-    target_link_libraries(mgba_mp2k_reference PRIVATE
-        "${PORYAAAA_MGBA_LIBRARY}"
-    )
+    if(PORYAAAA_MGBA_SOURCE)
+        get_filename_component(_mgba_source "${PORYAAAA_MGBA_SOURCE}" REALPATH)
+        if(NOT EXISTS "${_mgba_source}/CMakeLists.txt" OR NOT EXISTS "${_mgba_source}/.git")
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE must be the pinned mGBA git worktree, not an installation")
+        endif()
+        find_package(Git REQUIRED)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" rev-parse HEAD
+            RESULT_VARIABLE _mgba_revision_status
+            OUTPUT_VARIABLE _mgba_revision
+            ERROR_VARIABLE _mgba_revision_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_revision_status STREQUAL "0" OR
+           NOT _mgba_revision STREQUAL PORYAAAA_MGBA_EXPECTED_REVISION)
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE must be at ${PORYAAAA_MGBA_EXPECTED_REVISION}; "
+                "got '${_mgba_revision}' (${_mgba_revision_error})")
+        endif()
+
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" diff --name-only
+                    "${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            RESULT_VARIABLE _mgba_diff_status
+            OUTPUT_VARIABLE _mgba_changed_paths
+            ERROR_VARIABLE _mgba_diff_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_diff_status STREQUAL "0")
+            message(FATAL_ERROR "Could not inspect PORYAAAA_MGBA_SOURCE: ${_mgba_diff_error}")
+        endif()
+        set(_mgba_observation_patch_paths
+            "include/mgba/internal/gba/audio.h"
+            "src/gba/audio.c"
+            "src/gba/io.c")
+        set(_mgba_source_dirty 0)
+        if(_mgba_changed_paths)
+            set(_mgba_source_dirty 1)
+            string(REPLACE "\n" ";" _mgba_changed_path_list "${_mgba_changed_paths}")
+            foreach(_mgba_changed_path IN LISTS _mgba_changed_path_list)
+                list(FIND _mgba_observation_patch_paths "${_mgba_changed_path}" _mgba_known_patch_path)
+                if(_mgba_known_patch_path EQUAL -1)
+                    message(FATAL_ERROR
+                        "PORYAAAA_MGBA_SOURCE has an unexpected change: ${_mgba_changed_path}. "
+                        "Only the observation patch may differ from ${PORYAAAA_MGBA_EXPECTED_REVISION}.")
+                endif()
+            endforeach()
+        endif()
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" ls-files --others --exclude-standard
+            RESULT_VARIABLE _mgba_untracked_status
+            OUTPUT_VARIABLE _mgba_untracked_paths
+            ERROR_VARIABLE _mgba_untracked_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_untracked_status STREQUAL "0" OR _mgba_untracked_paths)
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE has unexpected untracked files: "
+                "${_mgba_untracked_paths}${_mgba_untracked_error}")
+        endif()
+
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" diff --binary
+                    "${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            RESULT_VARIABLE _mgba_patch_status
+            OUTPUT_VARIABLE _mgba_observation_patch
+            ERROR_VARIABLE _mgba_patch_error)
+        if(NOT _mgba_patch_status STREQUAL "0")
+            message(FATAL_ERROR "Could not hash mGBA observation patch: ${_mgba_patch_error}")
+        endif()
+        string(SHA256 _mgba_observation_patch_sha256 "${_mgba_observation_patch}")
+
+        set(LIBMGBA_ONLY ON CACHE BOOL "" FORCE)
+        set(M_CORE_GBA ON CACHE BOOL "" FORCE)
+        set(M_CORE_GB OFF CACHE BOOL "" FORCE)
+        # mTimingGlobalTime is a true absolute clock only in this pinned mGBA
+        # configuration when its existing debugger timing counter is enabled.
+        set(ENABLE_DEBUGGERS ON CACHE BOOL "" FORCE)
+        set(USE_EDITLINE OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${_mgba_source}" "${CMAKE_CURRENT_BINARY_DIR}/mgba-reference" EXCLUDE_FROM_ALL)
+        if(NOT TARGET mgba)
+            message(FATAL_ERROR "Pinned mGBA source did not define the mgba library target")
+        endif()
+        add_executable(mgba_audio_trace_replay
+            tools/mgba-reference/mgba_audio_trace_replay.c
+        )
+        set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD 11)
+        set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD_REQUIRED ON)
+        poryaaaa_enable_project_warnings(mgba_audio_trace_replay)
+        target_compile_definitions(mgba_audio_trace_replay PRIVATE ENABLE_VFS=1)
+        target_link_libraries(mgba_audio_trace_replay PRIVATE mgba)
+        # The replay adapter reads internal mGBA state, so its feature layout
+        # must match the linked mGBA target exactly.
+        target_compile_definitions(mgba_audio_trace_replay PRIVATE
+            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>"
+            PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
+            PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
+            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
+            PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
+        if(NOT MSVC)
+            target_link_libraries(mgba_audio_trace_replay PRIVATE m)
+        endif()
+        target_link_libraries(mgba_mp2k_reference PRIVATE mgba)
+        # mCore's public layout depends on mGBA's feature definitions. Compile the
+        # recorder with the library's exact definitions to preserve its ABI.
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>")
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
+            PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
+            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
+            PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
+    else()
+        message(WARNING
+            "PORYAAAA_MGBA_ROOT installed-library mode is non-authoritative and frontend-only. "
+            "Native parity capture requires PORYAAAA_MGBA_SOURCE.")
+        find_path(PORYAAAA_MGBA_INCLUDE_DIR mgba/core/core.h
+            HINTS
+                "${PORYAAAA_MGBA_ROOT}/include"
+                /usr/local/include
+                /opt/homebrew/include)
+        find_library(PORYAAAA_MGBA_LIBRARY mgba
+            HINTS
+                "${PORYAAAA_MGBA_ROOT}/lib"
+                /usr/local/lib
+                /opt/homebrew/lib)
+        if(NOT PORYAAAA_MGBA_INCLUDE_DIR OR NOT PORYAAAA_MGBA_LIBRARY)
+            message(FATAL_ERROR
+                "PORYAAAA_BUILD_MGBA_REFERENCE requires PORYAAAA_MGBA_SOURCE or an mGBA development install")
+        endif()
+        target_include_directories(mgba_mp2k_reference PRIVATE "${PORYAAAA_MGBA_INCLUDE_DIR}")
+        target_link_libraries(mgba_mp2k_reference PRIVATE "${PORYAAAA_MGBA_LIBRARY}")
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            PORYAAAA_MGBA_BASE_REVISION="unverified-installed-library"
+            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="unverified-installed-library"
+            PORYAAAA_MGBA_SOURCE_DIRTY=0
+            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=0
+            PORYAAAA_MGBA_SOURCE_POLICY="non-authoritative-installed-library")
+    endif()
+
     if(NOT MSVC)
         target_link_libraries(mgba_mp2k_reference PRIVATE m)
     endif()
@@ -469,6 +616,7 @@ add_executable(poryaaaa_unit_tests
     test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_hw_audio_trace.c
+    test/test_hw_audio_trace_contracts.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
     ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}
