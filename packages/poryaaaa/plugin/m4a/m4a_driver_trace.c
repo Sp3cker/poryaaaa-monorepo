@@ -6,28 +6,21 @@
 
 #include "hw_audio/hw_audio_trace.h"
 
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_SEQUENCE_SHIFT 16u
-
-static bool next_position(M4ADriverTraceWriter* writer, uint64_t cycle, uint32_t* order)
+/* Accept the driver's absolute position without synthesising a replacement
+ * order: trace replay must observe the same same-cycle sequence. */
+static bool accept_position(M4ADriverTraceWriter* writer, uint64_t cycle, uint32_t order)
 {
     if (!writer->position_valid || cycle > writer->previous_cycle)
     {
         writer->previous_cycle = cycle;
-        writer->previous_order = 0u;
+        writer->previous_order = order;
         writer->position_valid = true;
+        return true;
     }
-    else if (cycle == writer->previous_cycle)
-    {
-        if (writer->previous_order == 0x7FFFu)
-            return false;
-        writer->previous_order++;
-    }
-    else
-    {
+    if (cycle != writer->previous_cycle || order <= writer->previous_order)
         return false;
-    }
-    *order = TRACE_ORDER_EXTENDED | (writer->previous_order << TRACE_ORDER_SEQUENCE_SHIFT);
+
+    writer->previous_order = order;
     return true;
 }
 
@@ -144,8 +137,16 @@ static bool map_register_write(
         *value = source->value & 0xFFu;
         return true;
     }
-    case M4A_REG_PCM_PUBLISH:
-    case M4A_REG_PCM_RESET:
+    case M4A_REG_FIFO_A:
+        *width = 4u;
+        *address = HW_AUDIO_GBA_IO_BASE + 0xA0u;
+        return true;
+    case M4A_REG_FIFO_B:
+        *width = 4u;
+        *address = HW_AUDIO_GBA_IO_BASE + 0xA4u;
+        return true;
+    case M4A_REG_TIMER_0:
+    case M4A_REG_TIMER_1:
         return false;
     }
     return false;
@@ -162,7 +163,7 @@ bool m4a_driver_trace_begin(
     writer->end_cycle = end_cycle;
     writer->soundcnt_l = soundcnt_l;
     uint32_t order = 0u;
-    if (!next_position(writer, begin_cycle, &order) ||
+    if (!accept_position(writer, begin_cycle, order) ||
         fprintf(output,
                 "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\nBEGIN %" PRIu64 " %" PRIu32 "\n",
                 HW_AUDIO_GBA_CLOCK_HZ,
@@ -175,41 +176,39 @@ bool m4a_driver_trace_begin(
     return true;
 }
 
-bool m4a_driver_trace_write_batch(M4ADriverTraceWriter* writer,
-                                  const M4ARegWriteBatch* batch,
-                                  uint64_t render_start_cycle,
-                                  uint32_t cycles_per_frame)
+bool m4a_driver_trace_write_batch(M4ADriverTraceWriter* writer, const M4ARegWriteBatch* batch)
 {
-    if (!writer || !writer->open || !batch || !cycles_per_frame)
+    if (!writer || !writer->open || !batch)
         return false;
     for (size_t index = 0; index < batch->count; index++)
     {
         const M4ARegWrite* source = &batch->events[index];
-        if (source->reg == M4A_REG_PCM_PUBLISH || source->reg == M4A_REG_PCM_RESET)
+        if (source->cycle < writer->begin_cycle || source->cycle > writer->end_cycle)
+            continue;
+        if (source->reg == M4A_REG_TIMER_0 || source->reg == M4A_REG_TIMER_1)
         {
-            writer->skipped_pcm_events++;
+            const uint32_t timer = source->reg == M4A_REG_TIMER_0 ? 0u : 1u;
+            if (!accept_position(writer, source->cycle, source->order) ||
+                fprintf(writer->output,
+                        "TIMER %" PRIu64 " %" PRIu32 " %" PRIu32 "\n",
+                        source->cycle,
+                        source->order,
+                        timer) < 0)
+            {
+                return false;
+            }
             continue;
         }
-        if (source->sample_offset > UINT64_MAX / cycles_per_frame)
-            return false;
-        uint64_t relative_cycle = (uint64_t)source->sample_offset * cycles_per_frame;
-        if (render_start_cycle > UINT64_MAX - relative_cycle)
-            return false;
-        uint64_t cycle = render_start_cycle + relative_cycle;
-        if (cycle < writer->begin_cycle || cycle >= writer->end_cycle)
-            continue;
 
         uint8_t width = 0u;
         uint32_t address = 0u;
         uint32_t value = 0u;
-        if (!map_register_write(writer, source, &width, &address, &value))
-            return false;
-        uint32_t order = 0u;
-        if (!next_position(writer, cycle, &order) ||
+        if (!map_register_write(writer, source, &width, &address, &value) ||
+            !accept_position(writer, source->cycle, source->order) ||
             fprintf(writer->output,
                     "WRITE %" PRIu64 " %" PRIu32 " %u 0x%08" PRIX32 " 0x%08" PRIX32 "\n",
-                    cycle,
-                    order,
+                    source->cycle,
+                    source->order,
                     (unsigned)width,
                     address,
                     value) < 0)
@@ -224,8 +223,8 @@ bool m4a_driver_trace_end(M4ADriverTraceWriter* writer)
 {
     if (!writer || !writer->open)
         return false;
-    uint32_t order = 0u;
-    if (!next_position(writer, writer->end_cycle, &order) ||
+    uint32_t order = writer->previous_cycle == writer->end_cycle ? writer->previous_order + 1u : 0u;
+    if (!accept_position(writer, writer->end_cycle, order) ||
         fprintf(writer->output, "END %" PRIu64 " %" PRIu32 "\n", writer->end_cycle, order) < 0 ||
         fflush(writer->output) != 0)
     {

@@ -2,8 +2,8 @@
 #define HW_AUDIO_H
 
 #include "m4a/m4a_register_file.h"
-#include "m4a/m4a_pcm_ring.h"
-#include "m4a/m4a_driver.h" /* M4ARegWriteBatch / M4ARegWrite types */
+#include "m4a/m4a_pcm_ring.h" /* legacy snapshot API only */
+#include "m4a/m4a_driver.h"   /* M4ARegWriteBatch / M4ARegWrite types */
 
 #ifdef __cplusplus
 extern "C"
@@ -16,13 +16,10 @@ extern "C"
      *   - PSG square / wave / noise: synthesised at mGBA's
      *     SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`),
      *     updated at register-event offsets.
-     *   - PCM DirectSound: two-stage drain (§12 step 5 closed).
-     *     HwDmaToFifo reads M4APcmRing at pcm_rate_hz; HwFifoDrain
-     *     snapshots the FIFO head at the SOUNDBIAS-derived quirk rate
-     *     (32k/65k/131k/262k Hz); output at internal_rate is the held
-     *     quirk byte sign-extended.
-     *   - Mix bus: full SOUNDCNT_L (NR50/NR51) + SOUNDCNT_H + SOUNDBIAS
-     *     bias-add / clip pipeline at internal rate (§12 step 8 + 9).
+     *   - PCM DirectSound: canonical FIFO A/B words and explicit TIMER 0/1
+     *     events.  The live chip and trace replay share the GBA's modulo-8
+     *     word FIFO, little-endian byte shifts, and empty shift-register
+     *     behavior; no production path reads the m4a software ring.
      *   - Output frontend: streaming port of current mGBA's normalized
      *     16-tap sinc kernel with a three-term Nuttall window. Cumulative
      *     sample-clock accounting keeps output invariant under host
@@ -110,25 +107,19 @@ extern "C"
     void
     hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames);
 
-    /* LAYER 1.5 API — event-driven.  Authoritative interface used by all
-     * production v2 call sites (CLAP process, headless export, CLI render,
-     * unit tests).  Chip iterates the batch in non-decreasing
-     * sample_offset order, applies each register write at its offset, and
-     * renders each segment with the resulting register state — exactly as
-     * mGBA does with GBAAudioSample() + write.
+    /* Cycle-domain production API.  `events` carries an explicit absolute
+     * [begin_cycle, end_cycle] interval.  The renderer advances chip state
+     * to every ordered event cycle before applying it; `frames` only sizes
+     * the public host output buffer and never timestamps a register write.
      *
      * Caller convention:
-     *   1. m4a_advance(drv, frames)             // queue events
-     *   2. hw_audio_render_events(...)          // consume + render
-     *   3. m4a_consume_writes(drv)              // clear queue + reset offset
+     *   1. m4a_advance(drv, frames)             // queue cycle events
+     *   2. hw_audio_render_events(...)          // render batch interval
+     *   3. m4a_consume_writes(drv)              // begin next interval
      *
-     * The driver's snapshot (M4ARegisterFile) is computed as a side effect
-     * of CgbSound's same writes and remains queryable via
-     * m4a_get_register_file() for non-timing consumers (UI, debug).  hw_audio
-     * MUST NOT use the snapshot for timing-sensitive logic from this API
-     * onwards — that defeats the whole point of the event stream. */
-    void hw_audio_render_events(
-        HwAudio* hw, const M4ARegWriteBatch* events, const M4APcmRing* pcm, float* outL, float* outR, int frames);
+     * The register snapshot is observable for UI/debug only; hardware
+     * timing consumes the ordered event stream. */
+    void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* outL, float* outR, int frames);
 
 #ifdef __cplusplus
 }

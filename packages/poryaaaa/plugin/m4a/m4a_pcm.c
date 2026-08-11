@@ -68,8 +68,8 @@ void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32
             startOffset = wav->size;
         if (wav->data)
         {
-            ch->currentPointer = (type & VOICE_TYPE_REV) ? wav->data + wav->size - startOffset
-                                                          : wav->data + startOffset;
+            ch->currentPointer =
+                (type & VOICE_TYPE_REV) ? wav->data + wav->size - startOffset : wav->data + startOffset;
             if ((wav->status & 0xC000) && wav->loopStart < wav->size)
             {
                 ch->isLoop = true;
@@ -359,7 +359,6 @@ static int32_t pcm_source_current_sample(const PcmSource* source)
     return source->ptr[0];
 }
 
-
 static bool pcm_source_advance(PcmSource* source, uint32_t advance, bool fixed, int32_t* sampleStored, bool* stopped)
 {
     if (advance == 0)
@@ -511,17 +510,17 @@ static void render_pcm_block(M4ADriver* drv, bool tick_channels)
 
     if (tick_channels)
     {
-        /* 1. Envelope tick on every active channel. */
+        /* 1. Tick the envelope before expiring a gate for the next tick. */
         for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
         {
             M4ADriverPcmChan* ch = &drv->pcmChans[i];
+            pcm_channel_tick(ch, drv->master_volume);
             if (ch->gateTime > 0)
             {
                 ch->gateTime--;
                 if (ch->gateTime == 0)
                     ch->status |= M4A_CHN_STOP;
             }
-            pcm_channel_tick(ch, drv->master_volume);
         }
     }
 
@@ -583,10 +582,9 @@ static void render_pcm_block(M4ADriver* drv, bool tick_channels)
         drv->pcm.pcm_samples_per_vblank = (uint32_t)frameSize;
         drv->pcm.pcm_dma_buf_size = (uint32_t)bufSize;
 
-        /* Publish gate: stamp this block's exact write count with the firing
-         * sample_offset so the chip's hw_pcm only treats it as available from
-         * `event_vblank_offset` onwards within the current render span. */
-        m4a_internal_emit_event(drv, M4A_REG_PCM_PUBLISH, (uint32_t)frameSize);
+        /* The ring remains the driver's circular software-mix/DMA source.
+         * m4a_advance emits canonical FIFO words only when its timer-driven
+         * DMA model refills hardware; publication is not a hardware event. */
     }
     drv->pcm_prefill_pending = false;
 }
@@ -611,8 +609,8 @@ void m4a_driver_prefill_pcm(M4ADriver* drv)
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
     {
         M4ADriverPcmChan* ch = &drv->pcmChans[i];
-        if ((ch->status & M4A_CHN_ON) && (ch->status & M4A_CHN_ENV_MASK) == M4A_CHN_ENV_ATTACK
-            && ch->envelopeVolume == 0)
+        if ((ch->status & M4A_CHN_ON) && (ch->status & M4A_CHN_ENV_MASK) == M4A_CHN_ENV_ATTACK &&
+            ch->envelopeVolume == 0)
             pcm_channel_tick(ch, drv->master_volume);
     }
     render_pcm_block(drv, false);

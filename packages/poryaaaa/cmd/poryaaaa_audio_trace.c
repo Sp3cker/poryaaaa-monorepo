@@ -225,6 +225,14 @@ typedef struct
     const HwAudioTraceFifoSample* fifo_samples;
     size_t fifo_sample_count;
     size_t fifo_sample_index;
+    const HwAudioTraceEvent* events;
+    size_t event_count;
+    size_t event_index;
+    HwAudioTraceFifoSample pending_fifo_sample;
+    uint64_t pending_sample_cycle;
+    uint64_t pending_sample_deadline;
+    bool pending_sample;
+    bool pending_measurement;
     bool measurement_open;
     uint64_t frame_count;
     uint64_t first_cycle;
@@ -232,6 +240,32 @@ typedef struct
     HwAudioTraceStatus apply_status;
     bool output_failed;
 } ReplayContext;
+
+/* Emit one staged sample when mGBA's next native sample interval matures. */
+static bool emit_pending_sample(ReplayContext* replay)
+{
+    if (!replay->pending_sample)
+        return true;
+
+    HwAudioNativeFrame frame;
+    replay->apply_status = hw_audio_trace_observe_sample(
+        replay->audio, replay->pending_sample_cycle, &replay->pending_fifo_sample, &frame);
+    if (replay->apply_status != HW_AUDIO_TRACE_OK)
+        return false;
+    replay->pending_sample = false;
+    if (!replay->pending_measurement)
+        return true;
+    if (!write_pcm16_frame(replay->pcm, &frame) || !write_cycle(replay->cycles, frame.cycle))
+    {
+        replay->output_failed = true;
+        return false;
+    }
+    if (replay->frame_count == 0)
+        replay->first_cycle = frame.cycle;
+    replay->last_cycle = frame.cycle;
+    replay->frame_count++;
+    return true;
+}
 
 /* Replay each parsed event while preserving the trace interval for PCM output. */
 static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
@@ -244,39 +278,53 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
     }
     if (record->kind == HW_AUDIO_TRACE_TEXT_END)
     {
+        if (!emit_pending_sample(replay))
+            return false;
         replay->measurement_open = false;
         return true;
     }
 
+    if (replay->event_index >= replay->event_count)
+    {
+        replay->apply_status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
+        return false;
+    }
+    size_t event_index = replay->event_index++;
+    if (replay->pending_sample && record->event.cycle >= replay->pending_sample_deadline &&
+        !emit_pending_sample(replay))
+        return false;
+
     HwAudioNativeFrame frame;
     if (record->event.kind == HW_AUDIO_TRACE_SAMPLE)
     {
+        if (!emit_pending_sample(replay))
+            return false;
         if (replay->fifo_sample_index >= replay->fifo_sample_count)
         {
             replay->apply_status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
             return false;
         }
-        replay->apply_status = hw_audio_trace_apply_fifo_sample(
-            replay->audio, &record->event, &replay->fifo_samples[replay->fifo_sample_index++], &frame);
-    }
-    else
-    {
-        replay->apply_status = hw_audio_trace_apply(replay->audio, &record->event, &frame);
-    }
-    if (replay->apply_status != HW_AUDIO_TRACE_OK)
-        return false;
-    if (record->event.kind != HW_AUDIO_TRACE_SAMPLE || !replay->measurement_open)
+        replay->apply_status = hw_audio_trace_stage_sample(replay->audio, &record->event, &frame);
+        if (replay->apply_status != HW_AUDIO_TRACE_OK)
+            return false;
+        replay->pending_fifo_sample = replay->fifo_samples[replay->fifo_sample_index++];
+        replay->pending_sample_cycle = record->event.cycle;
+        replay->pending_sample = true;
+        replay->pending_sample_deadline = UINT64_MAX;
+        for (size_t index = event_index + 1u; index < replay->event_count; ++index)
+        {
+            if (replay->events[index].kind == HW_AUDIO_TRACE_SAMPLE)
+            {
+                replay->pending_sample_deadline = replay->events[index].cycle;
+                break;
+            }
+        }
+        replay->pending_measurement = replay->measurement_open;
         return true;
-    if (!write_pcm16_frame(replay->pcm, &frame) || !write_cycle(replay->cycles, frame.cycle))
-    {
-        replay->output_failed = true;
-        return false;
     }
-    if (replay->frame_count == 0)
-        replay->first_cycle = frame.cycle;
-    replay->last_cycle = frame.cycle;
-    replay->frame_count++;
-    return true;
+
+    replay->apply_status = hw_audio_trace_apply(replay->audio, &record->event, &frame);
+    return replay->apply_status == HW_AUDIO_TRACE_OK;
 }
 
 /* Convert one shared-grammar trace into atomic PCM, cycle, and manifest artifacts. */
@@ -325,7 +373,6 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         fclose(input);
         return false;
     }
-    free(collected.events);
 
     FILE* pcm = fopen(pcm_temp, "wb");
     FILE* cycles = fopen(cycles_temp, "wb");
@@ -337,6 +384,7 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         if (cycles)
             fclose(cycles);
         free(fifo_samples);
+        free(collected.events);
         fclose(input);
         return false;
     }
@@ -349,6 +397,7 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         fclose(pcm);
         fclose(cycles);
         free(fifo_samples);
+        free(collected.events);
         return false;
     }
     hw_audio_trace_reset(audio);
@@ -359,6 +408,8 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         .pcm = pcm,
         .cycles = cycles,
         .fifo_samples = fifo_samples,
+        .events = collected.events,
+        .event_count = collected.count,
         .fifo_sample_count = fifo_sample_count,
         .apply_status = HW_AUDIO_TRACE_OK,
     };
@@ -409,6 +460,7 @@ replay_trace(const Options* options, const char* pcm_temp, const char* cycles_te
         ok = false;
     hw_audio_destroy(audio);
     free(fifo_samples);
+    free(collected.events);
 
     if (ok)
         ok = write_manifest(
@@ -529,29 +581,6 @@ static const char* trace_record_name(const HwAudioTraceTextRecord* record)
     return "SAMPLE";
 }
 
-/* DirectSound is not represented by the driver's PCM publication signals. */
-static bool is_directsound_record(const HwAudioTraceTextRecord* record)
-{
-    return record->kind == HW_AUDIO_TRACE_TEXT_EVENT &&
-           (record->event.kind == HW_AUDIO_TRACE_TIMER ||
-            (record->event.kind == HW_AUDIO_TRACE_WRITE && (record->event.address == HW_AUDIO_GBA_IO_BASE + 0xA0u ||
-                                                            record->event.address == HW_AUDIO_GBA_IO_BASE + 0xA4u)));
-}
-
-static bool report_unsupported_directsound(const char* source, const HwAudioTraceTextRecord* record, size_t index)
-{
-    if (!is_directsound_record(record))
-        return false;
-    fprintf(stderr,
-            "driver-event compare: first divergence at record %zu (%s trace line %u): %s is DirectSound FIFO/TIMER "
-            "hardware activity, which poryaaaa's driver does not emit from PCM_PUBLISH/PCM_RESET\n",
-            index + 1u,
-            source,
-            record->line_number,
-            trace_record_name(record));
-    return true;
-}
-
 static bool compare_position(const char* name,
                              size_t index,
                              const HwAudioTraceTextRecord* oracle,
@@ -582,7 +611,8 @@ static bool compare_position(const char* name,
     return true;
 }
 
-/* Compare the interval markers and every normalized non-SAMPLE hardware event. */
+/* Compare interval markers and every normalized hardware event, including
+ * DirectSound FIFO writes and timer edges; SAMPLE observations are excluded. */
 static bool compare_driver_traces(const char* oracle_path, const char* driver_path)
 {
     DriverTraceRecords oracle = {0};
@@ -600,12 +630,6 @@ static bool compare_driver_traces(const char* oracle_path, const char* driver_pa
     {
         const HwAudioTraceTextRecord* expected = &oracle.records[index];
         const HwAudioTraceTextRecord* actual = &driver.records[index];
-        if (report_unsupported_directsound("oracle", expected, index) ||
-            report_unsupported_directsound("driver", actual, index))
-        {
-            ok = false;
-            break;
-        }
         if (expected->kind != actual->kind)
         {
             fprintf(stderr,
@@ -675,24 +699,19 @@ static bool compare_driver_traces(const char* oracle_path, const char* driver_pa
         const bool oracle_extra = oracle.count > driver.count;
         const HwAudioTraceTextRecord* extra = oracle_extra ? &oracle.records[shared] : &driver.records[shared];
         const char* source = oracle_extra ? "oracle" : "driver";
-        if (report_unsupported_directsound(source, extra, shared))
-        {
-            ok = false;
-        }
-        else
-        {
-            fprintf(stderr,
-                    "driver-event compare: first divergence at record %zu: %s has %s after the other trace ends\n",
-                    shared + 1u,
-                    source,
-                    trace_record_name(extra));
-            ok = false;
-        }
+        fprintf(stderr,
+                "driver-event compare: first divergence at record %zu: %s has %s after the other trace ends\n",
+                shared + 1u,
+                source,
+                trace_record_name(extra));
+        ok = false;
     }
     if (ok)
     {
         size_t hardware_events = oracle.count >= 2u ? oracle.count - 2u : 0u;
-        printf("driver-event compare: exact match (%zu WRITE/TIMER events; SAMPLE excluded)\n", hardware_events);
+        printf("driver-event compare: exact match (%zu hardware events: register/FIFO writes and timer edges; SAMPLE "
+               "excluded)\n",
+               hardware_events);
     }
     free(oracle.records);
     free(driver.records);

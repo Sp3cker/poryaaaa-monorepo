@@ -54,7 +54,6 @@
 static M4ADriver* g_v2_drv;
 static HwAudio* g_v2_hw;
 static M4ADriverTraceWriter* g_driver_trace_writer;
-static uint32_t g_driver_trace_cycles_per_frame;
 static bool g_driver_trace_failed;
 
 /* Parse an absolute GBA cycle without accepting a partial or signed value. */
@@ -69,6 +68,23 @@ static bool parse_u64(const char* text, uint64_t* value)
     if (errno || !end || *end || (unsigned long long)converted != parsed)
         return false;
     *value = converted;
+    return true;
+}
+
+/* Convert a host-frame duration to whole GBA cycles without assuming a host rate. */
+static bool host_frames_to_gba_cycles(uint64_t frames, uint32_t sample_rate, uint64_t* cycles)
+{
+    if (!sample_rate || !cycles)
+        return false;
+    uint64_t whole_seconds = frames / sample_rate;
+    uint64_t remainder_frames = frames % sample_rate;
+    if (whole_seconds > UINT64_MAX / M4A_GBA_CYCLES_PER_SECOND)
+        return false;
+    uint64_t whole_cycles = whole_seconds * M4A_GBA_CYCLES_PER_SECOND;
+    uint64_t remainder_cycles = remainder_frames * M4A_GBA_CYCLES_PER_SECOND / sample_rate;
+    if (whole_cycles > UINT64_MAX - remainder_cycles)
+        return false;
+    *cycles = whole_cycles + remainder_cycles;
     return true;
 }
 
@@ -870,7 +886,6 @@ static void print_usage(const char* prog)
             "Audio options:\n"
             "  --song-volume <0-127>       Song master volume (default: 127)\n"
             "  --reverb <0-127>            Reverb amount (default: 0)\n"
-            "  --analog-filter             Enable GBA analog low-pass filter (default: off)\n"
             "  --polyphony <1-12>          Max simultaneous PCM channels (default: 5)\n"
             "  --cgb-only                  Disable PCM channels; render CGB voices only\n"
             "  --sample-rate <hz>          Sample rate in Hz (default: 44100)\n"
@@ -959,27 +974,13 @@ static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t 
         (void)engine;
         m4a_advance(g_v2_drv, chunk);
         const M4ARegWriteBatch* writes = m4a_get_pending_writes(g_v2_drv);
-        if (g_driver_trace_writer && !g_driver_trace_failed)
+        if (g_driver_trace_writer && !g_driver_trace_failed &&
+            !m4a_driver_trace_write_batch(g_driver_trace_writer, writes))
         {
-            if (pos > UINT64_MAX / g_driver_trace_cycles_per_frame)
-            {
-                g_driver_trace_failed = true;
-            }
-            else
-            {
-                uint64_t relative_cycle = pos * (uint64_t)g_driver_trace_cycles_per_frame;
-                if (g_driver_trace_writer->begin_cycle > UINT64_MAX - relative_cycle ||
-                    !m4a_driver_trace_write_batch(g_driver_trace_writer,
-                                                  writes,
-                                                  g_driver_trace_writer->begin_cycle + relative_cycle,
-                                                  g_driver_trace_cycles_per_frame))
-                {
-                    g_driver_trace_failed = true;
-                }
-            }
+            g_driver_trace_failed = true;
         }
         if (outL && outR)
-            hw_audio_render_events(g_v2_hw, writes, m4a_get_pcm_ring(g_v2_drv), outL + pos, outR + pos, chunk);
+            hw_audio_render_events(g_v2_hw, writes, outL + pos, outR + pos, chunk);
         m4a_consume_writes(g_v2_drv);
         pos += (uint64_t)chunk;
         remaining -= (uint64_t)chunk;
@@ -1003,7 +1004,6 @@ int main(int argc, char* argv[])
     bool doPlay = false;
     int songVolume = 127;
     int reverbAmount = 0;
-    bool analogFilter = false;
     int maxChannels = 5;
     bool cgbOnly = false;
     int sampleRateHz = 44100;
@@ -1054,10 +1054,6 @@ int main(int argc, char* argv[])
                 reverbAmount = 0;
             if (reverbAmount > 127)
                 reverbAmount = 127;
-        }
-        else if (strcmp(argv[i], "--analog-filter") == 0)
-        {
-            analogFilter = true;
         }
         else if (strcmp(argv[i], "--polyphony") == 0 && i + 1 < argc)
         {
@@ -1125,9 +1121,9 @@ int main(int argc, char* argv[])
         print_usage(argv[0]);
         return 1;
     }
-    if (driverTracePath && sampleRateHz != 65536)
+    if (driverTracePath && outputPath && strcmp(driverTracePath, outputPath) == 0)
     {
-        fprintf(stderr, "Error: --driver-trace-output requires --sample-rate 65536 for exact GBA cycles\n");
+        fprintf(stderr, "Error: --driver-trace-output and --output must name different files\n");
         return 1;
     }
     if (driverTracePath && outputPath && strcmp(driverTracePath, outputPath) == 0)
@@ -1285,9 +1281,11 @@ int main(int argc, char* argv[])
         renderEvts = events->events;
         renderEvtCount = events->count;
     }
-    const uint32_t driverTraceCyclesPerFrame = HW_AUDIO_GBA_CLOCK_HZ / 65536u;
+    uint64_t driverTraceDurationCycles = 0;
     if (driverTracePath &&
-        (totalSamples == 0u || totalSamples > (UINT64_MAX - driverTraceStartCycle) / driverTraceCyclesPerFrame))
+        (totalSamples == 0u ||
+         !host_frames_to_gba_cycles(totalSamples, (uint32_t)sampleRateHz, &driverTraceDurationCycles) ||
+         driverTraceDurationCycles > UINT64_MAX - driverTraceStartCycle))
     {
         fprintf(stderr, "Error: driver trace interval exceeds the GBA cycle range\n");
         free(extEvts);
@@ -1379,7 +1377,6 @@ int main(int argc, char* argv[])
     m4a_set_tempo_bpm(g_v2_drv, 120.0);
     m4a_engine_set_reverb_amount(&engine, (uint8_t)reverbAmount);
     m4a_set_reverb_amount(g_v2_drv, (uint8_t)reverbAmount);
-    m4a_set_analog_filter(g_v2_drv, analogFilter);
     m4a_set_max_pcm_channels(g_v2_drv, cgbOnly ? 0 : (uint8_t)maxChannels);
 
     /* ---- Allocate output buffers only when audio is requested ---- */
@@ -1411,17 +1408,16 @@ int main(int argc, char* argv[])
     M4ADriverTraceWriter driverTrace = {0};
     FILE* driverTraceOutput = NULL;
     g_driver_trace_writer = NULL;
-    g_driver_trace_cycles_per_frame = 0u;
     g_driver_trace_failed = false;
     if (driverTracePath)
     {
         driverTraceOutput = fopen(driverTracePath, "wb");
-        uint64_t driverTraceEndCycle = driverTraceStartCycle + totalSamples * (uint64_t)driverTraceCyclesPerFrame;
+        uint64_t driverTraceEndCycle = driverTraceStartCycle + driverTraceDurationCycles;
         const M4ARegisterFile* registers = m4a_get_register_file(g_v2_drv);
         uint16_t soundcntL =
             (uint16_t)(((uint16_t)registers->master_vol_left << 4u) | registers->master_vol_right |
                        ((uint16_t)registers->pan_mask_left << 12u) | ((uint16_t)registers->pan_mask_right << 8u));
-        if (!driverTraceOutput ||
+        if (!driverTraceOutput || !m4a_driver_set_initial_cycle(g_v2_drv, driverTraceStartCycle) ||
             !m4a_driver_trace_begin(
                 &driverTrace, driverTraceOutput, driverTraceStartCycle, driverTraceEndCycle, soundcntL))
         {
@@ -1443,7 +1439,6 @@ int main(int argc, char* argv[])
             return 1;
         }
         g_driver_trace_writer = &driverTrace;
-        g_driver_trace_cycles_per_frame = driverTraceCyclesPerFrame;
     }
 
     /* ---- Rendering loop ---- */
@@ -1499,13 +1494,6 @@ int main(int argc, char* argv[])
             fprintf(stderr,
                     "Driver trace begins after setup: defaults/configuration not emitted through M4ARegWriteBatch are "
                     "excluded\n");
-            if (driverTrace.skipped_pcm_events)
-            {
-                fprintf(stderr,
-                        "Driver trace excluded %" PRIu64
-                        " PCM_PUBLISH/PCM_RESET signals; DirectSound FIFO/TIMER parity is unavailable\n",
-                        driverTrace.skipped_pcm_events);
-            }
         }
         g_driver_trace_writer = NULL;
     }

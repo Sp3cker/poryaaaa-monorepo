@@ -5,6 +5,7 @@
 #include "hw_mix.h"
 #include "hw_resample.h"
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,24 +17,21 @@
  * scratch buffers add up to 24 KB. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
 
-typedef struct
-{
-    uint32_t words[8];
-    uint32_t internal_sample;
-    uint8_t read_index;
-    uint8_t write_index;
-    uint8_t internal_remaining;
-    int8_t held_sample;
-} HwAudioTraceFifo;
-
 struct HwAudio
 {
     float host_rate;
     int internal_rate;
     HwPsgSynth psg;      /* sq1, sq2, wave, noise — render-rate synth */
-    HwPcm pcm;           /* two-stage drain: HwDmaToFifo + HwFifoDrain */
+    HwPcm pcm;           /* canonical FIFO A/B timer-held-byte model */
     HwMixBus mix;        /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
     HwResample resample; /* DAC cadence -> host rate through current mGBA's sinc frontend */
+
+    /* Production renderer's absolute hardware position.  DAC samples occur
+     * on integral SOUNDBIAS cadence boundaries; a partial interval is
+     * advanced through the PSG before a same-cycle register write. */
+    uint64_t live_cycle;
+    uint32_t dac_cycle_remainder;
+    bool live_sample_pending;
 
     /* Per-channel solo/mute mask.  Bits HW_AUDIO_SOLO_* gate whether
      * each channel's pre-mix buffer feeds hw_mix_render — masked-off
@@ -48,28 +46,43 @@ struct HwAudio
     uint64_t trace_cycle;
     uint32_t trace_order;
     bool trace_position_valid;
-    HwAudioTraceFifo trace_fifo_a;
-    HwAudioTraceFifo trace_fifo_b;
-    uint8_t trace_timer_a;
-    uint8_t trace_timer_b;
+    HwPcm trace_pcm;
 
-    /* Per-channel scratch at internal rate.  PSG synth writes 4, PCM
-     * drain writes 2, mix bus consumes all 6 to produce stereo into
-     * mix_l/mix_r.  Living on the chip struct avoids a multi-tens-of-
-     * KB stack frame in render-event call sites. */
-    float scratch_sq1[HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_sq2[HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_wave[HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_noise[HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_dma_a[HW_AUDIO_INTERNAL_CHUNK];
-    float scratch_dma_b[HW_AUDIO_INTERNAL_CHUNK];
-    float mix_l[HW_AUDIO_INTERNAL_CHUNK];
-    float mix_r[HW_AUDIO_INTERNAL_CHUNK];
+    /* Native channel values stay integral through the GBA DAC. Only the
+     * final PCM16 stereo pair is converted for the host resampler. */
+    uint8_t scratch_sq1[HW_AUDIO_INTERNAL_CHUNK];
+    uint8_t scratch_sq2[HW_AUDIO_INTERNAL_CHUNK];
+    uint8_t scratch_wave[HW_AUDIO_INTERNAL_CHUNK];
+    uint8_t scratch_noise[HW_AUDIO_INTERNAL_CHUNK];
+    int8_t scratch_dma_a[HW_AUDIO_INTERNAL_CHUNK];
+    int8_t scratch_dma_b[HW_AUDIO_INTERNAL_CHUNK];
+    int16_t native_l[HW_AUDIO_INTERNAL_CHUNK];
+    int16_t native_r[HW_AUDIO_INTERNAL_CHUNK];
 };
+
+/* mGBA starts empty: the sinc's negative source indices are lookup-zero,
+ * while its eight-frame high-water mark stalls output until frame nine. */
+static void reset_frontend(HwAudio* hw)
+{
+    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+}
 
 /* SOUNDBIAS-derived quirk rate.
  * 32768 / 65536 / 131072 / 262144 Hz for sampling_cycle 0 / 1 / 2 / 3.
  * Used by HwFifoDrain to sample the PCM FIFO head. */
+
+/* Map an absolute cycle span to the first host frame at or after it without
+ * allowing a large cycle count to overflow the fixed-rate multiplication. */
+static int host_frames_through_cycle(uint64_t cycles, uint32_t host_rate)
+{
+    uint64_t whole_seconds = cycles / HW_AUDIO_GBA_CLOCK_HZ;
+    uint64_t remainder = cycles % HW_AUDIO_GBA_CLOCK_HZ;
+    if (host_rate == 0 || whole_seconds > (uint64_t)INT_MAX / host_rate)
+        return INT_MAX;
+    uint64_t frames = whole_seconds * host_rate;
+    frames += (remainder * host_rate + HW_AUDIO_GBA_CLOCK_HZ - 1u) / HW_AUDIO_GBA_CLOCK_HZ;
+    return frames > INT_MAX ? INT_MAX : (int)frames;
+}
 static int chip_quirk_rate(uint8_t sampling_cycle)
 {
     return 32768 << (sampling_cycle & 0x3);
@@ -85,21 +98,18 @@ static int chip_internal_rate(uint8_t sampling_cycle)
 static void hw_audio_sync_rates_from_mix(HwAudio* hw)
 {
     int desired_internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
-    int desired_quirk_rate = chip_quirk_rate(hw->mix.sampling_cycle);
 
     if (desired_internal_rate != hw->internal_rate)
     {
         hw->internal_rate = desired_internal_rate;
         hw_psg_set_render_rate(&hw->psg, (float)hw->internal_rate);
-        hw_pcm_set_render_rate(&hw->pcm, (float)hw->internal_rate);
 
-        /* Rate changes define a new resampler epoch.  The old ring was
-         * filled at the previous input cadence, so keep the transition
-         * local by flushing and rebuilding here. */
-        hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+        /* mGBA changes the stream rate in place: buffered source history and
+         * the fractional frontend timestamp continue under the new step. */
+        hw_resample_set_rates(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+        hw->dac_cycle_remainder = 0;
+        hw->live_sample_pending = true;
     }
-
-    hw_pcm_set_quirk_rate(&hw->pcm, desired_quirk_rate);
 }
 
 HwAudio* hw_audio_create(float host_sample_rate)
@@ -112,9 +122,10 @@ HwAudio* hw_audio_create(float host_sample_rate)
     hw_mix_init(&hw->mix); /* establishes m4a's sampling_cycle = 1 */
     hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
-    hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
-    hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
-    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)host_sample_rate);
+    hw_pcm_init(&hw->pcm, (uint32_t)hw->internal_rate);
+
+    reset_frontend(hw);
+    hw->live_sample_pending = true;
     return hw;
 }
 
@@ -125,9 +136,11 @@ void hw_audio_reset(HwAudio* hw)
     hw_mix_init(&hw->mix);
     hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
-    hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
-    hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
-    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    hw_pcm_init(&hw->pcm, (uint32_t)hw->internal_rate);
+    reset_frontend(hw);
+    hw->live_cycle = 0;
+    hw->dac_cycle_remainder = 0;
+    hw->live_sample_pending = true;
     hw->trace_cycle = 0;
     hw->trace_order = 0;
     hw->trace_position_valid = false;
@@ -142,11 +155,11 @@ void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
     if (destination->internal_rate != source->internal_rate)
     {
         destination->internal_rate = source->internal_rate;
-        hw_resample_init(&destination->resample, (double)destination->internal_rate, (double)destination->host_rate);
+        hw_resample_set_rates(
+            &destination->resample, (double)destination->internal_rate, (double)destination->host_rate);
     }
     hw_psg_set_render_rate(&destination->psg, source->psg.render_rate);
-    hw_pcm_set_render_rate(&destination->pcm, source->pcm.render_rate);
-    hw_pcm_set_quirk_rate(&destination->pcm, source->pcm.quirk_rate);
+
     destination->psg.master_enabled = source->psg.master_enabled;
     destination->psg.frame_seq_step = source->psg.frame_seq_step;
     destination->psg.frame_seq_accum = source->psg.frame_seq_accum;
@@ -154,6 +167,9 @@ void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
     destination->psg.frame_seq_ticks = source->psg.frame_seq_ticks;
     destination->psg.frame_seq_length_ticks = source->psg.frame_seq_length_ticks;
     destination->psg.frame_seq_sweep_ticks = source->psg.frame_seq_sweep_ticks;
+    destination->live_cycle = source->live_cycle;
+    destination->dac_cycle_remainder = source->dac_cycle_remainder;
+    destination->live_sample_pending = source->live_sample_pending;
     destination->psg.frame_seq_envelope_ticks = source->psg.frame_seq_envelope_ticks;
 }
 
@@ -209,8 +225,8 @@ void hw_audio_clone_psg_lane(HwAudio* destination, const HwAudio* source, int la
         break;
     case 3:
         destination->psg.noise_lfsr = source->psg.noise_lfsr;
-        destination->psg.noise_phase = source->psg.noise_phase;
         destination->psg.noise_timer_cycles = source->psg.noise_timer_cycles;
+        destination->psg.noise_pending_cycles = source->psg.noise_pending_cycles;
         destination->psg.noise_clock_shift = source->psg.noise_clock_shift;
         destination->psg.noise_divisor_code = source->psg.noise_divisor_code;
         destination->psg.noise_last_sample = source->psg.noise_last_sample;
@@ -254,18 +270,13 @@ void hw_audio_set_host_rate(HwAudio* hw, float hz)
     if (!hw)
         return;
     hw->host_rate = hz;
-    /* PSG/PCM/mix continue at the chip-internal rate; only the
-     * resampler's output side changes when the host changes.  We
-     * also reset the resampler state and our cumulative trackers
-     * because the input/output rate ratio just changed — keeping the
-     * old phase would map old internal samples to a new host rate
-     * and create an audible glitch.  Callers that swap host rate
-     * mid-stream get one block of resampler-warmup latency. */
-    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hz);
+    /* Match mGBA's destination-rate update: retain source history and phase,
+     * and use the new step on the next frontend processing call. */
+    hw_resample_set_rates(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
 }
 
-/* Apply the shared routing and DAC stage after a producer fills channel scratch. */
-static void mix_chip_chunk(HwAudio* hw, int internal_count)
+/* Apply mGBA's integer routing and DAC stage after channel production. */
+static void mix_native_chunk(HwAudio* hw, int internal_count)
 {
     const uint32_t mask = hw->solo_mask;
     hw_mix_render(&hw->mix,
@@ -275,130 +286,51 @@ static void mix_chip_chunk(HwAudio* hw, int internal_count)
                   (mask & HW_AUDIO_SOLO_NOISE) ? hw->scratch_noise : NULL,
                   (mask & HW_AUDIO_SOLO_DMA_A) ? hw->scratch_dma_a : NULL,
                   (mask & HW_AUDIO_SOLO_DMA_B) ? hw->scratch_dma_b : NULL,
-                  hw->mix_l,
-                  hw->mix_r,
+                  hw->native_l,
+                  hw->native_r,
                   internal_count);
 }
 
-/* Produce chip-native stereo without involving the sinc frontend. */
-static void render_chip_chunk(HwAudio* hw, const M4APcmRing* pcm_ring, int internal_count)
+/* Feed the finished native PCM16 DAC observation directly into the
+ * host-only frontend. Oscillator time advances separately by cycle spans. */
+static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host)
 {
-    hw_psg_render(&hw->psg, hw->scratch_sq1, hw->scratch_sq2, hw->scratch_wave, hw->scratch_noise, internal_count);
-    hw_pcm_render(&hw->pcm, pcm_ring, hw->scratch_dma_a, hw->scratch_dma_b, internal_count);
-    mix_chip_chunk(hw, internal_count);
+    hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
+    hw_pcm_render(&hw->pcm, &hw->scratch_dma_a[0], &hw->scratch_dma_b[0], 1);
+    mix_native_chunk(hw, 1);
+
+    int max_host = target_host - *rendered_host;
+    if (max_host < 0)
+        max_host = 0;
+    *rendered_host += hw_resample_process(&hw->resample,
+                                          hw->native_l,
+                                          hw->native_r,
+                                          1,
+                                          outL ? outL + *rendered_host : NULL,
+                                          outR ? outR + *rendered_host : NULL,
+                                          max_host);
 }
 
-/* Render `internal_count` chip-internal samples through PSG → PCM →
- * mix-bus into mix_l/mix_r, feed them to the resampler, and drain up
- * to `max_host` host outputs into outL/outR + offset.  Returns the
- * number of host samples actually produced. */
-static int render_internal_chunk(HwAudio* hw,
-                                 const M4APcmRing* pcm_ring,
-                                 float* outL,
-                                 float* outR,
-                                 int host_offset,
-                                 int internal_count,
-                                 int max_host)
+/* Preserve real-time frontend latency independently of host block partitioning.
+ * Drain any ready sinc output before zero-filling host deadlines that passed
+ * while mGBA's eight-frame source watermark was still stalled. */
+static void fill_host_through_cycle(
+    HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host, uint64_t block_begin_cycle)
 {
-    if (internal_count <= 0 || max_host <= 0)
-        return 0;
-
-    render_chip_chunk(hw, pcm_ring, internal_count);
-
-    return hw_resample_process(&hw->resample,
-                               hw->mix_l,
-                               hw->mix_r,
-                               internal_count,
-                               outL ? outL + host_offset : NULL,
-                               outR ? outR + host_offset : NULL,
-                               max_host);
-}
-
-/* Render a contiguous span of `seg_internal` chip-internal samples
- * (chunked at HW_AUDIO_INTERNAL_CHUNK).  Drains to outL/outR up to
- * `target_host - *rendered_host` host samples; *rendered_host advances
- * by however many the resampler produced. */
-static void render_segment(HwAudio* hw,
-                           const M4APcmRing* pcm_ring,
-                           float* outL,
-                           float* outR,
-                           int seg_internal,
-                           int* rendered_host,
-                           int target_host)
-{
-    int remaining = seg_internal;
-    while (remaining > 0)
-    {
-        int chunk = remaining;
-        if (chunk > HW_AUDIO_INTERNAL_CHUNK)
-            chunk = HW_AUDIO_INTERNAL_CHUNK;
-
-        int drain_max = target_host - *rendered_host;
-        if (drain_max < 0)
-            drain_max = 0;
-
-        int produced = render_internal_chunk(hw, pcm_ring, outL, outR, *rendered_host, chunk, drain_max);
-        *rendered_host += produced;
-        remaining -= chunk;
-    }
-}
-
-void hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames)
-{
-    (void)hw;
-    (void)pcm;
-
-    /* Snapshot-driven render — superseded by hw_audio_render_events()
-     * at Layer 1.5.  This function deliberately does NOT synthesise;
-     * its only remaining job is to consume edge-trigger latches per
-     * plan §6a so call sites that haven't migrated to the event API
-     * still satisfy the driver→chip contract (the driver relies on
-     * trigger_* clearing — e.g. trigger_sq2 must not refire on
-     * subsequent vblanks without a fresh MO_VOL).  All real audio
-     * goes through hw_audio_render_events(). */
-    if (regs)
-    {
-        regs->trigger_sq1 = false;
-        regs->trigger_sq2 = false;
-        regs->trigger_wave = false;
-        regs->trigger_noise = false;
-    }
-
-    if (frames <= 0)
-        return;
-    if (outL)
-        memset(outL, 0, (size_t)frames * sizeof(float));
-    if (outR)
-        memset(outR, 0, (size_t)frames * sizeof(float));
-}
-
-static void render_to_host_offset(
-    HwAudio* hw, const M4APcmRing* pcm_ring, float* outL, float* outR, int target_host, int* rendered_host)
-{
-    int host_delta = target_host - *rendered_host;
-    if (host_delta <= 0)
+    int due = host_frames_through_cycle(hw->live_cycle - block_begin_cycle, (uint32_t)(hw->host_rate + 0.5f));
+    if (due > target_host)
+        due = target_host;
+    if (due <= *rendered_host)
         return;
 
-    int produced = hw_resample_process(&hw->resample,
-                                       NULL,
-                                       NULL,
-                                       0,
-                                       outL ? outL + *rendered_host : NULL,
-                                       outR ? outR + *rendered_host : NULL,
-                                       host_delta);
-    *rendered_host += produced;
-
-    int remaining = target_host - *rendered_host;
-    if (remaining > 0)
-    {
-        int internal_to_render = hw_resample_inputs_needed(&hw->resample, remaining);
-        render_segment(hw, pcm_ring, outL, outR, internal_to_render, rendered_host, target_host);
-    }
-
-    /* Preserve the event timeline when a freshly reset resampler has
-     * startup latency.  Later segments must start writing at target_host,
-     * not at an earlier index. */
-    while (*rendered_host < target_host)
+    *rendered_host += hw_resample_process(&hw->resample,
+                                          NULL,
+                                          NULL,
+                                          0,
+                                          outL ? outL + *rendered_host : NULL,
+                                          outR ? outR + *rendered_host : NULL,
+                                          due - *rendered_host);
+    while (*rendered_host < due)
     {
         if (outL)
             outL[*rendered_host] = 0.0f;
@@ -408,123 +340,193 @@ static void render_to_host_offset(
     }
 }
 
-void hw_audio_render_events(
-    HwAudio* hw, const M4ARegWriteBatch* events, const M4APcmRing* pcm, float* outL, float* outR, int frames)
+/* Advance the live chip to an absolute event boundary, producing only the
+ * DAC samples that occur on or before that boundary. */
+static bool render_to_cycle(HwAudio* hw,
+                            float* outL,
+                            float* outR,
+                            uint64_t target_cycle,
+                            uint64_t block_begin_cycle,
+                            int* rendered_host,
+                            int target_host)
 {
-    if (frames <= 0)
-        return;
-    if (!hw)
+    if (target_cycle < hw->live_cycle)
+        return false;
+
+    if (hw->live_sample_pending && target_cycle > hw->live_cycle)
     {
-        if (outL)
-            memset(outL, 0, (size_t)frames * sizeof(float));
-        if (outR)
-            memset(outR, 0, (size_t)frames * sizeof(float));
-        return;
-    }
-    if (hw->host_rate <= 0.0f || hw->internal_rate <= 0)
-    {
-        if (outL)
-            memset(outL, 0, (size_t)frames * sizeof(float));
-        if (outR)
-            memset(outR, 0, (size_t)frames * sizeof(float));
-        return;
+        fill_host_through_cycle(hw, outL, outR, rendered_host, target_host, block_begin_cycle);
+        render_dac_sample(hw, outL, outR, rendered_host, target_host);
+        hw->live_sample_pending = false;
     }
 
-    /* Catch any SOUNDBIAS sampling_cycle written by a prior call before
-     * rendering this call's first span.  Same-call SOUNDBIAS events are
-     * handled inside the event loop after HwMixBus consumes the event. */
-    hw_audio_sync_rates_from_mix(hw);
-
-    /* PCM publish-gate fallback for canned-mode callers.
-     *
-     * Production driver emits one M4A_REG_PCM_PUBLISH event per vblank
-     * inside m4a_sound_main_ram, stamped with the vblank firing offset;
-     * the chip's hw_pcm advances `pcm_published_through` when applying
-     * these events, so reads from the ring stay clamped to data that
-     * was actually published before the current sample_offset.
-     *
-     * Chip-only canned tests (and other callers that pre-populate
-     * `ring->write_cursor` directly without going through the driver
-     * event pipeline) never emit PUBLISH events.  For those calls,
-     * snap `pcm_published_through` to the ring's `write_cursor` so
-     * the entire pre-populated ring is readable from sample 0.
-     *
-     * Two discriminators must BOTH allow the snap:
-     *   - this batch has no PCM_PUBLISH events, AND
-     *   - publish_seen has never been latched (no PUBLISH ever fired).
-     *
-     * Without the first check, the very first production render call
-     * would snap publish forward to write_cursor (which already
-     * reflects ALL of m4a_advance's vblanks) AND apply each PUBLISH
-     * event on top — double-counting.  Without the second, production
-     * chunks shorter than a vblank period (no events) would re-snap
-     * mid-stream and re-introduce the cross-vblank leak.  Both
-     * canned-mode and post-first-PUBLISH-with-no-events-this-call
-     * cases are handled cleanly by combining them. */
-    bool has_publish = false;
-    if (events)
+    const uint32_t cycles_per_dac_sample = HW_AUDIO_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate;
+    while (hw->live_cycle < target_cycle)
     {
-        for (size_t i = 0; i < events->count; i++)
+        const uint32_t until_dac = cycles_per_dac_sample - hw->dac_cycle_remainder;
+        const uint64_t remaining = target_cycle - hw->live_cycle;
+        const uint32_t advance = remaining < until_dac ? (uint32_t)remaining : until_dac;
+        hw_psg_advance_cycles(&hw->psg, advance, true, true, true, true);
+        hw->live_cycle += advance;
+        hw->dac_cycle_remainder += advance;
+        if (hw->dac_cycle_remainder == cycles_per_dac_sample)
         {
-            if (events->events[i].reg == M4A_REG_PCM_PUBLISH)
+            hw->dac_cycle_remainder = 0;
+            if (hw->live_cycle == target_cycle)
+                hw->live_sample_pending = true;
+            else
             {
-                has_publish = true;
-                break;
+                fill_host_through_cycle(hw, outL, outR, rendered_host, target_host, block_begin_cycle);
+                render_dac_sample(hw, outL, outR, rendered_host, target_host);
             }
         }
     }
-    if (!has_publish && !hw->pcm.publish_seen && pcm && pcm->write_cursor > hw->pcm.pcm_published_through)
+    return true;
+}
+
+/* Legacy snapshot entrypoint only consumes trigger latches; production audio
+ * must use the absolute-cycle event stream. */
+void hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames)
+{
+    (void)hw;
+    (void)pcm;
+    if (regs)
     {
-        hw->pcm.pcm_published_through = pcm->write_cursor;
+        regs->trigger_sq1 = false;
+        regs->trigger_sq2 = false;
+        regs->trigger_wave = false;
+        regs->trigger_noise = false;
+    }
+    if (frames <= 0)
+        return;
+    if (outL)
+        memset(outL, 0, (size_t)frames * sizeof(float));
+    if (outR)
+        memset(outR, 0, (size_t)frames * sizeof(float));
+}
+
+/* Render one host block over the batch's explicit absolute cycle interval.
+ * Host frames size only the output buffer; they never determine event time. */
+void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* outL, float* outR, int frames)
+{
+    if (frames <= 0)
+        return;
+    if (!hw || !events || (!events->events && events->count != 0) || events->end_cycle < events->begin_cycle ||
+        hw->host_rate <= 0.0f || hw->internal_rate <= 0)
+    {
+        if (outL)
+            memset(outL, 0, (size_t)frames * sizeof(float));
+        if (outR)
+            memset(outR, 0, (size_t)frames * sizeof(float));
+        return;
     }
 
-    /* Walk events in non-decreasing sample_offset order.  Each event's
-     * sample_offset is in HOST frames; the chip-internal pipeline runs
-     * at internal_rate, so we map host-offset → internal-offset via the
-     * rate ratio.  Per segment we render a span of internal samples
-     * through PSG → PCM → mix bus and feed them to the resampler,
-     * which produces host samples on demand.  Apply each event to all
-     * three subsystems at the segment boundary.
-     *
-     * Per stage:
-     *   - PSG (sq1, sq2, wave, noise) consumes NRxx events for chans
-     *     1-4 + NR52 master enable.  Synthesises at internal_rate.
-     *   - PCM consumes only the FIFO drain; routing/scaling moved to
-     *     mix bus when step 8 landed.  S&H at internal_rate.
-     *   - HwMixBus consumes NR50/NR51, SOUNDCNT_H, SOUNDBIAS.  Combines
-     *     the six mono buffers, applies bias-add+clip, produces stereo.
-     *   - HwResample drains stereo DAC samples through current mGBA's sinc frontend. */
-    int rendered_host = 0;
-
-    if (events)
+    if (events->begin_cycle != hw->live_cycle)
     {
-        for (size_t i = 0; i < events->count; i++)
+        if (hw->live_cycle != 0 || !hw->live_sample_pending)
         {
-            const M4ARegWrite* ev = &events->events[i];
-            int H = (int)ev->sample_offset;
-            if (H > frames)
-                H = frames;
-            if (H < 0)
-                H = 0;
-
-            render_to_host_offset(hw, pcm, outL, outR, H, &rendered_host);
-
-            hw_psg_apply_event(&hw->psg, ev);
-            hw_pcm_apply_event(&hw->pcm, ev);
-            hw_mix_apply_event(&hw->mix, ev);
-
-            if (ev->reg == M4A_REG_SOUNDBIAS)
-                hw_audio_sync_rates_from_mix(hw);
+            if (outL)
+                memset(outL, 0, (size_t)frames * sizeof(float));
+            if (outR)
+                memset(outR, 0, (size_t)frames * sizeof(float));
+            return;
         }
+        hw->live_cycle = events->begin_cycle;
+        hw->dac_cycle_remainder = 0;
+    }
+    hw_audio_sync_rates_from_mix(hw);
+
+    int rendered_host = 0;
+    uint64_t previous_cycle = events->begin_cycle;
+    uint32_t previous_order = 0;
+    bool have_previous = false;
+    for (size_t i = 0; i < events->count; i++)
+    {
+        const M4ARegWrite* ev = &events->events[i];
+        bool rate_change = ev->reg == M4A_REG_SOUNDBIAS && ((ev->value >> 14u) & 3u) != hw->mix.sampling_cycle;
+        int event_host_limit = frames;
+        if (rate_change)
+        {
+            event_host_limit =
+                host_frames_through_cycle(ev->cycle - events->begin_cycle, (uint32_t)(hw->host_rate + 0.5f));
+            if (event_host_limit > frames)
+                event_host_limit = frames;
+        }
+        if (ev->cycle < events->begin_cycle || ev->cycle > events->end_cycle ||
+            (have_previous &&
+             (ev->cycle < previous_cycle || (ev->cycle == previous_cycle && ev->order <= previous_order))) ||
+            !render_to_cycle(hw, outL, outR, ev->cycle, events->begin_cycle, &rendered_host, event_host_limit))
+        {
+            if (outL)
+                memset(outL, 0, (size_t)frames * sizeof(float));
+            if (outR)
+                memset(outR, 0, (size_t)frames * sizeof(float));
+            return;
+        }
+
+        if (rate_change)
+        {
+            rendered_host += hw_resample_process(&hw->resample,
+                                                 NULL,
+                                                 NULL,
+                                                 0,
+                                                 outL ? outL + rendered_host : NULL,
+                                                 outR ? outR + rendered_host : NULL,
+                                                 event_host_limit - rendered_host);
+            while (rendered_host < event_host_limit)
+            {
+                if (outL)
+                    outL[rendered_host] = 0.0f;
+                if (outR)
+                    outR[rendered_host] = 0.0f;
+                rendered_host++;
+            }
+        }
+
+        hw_psg_apply_event(&hw->psg, ev);
+        hw_pcm_apply_event(&hw->pcm, ev);
+        hw_mix_apply_event(&hw->mix, ev);
+        if (ev->reg == M4A_REG_SOUNDBIAS)
+            hw_audio_sync_rates_from_mix(hw);
+
+        previous_cycle = ev->cycle;
+        previous_order = ev->order;
+        have_previous = true;
     }
 
-    render_to_host_offset(hw, pcm, outL, outR, frames, &rendered_host);
+    if (!render_to_cycle(hw, outL, outR, events->end_cycle, events->begin_cycle, &rendered_host, frames))
+    {
+        if (outL)
+            memset(outL, 0, (size_t)frames * sizeof(float));
+        if (outR)
+            memset(outR, 0, (size_t)frames * sizeof(float));
+        return;
+    }
+
+    if (rendered_host < frames)
+    {
+        rendered_host += hw_resample_process(&hw->resample,
+                                             NULL,
+                                             NULL,
+                                             0,
+                                             outL ? outL + rendered_host : NULL,
+                                             outR ? outR + rendered_host : NULL,
+                                             frames - rendered_host);
+    }
+    while (rendered_host < frames)
+    {
+        if (outL)
+            outL[rendered_host] = 0.0f;
+        if (outR)
+            outR[rendered_host] = 0.0f;
+        rendered_host++;
+    }
 }
 
 /* Apply one existing poryaaaa register event to every owning chip module. */
 static void apply_chip_event(HwAudio* hw, M4ARegId reg, uint32_t value)
 {
-    M4ARegWrite event = {0, reg, value};
+    M4ARegWrite event = {.cycle = 0, .reg = reg, .value = value, .order = 0};
     hw_psg_apply_event(&hw->psg, &event);
     hw_pcm_apply_event(&hw->pcm, &event);
     hw_mix_apply_event(&hw->mix, &event);
@@ -532,6 +534,11 @@ static void apply_chip_event(HwAudio* hw, M4ARegId reg, uint32_t value)
         hw_audio_sync_rates_from_mix(hw);
 }
 
+static void apply_trace_pcm_event(HwAudio* hw, M4ARegId reg, uint32_t value)
+{
+    M4ARegWrite event = {.cycle = 0, .reg = reg, .value = value, .order = 0};
+    hw_pcm_apply_event(&hw->trace_pcm, &event);
+}
 /* Decode the byte and halfword audio-register calls exposed by mGBA's GBA audio module. */
 static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t address, uint8_t width, uint32_t value)
 {
@@ -641,21 +648,11 @@ static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t addre
         break;
     case HW_AUDIO_GBA_IO_BASE + 0x82:
         apply_chip_event(hw, M4A_REG_SOUNDCNT_H, value & 0xFFFFu);
-        hw->trace_timer_a = (uint8_t)((value >> 10) & 1u);
-        hw->trace_timer_b = (uint8_t)((value >> 14) & 1u);
-        if (value & (1u << 11))
-        {
-            hw->trace_fifo_a.read_index = 0;
-            hw->trace_fifo_a.write_index = 0;
-        }
-        if (value & (1u << 15))
-        {
-            hw->trace_fifo_b.read_index = 0;
-            hw->trace_fifo_b.write_index = 0;
-        }
+        apply_trace_pcm_event(hw, M4A_REG_SOUNDCNT_H, value & 0xFFFFu);
         break;
     case HW_AUDIO_GBA_IO_BASE + 0x84:
         apply_chip_event(hw, M4A_REG_NR52, value & 0xFFu);
+        apply_trace_pcm_event(hw, M4A_REG_NR52, value & 0xFFu);
         break;
     case HW_AUDIO_GBA_IO_BASE + 0x88:
         apply_chip_event(hw, M4A_REG_SOUNDBIAS, value & 0xFFFFu);
@@ -683,53 +680,24 @@ static HwAudioTraceStatus apply_trace_wave_write(HwAudio* hw, uint32_t address, 
     return HW_AUDIO_TRACE_OK;
 }
 
-/* Push one DMA word through the GBA FIFO's modulo-8 write pointer. */
-static HwAudioTraceStatus apply_trace_fifo_write(HwAudioTraceFifo* fifo, uint8_t width, uint32_t value)
+/* FIFO trace writes use the same modulo-8 word model as live audio. */
+static HwAudioTraceStatus apply_trace_fifo_write(HwPcmFifo* fifo, uint8_t width, uint32_t value)
 {
     if (width != 4)
         return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
-    fifo->words[fifo->write_index] = value;
-    fifo->write_index = (uint8_t)((fifo->write_index + 1u) & 7u);
+    hw_pcm_fifo_write_word(fifo, value);
     return HW_AUDIO_TRACE_OK;
-}
-
-/* A selected timer exposes one internal byte while preserving the empty hold. */
-static void clock_trace_fifo(HwAudioTraceFifo* fifo)
-{
-    if (!fifo->internal_remaining && fifo->read_index != fifo->write_index)
-    {
-        fifo->internal_sample = fifo->words[fifo->read_index];
-        fifo->read_index = (uint8_t)((fifo->read_index + 1u) & 7u);
-        fifo->internal_remaining = 4;
-    }
-    fifo->held_sample = (int8_t)fifo->internal_sample;
-    if (fifo->internal_remaining)
-    {
-        fifo->internal_sample >>= 8u;
-        fifo->internal_remaining--;
-    }
 }
 
 /* Expose one explicit native SAMPLE without advancing the trace clock. */
 static void render_trace_sample(HwAudio* hw, const HwAudioTraceFifoSample* fifo_sample)
 {
     hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
-    int8_t fifo_a = fifo_sample ? fifo_sample->fifo_a : hw->trace_fifo_a.held_sample;
-    int8_t fifo_b = fifo_sample ? fifo_sample->fifo_b : hw->trace_fifo_b.held_sample;
-    hw->scratch_dma_a[0] = (float)fifo_a / 128.0f;
-    hw->scratch_dma_b[0] = (float)fifo_b / 128.0f;
-    mix_chip_chunk(hw, 1);
-}
-
-/* Quantize the current native float representation into mGBA's signed PCM16 unit. */
-static int16_t native_float_to_pcm16(float sample)
-{
-    float scaled = sample * 32768.0f;
-    if (scaled >= 32767.0f)
-        return INT16_MAX;
-    if (scaled <= -32768.0f)
-        return INT16_MIN;
-    return (int16_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    int8_t fifo_a = fifo_sample ? fifo_sample->fifo_a : hw->trace_pcm.fifo_a.held_sample;
+    int8_t fifo_b = fifo_sample ? fifo_sample->fifo_b : hw->trace_pcm.fifo_b.held_sample;
+    hw->scratch_dma_a[0] = fifo_a;
+    hw->scratch_dma_b[0] = fifo_b;
+    mix_native_chunk(hw, 1);
 }
 
 void hw_audio_trace_reset(HwAudio* hw)
@@ -743,16 +711,16 @@ void hw_audio_trace_reset(HwAudio* hw)
     hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
     apply_chip_event(hw, M4A_REG_NR52, 0);
-    hw_pcm_init(&hw->pcm, (float)hw->internal_rate);
-    hw_pcm_set_quirk_rate(&hw->pcm, chip_quirk_rate(hw->mix.sampling_cycle));
-    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    hw_pcm_init(&hw->pcm, (uint32_t)hw->internal_rate);
+    hw_pcm_init(&hw->trace_pcm, 0);
+    hw->trace_pcm.master_enabled = false;
+    reset_frontend(hw);
+    hw->live_cycle = 0;
+    hw->dac_cycle_remainder = 0;
+    hw->live_sample_pending = true;
     hw->trace_cycle = 0;
     hw->trace_order = 0;
     hw->trace_position_valid = false;
-    memset(&hw->trace_fifo_a, 0, sizeof(hw->trace_fifo_a));
-    memset(&hw->trace_fifo_b, 0, sizeof(hw->trace_fifo_b));
-    hw->trace_timer_a = 0;
-    hw->trace_timer_b = 0;
 }
 
 static bool trace_supports_byte_register(uint32_t address)
@@ -847,7 +815,8 @@ static HwAudioTraceStatus validate_trace_event(const HwAudioTraceEvent* event)
 static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
                                             const HwAudioTraceEvent* event,
                                             const HwAudioTraceFifoSample* fifo_sample,
-                                            HwAudioNativeFrame* frame)
+                                            HwAudioNativeFrame* frame,
+                                            bool observe_sample)
 {
     if (!hw || !event || !frame)
         return HW_AUDIO_TRACE_INVALID_ARGUMENT;
@@ -868,12 +837,14 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
     bool clock_sq1 = false;
     bool clock_sq2 = false;
     bool clock_wave = false;
+    bool clock_noise = false;
     bool preapply_wave_bank = false;
     if (event->kind == HW_AUDIO_TRACE_SAMPLE)
     {
         clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
         clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
         clock_wave = true;
+        clock_noise = true;
     }
     else if (event->kind == HW_AUDIO_TRACE_WRITE)
     {
@@ -886,20 +857,24 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
             clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
             clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
         }
-        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75) ||
-            event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
-            (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0))
+        if (((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75 &&
+              !(event->width == 1 && event->address == HW_AUDIO_GBA_IO_BASE + 0x73)) ||
+             event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
+             (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)))
             clock_wave = true;
         preapply_wave_bank = event->address == HW_AUDIO_GBA_IO_BASE + 0x70;
+        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x78 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x7D) ||
+            event->address == HW_AUDIO_GBA_IO_BASE + 0x80)
+            clock_noise = true;
     }
-    hw_psg_advance_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave);
+    hw_psg_advance_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave, clock_noise);
     if (preapply_wave_bank)
     {
         /* Frame events consume the old bank first; NR30 then selects bank
          * and size before its terminal forced Wave run. */
         hw->psg.wave_size = (event->value & 0x20u) != 0;
         hw->psg.wave_bank = (event->value & 0x40u) != 0;
-        hw_psg_advance_cycles(&hw->psg, 0, false, false, true);
+        hw_psg_advance_cycles(&hw->psg, 0, false, false, true, false);
     }
     if (event->kind == HW_AUDIO_TRACE_WRITE)
     {
@@ -909,11 +884,11 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
         }
         else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0)
         {
-            status = apply_trace_fifo_write(&hw->trace_fifo_a, event->width, event->value);
+            status = apply_trace_fifo_write(&hw->trace_pcm.fifo_a, event->width, event->value);
         }
         else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
         {
-            status = apply_trace_fifo_write(&hw->trace_fifo_b, event->width, event->value);
+            status = apply_trace_fifo_write(&hw->trace_pcm.fifo_b, event->width, event->value);
         }
         else
         {
@@ -924,12 +899,12 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
     {
         if (event->width != 0 || event->address != 0 || event->value != 0)
             status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
-        else
+        else if (observe_sample)
         {
             render_trace_sample(hw, fifo_sample);
             frame->cycle = event->cycle;
-            frame->left = native_float_to_pcm16(hw->mix_l[0]);
-            frame->right = native_float_to_pcm16(hw->mix_r[0]);
+            frame->left = hw->native_l[0];
+            frame->right = hw->native_r[0];
         }
     }
     else if (event->kind == HW_AUDIO_TRACE_TIMER)
@@ -937,12 +912,7 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
         if (event->width != 0 || event->address != 0 || event->value > 1)
             status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
         else
-        {
-            if (hw->trace_timer_a == event->value)
-                clock_trace_fifo(&hw->trace_fifo_a);
-            if (hw->trace_timer_b == event->value)
-                clock_trace_fifo(&hw->trace_fifo_b);
-        }
+            hw_pcm_clock_timer(&hw->trace_pcm, (uint8_t)event->value);
     }
     else
     {
@@ -960,7 +930,7 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
 
 HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame)
 {
-    return apply_trace_event(hw, event, NULL, frame);
+    return apply_trace_event(hw, event, NULL, frame, true);
 }
 
 HwAudioTraceStatus hw_audio_trace_apply_fifo_sample(HwAudio* hw,
@@ -970,7 +940,28 @@ HwAudioTraceStatus hw_audio_trace_apply_fifo_sample(HwAudio* hw,
 {
     if (!fifo_sample || !event || event->kind != HW_AUDIO_TRACE_SAMPLE)
         return HW_AUDIO_TRACE_INVALID_ARGUMENT;
-    return apply_trace_event(hw, event, fifo_sample, frame);
+    return apply_trace_event(hw, event, fifo_sample, frame, true);
+}
+
+HwAudioTraceStatus hw_audio_trace_stage_sample(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame)
+{
+    if (!event || event->kind != HW_AUDIO_TRACE_SAMPLE)
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    return apply_trace_event(hw, event, NULL, frame, false);
+}
+
+HwAudioTraceStatus hw_audio_trace_observe_sample(HwAudio* hw,
+                                                 uint64_t cycle,
+                                                 const HwAudioTraceFifoSample* fifo_sample,
+                                                 HwAudioNativeFrame* frame)
+{
+    if (!hw || !fifo_sample || !frame || cycle > INT32_MAX)
+        return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+    render_trace_sample(hw, fifo_sample);
+    frame->cycle = cycle;
+    frame->left = hw->native_l[0];
+    frame->right = hw->native_r[0];
+    return HW_AUDIO_TRACE_OK;
 }
 
 const char* hw_audio_trace_status_string(HwAudioTraceStatus status)

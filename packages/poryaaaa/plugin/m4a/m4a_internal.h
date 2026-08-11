@@ -17,21 +17,16 @@ extern "C"
 #define M4A_MAX_TRACKS 16
 #define M4A_MAX_CGB_CHANNELS 4  /* sq1, sq2, wave, noise */
 #define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
-
-/* Layer 1.5 event-queue capacity.  Per render span (between consume
- * calls): at most ~5 NRxx writes per CGB channel × 4 channels = 20
- * per vblank for snapshot-equivalent emits, plus 16 wave-RAM bytes
- * on full rewrites, plus occasional NR50/51/SOUNDCNT_H writes.  256
- * comfortably holds several vblanks of dense activity. */
-#define M4A_EVENT_QUEUE_CAP 256
+/* Layer 1.5 event-queue capacity.  A 2048-frame render at the maximum
+ * supported PCM rate emits one TIMER per byte plus FIFO refill writes;
+ * leave room for dense CGB writes in that same render span. */
+#define M4A_EVENT_QUEUE_CAP 32768
 
 /* PCM_DMA constants live in m4a_pcm_ring.h (public — chip-side reads
  * them too).  M4A_PCM_SAMPLES_PER_VBLANK / M4A_PCM_RATE_HZ /
  * M4A_PCM_DMA_BUF_SIZE come in via that header, included above. */
 
-/* m4a runs at 59.7275 Hz vblank.  Use 1/this as the period for tick firing. */
-#define M4A_VBLANK_HZ 59.7275f
-/* 59.7275 Hz expressed exactly for the PCM block-size accumulator. */
+/* PCM block geometry retains the m4a driver's canonical 59.7275-Hz rate. */
 #define M4A_PCM_VBLANK_RATE_NUMERATOR 23891u
 #define M4A_PCM_VBLANK_RATE_DENOMINATOR 400u
 
@@ -201,7 +196,7 @@ extern "C"
         /* Sample-read state */
         WaveData* wav;
         int8_t* currentPointer; /* forward: current sample; reverse: one past next sample */
-        int8_t sampleStored; /* preceding source byte for reverse interpolation */
+        int8_t sampleStored;    /* preceding source byte for reverse interpolation */
         int32_t count;          /* remaining samples in current segment */
         uint32_t fw;            /* 23-bit fractional position accumulator */
         uint32_t frequency;     /* per-PCM-tick step, Q9.23 */
@@ -249,7 +244,6 @@ extern "C"
         bool compat_zero_pcm_is_silent;
         bool compat_skip_pwm_tick;
 
-
         /* m4a tempo accumulator (vblank-clocked).  Fires LFO ticks when tempoC
          * crosses 150.  Mirrors v1's tempoD/tempoU/tempoI/tempoC. */
         uint16_t tempoD;
@@ -260,21 +254,33 @@ extern "C"
         /* CgbSound c15 counter (0..14 cycle for double-step on c15==0). */
         uint8_t c15;
 
-        /* Per-vblank firing.  m4a_advance accumulates host frames; one vblank
-         * fires every host_rate / M4A_VBLANK_HZ frames.  `vblank_accum` is
-         * `double` so cumulative-add error stays bounded across long runs
-         * with many small m4a_advance calls — a `float` accumulator
-         * accumulates per-call rounding that shifts vblank firings between
-         * chunkings (visible as PCM chunk-size-invariance drift). */
-        double vblank_step;  /* host_frames per vblank */
-        double vblank_accum; /* runs forward; subtracts vblank_step on fire */
+        /* Host-facing advance converts frames to GBA cycles with an integer
+         * remainder.  The VBlank clock is the exact 280896-cycle hardware
+         * cadence, independent of host-buffer partitioning. */
+        uint32_t host_rate_hz;
+        uint64_t host_cycle_remainder;
+        uint64_t current_cycle;
+        uint64_t next_vblank_cycle;
 
-        /* Layer 1.5 event queue.  CgbSound (and any future MIDI-driven
-         * register-write emitter) appends to events[] in chronological
-         * order; sample_offset is render-span-relative.  Reset by
-         * m4a_consume_writes(). */
-        uint32_t event_render_offset; /* host frames since last consume */
-        uint32_t event_vblank_offset; /* offset of current vblank firing */
+        /* DirectSound's DMA/timer scheduler.  The mixer writes the circular
+         * software source ring at VBlank; DMA refills each hardware FIFO in
+         * four-word bursts before the selected timer consumes one byte. */
+        uint64_t next_pcm_timer_cycle;
+        uint32_t pcm_timer_cycle_remainder;
+        uint64_t pcm_fifo_a_source_cursor;
+        uint64_t pcm_fifo_b_source_cursor;
+        uint8_t pcm_fifo_a_read;
+        uint8_t pcm_fifo_a_write;
+        uint8_t pcm_fifo_b_read;
+        uint8_t pcm_fifo_b_write;
+        uint8_t pcm_fifo_a_internal_remaining;
+        uint8_t pcm_fifo_b_internal_remaining;
+        /* Ordered driver→chip events.  The range is the absolute interval
+         * since the last consume; each same-cycle emitter increments
+         * event_next_order. */
+        uint64_t event_range_begin_cycle;
+        uint64_t event_cycle;
+        uint32_t event_next_order;
         size_t event_count;
         /* Diagnostic: incremented every time m4a_internal_emit_event finds
          * the queue full and has to drop a write.  Production code should
@@ -327,11 +333,11 @@ extern "C"
         M4APcmRing pcm;
     };
 
-    /* Internal helpers (exposed to other m4a_*.c files). */
-    void m4a_internal_recompute_vblank_step(M4ADriver* drv);
+    /* Recomputes the integer host-rate divisor used by m4a_advance. */
+    void m4a_internal_recompute_host_timing(M4ADriver* drv);
 
-    /* Append one register-write event at the current vblank offset.  Drops
-     * silently if the queue is full (caller's responsibility to size it
+    /* Appends one register-write event at the current absolute event cycle.
+     * Drops silently if the queue is full (caller's responsibility to size it
      * for the worst case — see M4A_EVENT_QUEUE_CAP). */
     void m4a_internal_emit_event(M4ADriver* drv, M4ARegId reg, uint32_t value);
 
@@ -352,8 +358,8 @@ extern "C"
     /* Recompute every active PCM channel's source step after its mix rate
      * changes.  The next SoundMainRAM event consumes the corrected step. */
     void m4a_internal_refresh_pcm_pitches(M4ADriver* drv);
-    /* Clears a driver's published PCM epoch and inserts a reset event at the
-     * start of the next hardware render span. */
+    /* Clears the software source and schedules canonical FIFO pointer resets
+     * at the current hardware cycle. */
     void m4a_internal_reset_pcm_output(M4ADriver* drv);
 
 #ifdef __cplusplus

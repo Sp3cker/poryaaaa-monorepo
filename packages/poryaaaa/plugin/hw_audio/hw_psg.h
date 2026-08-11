@@ -36,12 +36,13 @@ extern "C"
      *     8 * (2048 - F) cycles. NR34 leaves the prior sample latched and
      *     schedules the first clock 24 cycles after one full wave period.
      *   Wave RAM writes target the bank opposite NR30's playback bank.
-     *   noise LFSR resets to 0x7F or 0x7FFF on NR44-with-trigger.
+     *   NR44 trigger resets the GBA noise LFSR and its clock origin to zero.
      *
-     * Noise follows the linked mGBA 0.10.5 GBA-mode path.  Each clock emits
-     * the old low bit, shifts right, and XORs that bit with 0x60 (7-bit) or
-     * 0x6000 (15-bit).  No sub-sample averaging is applied; the downstream
-     * current mGBA sinc frontend consumes the DAC samples.
+     * Noise follows pinned mGBA GBA-mode feedback. Each clock derives
+     * `bit0 ^ bit1 ^ 1`, shifts right, writes that feedback to bit 14
+     * (and bit 6 in 7-bit mode), and exposes the feedback bit as output.
+     * No sub-sample averaging is applied; the downstream current mGBA sinc
+     * frontend consumes the DAC samples.
      *
      * Synth runs at mGBA's SOUNDBIAS-selected DAC cadence, set by HwAudio
      * to `32768 << sampling_cycle`, not at the host rate. Reference
@@ -101,13 +102,13 @@ extern "C"
         uint8_t wave_ram[32];
 
         /* Noise (NR41..NR44) */
-        uint16_t noise_lfsr;  /* shift register; width-specific NR44 reset */
-        uint32_t noise_phase; /* fractional-clocks accumulator (2^32 = 1 clock) */
-        uint32_t noise_timer_cycles;
-        uint8_t noise_clock_shift;  /* NR43 bits 7-4 */
-        uint8_t noise_divisor_code; /* NR43 bits 2-0 */
-        uint8_t noise_last_sample;  /* last emitted old LFSR low bit */
-        bool noise_width_7bit;      /* NR43 bit 3 */
+        uint16_t noise_lfsr;           /* GBA feedback register; NR44 seed is zero */
+        uint32_t noise_timer_cycles;   /* unconsumed cycles from the latest NR44 clock origin */
+        uint64_t noise_pending_cycles; /* lazy cycles retained until mGBA runs channel 4 */
+        uint8_t noise_clock_shift;     /* NR43 bits 7-4 */
+        uint8_t noise_divisor_code;    /* NR43 bits 2-0 */
+        uint8_t noise_last_sample;     /* latest mGBA feedback bit */
+        bool noise_width_7bit;         /* NR43 bit 3 */
         HwPsgEnvelope noise_envelope;
         bool noise_enabled;
         uint16_t noise_length_counter;
@@ -124,11 +125,11 @@ extern "C"
          * frontend downstream converts DAC-rate samples to the host rate. */
         float render_rate;
 
-        /* Shared 512 Hz PSG frame sequencer.  Mirrors mGBA GBA-mode
-         * frame ownership: one chip-internal sequencer clocks length
-         * (0/2/4/6), SQ1 sweep (2/6), and envelope (7). */
+        /* Shared 512 Hz PSG frame sequencer. Its event phase is fixed to
+         * reset-time 32,768-cycle boundaries even while NR52 is disabled.
+         * Re-enabling NR52 sets step 7 without rebasing that phase. */
         uint8_t frame_seq_step;
-        double frame_seq_accum;
+        double frame_seq_accum; /* debug view of frame_seq_cycle_remainder */
         uint16_t frame_seq_cycle_remainder;
         uint64_t frame_seq_ticks;
         uint64_t frame_seq_length_ticks;
@@ -139,10 +140,11 @@ extern "C"
     void hw_psg_init(HwPsgSynth* psg, float render_rate);
     void hw_psg_set_render_rate(HwPsgSynth* psg, float render_rate);
 
-    /* Accumulate exact trace cycles and clock only channels mGBA would
-     * update for the current event. Normal host rendering does not use
-     * this path. */
-    void hw_psg_advance_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave);
+    /* Advance an exact GBA-cycle span and clock only the channels mGBA would
+     * run for the current event. This preserves the shared absolute frame
+     * cadence across trace and live rendering. */
+    void hw_psg_advance_cycles(
+        HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise);
 
     typedef struct
     {
@@ -162,28 +164,14 @@ extern "C"
      * land on HwMixBus, NOT on the synth — see hw_mix.h. */
     void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev);
 
-    /* Read the current PSG DAC inputs without advancing any oscillator or
-     * frame-sequencer state. Trace SAMPLE events use this exact observation. */
-    void hw_psg_sample(const HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_wave, float* out_noise);
+    /* Read current native mGBA GBA-mode PSG values [0, 15] without advancing. */
+    void
+    hw_psg_sample(const HwPsgSynth* psg, uint8_t* out_sq1, uint8_t* out_sq2, uint8_t* out_wave, uint8_t* out_noise);
 
-    /* Render `frames` host-rate per-channel mono samples into the four
-     * provided buffers.  Each output is the channel's pre-mix UNIPOLAR
-     * audio in [0, env_vol/15] (square / noise) or [0, wave_factor]
-     * (wave) — no per-channel headroom budget; the mix bus owns final
-     * gain.  Buffers are OVERWRITTEN, not summed — the channel's
-     * contribution is exclusive.  Pass NULL for any buffer the caller
-     * doesn't need (still advances phase + LFSR state).
-     *
-     * Unipolar synth mirrors mGBA GBA-mode `GBAudioSamplePSG`
-     * (gb_audio.c:743) which uses `dcOffset = 0` and unsigned channel
-     * samples; the positive PSG DC passes through `_applyBias` into the
-     * raw mix and is preserved by the current mGBA frontend.
-     * Earlier poryaaaa revisions used dipolar ±env_vol/15 synthesis,
-     * which changed the signal before the GBA mix and clip stages.
-     *
-     * NR52 master-disable zeros every channel's output here at the synth
-     * stage, mirroring real GB's powered-down-DAC behaviour. */
-    void hw_psg_render(HwPsgSynth* psg, float* out_sq1, float* out_sq2, float* out_wave, float* out_noise, int frames);
+    /* Render native per-channel values while advancing the compatibility
+     * oscillator path. Buffers are overwritten; NULL still advances state. */
+    void hw_psg_render(
+        HwPsgSynth* psg, uint8_t* out_sq1, uint8_t* out_sq2, uint8_t* out_wave, uint8_t* out_noise, int frames);
 
 #ifdef __cplusplus
 }

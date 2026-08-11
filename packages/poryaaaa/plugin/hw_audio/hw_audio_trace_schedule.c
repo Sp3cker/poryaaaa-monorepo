@@ -81,7 +81,7 @@ static bool finish_sample_block(FifoSchedule* schedule)
     return true;
 }
 
-/* Advance fixed 1024-cycle mGBA audio blocks before applying a later event. */
+/* Advance 1024-cycle mGBA audio blocks in the current observed source phase. */
 static bool advance_sample_blocks(FifoSchedule* schedule, uint64_t cycle)
 {
     while (cycle >= schedule->block_end)
@@ -91,6 +91,17 @@ static bool advance_sample_blocks(FifoSchedule* schedule, uint64_t cycle)
         schedule->block_start = schedule->block_end;
         schedule->block_end += TRACE_SAMPLE_BLOCK_CYCLES;
     }
+    return true;
+}
+/* Explicit samples are the only global-cycle view of mGBA's mutable
+ * lastSample/sampleIndex state. Rebase an empty prospective block when that
+ * state reports a new phase instead of requiring a zero-aligned grid. */
+static bool rebase_sample_block(FifoSchedule* schedule, uint64_t cycle)
+{
+    if (schedule->pending_count)
+        return false;
+    schedule->block_start = cycle;
+    schedule->block_end = cycle + TRACE_SAMPLE_BLOCK_CYCLES;
     return true;
 }
 
@@ -174,7 +185,7 @@ static bool apply_schedule_write(FifoSchedule* schedule, const HwAudioTraceEvent
     }
 }
 
-/* Record the native slot now; later timers in the interval may still change it. */
+/* Record the explicit native slot; pinned mGBA can rephase a source block. */
 static bool schedule_sample(FifoSchedule* schedule, const HwAudioTraceEvent* event)
 {
     if (schedule->pending_count == TRACE_MAX_BLOCK_SAMPLES || schedule->output_count >= schedule->output_capacity)
@@ -183,7 +194,11 @@ static bool schedule_sample(FifoSchedule* schedule, const HwAudioTraceEvent* eve
     uint64_t sample_interval = TRACE_SAMPLE_BLOCK_CYCLES / sample_count;
     uint64_t offset = event->cycle - schedule->block_start;
     if (offset % sample_interval != 0 || offset / sample_interval >= sample_count)
-        return false;
+    {
+        if (!rebase_sample_block(schedule, event->cycle))
+            return false;
+        offset = 0;
+    }
     uint8_t slot = (uint8_t)(offset / sample_interval);
     if (schedule->sample_position_valid && event->cycle == schedule->prior_sample_cycle)
         return false;

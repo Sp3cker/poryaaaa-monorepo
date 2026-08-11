@@ -67,9 +67,9 @@ extern "C"
      * little-endian values at the GBA FIFO addresses; TIMER value 0 or 1
      * drains channels selecting that timer. */
     HwAudioTraceStatus hw_audio_trace_apply(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame);
-    /* Precomputes the FIFO bytes used by every SAMPLE in a complete event
-     * sequence. mGBA renders native samples in 1024-cycle blocks, so a timer
-     * later in one sample interval can determine that interval's byte. */
+    /* Precomputes the FIFO bytes used by every explicit SAMPLE. mGBA's mutable
+     * source sample state can rephase a 1024-cycle block, so SAMPLE cycles
+     * establish that block phase rather than a host rate. */
     HwAudioTraceStatus hw_audio_trace_schedule_fifo_samples(const HwAudioTraceEvent* events,
                                                             size_t event_count,
                                                             HwAudioTraceFifoSample* samples,
@@ -83,6 +83,17 @@ extern "C"
                                                         const HwAudioTraceEvent* event,
                                                         const HwAudioTraceFifoSample* fifo_sample,
                                                         HwAudioNativeFrame* frame);
+
+    /* Stage a SAMPLE's cycle progression without observing its DAC value.
+     * The CLI uses this to preserve mGBA's one-sample production latency. */
+    HwAudioTraceStatus
+    hw_audio_trace_stage_sample(HwAudio* hw, const HwAudioTraceEvent* event, HwAudioNativeFrame* frame);
+
+    /* Observe a previously staged SAMPLE after intervening writes have run. */
+    HwAudioTraceStatus hw_audio_trace_observe_sample(HwAudio* hw,
+                                                     uint64_t cycle,
+                                                     const HwAudioTraceFifoSample* fifo_sample,
+                                                     HwAudioNativeFrame* frame);
 
     const char* hw_audio_trace_status_string(HwAudioTraceStatus status);
 

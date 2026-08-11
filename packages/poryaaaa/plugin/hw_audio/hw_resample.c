@@ -26,8 +26,7 @@ static atomic_int g_lut_state;
 static void init_luts(void)
 {
     int expected = 0;
-    if (atomic_compare_exchange_strong_explicit(
-            &g_lut_state, &expected, 1, memory_order_acq_rel, memory_order_acquire))
+    if (atomic_compare_exchange_strong_explicit(&g_lut_state, &expected, 1, memory_order_acq_rel, memory_order_acquire))
     {
         const double pi = 3.14159265358979323846;
         const double dy = pi / SINC_SAMPLES;
@@ -51,16 +50,6 @@ static void init_luts(void)
     }
 }
 
-static int float_to_sample(float sample)
-{
-    long value = lrintf(sample * 32768.0f);
-    if (value > 32767)
-        value = 32767;
-    else if (value < -32768)
-        value = -32768;
-    return (int)value;
-}
-
 static int sample_at(const int16_t* input, int available, int index)
 {
     if (index < 0 || index >= available)
@@ -74,8 +63,7 @@ static int16_t interpolate(const HwResample* rs, const int16_t* input, double ti
     const int index = (int)time;
     const double subsample = time - floor(time);
     const double sample_step = rs->source_rate / rs->destination_rate;
-    const unsigned step =
-        sample_step < 1.0 ? (unsigned)(SINC_RESOLUTION * sample_step) : SINC_RESOLUTION;
+    const unsigned step = sample_step < 1.0 ? (unsigned)(SINC_RESOLUTION * sample_step) : SINC_RESOLUTION;
     const unsigned y_shift = (unsigned)(subsample * step);
     const unsigned x_shift = (unsigned)(subsample * SINC_RESOLUTION);
     double sum = 0.0;
@@ -100,6 +88,11 @@ void hw_resample_init(HwResample* rs, double input_rate, double output_rate)
 {
     init_luts();
     memset(rs, 0, sizeof(*rs));
+    hw_resample_set_rates(rs, input_rate, output_rate);
+}
+
+void hw_resample_set_rates(HwResample* rs, double input_rate, double output_rate)
+{
     rs->source_rate = input_rate;
     rs->destination_rate = output_rate;
 }
@@ -116,7 +109,7 @@ int hw_resample_inputs_needed(const HwResample* rs, int output_samples)
 }
 
 int hw_resample_process(
-    HwResample* rs, const float* in_l, const float* in_r, int in_n, float* out_l, float* out_r, int max_out)
+    HwResample* rs, const int16_t* in_l, const int16_t* in_r, int in_n, float* out_l, float* out_r, int max_out)
 {
     if (in_n < 0 || max_out < 0 || rs->source_rate <= 0.0 || rs->destination_rate <= 0.0)
         return 0;
@@ -124,8 +117,8 @@ int hw_resample_process(
     assert(rs->available + in_n <= HW_RESAMPLE_BUFFER_SIZE);
     for (int i = 0; i < in_n; i++)
     {
-        rs->input_l[rs->available + i] = (int16_t)float_to_sample(in_l ? in_l[i] : 0.0f);
-        rs->input_r[rs->available + i] = (int16_t)float_to_sample(in_r ? in_r[i] : 0.0f);
+        rs->input_l[rs->available + i] = in_l ? in_l[i] : 0;
+        rs->input_r[rs->available + i] = in_r ? in_r[i] : 0;
     }
     rs->available += in_n;
 
