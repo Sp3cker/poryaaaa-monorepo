@@ -2894,64 +2894,73 @@ static void test_v2_lfo_lfodl_resets_running_modulation(void)
     m4a_driver_destroy(drv);
 }
 
-/* Step 4 acceptance: PSG square + wave synth produces audible output
- * end-to-end through hw_audio_render_events.  Tests the integrated
- * pipeline: ingress → CgbSound emits events → chip applies events at
- * sample_offset boundaries → square synth advances phase → ±amplitude
- * sample written to outL/outR. */
+/* Step 4 acceptance: both live square paths produce equally loud output
+ * end-to-end through hw_audio_render_events.  Equal voice settings isolate
+ * the channel-specific path from track volume, pan, and envelope inputs. */
 static void test_v2_psg_square_audible(void)
 {
-    printf("Testing v2 PSG square produces audible output...\n");
-
-    ToneData voices[128];
-    memset(voices, 0, sizeof(voices));
-    voices[0].type = VOICE_SQUARE_2;
-    voices[0].key = 60;
-    voices[0].attack = 0;
-    voices[0].decay = 0;
-    voices[0].sustain = 16;
-    voices[0].release = 16;
-    voices[0].wavePointer = (uint32_t*)(uintptr_t)2; /* 50% duty */
-
-    M4ADriver* drv = m4a_driver_create(44100.0f);
-    HwAudio* hw = hw_audio_create(44100.0f);
-    m4a_driver_set_voicegroup(drv, voices);
-    m4a_program_change(drv, 0, 0);
-    m4a_cc(drv, 0, 7, 127);
-    m4a_cc(drv, 0, 10, 64);
-    m4a_note_on(drv, 0, 60, 100);
+    printf("Testing v2 PSG square voices produce equal audible output...\n");
 
     enum
     {
         N = 8192
     };
-    float L[N], R[N];
+    float peaks[2] = {0.0f, 0.0f};
 
-    /* Production event-driven path, chunked to fit the bounded queue. */
-    v2_render_chunked(drv, hw, L, R, N);
-
-    /* Detect signal: peak amplitude > 0 and at least some sign changes
-     * (square wave has many zero-crossings). */
-    float peak = 0.0f;
-    int signChanges = 0;
-    float prev = 0.0f;
-    for (int i = 0; i < N; i++)
+    for (int square = 0; square < 2; square++)
     {
-        float a = L[i];
-        if (a < 0)
-            a = -a;
-        if (a > peak)
-            peak = a;
-        if (i > 0 && ((L[i] >= 0) != (prev >= 0)))
-            signChanges++;
-        prev = L[i];
-    }
-    ASSERT(peak > 0.001f, "sq2 produces non-zero output");
-    ASSERT(signChanges > 10, "sq2 oscillates (many zero crossings)");
-    ASSERT_EQ((int)m4a_get_events_dropped(drv), 0, "no events dropped during PSG render");
+        ToneData voices[128];
+        memset(voices, 0, sizeof(voices));
+        voices[0].type = square == 0 ? VOICE_SQUARE_1 : VOICE_SQUARE_2;
+        voices[0].key = 60;
+        voices[0].attack = 0;
+        voices[0].decay = 0;
+        voices[0].sustain = 16;
+        voices[0].release = 16;
+        voices[0].wavePointer = (uint32_t*)(uintptr_t)2; /* 50% duty */
 
-    m4a_driver_destroy(drv);
-    hw_audio_destroy(hw);
+        M4ADriver* drv = m4a_driver_create(44100.0f);
+        HwAudio* hw = hw_audio_create(44100.0f);
+        m4a_driver_set_voicegroup(drv, voices);
+        m4a_program_change(drv, 0, 0);
+        m4a_cc(drv, 0, 7, 127);
+        m4a_cc(drv, 0, 10, 64);
+        m4a_note_on(drv, 0, 60, 100);
+
+        float L[N], R[N];
+        v2_render_chunked(drv, hw, L, R, N);
+
+        int signChanges = 0;
+        float prev = 0.0f;
+        for (int i = 0; i < N; i++)
+        {
+            float a = L[i];
+            if (a < 0)
+                a = -a;
+            if (a > peaks[square])
+                peaks[square] = a;
+            if (i > 0 && ((L[i] >= 0) != (prev >= 0)))
+                signChanges++;
+            prev = L[i];
+        }
+
+        if (square == 0)
+        {
+            ASSERT(peaks[square] > 0.001f, "sq1 produces non-zero output");
+            ASSERT(signChanges > 10, "sq1 oscillates (many zero crossings)");
+        }
+        else
+        {
+            ASSERT(peaks[square] > 0.001f, "sq2 produces non-zero output");
+            ASSERT(signChanges > 10, "sq2 oscillates (many zero crossings)");
+        }
+        ASSERT_EQ((int)m4a_get_events_dropped(drv), 0, "no events dropped during PSG render");
+
+        m4a_driver_destroy(drv);
+        hw_audio_destroy(hw);
+    }
+
+    ASSERT_NEAR(peaks[0], peaks[1], 0.000001f, "sq1 and sq2 live paths have equal peak level");
 }
 
 /* NR51 pan-mask routing: a sq2 voice with NR51 routing only to LEFT
