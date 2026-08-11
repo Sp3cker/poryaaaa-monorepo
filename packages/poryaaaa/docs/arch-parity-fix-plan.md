@@ -423,6 +423,7 @@ For each case:
 ```bash
 ./build/mgba_audio_trace_replay \
   --input case.trace \
+  --reference-manifest case-full.json \
   --output-prefix case-mgba
 
 ./build/poryaaaa_audio_trace \

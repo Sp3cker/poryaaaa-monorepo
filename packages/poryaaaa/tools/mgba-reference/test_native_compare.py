@@ -14,7 +14,14 @@ CLOCK_HZ = 16_777_216
 
 
 def write_capture(
-    manifest_path, frames, cycles, *, clock_hz=CLOCK_HZ, source="test", solo_mask=63
+    manifest_path,
+    frames,
+    cycles,
+    *,
+    clock_hz=CLOCK_HZ,
+    source="test",
+    solo_mask=63,
+    manifest_overrides=None,
 ):
     """Write one canonical capture without introducing test dependencies."""
     manifest = {
@@ -30,6 +37,16 @@ def write_capture(
         "last_cycle": cycles[-1],
         "solo_mask": solo_mask,
     }
+    if source in {"mgba-full", "mgba-clone"}:
+        manifest.update(
+            {
+                "audio_channel_mask": solo_mask,
+                "mgba_master_volume": 0x100,
+                "bios_mode": "hle",
+            }
+        )
+    if manifest_overrides:
+        manifest.update(manifest_overrides)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     pcm = bytearray()
     for left, right in frames:
@@ -213,6 +230,24 @@ class NativeCompareTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
         result = json.loads(completed.stdout)
         self.assertIn("solo_mask mismatch", result["contract_failures"][0])
+
+    def test_mgba_manifest_requires_authoritative_audio_contract(self):
+        """mGBA artifacts with a different configured volume must be rejected."""
+        reference = self.directory / "reference.json"
+        candidate = self.directory / "candidate.json"
+        write_capture(reference, self.frames, self.cycles, source="mgba-full")
+        write_capture(
+            candidate,
+            self.frames,
+            self.cycles,
+            source="mgba-clone",
+            manifest_overrides={"mgba_master_volume": 128},
+        )
+
+        completed = self.run_compare(reference, candidate)
+
+        self.assertEqual(completed.returncode, 2, completed.stderr or completed.stdout)
+        self.assertIn("expected mgba_master_volume=256, got 128", completed.stderr)
 
     def test_missing_candidate_frame_fails_at_first_unpaired_index(self):
         """One missing valid frame must identify the first unavailable index."""

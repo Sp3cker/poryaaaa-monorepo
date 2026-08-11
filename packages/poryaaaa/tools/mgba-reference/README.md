@@ -132,6 +132,55 @@ tools/mgba-reference/record_voice.sh \
   --output /tmp/mus-slateport-psg-only.wav
 ```
 
+## Shipped renderer evidence profile
+
+Use this one fixed profile for the `poryaaaa_render` shipped-path evidence.
+It is a renderer exercise, not a whole-song parity claim: native hardware,
+driver-trace, and frontend gates still apply independently.
+
+- Analog filter: off. The renderer has no `--analog-filter` option because it
+  did not control a renderer filter.
+- Fadeout: `0` seconds; output normalization, gain fitting, and DC removal:
+  none.
+- Host rate: `48000` Hz. Channel mask: `full` (`HW_AUDIO_SOLO_FULL`, `0x3F`).
+- Polyphony: `5`; song volume: `100`; reverb: `50`; duration: `1.25` seconds.
+- Fixture: `se_pc_on`, with `rs_sfx_1`.
+
+Run the renderer from the package directory with a supplied decomp checkout:
+
+```bash
+./build/poryaaaa_render \
+  "$PROJECT_ROOT" rs_sfx_1 \
+  --midi "$PROJECT_ROOT/sound/songs/midi/se_pc_on.mid" \
+  --sample-rate 48000 \
+  --song-volume 100 \
+  --reverb 50 \
+  --polyphony 5 \
+  --solo full \
+  --total-duration-seconds 1.25 \
+  --fadeout 0 \
+  --output /tmp/poryaaaa-se-pc-on-48000.wav
+```
+
+The evidence manifest must record these SHA-256 values before comparing
+artifacts:
+
+| Input | SHA-256 |
+| --- | --- |
+| ROM image | `f24f420542315fc699fad541915e9a437e55fbc3e9cdf2dfdaf3a5a0e55466f3` |
+| `sound/voicegroups/rs_sfx_1.inc` | `46dc8966a9760bfc74a59308ae766fb6742994b97b4c37456a0b11f12974b1bd` |
+| `sound/songs/midi/se_pc_on.mid` | `672490fca6e381fd4f0d9d1fd0707b77714c52905f15321cb7206c6fb6864def` |
+
+Record the SHA-256 of `./build/poryaaaa_render` and every capture alongside
+those inputs. If a copied renderer is exercised, require both `cmp -s` and
+equal SHA-256 values against `./build/poryaaaa_render`; equality proves the
+executed binary is the built binary.
+
+Keep the WAV's left and right channels independent in every evidence artifact
+and comparison. Do not fold to mono, normalize, fit gain, remove DC, or use
+lag/correlation diagnostics as a parity pass. The 65536 Hz commands below are
+legacy frontend diagnostics, not this fixed shipped-renderer profile.
+
 ## Compare a real game sound
 
 `se_pc_on` is a useful square-1 regression because song mode runs its compiled

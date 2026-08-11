@@ -66,6 +66,18 @@ def load_capture(manifest_path):
         raise ComparisonError(f"{manifest_path}: invalid first/last cycle range")
     if not isinstance(solo_mask, int) or isinstance(solo_mask, bool) or not 1 <= solo_mask <= 63:
         raise ComparisonError(f"{manifest_path}: solo_mask must be an integer between 1 and 63")
+    source = manifest.get("source")
+    if source in {"mgba-full", "mgba-clone"}:
+        mgba_contract = {
+            "audio_channel_mask": solo_mask,
+            "mgba_master_volume": 0x100,
+            "bios_mode": "hle",
+        }
+        for key, expected in mgba_contract.items():
+            if manifest.get(key) != expected:
+                raise ComparisonError(
+                    f"{manifest_path}: expected {key}={expected!r}, got {manifest.get(key)!r}"
+                )
 
     pcm_path = manifest_path.with_suffix(".pcm")
     cycles_path = manifest_path.with_suffix(".cycles")
@@ -114,6 +126,9 @@ def load_capture(manifest_path):
         "first_cycle": first_cycle,
         "last_cycle": last_cycle,
         "solo_mask": solo_mask,
+        "audio_channel_mask": manifest.get("audio_channel_mask"),
+        "mgba_master_volume": manifest.get("mgba_master_volume"),
+        "bios_mode": manifest.get("bios_mode"),
         "pcm_path": pcm_path,
         "cycles_path": cycles_path,
     }
@@ -122,8 +137,14 @@ def load_capture(manifest_path):
 def compare(reference, candidate):
     """Find every timing and stereo integer mismatch at matching frame indices."""
     contract_failures = []
-    for field in ("clock_hz", "solo_mask"):
-        if reference[field] != candidate[field]:
+    for field in (
+        "clock_hz",
+        "solo_mask",
+        "audio_channel_mask",
+        "mgba_master_volume",
+        "bios_mode",
+    ):
+        if reference[field] is not None and candidate[field] is not None and reference[field] != candidate[field]:
             contract_failures.append(
                 f"{field} mismatch: {reference[field]} reference, {candidate[field]} candidate"
             )
