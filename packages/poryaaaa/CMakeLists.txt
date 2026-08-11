@@ -483,12 +483,22 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
         set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD 11)
         set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD_REQUIRED ON)
         poryaaaa_enable_project_warnings(mgba_audio_trace_replay)
+        get_target_property(_mgba_replay_compile_options mgba_audio_trace_replay COMPILE_OPTIONS)
+        if(_mgba_replay_compile_options STREQUAL "_mgba_replay_compile_options-NOTFOUND")
+            set(_mgba_replay_compile_options)
+        endif()
+        string(JOIN " " _mgba_replay_compiler_flags
+            "${CMAKE_C_FLAGS}" ${_mgba_replay_compile_options})
+        string(REPLACE ";" " " _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
+        string(REPLACE "\"" "\\\"" _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
         target_compile_definitions(mgba_audio_trace_replay PRIVATE ENABLE_VFS=1)
         target_link_libraries(mgba_audio_trace_replay PRIVATE mgba)
         # The replay adapter reads internal mGBA state, so its feature layout
         # must match the linked mGBA target exactly.
         target_compile_definitions(mgba_audio_trace_replay PRIVATE
             "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>"
+            "PORYAAAA_MGBA_REPLAY_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
+            "PORYAAAA_MGBA_REPLAY_COMPILE_FLAGS=\"${_mgba_replay_compiler_flags}\""
             PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
             PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
             PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
@@ -496,6 +506,24 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
             PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
         if(NOT MSVC)
             target_link_libraries(mgba_audio_trace_replay PRIVATE m)
+        endif()
+
+        # ---- Direct pinned mGBA frontend parity harness ----
+        add_executable(poryaaaa_frontend_parity_tests
+            test/test_hw_resample_parity.c
+        )
+        set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD 11)
+        set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD_REQUIRED ON)
+        poryaaaa_enable_project_warnings(poryaaaa_frontend_parity_tests)
+        target_include_directories(poryaaaa_frontend_parity_tests PRIVATE
+            plugin
+            test
+            "${_mgba_source}/include")
+        target_compile_definitions(poryaaaa_frontend_parity_tests PRIVATE
+            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>")
+        target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE hw_audio mgba)
+        if(NOT MSVC)
+            target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE m)
         endif()
         target_link_libraries(mgba_mp2k_reference PRIVATE mgba)
         # mCore's public layout depends on mGBA's feature definitions. Compile the

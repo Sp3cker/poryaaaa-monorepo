@@ -227,7 +227,7 @@ static bool run_driver_hw_cycle(ToneData* voices, int program)
         memset(left, 0, sizeof(left));
         memset(right, 0, sizeof(right));
         m4a_advance(drv, CHUNK_FRAMES);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), left, right, CHUNK_FRAMES);
+        hw_audio_render_events(hw, m4a_get_pending_writes(drv), left, right, CHUNK_FRAMES);
         m4a_consume_writes(drv);
         float chunk_peak = peak_abs(left, right, CHUNK_FRAMES);
         if (chunk_peak > peak)

@@ -87,16 +87,19 @@ static void test_trace_fifo_timer_replay(void)
     HwAudioNativeFrame frame;
     hw_audio_trace_reset(audio);
 
-    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, 0x04000082, 0x0F04, &frame),
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, 0x04000084, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "DirectSound master enable is accepted");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, 0x04000082, 0x0F04, &frame),
               HW_AUDIO_TRACE_OK,
               "DMA A routes both sides and selects timer 1");
-    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 4, 0x040000A0, 0x7F0100FF, &frame),
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 4, 0x040000A0, 0x7F0100FF, &frame),
               HW_AUDIO_TRACE_OK,
               "FIFO A accepts one little-endian DMA word");
-    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_TIMER, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_TIMER, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "unselected timer after its same-cycle DMA write is accepted");
-    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 0, 4, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "sample after unselected timer is accepted");
     ASSERT_EQ(frame.left, 0, "unselected timer leaves FIFO A hold silent");

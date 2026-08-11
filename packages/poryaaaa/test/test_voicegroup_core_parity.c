@@ -53,6 +53,41 @@ static bool write_bytes(const char* path, const uint8_t* bytes, size_t count)
     return ok;
 }
 
+/* Generate the bank sequentially so the first exercised program occupies the
+ * intended MIDI slot without relying on the removed voice_group start index. */
+static bool write_parity_voicegroups(const char* path)
+{
+    FILE* f = fopen(path, "w");
+    if (!f)
+        return false;
+
+    bool ok = fputs("main::\n\tvoice_group main\n", f) >= 0;
+    for (int slot = 0; slot < 36 && ok; slot++)
+        ok = fputs("\tvoice_square_1 60, 0, 0, 2, 0, 0, 15, 0\n", f) >= 0;
+    if (ok)
+    {
+        ok = fputs("\tvoice_directsound_no_resample 60, 7, SharedSample, 255, 252, 0, 115\n"
+                   "\tvoice_programmable_wave 61, 12, PulseWave, 5, 2, 15, 3\n"
+                   "\tvoice_square_1_alt 62, 0, 5, 3, 1, 2, 15, 3\n"
+                   "\tvoice_square_2 63, 0, 2, 1, 2, 15, 3\n"
+                   "\tvoice_noise_alt 64, 0, 1, 1, 2, 15, 3\n"
+                   "\tvoice_keysplit voicegroup_child, keysplit_main @ Main Split\n"
+                   "\tvoice_keysplit_all voicegroup_drums @ All Drums\n"
+                   "\n"
+                   "child::\n"
+                   "\tvoice_group child\n"
+                   "\tvoice_square_1 60, 0, 3, 2, 1, 2, 8, 3\n"
+                   "\n"
+                   "drums::\n"
+                   "\tvoice_group drums\n"
+                   "\tvoice_noise 36, 0, 1, 1, 2, 8, 3\n",
+                   f) >= 0;
+    }
+    if (fclose(f) != 0)
+        ok = false;
+    return ok;
+}
+
 static void cleanup_fixture(void)
 {
     remove("poryaaaa_vg_core_parity/sound/voice_groups.inc");
@@ -111,23 +146,8 @@ static bool write_parity_fixture(void)
            write_text_file("poryaaaa_vg_core_parity/sound/keysplit_tables.inc",
                            "keysplit main, 0\n"
                            "\tsplit 1, 64\n"
-                           "\tsplit 2, 128\n") &&
-           write_text_file("poryaaaa_vg_core_parity/sound/voice_groups.inc",
-                           "main::\n"
-                           "\tvoice_group main, 36\n"
-                           "\tvoice_directsound_no_resample 60, 7, SharedSample, 255, 252, 0, 115\n"
-                           "\tvoice_programmable_wave 61, 12, PulseWave, 9, 10, 31, 11\n"
-                           "\tvoice_square_1_alt 62, 0, 5, 7, 9, 10, 31, 11\n"
-                           "\tvoice_square_2 63, 0, 6, 9, 10, 31, 11\n"
-                           "\tvoice_noise_alt 64, 0, 3, 9, 10, 31, 11\n"
-                           "\tvoice_keysplit voicegroup_child, keysplit_main @ Main Split\n"
-                           "\tvoice_keysplit_all voicegroup_drums @ All Drums\n"
-                           "\n"
-                           "child::\n"
-                           "\tvoice_square_1 60, 0, 3, 2, 1, 2, 8, 3\n"
-                           "\n"
-                           "drums::\n"
-                           "\tvoice_noise 36, 0, 1, 1, 2, 8, 3\n");
+                           "\tsplit 2, 127\n") &&
+           write_parity_voicegroups("poryaaaa_vg_core_parity/sound/voice_groups.inc");
 }
 
 static void read_core_display_name(const VoicegroupCoreBankResult* result, size_t slot, char* buffer, size_t buffer_len)

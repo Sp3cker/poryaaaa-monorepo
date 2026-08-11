@@ -69,7 +69,7 @@ static void v2_render_chunked(M4ADriver* drv, HwAudio* hw, float* outL, float* o
         int chunk =
             (frames - off) > M4A_RECOMMENDED_MAX_ADVANCE_FRAMES ? M4A_RECOMMENDED_MAX_ADVANCE_FRAMES : (frames - off);
         m4a_advance(drv, chunk);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), outL + off, outR + off, chunk);
+        hw_audio_render_events(hw, m4a_get_pending_writes(drv), outL + off, outR + off, chunk);
         m4a_consume_writes(drv);
         off += chunk;
     }
@@ -438,7 +438,7 @@ static void test_basic_audio(void)
     /* Generate some audio */
     float outL[1024], outR[1024];
     m4a_advance(drv, 1024);
-    hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), outL, outR, 1024);
+    hw_audio_render_events(hw, m4a_get_pending_writes(drv), outL, outR, 1024);
     m4a_consume_writes(drv);
     /* v2 audible end-to-end via the event-stream API (PSG square+wave+
      * noise + PCM); however this top-level test exercises driver
@@ -1828,6 +1828,35 @@ static void test_v2_pcm_reverb_pipeline(void)
     free(wd);
 }
 
+/* A gate expiry is observed after the current SoundMainRAM envelope tick.
+ * The current decay tick must therefore precede the following release tick. */
+static void test_v2_pcm_gate_time_completes_decay_before_release(void)
+{
+    printf("Testing v2 PCM gate-time envelope transition...\n");
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "PCM gate-time driver allocated");
+    if (!drv)
+        return;
+
+    M4ADriverPcmChan* ch = &drv->pcmChans[0];
+    ch->status = M4A_CHN_ON | M4A_CHN_ENV_DECAY;
+    ch->envelopeVolume = 255;
+    ch->decay = 188;
+    ch->release = 244;
+    ch->gateTime = 1;
+
+    m4a_sound_main_ram(drv);
+    ASSERT_EQ(ch->envelopeVolume, 187, "gate expiry preserves the current 255 -> 187 decay transition");
+    ASSERT((ch->status & M4A_CHN_STOP) != 0, "gate expiry marks release for the following tick");
+    ASSERT_EQ(ch->status & M4A_CHN_ENV_MASK, M4A_CHN_ENV_DECAY, "gate expiry does not replace the current decay phase");
+
+    m4a_sound_main_ram(drv);
+    ASSERT_EQ(ch->envelopeVolume, 178, "the following tick applies the 187 -> 178 release transition");
+
+    m4a_driver_destroy(drv);
+}
+
 static WaveData* make_v2_pcm_echo_test_wave(void)
 {
     int dataSize = 64;
@@ -1961,10 +1990,10 @@ static void test_v2_pcm_pseudo_echo_nonzero_length_counts_down(void)
     free(wd);
 }
 
-/* Layer 1.5 event-stream contract.  After note_on + 1 vblank the
- * driver must have queued Emerald CgbSound's square start order, all
- * stamped with the same sample_offset.  m4a_consume_writes empties the
- * queue. */
+/* Layer 1.5 event-stream contract.  After note_on + 1 VBlank the
+ * driver queues Emerald CgbSound's square start order at one absolute
+ * GBA cycle with strictly increasing stable order.  m4a_consume_writes
+ * empties the queue. */
 static void test_v2_event_stream(void)
 {
     printf("Testing v2 Layer 1.5 event-stream order + consumption...\n");
@@ -2056,26 +2085,88 @@ static void test_v2_event_stream(void)
     ASSERT((nr24Trigger & 0x80) != 0, "volume NR24 has trigger bit set");
     ASSERT((nr24Trigger & 0x40) != 0, "volume NR24 keeps nonzero hardware length enabled");
 
-    /* All vblank-emitted events share the same sample_offset (that
-     * vblank's firing position within the render span). */
-    uint32_t off = b->events[seenN21].sample_offset;
-    bool sameOffset = true;
+    /* Timer and FIFO events now span the complete interval. The CGB writes
+     * produced by one SoundMain call still share its VBlank cycle and order. */
+    uint64_t cycle = b->events[seenN21].cycle;
+    bool same_cycle = true;
+    bool ordered = true;
+    bool have_previous = false;
+    uint32_t previous_order = 0;
     for (size_t i = 0; i < b->count; i++)
     {
-        if (b->events[i].sample_offset != off)
-        {
-            sameOffset = false;
-            break;
-        }
+        if (b->events[i].reg >= M4A_REG_FIFO_A)
+            continue;
+        if (b->events[i].cycle != cycle)
+            same_cycle = false;
+        if (have_previous && b->events[i].order <= previous_order)
+            ordered = false;
+        previous_order = b->events[i].order;
+        have_previous = true;
     }
-    ASSERT(sameOffset, "all vblank events share one sample_offset");
-    ASSERT(off > 0 && off < 1024, "sample_offset within render span");
+    ASSERT(same_cycle, "all SoundMain writes share one absolute GBA cycle");
+    ASSERT(ordered, "same-cycle SoundMain writes retain stable order");
+    ASSERT_EQ(cycle, M4A_VBLANK_CYCLES, "first VBlank has the canonical absolute cycle");
+    ASSERT(cycle >= b->begin_cycle && cycle < b->end_cycle, "VBlank cycle lies in its render interval");
 
     m4a_consume_writes(drv);
     b = m4a_get_pending_writes(drv);
     ASSERT_EQ((int)b->count, 0, "queue empty after m4a_consume_writes");
 
     m4a_driver_destroy(drv);
+}
+
+/* Identical driver inputs must produce an identical ordered cycle stream. */
+static void test_v2_event_stream_is_repeatable(void)
+{
+    printf("Testing v2 cycle-domain event stream is repeatable...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 2;
+    voices[0].sustain = 8;
+    voices[0].release = 1;
+    voices[0].length = 63;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* first = m4a_driver_create(44100.0f);
+    M4ADriver* second = m4a_driver_create(44100.0f);
+    ASSERT(first != NULL && second != NULL, "repeatability drivers allocate");
+    if (!first || !second)
+    {
+        m4a_driver_destroy(first);
+        m4a_driver_destroy(second);
+        return;
+    }
+
+    M4ADriver* drivers[] = {first, second};
+    for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++)
+    {
+        m4a_driver_set_voicegroup(drivers[i], voices);
+        m4a_program_change(drivers[i], 0, 0);
+        m4a_cc(drivers[i], 0, 7, 127);
+        m4a_cc(drivers[i], 0, 10, 64);
+        m4a_note_on(drivers[i], 0, 60, 100);
+        m4a_advance(drivers[i], 4096);
+    }
+
+    const M4ARegWriteBatch* a = m4a_get_pending_writes(first);
+    const M4ARegWriteBatch* b = m4a_get_pending_writes(second);
+    ASSERT_EQ(a->count, b->count, "repeated driver runs emit the same event count");
+    ASSERT_EQ(a->begin_cycle, b->begin_cycle, "repeated driver runs share event begin cycle");
+    ASSERT_EQ(a->end_cycle, b->end_cycle, "repeated driver runs share event end cycle");
+    for (size_t i = 0; i < a->count && i < b->count; i++)
+    {
+        ASSERT_EQ(a->events[i].cycle, b->events[i].cycle, "repeated driver runs share event cycle");
+        ASSERT_EQ(a->events[i].order, b->events[i].order, "repeated driver runs share same-cycle order");
+        ASSERT_EQ(a->events[i].reg, b->events[i].reg, "repeated driver runs share event register");
+        ASSERT_EQ(a->events[i].value, b->events[i].value, "repeated driver runs share event value");
+    }
+
+    m4a_driver_destroy(first);
+    m4a_driver_destroy(second);
 }
 
 /* m4a_consume_writes is the unified "everything pending applied" call.
@@ -3289,152 +3380,101 @@ static void test_v2_cgb_volume_triggers_match_m4a(void)
     m4a_driver_destroy(drv);
 }
 
-/* PCM_PUBLISH driver contract: m4a_sound_main_ram emits exactly one
- * M4A_REG_PCM_PUBLISH event per vblank, stamped with the firing
- * sample_offset (the host-frame offset within the current render
- * span where the vblank fired).  This is a DRIVER-side regression
- * that doesn't need the chip — all we're asserting is "the driver
- * publishes its ring writes to the event stream correctly."  The
- * full chip-side timing behaviour is covered separately by
- * test_v2_pcm_chunk_size_invariance and test_v2_pcm_publish_timing
- * in the full-v2 build slice. */
-static void test_v2_pcm_publish_event_per_vblank(void)
+/* DirectSound leaves the software ring only through canonical FIFO word and
+ * TIMER events.  The first refill proves the source bytes are packed LSB
+ * first and that all same-cycle DMA writes precede the timer consumption. */
+static void test_v2_pcm_fifo_timer_events(void)
 {
-    printf("Testing v2 driver emits one PCM_PUBLISH per vblank with correct offset...\n");
+    printf("Testing v2 DirectSound FIFO words and timer ordering...\n");
 
-    /* Looping PCM voice — just needs enough activity for
-     * m4a_sound_main_ram to actually run on each vblank. */
-    int dataSize = 16;
-    WaveData* wd = calloc(1, sizeof(WaveData) + dataSize + 1);
-    wd->type = 0;
-    wd->status = 0xC000;
-    wd->freq = 22050u << 10;
-    wd->loopStart = 0;
-    wd->size = dataSize;
-    wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
-    for (int i = 0; i < dataSize; i++)
-        wd->data[i] = (int8_t)((i & 1) ? 50 : -50);
-    wd->data[dataSize] = wd->data[0];
+    int data_size = 16;
+    WaveData* wave = calloc(1, sizeof(WaveData) + data_size + 1);
+    wave->type = 0;
+    wave->status = 0xC000;
+    wave->freq = 22050u << 10;
+    wave->size = data_size;
+    wave->data = (int8_t*)((uint8_t*)wave + sizeof(WaveData));
+    for (int i = 0; i < data_size; i++)
+        wave->data[i] = (int8_t)((i & 1) ? 50 : -50);
+    wave->data[data_size] = wave->data[0];
 
     ToneData voices[128];
     memset(voices, 0, sizeof(voices));
     voices[0].type = VOICE_DIRECTSOUND;
     voices[0].key = 60;
-    voices[0].wav = wd;
+    voices[0].wav = wave;
     voices[0].attack = 0xFF;
     voices[0].sustain = 0xFF;
 
     M4ADriver* drv = m4a_driver_create(44100.0f);
     m4a_set_master_volume(drv, 15);
-    m4a_set_max_pcm_channels(drv, 5);
     m4a_driver_set_voicegroup(drv, voices);
     m4a_program_change(drv, 0, 0);
-    m4a_cc(drv, 0, 7, 127);
-    m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-
-    /* Render-window 1: 1024 frames at 44100 Hz fires exactly 1 vblank
-     * (vblank_step ≈ 738.36).  Expect exactly 1 PCM_PUBLISH event. */
     m4a_advance(drv, 1024);
-    const M4ARegWriteBatch* b = m4a_get_pending_writes(drv);
-    int npub = 0;
-    uint32_t pub_off = 0;
-    for (size_t i = 0; i < b->count; i++)
-    {
-        if (b->events[i].reg == M4A_REG_PCM_PUBLISH)
-        {
-            if (npub == 0)
-                pub_off = b->events[i].sample_offset;
-            npub++;
-        }
-    }
-    ASSERT_EQ(npub, 1, "1024-frame advance fires exactly 1 PCM_PUBLISH");
-    ASSERT(pub_off >= 700 && pub_off < 750, "PCM_PUBLISH sample_offset matches vblank firing (~738)");
-    /* Ring write_cursor advanced by exactly one vblank's samples in
-     * lockstep with the publish event count. */
-    ASSERT_EQ((int)m4a_get_pcm_ring(drv)->write_cursor,
-              (int)M4A_PCM_SAMPLES_PER_VBLANK,
-              "ring write_cursor matches 1 published vblank");
-    m4a_consume_writes(drv);
 
-    /* Render-window 2: 4096 frames (≈ 5.55 vblank periods) → exactly 5
-     * PCM_PUBLISH events, monotonic in sample_offset. */
-    m4a_advance(drv, 4096);
-    b = m4a_get_pending_writes(drv);
-    int pub_count = 0;
-    uint32_t prev_off = 0;
-    bool monotonic = true;
-    for (size_t i = 0; i < b->count; i++)
+    const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+    const M4APcmRing* ring = m4a_get_pcm_ring(drv);
+    int fifo_a_count = 0;
+    int fifo_b_count = 0;
+    int timer_count = 0;
+    bool first_a_checked = false;
+    bool first_b_checked = false;
+    bool refill_before_timer = false;
+    for (size_t index = 0; index < batch->count; index++)
     {
-        if (b->events[i].reg == M4A_REG_PCM_PUBLISH)
+        const M4ARegWrite* event = &batch->events[index];
+        if (event->reg == M4A_REG_FIFO_A)
         {
-            if (pub_count > 0 && b->events[i].sample_offset <= prev_off)
-                monotonic = false;
-            prev_off = b->events[i].sample_offset;
-            pub_count++;
+            if (!first_a_checked)
+            {
+                uint32_t expected = (uint32_t)(uint8_t)ring->ring_a[0] | ((uint32_t)(uint8_t)ring->ring_a[1] << 8u) |
+                                    ((uint32_t)(uint8_t)ring->ring_a[2] << 16u) |
+                                    ((uint32_t)(uint8_t)ring->ring_a[3] << 24u);
+                ASSERT_EQ(event->value, expected, "FIFO A packs ring bytes little-endian");
+                first_a_checked = true;
+            }
+            fifo_a_count++;
+        }
+        else if (event->reg == M4A_REG_FIFO_B)
+        {
+            if (!first_b_checked)
+            {
+                uint32_t expected = (uint32_t)(uint8_t)ring->ring_b[0] | ((uint32_t)(uint8_t)ring->ring_b[1] << 8u) |
+                                    ((uint32_t)(uint8_t)ring->ring_b[2] << 16u) |
+                                    ((uint32_t)(uint8_t)ring->ring_b[3] << 24u);
+                ASSERT_EQ(event->value, expected, "FIFO B packs ring bytes little-endian");
+                first_b_checked = true;
+            }
+            fifo_b_count++;
+        }
+        else if (event->reg == M4A_REG_TIMER_0)
+        {
+            int same_cycle_a = 0;
+            int same_cycle_b = 0;
+            for (size_t prior = index; prior-- > 0 && batch->events[prior].cycle == event->cycle;)
+            {
+                same_cycle_a += batch->events[prior].reg == M4A_REG_FIFO_A;
+                same_cycle_b += batch->events[prior].reg == M4A_REG_FIFO_B;
+            }
+            if (same_cycle_a || same_cycle_b)
+            {
+                ASSERT_EQ(same_cycle_a, 4, "FIFO A refill is four words before its timer");
+                ASSERT_EQ(same_cycle_b, 4, "FIFO B refill is four words before its timer");
+                refill_before_timer = true;
+            }
+            ASSERT_EQ(event->value, 0, "TIMER_0 identifies timer zero");
+            timer_count++;
         }
     }
-    ASSERT_EQ(pub_count, 5, "4096-frame advance fires exactly 5 PCM_PUBLISH events");
-    ASSERT(monotonic, "PCM_PUBLISH sample_offsets are monotonic increasing");
-    /* Ring write_cursor totals 1 + 5 = 6 vblanks of samples. */
-    ASSERT_EQ((int)m4a_get_pcm_ring(drv)->write_cursor,
-              6 * (int)M4A_PCM_SAMPLES_PER_VBLANK,
-              "ring write_cursor matches cumulative published vblanks");
-    m4a_consume_writes(drv);
+    ASSERT(first_a_checked && first_b_checked, "DirectSound emits FIFO A/B DMA words");
+    ASSERT(fifo_a_count == fifo_b_count && fifo_a_count > 0, "FIFO refill writes stay stereo-paired");
+    ASSERT(timer_count > 0, "DirectSound emits timer overflows at its PCM rate");
+    ASSERT(refill_before_timer, "same-cycle FIFO refill precedes TIMER_0");
+    ASSERT_EQ((int)m4a_get_events_dropped(drv), 0, "recommended render span drops no FIFO events");
 
     m4a_driver_destroy(drv);
-    free(wd);
-
-    /* Render-window 3 (fresh driver): a 64-frame advance at 44100 Hz
-     * starts vblank_accum from 0, so it never crosses vblank_step
-     * (~738.36) — expect zero PCM_PUBLISH events.  Exercises the
-     * "chunk shorter than vblank" path that almost tripped the
-     * chip-side publish-fallback heuristic when we built this fix.
-     * (Can't reuse the prior driver because vblank_accum carries
-     * residue from previous advances.) */
-    {
-        WaveData* wd2 = calloc(1, sizeof(WaveData) + dataSize + 1);
-        wd2->type = 0;
-        wd2->status = 0xC000;
-        wd2->freq = 22050u << 10;
-        wd2->loopStart = 0;
-        wd2->size = dataSize;
-        wd2->data = (int8_t*)((uint8_t*)wd2 + sizeof(WaveData));
-        for (int i = 0; i < dataSize; i++)
-            wd2->data[i] = (int8_t)((i & 1) ? 50 : -50);
-        wd2->data[dataSize] = wd2->data[0];
-
-        ToneData voices2[128];
-        memset(voices2, 0, sizeof(voices2));
-        voices2[0].type = VOICE_DIRECTSOUND;
-        voices2[0].key = 60;
-        voices2[0].wav = wd2;
-        voices2[0].attack = 0xFF;
-        voices2[0].sustain = 0xFF;
-
-        M4ADriver* drv2 = m4a_driver_create(44100.0f);
-        m4a_set_master_volume(drv2, 15);
-        m4a_set_max_pcm_channels(drv2, 5);
-        m4a_driver_set_voicegroup(drv2, voices2);
-        m4a_program_change(drv2, 0, 0);
-        m4a_cc(drv2, 0, 7, 127);
-        m4a_cc(drv2, 0, 10, 64);
-        m4a_note_on(drv2, 0, 60, 127);
-
-        m4a_advance(drv2, 64);
-        const M4ARegWriteBatch* b2 = m4a_get_pending_writes(drv2);
-        int late_count = 0;
-        for (size_t i = 0; i < b2->count; i++)
-        {
-            if (b2->events[i].reg == M4A_REG_PCM_PUBLISH)
-                late_count++;
-        }
-        ASSERT_EQ(late_count, 0, "fresh-driver 64-frame advance fires 0 PCM_PUBLISH");
-        ASSERT_EQ((int)m4a_get_pcm_ring(drv2)->write_cursor, 0, "ring write_cursor stays 0 with no vblank");
-
-        m4a_driver_destroy(drv2);
-        free(wd2);
-    }
+    free(wave);
 }
 
 /* The bounded event queue must never overflow under correct use of
@@ -3582,13 +3622,9 @@ static void test_v2_directsound_audible(void)
 
 /* PCM publish gate: render the same PCM-only audio at two different
  * host-frame chunkings (one big call vs many small calls) and assert
- * bit-identical output.  Pre-fix: the chip's pcm_pos read clock saw
- * all of m4a_advance's ring writes from sample_offset 0, so changing
- * the chunk size shifted PCM data into different host frames.
- * Post-fix: PCM_PUBLISH events stamp each vblank's writes with the
- * firing offset; the chip clamps reads to the published range, and
- * pcm_pos pauses on FIFO underrun — so output is invariant under
- * arbitrary chunkings. */
+ * bit-identical output. Each ring write becomes visible at its ordered
+ * absolute VBlank cycle; the integer PCM phase pauses on underrun, so
+ * output is invariant under arbitrary chunkings. */
 static void render_with_chunking(M4ADriver* drv, HwAudio* hw, float* L, float* R, int total, int chunk_size)
 {
     int off = 0;
@@ -3596,7 +3632,7 @@ static void render_with_chunking(M4ADriver* drv, HwAudio* hw, float* L, float* R
     {
         int chunk = (total - off) > chunk_size ? chunk_size : (total - off);
         m4a_advance(drv, chunk);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), L + off, R + off, chunk);
+        hw_audio_render_events(hw, m4a_get_pending_writes(drv), L + off, R + off, chunk);
         m4a_consume_writes(drv);
         off += chunk;
     }
@@ -3901,6 +3937,30 @@ static void test_v2_all_sound_off_immediate(void)
     m4a_driver_destroy(drv);
 }
 
+/* Give hand-authored chip events explicit cycle ranges and stable order. */
+static uint64_t test_gba_cycles_for_host_frames(uint64_t frames, uint32_t host_rate)
+{
+    return frames * M4A_GBA_CYCLES_PER_SECOND / host_rate;
+}
+
+static void test_set_cycle_batch_range(M4ARegWriteBatch* batch, uint64_t begin_cycle, uint64_t end_cycle)
+{
+    batch->begin_cycle = begin_cycle;
+    batch->end_cycle = end_cycle;
+    M4ARegWrite* events = (M4ARegWrite*)batch->events;
+    uint64_t previous_cycle = 0;
+    uint32_t order = 0;
+    for (size_t i = 0; i < batch->count; i++)
+    {
+        if (i != 0 && events[i].cycle == previous_cycle)
+            order++;
+        else
+            order = 0;
+        events[i].order = order;
+        previous_cycle = batch->events[i].cycle;
+    }
+}
+
 /* ---- Chip-only canned-event tests.  Construct M4ARegWriteBatch by hand and
  * feed directly to hw_audio_render_events.  Per plan §10 step 4 these are
  * the right granularity for chip-side parity work without booting the
@@ -3911,7 +3971,7 @@ static void test_hw_psg_frame_sequencer_init_convention(void)
     printf("Testing hw_psg frame sequencer: post-m4a init first tick dispatches step 0...\n");
 
     HwPsgSynth psg;
-    float sq1[256], sq2[256], wave[256], noise[256];
+    uint8_t sq1[256], sq2[256], wave[256], noise[256];
     HwPsgFrameSequencerDebug dbg;
 
     hw_psg_init(&psg, 131072.0f);
@@ -3952,9 +4012,9 @@ static void test_hw_psg_hardware_envelope_steps_at_64_hz(void)
     hw_psg_init(&psg, 131072.0f);
 
     M4ARegWrite attack[] = {
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0x2A}, /* initial 2, increase, pace 2 */
-        {0, M4A_REG_NR24, 0x80},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0x2A, 0}, /* initial 2, increase, pace 2 */
+        {0, M4A_REG_NR24, 0x80, 0},
     };
     for (size_t i = 0; i < sizeof(attack) / sizeof(attack[0]); i++)
         hw_psg_apply_event(&psg, &attack[i]);
@@ -3966,8 +4026,8 @@ static void test_hw_psg_hardware_envelope_steps_at_64_hz(void)
     ASSERT_EQ(psg.sq2_envelope.current_volume, 3, "pace 2 increments on the second envelope clock");
 
     M4ARegWrite decay[] = {
-        {0, M4A_REG_NR22, 0x81}, /* initial 8, decrease, pace 1 */
-        {0, M4A_REG_NR24, 0x80},
+        {0, M4A_REG_NR22, 0x81, 0}, /* initial 8, decrease, pace 1 */
+        {0, M4A_REG_NR24, 0x80, 0},
     };
     for (size_t i = 0; i < sizeof(decay) / sizeof(decay[0]); i++)
         hw_psg_apply_event(&psg, &decay[i]);
@@ -4027,12 +4087,12 @@ static void test_hw_psg_frame_sequencer_rate_continuity(void)
 
 static void test_hw_psg_frame_sequencer_nr52_power_cycle(void)
 {
-    printf("Testing hw_psg frame sequencer: NR52 off-to-on follows mGBA step 0 convention...\n");
+    printf("Testing hw_psg frame sequencer: NR52 off-to-on retains the absolute event epoch...\n");
 
     HwPsgSynth psg;
     HwPsgFrameSequencerDebug dbg;
-    M4ARegWrite off = {0, M4A_REG_NR52, 0x00};
-    M4ARegWrite on = {0, M4A_REG_NR52, 0x80};
+    M4ARegWrite off = {0, M4A_REG_NR52, 0x00, 0};
+    M4ARegWrite on = {0, M4A_REG_NR52, 0x80, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_render(&psg, NULL, NULL, NULL, NULL, 2048);
@@ -4041,21 +4101,21 @@ static void test_hw_psg_frame_sequencer_nr52_power_cycle(void)
     hw_psg_render(&psg, NULL, NULL, NULL, NULL, 256);
     hw_psg_get_frame_sequencer_debug(&psg, &dbg);
 
-    ASSERT_EQ(dbg.frame_ticks, 1, "NR52 off-to-on resets frame tick counters");
-    ASSERT_EQ(dbg.frame_step, 0, "mGBA NR52 re-enable sets frame=7, first tick dispatches step 0");
-    ASSERT_EQ(dbg.length_ticks, 1, "step 0 clocks length after NR52 re-enable");
-    ASSERT_EQ(dbg.sweep_ticks, 0, "step 0 does not clock sweep");
-    ASSERT_EQ(dbg.envelope_ticks, 0, "step 0 does not clock envelope");
+    ASSERT_EQ(dbg.frame_ticks, 9, "NR52 off-to-on preserves prior frame event counts");
+    ASSERT_EQ(dbg.frame_step, 0, "mGBA NR52 re-enable sets frame=7, then the next absolute event dispatches step 0");
+    ASSERT_EQ(dbg.length_ticks, 5, "the next absolute step 0 adds one length clock after re-enable");
+    ASSERT_EQ(dbg.sweep_ticks, 2, "step 0 preserves prior sweep clocks without adding one");
+    ASSERT_EQ(dbg.envelope_ticks, 1, "step 0 preserves prior envelope clocks without adding one");
 }
 
 static void test_hw_psg_frame_sequencer_disabled_does_not_advance(void)
 {
-    printf("Testing hw_psg frame sequencer: disabled master stays silent and does not advance...\n");
+    printf("Testing hw_psg frame sequencer: disabled master stays silent across absolute events...\n");
 
     HwPsgSynth psg;
-    float sq1[512], sq2[512], wave[512], noise[512];
+    uint8_t sq1[512], sq2[512], wave[512], noise[512];
     HwPsgFrameSequencerDebug dbg;
-    M4ARegWrite off = {0, M4A_REG_NR52, 0x00};
+    M4ARegWrite off = {0, M4A_REG_NR52, 0x00, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &off);
@@ -4069,14 +4129,14 @@ static void test_hw_psg_frame_sequencer_disabled_does_not_advance(void)
     bool silent = true;
     for (int i = 0; i < 512; i++)
     {
-        if (sq1[i] != 0.0f || sq2[i] != 0.0f || wave[i] != 0.0f || noise[i] != 0.0f)
+        if (sq1[i] != 0 || sq2[i] != 0 || wave[i] != 0 || noise[i] != 0)
         {
             silent = false;
             break;
         }
     }
     ASSERT(silent, "NR52 disabled render zeroes all direct PSG outputs");
-    ASSERT_EQ(dbg.frame_ticks, 0, "NR52 disabled render does not advance frame sequencer");
+    ASSERT_EQ(dbg.frame_ticks, 0, "NR52 disabled render crosses frame events without dispatching them");
     ASSERT_EQ(dbg.frame_step, 7, "NR52 disabled state holds mGBA re-enable frame seed");
 }
 
@@ -4086,7 +4146,7 @@ static void test_hw_psg_frame_sequencer_nr52_enabled_write_no_reset(void)
 
     HwPsgSynth psg;
     HwPsgFrameSequencerDebug before, after;
-    M4ARegWrite on = {0, M4A_REG_NR52, 0x80};
+    M4ARegWrite on = {0, M4A_REG_NR52, 0x80, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_render(&psg, NULL, NULL, NULL, NULL, 384);
@@ -4108,7 +4168,7 @@ static void test_hw_psg_frame_sequencer_nr52_disabled_write_stable(void)
 
     HwPsgSynth psg;
     HwPsgFrameSequencerDebug before, after;
-    M4ARegWrite off = {0, M4A_REG_NR52, 0x00};
+    M4ARegWrite off = {0, M4A_REG_NR52, 0x00, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_render(&psg, NULL, NULL, NULL, NULL, 384);
@@ -4132,11 +4192,11 @@ static void test_hw_psg_length_counters_one_step_expiry(void)
     {
         HwPsgSynth psg;
         M4ARegWrite ev[] = {
-            {0, M4A_REG_NR52, 0x80},
-            {0, M4A_REG_NR21, 0x80 | 63u},
-            {0, M4A_REG_NR22, 0xF0},
-            {0, M4A_REG_NR23, 2040 & 0xFF},
-            {0, M4A_REG_NR24, 0x80 | 0x40 | ((2040 >> 8) & 7)},
+            {0, M4A_REG_NR52, 0x80, 0},
+            {0, M4A_REG_NR21, 0x80 | 63u, 0},
+            {0, M4A_REG_NR22, 0xF0, 0},
+            {0, M4A_REG_NR23, 2040 & 0xFF, 0},
+            {0, M4A_REG_NR24, 0x80 | 0x40 | ((2040 >> 8) & 7), 0},
         };
 
         hw_psg_init(&psg, 131072.0f);
@@ -4152,18 +4212,18 @@ static void test_hw_psg_length_counters_one_step_expiry(void)
     {
         HwPsgSynth psg;
         M4ARegWrite ev[] = {
-            {0, M4A_REG_NR52, 0x80},
-            {0, M4A_REG_NR30, 0x80},
-            {0, M4A_REG_NR31, 255},
-            {0, M4A_REG_NR32, 0x20},
-            {0, M4A_REG_NR33, 2040 & 0xFF},
-            {0, M4A_REG_NR34, 0x80 | 0x40 | ((2040 >> 8) & 7)},
+            {0, M4A_REG_NR52, 0x80, 0},
+            {0, M4A_REG_NR30, 0x80, 0},
+            {0, M4A_REG_NR31, 255, 0},
+            {0, M4A_REG_NR32, 0x20, 0},
+            {0, M4A_REG_NR33, 2040 & 0xFF, 0},
+            {0, M4A_REG_NR34, 0x80 | 0x40 | ((2040 >> 8) & 7), 0},
         };
 
         hw_psg_init(&psg, 131072.0f);
         for (uint32_t i = 0; i < 16; i++)
         {
-            M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | 0xFFu};
+            M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | 0xFFu, 0};
             hw_psg_apply_event(&psg, &wr);
         }
         for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
@@ -4178,11 +4238,11 @@ static void test_hw_psg_length_counters_one_step_expiry(void)
     {
         HwPsgSynth psg;
         M4ARegWrite ev[] = {
-            {0, M4A_REG_NR52, 0x80},
-            {0, M4A_REG_NR41, 63},
-            {0, M4A_REG_NR42, 0xF0},
-            {0, M4A_REG_NR43, 0x00},
-            {0, M4A_REG_NR44, 0x80 | 0x40},
+            {0, M4A_REG_NR52, 0x80, 0},
+            {0, M4A_REG_NR41, 63, 0},
+            {0, M4A_REG_NR42, 0xF0, 0},
+            {0, M4A_REG_NR43, 0x00, 0},
+            {0, M4A_REG_NR44, 0x80 | 0x40, 0},
         };
 
         hw_psg_init(&psg, 131072.0f);
@@ -4201,8 +4261,8 @@ static void test_hw_psg_sq1_sweep_nr10_decode(void)
     printf("Testing hw_psg sq1 sweep: NR10 decode...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite nr10_zero_time = {0, M4A_REG_NR10, 0x03};
-    M4ARegWrite nr10_decrease = {0, M4A_REG_NR10, 0x6D};
+    M4ARegWrite nr10_zero_time = {0, M4A_REG_NR10, 0x03, 0};
+    M4ARegWrite nr10_decrease = {0, M4A_REG_NR10, 0x6D, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &nr10_zero_time);
@@ -4224,10 +4284,10 @@ static void test_hw_psg_sq1_sweep_trigger_initializes_shadow(void)
     printf("Testing hw_psg sq1 sweep: trigger initializes shadow state...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite nr10 = {0, M4A_REG_NR10, 0x2C};
-    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0};
-    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00};
-    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84};
+    M4ARegWrite nr10 = {0, M4A_REG_NR10, 0x2C, 0};
+    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0, 0};
+    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00, 0};
+    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &nr10);
@@ -4248,10 +4308,10 @@ static void test_hw_psg_sq1_negative_sweep_commits_on_frame_step(void)
     printf("Testing hw_psg sq1 sweep: negative sweep commits on frame step 6...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite nr10 = {0, M4A_REG_NR10, 0x2C};
-    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0};
-    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00};
-    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84};
+    M4ARegWrite nr10 = {0, M4A_REG_NR10, 0x2C, 0};
+    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0, 0};
+    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00, 0};
+    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &nr10);
@@ -4275,11 +4335,11 @@ static void test_hw_psg_sq1_negative_direction_change_quirk(void)
     printf("Testing hw_psg sq1 sweep: negative-to-positive direction change disables SQ1...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite nr10_neg = {0, M4A_REG_NR10, 0x2C};
-    M4ARegWrite nr10_pos = {0, M4A_REG_NR10, 0x20};
-    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0};
-    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00};
-    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84};
+    M4ARegWrite nr10_neg = {0, M4A_REG_NR10, 0x2C, 0};
+    M4ARegWrite nr10_pos = {0, M4A_REG_NR10, 0x20, 0};
+    M4ARegWrite nr12 = {0, M4A_REG_NR12, 0xF0, 0};
+    M4ARegWrite nr13 = {0, M4A_REG_NR13, 0x00, 0};
+    M4ARegWrite nr14 = {0, M4A_REG_NR14, 0x84, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &nr10_neg);
@@ -4300,9 +4360,9 @@ static void test_hw_psg_sq1_trigger_uses_dac_enabled_state(void)
     printf("Testing hw_psg sq1 sweep: NR14 trigger uses DAC-enabled state...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite nr12_dac_on = {0, M4A_REG_NR12, 0x08};
-    M4ARegWrite nr12_dac_off = {0, M4A_REG_NR12, 0x00};
-    M4ARegWrite nr14_trigger = {0, M4A_REG_NR14, 0x80};
+    M4ARegWrite nr12_dac_on = {0, M4A_REG_NR12, 0x08, 0};
+    M4ARegWrite nr12_dac_off = {0, M4A_REG_NR12, 0x00, 0};
+    M4ARegWrite nr14_trigger = {0, M4A_REG_NR14, 0x80, 0};
 
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &nr12_dac_on);
@@ -4322,15 +4382,15 @@ static void test_hw_psg_nr52_power_cycle_preserves_wave_ram(void)
     printf("Testing hw_psg: NR52 power cycle preserves wave RAM...\n");
 
     HwPsgSynth psg;
-    M4ARegWrite off = {0, M4A_REG_NR52, 0x00};
-    M4ARegWrite on = {0, M4A_REG_NR52, 0x80};
+    M4ARegWrite off = {0, M4A_REG_NR52, 0x00, 0};
+    M4ARegWrite on = {0, M4A_REG_NR52, 0x80, 0};
 
-    M4ARegWrite select_opposite_bank = {0, M4A_REG_NR30, 0x40};
+    M4ARegWrite select_opposite_bank = {0, M4A_REG_NR30, 0x40, 0};
     hw_psg_init(&psg, 131072.0f);
     hw_psg_apply_event(&psg, &select_opposite_bank);
     for (uint32_t i = 0; i < 16; i++)
     {
-        M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | (uint8_t)(0xA0u | i)};
+        M4ARegWrite wr = {0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | (uint8_t)(0xA0u | i), 0};
         hw_psg_apply_event(&psg, &wr);
     }
     hw_psg_apply_event(&psg, &off);
@@ -4368,22 +4428,22 @@ static void test_hw_psg_square_duty_phase_matches_mgba(void)
         hw_psg_init(&psg, 131072.0f);
 
         M4ARegWrite ev[] = {
-            {0, M4A_REG_NR52, 0x80},
-            {0, M4A_REG_NR21, (uint32_t)duty << 6},
-            {0, M4A_REG_NR22, 0xF8},
-            {0, M4A_REG_NR23, 2040 & 0xFF},
-            {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7)},
+            {0, M4A_REG_NR52, 0x80, 0},
+            {0, M4A_REG_NR21, (uint32_t)duty << 6, 0},
+            {0, M4A_REG_NR22, 0xF8, 0},
+            {0, M4A_REG_NR23, 2040 & 0xFF, 0},
+            {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7), 0},
         };
         for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
             hw_psg_apply_event(&psg, &ev[i]);
 
-        float sq2[8];
+        uint8_t sq2[8];
         hw_psg_render(&psg, NULL, sq2, NULL, NULL, 8);
 
         for (int i = 0; i < 8; i++)
         {
-            float want = expected[duty][i] ? 1.0f : 0.0f;
-            ASSERT_NEAR(sq2[i], want, 0.00001f, "SQ2 duty phase sample matches mGBA");
+            uint8_t want = expected[duty][i] ? 15 : 0;
+            ASSERT_EQ(sq2[i], want, "SQ2 duty phase sample matches mGBA");
         }
     }
 }
@@ -4396,56 +4456,55 @@ static void test_hw_psg_square_duty_advances_while_silent(void)
     HwPsgSynth psg;
     hw_psg_init(&psg, 65536.0f);
 
-    float silent[128];
+    uint8_t silent[128];
     hw_psg_render(&psg, NULL, silent, NULL, NULL, 128);
 
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR21, 0x00},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 2040 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7)},
+        {0, M4A_REG_NR21, 0x00, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 2040 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((2040 >> 8) & 7), 0},
     };
     for (size_t i = 0; i < sizeof(ev) / sizeof(ev[0]); i++)
         hw_psg_apply_event(&psg, &ev[i]);
 
-    float first;
+    uint8_t first;
     hw_psg_render(&psg, NULL, &first, NULL, NULL, 1);
 
-    ASSERT_NEAR(first, 0.0f, 0.00001f, "silent elapsed time advances duty index before trigger");
+    ASSERT_EQ(first, 0, "silent elapsed time advances duty index before trigger");
 }
 
-/* Locks noise trigger and shift behavior to the linked mGBA 0.10.5 reference. */
+/* Locks GBA-mode noise trigger and feedback behavior to pinned mGBA. */
 static void test_hw_psg_noise_sequence_matches_mgba_0_10_5(void)
 {
     printf("Testing hw_psg noise sequence matches mGBA 0.10.5...\n");
 
     static const char* expected[] = {
-        "11111111111111000000000000001000",
-        "11111100000010000011000010100011",
+        "11111111111111011111111111110011",
+        "11111101111100111101011100001101",
     };
-    static const uint16_t initialLfsr[] = {0x7FFFu, 0x007Fu};
-
+    static const uint16_t initialLfsr[] = {0x0000u, 0x0000u};
     for (int width = 0; width < 2; width++)
     {
         HwPsgSynth psg;
         hw_psg_init(&psg, 524288.0f);
 
         M4ARegWrite events[] = {
-            {0, M4A_REG_NR42, 0xF8},
-            {0, M4A_REG_NR43, width ? 0x08u : 0x00u},
-            {0, M4A_REG_NR44, 0x80},
+            {0, M4A_REG_NR42, 0xF8, 0},
+            {0, M4A_REG_NR43, width ? 0x08u : 0x00u, 0},
+            {0, M4A_REG_NR44, 0x80, 0},
         };
         for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++)
             hw_psg_apply_event(&psg, &events[i]);
 
         ASSERT_EQ(psg.noise_lfsr, initialLfsr[width], "NR44 trigger resets noise LFSR like mGBA 0.10.5");
 
-        float noise[32];
+        uint8_t noise[32];
         hw_psg_render(&psg, NULL, NULL, NULL, noise, 32);
         for (int i = 0; i < 32; i++)
         {
-            float want = expected[width][i] == '1' ? 1.0f : 0.0f;
-            ASSERT_NEAR(noise[i], want, 0.00001f, "noise LFSR sample matches mGBA 0.10.5");
+            uint8_t want = expected[width][i] == '1' ? 15 : 0;
+            ASSERT_EQ(noise[i], want, "noise LFSR sample matches mGBA 0.10.5");
         }
     }
 }
@@ -4460,14 +4519,14 @@ static void test_chip_canned_square_audible(void)
      * routed to both sides, then trigger sq2 at freq word 1700 (50%
      * duty, env volume 15). */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},                     /* master enable */
-        {0, M4A_REG_NR50, 0x77},                     /* master vol max both */
-        {0, M4A_REG_NR51, 0x22},                     /* sq2 → both */
-        {0, M4A_REG_SOUNDCNT_H, 0x02},               /* PSG vol = 100% */
-        {0, M4A_REG_NR21, 0x80},                     /* duty 50% (bit7) */
-        {0, M4A_REG_NR22, 0xF8},                     /* env vol 15, dir+, pace 0 */
-        {0, M4A_REG_NR23, 1700 & 0xFF},              /* freq lo */
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)}, /* trigger + freq hi */
+        {0, M4A_REG_NR52, 0x80, 0},                     /* master enable */
+        {0, M4A_REG_NR50, 0x77, 0},                     /* master vol max both */
+        {0, M4A_REG_NR51, 0x22, 0},                     /* sq2 → both */
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},               /* PSG vol = 100% */
+        {0, M4A_REG_NR21, 0x80, 0},                     /* duty 50% (bit7) */
+        {0, M4A_REG_NR22, 0xF8, 0},                     /* env vol 15, dir+, pace 0 */
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},              /* freq lo */
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0}, /* trigger + freq hi */
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4475,8 +4534,9 @@ static void test_chip_canned_square_audible(void)
     {
         N = 4096
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     float peak = 0.0f;
     int signChanges = 0;
@@ -4505,14 +4565,14 @@ static void test_chip_output_preserves_dc(void)
 
     HwAudio* hw = hw_audio_create(65536.0f);
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0xC0}, /* 75% duty has a positive raw-DAC mean */
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1984 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1984 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0xC0, 0}, /* 75% duty has a positive raw-DAC mean */
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1984 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1984 >> 8) & 7), 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4521,8 +4581,9 @@ static void test_chip_output_preserves_dc(void)
         N = 8192,
         WINDOW = 2048
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 65536));
     float L[N], R[N];
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     double mean = 0.0;
     for (int i = N - WINDOW; i < N; i++)
@@ -4541,9 +4602,9 @@ static void test_hw_resample_matches_mgba_sinc_impulse(void)
     static const int16_t expected[] = {
         0, 0, 0, 0, 0, 0, 0, -60, -776, -1217, 2927, 5923, 7888, 760, 5929, -687, 3460, -837, 347, -314, 0, 0, 0, 0,
     };
-    float input[24] = {0};
+    int16_t input[24] = {0};
     float output[24];
-    input[8] = 0.5f;
+    input[8] = 16384;
 
     HwResample resample;
     hw_resample_init(&resample, 32768.0, 48000.0);
@@ -4564,16 +4625,16 @@ static void test_chip_canned_master_disable_silences(void)
     /* First arm sq2, then disable master.  Output should go silent
      * regardless of channel state. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
         /* Disable master halfway through the render. */
-        {2048, M4A_REG_NR52, 0x00},
+        {2048, M4A_REG_NR52, 0x00, 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4582,7 +4643,9 @@ static void test_chip_canned_master_disable_silences(void)
         N = 8192
     };
     float L[N], R[N];
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    ev[8].cycle = test_gba_cycles_for_host_frames(2048, 44100);
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     /* First half: signal; after disable the sinc kernel's short tail must
      * decay to silence. A few dozen host samples past the event boundary
@@ -4620,20 +4683,19 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
     printf("Testing chip-only: after sq2 playback, empty blocks stay silent...\n");
 
     HwAudio* hw = hw_audio_create(44100.0f);
-
     M4ARegWrite start[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
     M4ARegWriteBatch start_batch = {.events = start, .count = sizeof(start) / sizeof(start[0])};
     M4ARegWrite stop[] = {
-        {0, M4A_REG_NR52, 0x00},
+        {0, M4A_REG_NR52, 0x00, 0},
     };
     M4ARegWriteBatch stop_batch = {.events = stop, .count = sizeof(stop) / sizeof(stop[0])};
     M4ARegWriteBatch empty = {.events = NULL, .count = 0};
@@ -4645,12 +4707,25 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
         SILENT_CHUNKS = 256
     };
     float L[CHUNK], R[CHUNK];
+    uint64_t cycle = 0;
+    uint64_t next_cycle = cycle + test_gba_cycles_for_host_frames(CHUNK, 44100);
 
-    hw_audio_render_events(hw, &start_batch, NULL, L, R, CHUNK);
+    test_set_cycle_batch_range(&start_batch, cycle, next_cycle);
+    hw_audio_render_events(hw, &start_batch, L, R, CHUNK);
+    cycle = next_cycle;
     for (int chunk_i = 1; chunk_i < PLAY_CHUNKS; chunk_i++)
-        hw_audio_render_events(hw, &empty, NULL, L, R, CHUNK);
+    {
+        next_cycle = cycle + test_gba_cycles_for_host_frames(CHUNK, 44100);
+        test_set_cycle_batch_range(&empty, cycle, next_cycle);
+        hw_audio_render_events(hw, &empty, L, R, CHUNK);
+        cycle = next_cycle;
+    }
 
-    hw_audio_render_events(hw, &stop_batch, NULL, L, R, CHUNK);
+    stop[0].cycle = cycle;
+    next_cycle = cycle + test_gba_cycles_for_host_frames(CHUNK, 44100);
+    test_set_cycle_batch_range(&stop_batch, cycle, next_cycle);
+    hw_audio_render_events(hw, &stop_batch, L, R, CHUNK);
+    cycle = next_cycle;
 
     float worst = 0.0f;
     int worst_chunk = -1;
@@ -4662,10 +4737,13 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
             L[i] = 123.0f;
             R[i] = -123.0f;
         }
-        hw_audio_render_events(hw, &empty, NULL, L, R, CHUNK);
+        next_cycle = cycle + test_gba_cycles_for_host_frames(CHUNK, 44100);
+        test_set_cycle_batch_range(&empty, cycle, next_cycle);
+        hw_audio_render_events(hw, &empty, L, R, CHUNK);
+        cycle = next_cycle;
 
         if (chunk_i < 32)
-            continue; /* allow mGBA's 511/512 frontend pole to decay */
+            continue;
 
         for (int i = 0; i < CHUNK; i++)
         {
@@ -4701,14 +4779,14 @@ static void test_chip_canned_pan_routing(void)
 
     /* sq2 routed to LEFT only (NR51 bit 5 set, bit 1 clear). */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x20}, /* sq2 → L only */
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x20, 0}, /* sq2 → L only */
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4716,8 +4794,9 @@ static void test_chip_canned_pan_routing(void)
     {
         N = 2048
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     float peakL = 0.0f, peakR = 0.0f;
     for (int i = 0; i < N; i++)
@@ -4749,25 +4828,26 @@ static void test_chip_canned_wave_audible(void)
      * enable bank-zero playback at full volume. */
     M4ARegWrite ev[40];
     size_t n = 0;
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR52, 0x80};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR50, 0x77};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR51, 0x44}; /* wave → both */
-    ev[n++] = (M4ARegWrite){0, M4A_REG_SOUNDCNT_H, 0x02};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x40}; /* bank 1, DAC off */
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR52, 0x80, 0};
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR50, 0x77, 0};
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR51, 0x44, 0}; /* wave → both */
+    ev[n++] = (M4ARegWrite){0, M4A_REG_SOUNDCNT_H, 0x02, 0};
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x40, 0}; /* bank 1, DAC off */
     for (uint32_t i = 0; i < 16; i++)
-        ev[n++] = (M4ARegWrite){0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | ((i & 1) ? 0x00 : 0xFF)};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x80}; /* DAC on */
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR32, 0x20}; /* 100% */
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR33, 1500 & 0xFF};
-    ev[n++] = (M4ARegWrite){0, M4A_REG_NR34, 0x80 | ((1500 >> 8) & 7)};
+        ev[n++] = (M4ARegWrite){0, M4A_REG_WAVE_RAM_BYTE, (i << 8) | ((i & 1) ? 0x00 : 0xFF), 0};
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR30, 0x80, 0}; /* DAC on */
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR32, 0x20, 0}; /* 100% */
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR33, 1500 & 0xFF, 0};
+    ev[n++] = (M4ARegWrite){0, M4A_REG_NR34, 0x80 | ((1500 >> 8) & 7), 0};
     M4ARegWriteBatch batch = {.events = ev, .count = n};
 
     enum
     {
         N = 8192
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     float peak = 0.0f;
     for (int i = 0; i < N; i++)
@@ -4783,42 +4863,28 @@ static void test_chip_canned_wave_audible(void)
     hw_audio_destroy(hw);
 }
 
-/* SOUNDCNT_H DMA routing: handcraft a ring with non-zero ring_a only,
- * and a SOUNDCNT_H event setting "DMA A → left only".  Output L should
- * carry signal; R should be near zero. */
+/* SOUNDCNT_H DMA routing applies to the held byte selected by TIMER_0. */
 static void test_chip_canned_pcm_routing(void)
 {
     printf("Testing chip-only: SOUNDCNT_H routes DMA A to L only...\n");
 
     HwAudio* hw = hw_audio_create(44100.0f);
-
-    /* Build a fake M4APcmRing on the stack: 100% saw on ring_a, 0 on
-     * ring_b, write_cursor far ahead, pcm_rate_hz set. */
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = (int8_t)((i * 4) - 127);
-        ring.ring_b[i] = 0;
-    }
-
-    /* SOUNDCNT_H bit 9 = DMA A → left enable; bits 8/12/13 cleared
-     * means R disabled and DMA B disabled both sides. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_SOUNDCNT_H, (1u << 9) | (1u << 2)}, /* A → L only, A vol 100% */
+        {0, M4A_REG_SOUNDCNT_H, (1u << 9) | (1u << 2), 0}, /* A → L only, A vol 100% */
+        {0, M4A_REG_FIFO_A, 0x0000007Fu, 1},
+        {0, M4A_REG_TIMER_0, 0, 2},
     };
-    M4ARegWriteBatch batch = {.events = ev, .count = 1};
+    M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
     enum
     {
         N = 2048
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, &ring, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     float peakL = 0.0f, peakR = 0.0f;
     for (int i = 0; i < N; i++)
@@ -4851,14 +4917,14 @@ static void test_chip_canned_noise_audible(void)
      * (yields 524288/4/4 ≈ 32768 Hz LFSR rate, ~0.74 clocks per host
      * sample at 44100 Hz — many sign changes within 4096 frames). */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},       /* master enable */
-        {0, M4A_REG_NR50, 0x77},       /* master vol max both */
-        {0, M4A_REG_NR51, 0x88},       /* noise → both (bit 3) */
-        {0, M4A_REG_SOUNDCNT_H, 0x02}, /* PSG vol = 100% */
-        {0, M4A_REG_NR41, 0x00},       /* length-load (irrelevant) */
-        {0, M4A_REG_NR42, 0xF8},       /* env vol 15, dir+, pace 0 */
-        {0, M4A_REG_NR43, 0x14},       /* shift=1, w=15-bit, div=4 */
-        {0, M4A_REG_NR44, 0x80},       /* trigger */
+        {0, M4A_REG_NR52, 0x80, 0},       /* master enable */
+        {0, M4A_REG_NR50, 0x77, 0},       /* master vol max both */
+        {0, M4A_REG_NR51, 0x88, 0},       /* noise → both (bit 3) */
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0}, /* PSG vol = 100% */
+        {0, M4A_REG_NR41, 0x00, 0},       /* length-load (irrelevant) */
+        {0, M4A_REG_NR42, 0xF8, 0},       /* env vol 15, dir+, pace 0 */
+        {0, M4A_REG_NR43, 0x14, 0},       /* shift=1, w=15-bit, div=4 */
+        {0, M4A_REG_NR44, 0x80, 0},       /* trigger */
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4866,10 +4932,11 @@ static void test_chip_canned_noise_audible(void)
     {
         N = 4096
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     /* Noise outputs ≈0.3516 at env=15 after the GBA output scale.  Many
      * sign changes per 4096 frames — at ~32768 Hz LFSR rate the LSB
@@ -4902,14 +4969,14 @@ static void test_chip_canned_noise_dac_off_silences(void)
 
     /* Arm noise, then write NR42=0 (top-5-bits clear → DAC off) midway. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x88},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR42, 0xF8},
-        {0, M4A_REG_NR43, 0x14},
-        {0, M4A_REG_NR44, 0x80},
-        {2048, M4A_REG_NR42, 0x00}, /* DAC off */
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x88, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR42, 0xF8, 0},
+        {0, M4A_REG_NR43, 0x14, 0},
+        {0, M4A_REG_NR44, 0x80, 0},
+        {2048, M4A_REG_NR42, 0x00, 0}, /* DAC off */
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4917,10 +4984,12 @@ static void test_chip_canned_noise_dac_off_silences(void)
     {
         N = 8192
     };
+    ev[7].cycle = test_gba_cycles_for_host_frames(2048, 44100);
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     /* First half: signal; the sinc kernel's short tail decays after the
      * DAC turns off. See test_chip_canned_master_disable_silences for
@@ -4979,8 +5048,8 @@ static void test_chip_canned_soundbias_dc_offset(void)
      * signal) and assert the output stays at 0 ± kernel float
      * precision. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x00},
-        {0, M4A_REG_SOUNDBIAS, 0x280},
+        {0, M4A_REG_NR52, 0x00, 0},
+        {0, M4A_REG_SOUNDBIAS, 0x280, 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -4988,13 +5057,14 @@ static void test_chip_canned_soundbias_dc_offset(void)
     {
         N = 256
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     /* Expect every post-warmup sample at 0 within kernel precision.
-     * The sinc source buffer starts zero-filled, so this is zero-in-zero-out. */
+     * The empty sinc stream's unavailable lookahead reads as zero. */
     const float dc_eps = 5e-5f;
     const int warmup_host = 32;
     bool allOnTarget = true;
@@ -5029,20 +5099,20 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
      * already 240 counts at these register settings, so SQ1 and SQ2
      * exercise the high-side clip whenever either channel is high. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x30},       /* sq1+sq2 → L only */
-        {0, M4A_REG_SOUNDCNT_H, 0x02}, /* PSG vol 100% */
-        {0, M4A_REG_SOUNDBIAS, 0x340},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x30, 0},       /* sq1+sq2 → L only */
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0}, /* PSG vol 100% */
+        {0, M4A_REG_SOUNDBIAS, 0x340, 0},
         /* SQ1: same freq + duty as SQ2 so both are high simultaneously. */
-        {0, M4A_REG_NR11, 0x80}, /* 50% duty */
-        {0, M4A_REG_NR12, 0xF8}, /* env_vol 15 */
-        {0, M4A_REG_NR13, 1700 & 0xFF},
-        {0, M4A_REG_NR14, 0x80 | ((1700 >> 8) & 7)},
-        {0, M4A_REG_NR21, 0x80}, /* SQ2 50% duty */
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR11, 0x80, 0}, /* 50% duty */
+        {0, M4A_REG_NR12, 0xF8, 0}, /* env_vol 15 */
+        {0, M4A_REG_NR13, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR14, 0x80 | ((1700 >> 8) & 7), 0},
+        {0, M4A_REG_NR21, 0x80, 0}, /* SQ2 50% duty */
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -5050,10 +5120,11 @@ static void test_chip_canned_soundbias_clip_asymmetric(void)
     {
         N = 4096
     };
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     float L[N], R[N];
     memset(L, 0, sizeof(L));
     memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, NULL, L, R, N);
+    hw_audio_render_events(hw, &batch, L, R, N);
 
     /* Output expectations:
      *   clip_top_counts = 0x3FF - 0x340 = 191
@@ -5106,15 +5177,15 @@ static void test_chip_canned_soundcnth_psg_vol_codes(void)
     {
         HwAudio* hw = hw_audio_create(44100.0f);
         M4ARegWrite ev[] = {
-            {0, M4A_REG_NR52, 0x80},
-            {0, M4A_REG_NR50, 0x77},
-            {0, M4A_REG_NR51, 0x20}, /* sq2 → L */
-            {0, M4A_REG_SOUNDCNT_H, codes[k]},
-            {0, M4A_REG_SOUNDBIAS, 0x200},
-            {0, M4A_REG_NR21, 0x80},
-            {0, M4A_REG_NR22, 0x78},
-            {0, M4A_REG_NR23, 1700 & 0xFF},
-            {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+            {0, M4A_REG_NR52, 0x80, 0},
+            {0, M4A_REG_NR50, 0x77, 0},
+            {0, M4A_REG_NR51, 0x20, 0}, /* sq2 → L */
+            {0, M4A_REG_SOUNDCNT_H, codes[k], 0},
+            {0, M4A_REG_SOUNDBIAS, 0x200, 0},
+            {0, M4A_REG_NR21, 0x80, 0},
+            {0, M4A_REG_NR22, 0x78, 0},
+            {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+            {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
         };
         M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -5122,10 +5193,11 @@ static void test_chip_canned_soundcnth_psg_vol_codes(void)
         {
             N = 4096
         };
+        test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
         float L[N], R[N];
         memset(L, 0, sizeof(L));
         memset(R, 0, sizeof(R));
-        hw_audio_render_events(hw, &batch, NULL, L, R, N);
+        hw_audio_render_events(hw, &batch, L, R, N);
 
         float peak = 0.0f;
         for (int i = 0; i < N; i++)
@@ -5155,17 +5227,6 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
 {
     printf("Testing chip-only: SOUNDCNT_H DMA A vol code 50/100%% scales...\n");
 
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    /* Constant +127 in ring_a maximises DMA A peak; ring_b stays 0. */
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = 127;
-        ring.ring_b[i] = 0;
-    }
-
     /* code=0 → DMA A 50%, code=1 → 100%.  Both with A→L only. */
     const uint16_t cnt_h_code0 = (1u << 9);             /* A→L, A vol 50% */
     const uint16_t cnt_h_code1 = (1u << 9) | (1u << 2); /* A→L, A vol 100% */
@@ -5177,8 +5238,10 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
     {
         HwAudio* hw = hw_audio_create(44100.0f);
         M4ARegWrite ev[] = {
-            {0, M4A_REG_SOUNDCNT_H, cnt_h_codes[k]},
-            {0, M4A_REG_SOUNDBIAS, 0x200},
+            {0, M4A_REG_SOUNDCNT_H, cnt_h_codes[k], 0},
+            {0, M4A_REG_SOUNDBIAS, 0x200, 1},
+            {0, M4A_REG_FIFO_A, 0x7F7F7F7Fu, 2},
+            {0, M4A_REG_TIMER_0, 0, 3},
         };
         M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
 
@@ -5186,10 +5249,11 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
         {
             N = 2048
         };
+        test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
         float L[N], R[N];
         memset(L, 0, sizeof(L));
         memset(R, 0, sizeof(R));
-        hw_audio_render_events(hw, &batch, &ring, L, R, N);
+        hw_audio_render_events(hw, &batch, L, R, N);
 
         float p = 0.0f;
         for (int i = 0; i < N; i++)
@@ -5231,14 +5295,14 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
 static void render_sq2_chunked(HwAudio* hw, float* L, float* R, int frames, int chunk_size)
 {
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
     M4ARegWriteBatch first = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
     M4ARegWriteBatch empty = {.events = NULL, .count = 0};
@@ -5250,8 +5314,11 @@ static void render_sq2_chunked(HwAudio* hw, float* L, float* R, int frames, int 
         int this_chunk = chunk_size;
         if (this_chunk > frames - produced)
             this_chunk = frames - produced;
-        const M4ARegWriteBatch* batch = first_chunk ? &first : &empty;
-        hw_audio_render_events(hw, batch, NULL, L + produced, R + produced, this_chunk);
+        M4ARegWriteBatch batch = first_chunk ? first : empty;
+        test_set_cycle_batch_range(&batch,
+                                   test_gba_cycles_for_host_frames((uint64_t)produced, 44100),
+                                   test_gba_cycles_for_host_frames((uint64_t)(produced + this_chunk), 44100));
+        hw_audio_render_events(hw, &batch, L + produced, R + produced, this_chunk);
         produced += this_chunk;
         first_chunk = false;
     }
@@ -5344,6 +5411,86 @@ static void test_chip_canned_block_size_invariance(void)
     ASSERT(worst_2048 < invar_eps, "block-size 2048 matches full call");
 }
 
+/* Cycle-stamped VBlank, register, and SOUNDBIAS writes must not depend on
+ * the host block partition used to reach them. */
+static void test_chip_canned_cycle_boundary_partition_invariance(void)
+{
+    printf("Testing chip-only: cycle boundary events survive host partitions...\n");
+
+    enum
+    {
+        N = 2048,
+        FIRST_BLOCK = 738,
+        SECOND_BLOCK = 286,
+        INITIAL_EVENTS = 8,
+    };
+    const uint64_t first_end = test_gba_cycles_for_host_frames(FIRST_BLOCK, 44100);
+    const uint64_t second_end = test_gba_cycles_for_host_frames(FIRST_BLOCK + SECOND_BLOCK, 44100);
+    const uint64_t end_cycle = test_gba_cycles_for_host_frames(N, 44100);
+
+    M4ARegWrite all[] = {
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
+        {M4A_VBLANK_CYCLES, M4A_REG_NR51, 0x20, 0},
+        {M4A_VBLANK_CYCLES, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+    };
+    all[10].cycle = second_end;
+    M4ARegWriteBatch all_batch = {.events = all, .count = sizeof(all) / sizeof(all[0])};
+    test_set_cycle_batch_range(&all_batch, 0, end_cycle);
+
+    M4ARegWrite first[INITIAL_EVENTS];
+    memcpy(first, all, sizeof(first));
+    M4ARegWriteBatch first_batch = {.events = first, .count = INITIAL_EVENTS};
+    M4ARegWrite at_vblank[] = {
+        {M4A_VBLANK_CYCLES, M4A_REG_NR51, 0x20, 0},
+        {M4A_VBLANK_CYCLES, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0},
+    };
+    M4ARegWriteBatch middle_batch = {.events = at_vblank, .count = sizeof(at_vblank) / sizeof(at_vblank[0])};
+    M4ARegWrite final_write[] = {{second_end, M4A_REG_NR51, 0x22, 0}};
+    M4ARegWriteBatch final_batch = {.events = final_write, .count = 1};
+    test_set_cycle_batch_range(&first_batch, 0, first_end);
+    test_set_cycle_batch_range(&middle_batch, first_end, second_end);
+    test_set_cycle_batch_range(&final_batch, second_end, end_cycle);
+
+    float one_l[N], one_r[N], partitioned_l[N], partitioned_r[N];
+    HwAudio* one = hw_audio_create(44100.0f);
+    HwAudio* partitioned = hw_audio_create(44100.0f);
+    ASSERT(one != NULL && partitioned != NULL, "cycle boundary HwAudio allocations succeed");
+    if (one && partitioned)
+    {
+        hw_audio_render_events(one, &all_batch, one_l, one_r, N);
+        hw_audio_render_events(partitioned, &first_batch, partitioned_l, partitioned_r, FIRST_BLOCK);
+        hw_audio_render_events(
+            partitioned, &middle_batch, partitioned_l + FIRST_BLOCK, partitioned_r + FIRST_BLOCK, SECOND_BLOCK);
+        hw_audio_render_events(partitioned,
+                               &final_batch,
+                               partitioned_l + FIRST_BLOCK + SECOND_BLOCK,
+                               partitioned_r + FIRST_BLOCK + SECOND_BLOCK,
+                               N - FIRST_BLOCK - SECOND_BLOCK);
+
+        float worst = 0.0f;
+        for (int i = 64; i < N; i++)
+        {
+            float left = fabsf(one_l[i] - partitioned_l[i]);
+            float right = fabsf(one_r[i] - partitioned_r[i]);
+            if (left > worst)
+                worst = left;
+            if (right > worst)
+                worst = right;
+        }
+        ASSERT(worst < 1e-4f, "VBlank/register/SOUNDBIAS boundaries are block-partition invariant");
+    }
+    hw_audio_destroy(one);
+    hw_audio_destroy(partitioned);
+}
+
 static void test_chip_canned_dc_streaming(void)
 {
     printf("Testing chip-only: silent stream stays at 0 across many small calls...\n");
@@ -5356,8 +5503,8 @@ static void test_chip_canned_dc_streaming(void)
      * we're testing is "no per-call discontinuities" — same target,
      * just expressed against 0 instead of a bias-injected DC level. */
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x00},
-        {0, M4A_REG_SOUNDBIAS, 0x280},
+        {0, M4A_REG_NR52, 0x00, 0},
+        {0, M4A_REG_SOUNDBIAS, 0x280, 0},
     };
     M4ARegWriteBatch setup = {.events = ev, .count = 2};
     M4ARegWriteBatch empty = {.events = NULL, .count = 0};
@@ -5383,8 +5530,11 @@ static void test_chip_canned_dc_streaming(void)
 
     for (int chunk_i = 0; chunk_i < NCHUNKS; chunk_i++)
     {
-        const M4ARegWriteBatch* batch = first_chunk ? &setup : &empty;
-        hw_audio_render_events(hw, batch, NULL, L, R, CHUNK);
+        M4ARegWriteBatch batch = first_chunk ? setup : empty;
+        test_set_cycle_batch_range(&batch,
+                                   test_gba_cycles_for_host_frames((uint64_t)chunk_i * CHUNK, 44100),
+                                   test_gba_cycles_for_host_frames((uint64_t)(chunk_i + 1) * CHUNK, 44100));
+        hw_audio_render_events(hw, &batch, L, R, CHUNK);
         first_chunk = false;
         total_produced += CHUNK;
 
@@ -5446,25 +5596,30 @@ static float run_sq2_at_soundbias(uint32_t soundbias, int frames, float* out_L, 
     /* Setup call: apply SOUNDBIAS in isolation.  A single-frame
      * render is enough to trigger the start-of-call rate sync. */
     M4ARegWrite setup_ev[] = {
-        {0, M4A_REG_SOUNDBIAS, soundbias},
+        {0, M4A_REG_SOUNDBIAS, soundbias, 0},
     };
     M4ARegWriteBatch setup = {.events = setup_ev, .count = 1};
     float scratch_l[1], scratch_r[1];
-    hw_audio_render_events(hw, &setup, NULL, scratch_l, scratch_r, 1);
+    const uint64_t setup_end = test_gba_cycles_for_host_frames(1, 44100);
+    test_set_cycle_batch_range(&setup, 0, setup_end);
+    hw_audio_render_events(hw, &setup, scratch_l, scratch_r, 1);
 
     /* Play call: trigger SQ2 + render the actual test signal. */
     M4ARegWrite play_ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
+    for (size_t i = 0; i < sizeof(play_ev) / sizeof(play_ev[0]); i++)
+        play_ev[i].cycle = setup_end;
     M4ARegWriteBatch play = {.events = play_ev, .count = sizeof(play_ev) / sizeof(play_ev[0])};
-    hw_audio_render_events(hw, &play, NULL, out_L, out_R, frames);
+    test_set_cycle_batch_range(&play, setup_end, setup_end + test_gba_cycles_for_host_frames(frames, 44100));
+    hw_audio_render_events(hw, &play, out_L, out_R, frames);
 
     float peak = 0.0f;
     for (int i = 64; i < frames; i++)
@@ -5510,6 +5665,7 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
     printf("Testing chip-only: hw_audio_internal_rate() tracks SOUNDBIAS sampling_cycle...\n");
 
     HwAudio* hw = hw_audio_create(44100.0f);
+    uint64_t transition_cycle = 0;
 
     ASSERT_EQ(hw_audio_internal_rate(hw), 65536, "default sampling_cycle = 1 yields internal 65536 Hz");
 
@@ -5519,12 +5675,18 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
     do                                                                                                                 \
     {                                                                                                                  \
         uint32_t sb_payload = 0x200u | ((uint32_t)(sc_value) << 14);                                                   \
-        M4ARegWrite setup_ev[] = {{0, M4A_REG_SOUNDBIAS, sb_payload}};                                                 \
+        M4ARegWrite setup_ev[] = {{transition_cycle, M4A_REG_SOUNDBIAS, sb_payload, 0}};                               \
         M4ARegWriteBatch setup = {.events = setup_ev, .count = 1};                                                     \
         M4ARegWriteBatch empty = {.events = NULL, .count = 0};                                                         \
         float scratch[1];                                                                                              \
-        hw_audio_render_events(hw, &setup, NULL, scratch, scratch, 1);                                                 \
-        hw_audio_render_events(hw, &empty, NULL, scratch, scratch, 1);                                                 \
+        uint64_t next_cycle = transition_cycle + test_gba_cycles_for_host_frames(1, 44100);                            \
+        test_set_cycle_batch_range(&setup, transition_cycle, next_cycle);                                              \
+        hw_audio_render_events(hw, &setup, scratch, scratch, 1);                                                       \
+        transition_cycle = next_cycle;                                                                                 \
+        next_cycle = transition_cycle + test_gba_cycles_for_host_frames(1, 44100);                                     \
+        test_set_cycle_batch_range(&empty, transition_cycle, next_cycle);                                              \
+        hw_audio_render_events(hw, &empty, scratch, scratch, 1);                                                       \
+        transition_cycle = next_cycle;                                                                                 \
     } while (0)
 
     SOUNDBIAS_TRANSITION(1);
@@ -5546,14 +5708,15 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
      * stream has reached that hardware write, so the chip's rate state must
      * be updated before the call returns. */
     {
-        M4ARegWrite ev[] = {{0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)}};
+        M4ARegWrite ev[] = {{0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0}};
         M4ARegWriteBatch batch = {.events = ev, .count = 1};
         float scratch[1];
         /* Reset to a known state first. */
         hw_audio_destroy(hw);
         hw = hw_audio_create(44100.0f);
         ASSERT_EQ(hw_audio_internal_rate(hw), 65536, "fresh chip starts at 65536");
-        hw_audio_render_events(hw, &batch, NULL, scratch, scratch, 1);
+        test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(1, 44100));
+        hw_audio_render_events(hw, &batch, scratch, scratch, 1);
         ASSERT_EQ(hw_audio_internal_rate(hw), 262144, "mid-call SOUNDBIAS switches rate before return");
     }
 
@@ -5574,30 +5737,36 @@ static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
     float split_L[N] = {0}, split_R[N] = {0};
 
     M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF0},
-        {0, M4A_REG_NR23, 0x00},
-        {0, M4A_REG_NR24, 0x80 | 0x02},
-        {SWITCH_AT, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF0, 0},
+        {0, M4A_REG_NR23, 0x00, 0},
+        {0, M4A_REG_NR24, 0x80 | 0x02, 0},
+        {0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0},
     };
-    M4ARegWriteBatch one_batch = {ev, sizeof(ev) / sizeof(ev[0])};
-    M4ARegWriteBatch start_batch = {ev, (sizeof(ev) / sizeof(ev[0])) - 1};
-    M4ARegWrite switch_ev[] = {{0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14)}};
-    M4ARegWriteBatch switch_batch = {switch_ev, 1};
+    const uint64_t switch_cycle = test_gba_cycles_for_host_frames(SWITCH_AT, 44100);
+    const uint64_t end_cycle = test_gba_cycles_for_host_frames(N, 44100);
+    ev[7].cycle = switch_cycle;
+    M4ARegWriteBatch one_batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
+    M4ARegWriteBatch start_batch = {.events = ev, .count = (sizeof(ev) / sizeof(ev[0])) - 1};
+    M4ARegWrite switch_ev[] = {{switch_cycle, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0}};
+    M4ARegWriteBatch switch_batch = {.events = switch_ev, .count = 1};
+    test_set_cycle_batch_range(&one_batch, 0, end_cycle);
+    test_set_cycle_batch_range(&start_batch, 0, switch_cycle);
+    test_set_cycle_batch_range(&switch_batch, switch_cycle, end_cycle);
 
     HwAudio* one = hw_audio_create(44100.0f);
     ASSERT(one != NULL, "one-call HwAudio allocation succeeds");
-    hw_audio_render_events(one, &one_batch, NULL, one_L, one_R, N);
+    hw_audio_render_events(one, &one_batch, one_L, one_R, N);
     ASSERT_EQ(hw_audio_internal_rate(one), 262144, "one-call render ends at sampling_cycle 3 rate");
     hw_audio_destroy(one);
 
     HwAudio* split = hw_audio_create(44100.0f);
     ASSERT(split != NULL, "split-call HwAudio allocation succeeds");
-    hw_audio_render_events(split, &start_batch, NULL, split_L, split_R, SWITCH_AT);
-    hw_audio_render_events(split, &switch_batch, NULL, split_L + SWITCH_AT, split_R + SWITCH_AT, N - SWITCH_AT);
+    hw_audio_render_events(split, &start_batch, split_L, split_R, SWITCH_AT);
+    hw_audio_render_events(split, &switch_batch, split_L + SWITCH_AT, split_R + SWITCH_AT, N - SWITCH_AT);
     ASSERT_EQ(hw_audio_internal_rate(split), 262144, "split-call render ends at sampling_cycle 3 rate");
     hw_audio_destroy(split);
 
@@ -5616,241 +5785,31 @@ static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
 
 static void test_hw_pcm_soundcnt_h_fifo_reset_bits(void)
 {
-    printf("Testing hw_pcm: SOUNDCNT_H FIFO reset bits clear only the selected FIFO...\n");
+    printf("Testing hw_pcm: FIFO reset clears pointers but keeps its in-flight word...\n");
 
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = 32768.0f;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = 64;
-        ring.ring_b[i] = -64;
-    }
+    HwPcm pcm;
+    hw_pcm_init(&pcm, 0);
+    M4ARegWrite configure = {0, M4A_REG_SOUNDCNT_H, 0x3300u, 0};
+    M4ARegWrite fifo_a = {0, M4A_REG_FIFO_A, 0x00000B07u, 1};
+    M4ARegWrite fifo_b = {0, M4A_REG_FIFO_B, 0x0000160Eu, 2};
+    M4ARegWrite timer = {0, M4A_REG_TIMER_0, 0, 3};
+    M4ARegWrite reset_a = {1, M4A_REG_SOUNDCNT_H, 0x3B00u, 0};
+    int8_t out_a[1] = {0};
+    int8_t out_b[1] = {0};
 
-    for (int pass = 0; pass < 2; pass++)
-    {
-        const bool reset_b = pass != 0;
-        HwPcm pcm;
-        float out_a[1] = {0}, out_b[1] = {0};
-        M4ARegWrite publish = {0, M4A_REG_PCM_PUBLISH, 0};
-        M4ARegWrite reset = {0, M4A_REG_SOUNDCNT_H, reset_b ? 0x8000u : 0x0800u};
+    hw_pcm_apply_event(&pcm, &configure);
+    hw_pcm_apply_event(&pcm, &fifo_a);
+    hw_pcm_apply_event(&pcm, &fifo_b);
+    hw_pcm_apply_event(&pcm, &timer);
+    hw_pcm_render(&pcm, out_a, out_b, 1);
+    ASSERT_EQ(out_a[0], 7, "FIFO A first little-endian byte is held");
+    ASSERT_EQ(out_b[0], 14, "FIFO B first little-endian byte is held");
 
-        hw_pcm_init(&pcm, 32768.0f);
-        hw_pcm_set_quirk_rate(&pcm, 32768);
-        hw_pcm_apply_event(&pcm, &publish);
-        hw_pcm_render(&pcm, &ring, out_a, out_b, 1);
-        ASSERT(out_a[0] != 0.0f, "precondition: FIFO A renders non-zero");
-        ASSERT(out_b[0] != 0.0f, "precondition: FIFO B renders non-zero");
-
-        hw_pcm_apply_event(&pcm, &reset);
-        hw_pcm_render(&pcm, &ring, out_a, out_b, 1);
-        if (reset_b)
-        {
-            ASSERT(out_a[0] != 0.0f, "SOUNDCNT_H bit 15 does not disturb FIFO A");
-            ASSERT_EQ(out_b[0], 0.0f, "SOUNDCNT_H bit 15 clears FIFO B held output");
-        }
-        else
-        {
-            ASSERT_EQ(out_a[0], 0.0f, "SOUNDCNT_H bit 11 clears FIFO A held output");
-            ASSERT(out_b[0] != 0.0f, "SOUNDCNT_H bit 11 does not disturb FIFO B");
-        }
-    }
-}
-
-/* §12 step 5 — two-stage drain regression test.
- *
- * The PCM path is now a two-stage chain: HwDmaToFifo reads from
- * M4APcmRing at pcm_rate (≈13379 Hz), and HwFifoDrain snapshots that
- * FIFO head byte at the SOUNDBIAS-derived quirk_rate (32k/65k/131k/
- * 262k Hz).  For Pokemon Emerald defaults the two stages collapse
- * behaviorally to a single S&H (quirk >> pcm/2), so this test just
- * verifies the pipeline still produces audible, properly-routed PCM.
- *
- * The behavioral edge-cases that DO depend on the split (ROMhacks
- * pushing pcm_rate above quirk_rate / 2, where the quirk-rate S&H
- * acts as a low-pass at quirk Nyquist) are left for §12.10b
- * mGBA-comparison parity tests. */
-static void test_chip_canned_pcm_two_stage_drain(void)
-{
-    printf("Testing chip-only: two-stage HwDmaToFifo + HwFifoDrain produces audible PCM...\n");
-
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    /* Sawtooth ramp on ring_a, zero on ring_b — gives both
-     * non-trivial signal on A and a clean silence reference on B. */
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = (int8_t)((i * 4) - 127);
-        ring.ring_b[i] = 0;
-    }
-
-    HwAudio* hw = hw_audio_create(44100.0f);
-    M4ARegWrite ev[] = {
-        /* DMA A → both sides at 100%, DMA B disabled. */
-        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 2)},
-    };
-    M4ARegWriteBatch batch = {.events = ev, .count = 1};
-
-    enum
-    {
-        N = 2048
-    };
-    float L[N], R[N];
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, &ring, L, R, N);
-
-    float peakL = 0.0f, peakR = 0.0f;
-    for (int i = 0; i < N; i++)
-    {
-        float a = L[i];
-        if (a < 0)
-            a = -a;
-        if (a > peakL)
-            peakL = a;
-        a = R[i];
-        if (a < 0)
-            a = -a;
-        if (a > peakR)
-            peakR = a;
-    }
-    /* Sawtooth on ring_a routes to both sides; both peaks must be
-     * audible.  Default DMA vol code 1 maps int8 ±127 through mGBA's
-     * `sample << 2` FIFO scale and final output gain, so peaks land
-     * around ±0.744.  Allow generous tolerance for resampler edge
-     * effects. */
-    ASSERT(peakL > 0.1f, "two-stage drain produces audible L PCM");
-    ASSERT(peakR > 0.1f, "two-stage drain produces audible R PCM");
-
-    hw_audio_destroy(hw);
-}
-
-/* §12 step 5 — deterministic constant-byte test.
- *
- * Fill the entire ring with a single nonzero byte.  After resampler
- * warmup, post-mix-bus output must be exactly the held byte, properly
- * scaled by the routing + DMA-vol-code factors.  This pins the
- * absolute amplitude of the two-stage drain (a smoke test only checks
- * "non-zero", which can hide level / sign / scale bugs). */
-static void test_chip_canned_pcm_constant_byte(void)
-{
-    printf("Testing chip-only: constant ring value yields the expected frontend step...\n");
-
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    /* Constant +64 on ring_a (= +0.5 in normalized float space),
-     * silence on ring_b.  Picking a power-of-2-friendly value keeps
-     * the float math exact post-divide. */
-    const int8_t kConstByte = 64;
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = kConstByte;
-        ring.ring_b[i] = 0;
-    }
-
-    HwAudio* hw = hw_audio_create(44100.0f);
-    M4ARegWrite ev[] = {
-        /* DMA A → L only at 100%, DMA B disabled. */
-        {0, M4A_REG_SOUNDCNT_H, (1u << 9) | (1u << 2)},
-    };
-    M4ARegWriteBatch batch = {.events = ev, .count = 1};
-
-    enum
-    {
-        N = 2048
-    };
-    float L[N], R[N];
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, &ring, L, R, N);
-
-    /* Expected raw-DAC L step:
-     *   mGBA sample count = +64 << 2 = 256
-     *   final output = 256 × 48 / 32768 = +0.375
-     * The current mGBA frontend preserves that DC after its startup transient. */
-    const float expected_L = 0.375f;
-    float peakL = 0.0f;
-    float latePeak = 0.0f;
-    bool R_silent = true;
-    for (int i = 0; i < N; i++)
-    {
-        float a = L[i] < 0.0f ? -L[i] : L[i];
-        float b = R[i] < 0.0f ? -R[i] : R[i];
-        if (a > peakL)
-            peakL = a;
-        if (i >= N - 256 && a > latePeak)
-            latePeak = a;
-        if (b > 5e-5f)
-            R_silent = false;
-    }
-    ASSERT(peakL >= expected_L - 0.04f, "L frontend step reaches the +0.375 raw-DAC level");
-    ASSERT(peakL <= expected_L + 0.04f, "L frontend step stays near the +0.375 raw-DAC level");
-    ASSERT(latePeak >= expected_L - 0.01f, "sinc frontend preserves constant DMA DC");
-    ASSERT(R_silent, "R is silent (no PCM routed there)");
-
-    hw_audio_destroy(hw);
-}
-
-/* §12 step 5 — explicit ring[0]-must-be-read regression.
- *
- * The two-stage drain originally had an off-by-one: held_pcm was
- * read only when pcm_pos crossed an integer boundary, but the model
- * "increment first, compare-to-prev" never fired for the 0→0
- * transition at session start, so ring[0] was silently skipped and
- * the first byte actually consumed was ring[1].
- *
- * This test pins that fix: place an impulse at ring[0] and silence
- * everywhere else.  The fixed pipeline produces a brief resampler
- * transient in the host output (ring[0] held for a few pcm-rate ticks
- * at session start, then ring[1+] = 0).  An implementation that skips
- * ring[0] would output silence throughout. */
-static void test_chip_canned_pcm_first_byte_consumed(void)
-{
-    printf("Testing chip-only: ring[0] is read at session start (no off-by-one)...\n");
-
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    /* Impulse at ring[0]; zeros everywhere else. */
-    ring.ring_a[0] = 100;
-    /* (rest already zero from memset) */
-
-    HwAudio* hw = hw_audio_create(44100.0f);
-    M4ARegWrite ev[] = {
-        {0, M4A_REG_SOUNDCNT_H, (1u << 9) | (1u << 2)}, /* A → L, vol 100% */
-    };
-    M4ARegWriteBatch batch = {.events = ev, .count = 1};
-
-    enum
-    {
-        N = 128
-    };
-    float L[N], R[N];
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, &ring, L, R, N);
-
-    /* The fixed pipeline holds ring[0] = 100 for a few internal samples.
-     * The startup resampler kernel turns that into a tiny bipolar transient,
-     * so use absolute energy rather than positive-only sum.  A broken
-     * implementation that skipped ring[0] would still yield exactly 0. */
-    float sum_abs_L = 0.0f;
-    for (int i = 0; i < N; i++)
-    {
-        float a = L[i];
-        if (a < 0.0f)
-            a = -a;
-        sum_abs_L += a;
-    }
-    ASSERT(sum_abs_L > 0.0001f, "ring[0] consumed at session start (transient present)");
-
-    hw_audio_destroy(hw);
+    hw_pcm_apply_event(&pcm, &reset_a);
+    hw_pcm_apply_event(&pcm, &timer);
+    hw_pcm_render(&pcm, out_a, out_b, 1);
+    ASSERT_EQ(out_a[0], 11, "FIFO A reset preserves the current word's next byte");
+    ASSERT_EQ(out_b[0], 22, "FIFO A reset leaves FIFO B in-flight word unchanged");
 }
 
 /* Solo-mask: with both PSG (sq2) and DirectSound (DMA A) active, each
@@ -5864,44 +5823,35 @@ static void test_chip_canned_pcm_first_byte_consumed(void)
  * mask change isn't entangled with cumulative state. */
 static float run_psg_and_pcm_with_solo(uint32_t mask, int frames, float* out_L, float* out_R)
 {
-    M4APcmRing ring;
-    memset(&ring, 0, sizeof(ring));
-    ring.pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring.write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    /* Saturated sawtooth on ring_a — strong PCM signal.  ring_b
-     * stays zero so DMA B contributes nothing regardless of mask. */
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring.ring_a[i] = (int8_t)((i * 4) - 127);
-        ring.ring_b[i] = 0;
-    }
-
     HwAudio* hw = hw_audio_create(44100.0f);
     hw_audio_set_solo_mask(hw, mask);
 
     M4ARegWrite ev[] = {
         /* PSG master + routing: NR52 master enable, NR50 master 7/7,
          * NR51 routes sq2 (bit 1) to both sides. */
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x22, 0},
         /* SOUNDCNT_H: DMA A → both sides at 100%, plus PSG vol 100%. */
-        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 2)},
+        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 2), 0},
+        {0, M4A_REG_FIFO_A, 0x7F7F7F7Fu, 0},
+        {0, M4A_REG_TIMER_0, 0, 0},
         /* SQ2 trigger at audible freq. */
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
     };
     M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
-    hw_audio_render_events(hw, &batch, &ring, out_L, out_R, frames);
+    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(frames, 44100));
+    hw_audio_render_events(hw, &batch, out_L, out_R, frames);
 
-    /* Skip resampler warmup and any DC bias from canned setup; report
-     * AC-amplitude peak (deviation from mean) so unmasked silence
-     * really reads as zero rather than a small DC offset. */
+    /* Include the startup transient: the canonical FIFO fixture is a single
+     * four-byte DMA word, so its isolated DirectSound signal is intentionally
+     * shorter than the frontend's former warmup skip. */
     enum
     {
-        skip = 64
+        skip = 0
     };
     float sumL = 0.0f;
     int nL = 0;
@@ -5980,8 +5930,11 @@ static void test_chip_canned_solo_mask_isolates_channels(void)
 static void test_chip_canned_solo_mask_empty_falls_back_to_full(void)
 {
     printf("Testing chip-only: empty solo mask falls back to full mix...\n");
+    HwAudio* hw = hw_audio_create(48000.0f);
+    ASSERT(hw != NULL, "create chip for solo-mask fallback test");
+    if (!hw)
+        return;
 
-    HwAudio* hw = hw_audio_create(44100.0f);
     hw_audio_set_solo_mask(hw, 0);
     ASSERT_EQ((int)hw_audio_get_solo_mask(hw), (int)HW_AUDIO_SOLO_FULL, "set_solo_mask(0) restores HW_AUDIO_SOLO_FULL");
 
@@ -6064,9 +6017,11 @@ int main(void)
     test_v2_cgb_pan_mask_routes();
     test_v2_pcm_cc7_refresh();
     test_v2_pcm_reverb_pipeline();
+    test_v2_pcm_gate_time_completes_decay_before_release();
     test_v2_pcm_pseudo_echo_zero_length_stops();
     test_v2_pcm_pseudo_echo_nonzero_length_counts_down();
     test_v2_event_stream();
+    test_v2_event_stream_is_repeatable();
     test_v2_consume_clears_triggers();
     test_v2_wave_ram_events();
     test_v2_modt_recomputes_track_state();
@@ -6080,7 +6035,7 @@ int main(void)
     test_v2_lfo_delay_holds_off();
     test_v2_lfo_lfodl_resets_running_modulation();
     test_v2_cgb_volume_triggers_match_m4a();
-    test_v2_pcm_publish_event_per_vblank();
+    test_v2_pcm_fifo_timer_events();
     test_v2_psg_square_audible();
     test_v2_psg_pan_routing();
     test_v2_psg_wave_audible();
@@ -6131,14 +6086,12 @@ int main(void)
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();
+    test_chip_canned_cycle_boundary_partition_invariance();
     test_chip_canned_dc_streaming();
     test_chip_canned_soundbias_cycle_audible_sweep();
     test_chip_canned_soundbias_internal_rate_switches();
     test_chip_canned_soundbias_mid_call_matches_split_call();
     test_hw_pcm_soundcnt_h_fifo_reset_bits();
-    test_chip_canned_pcm_two_stage_drain();
-    test_chip_canned_pcm_constant_byte();
-    test_chip_canned_pcm_first_byte_consumed();
     test_chip_canned_solo_mask_isolates_channels();
     test_chip_canned_solo_mask_empty_falls_back_to_full();
     test_chip_canned_soundbias_cycle_0_vs_3_levels();

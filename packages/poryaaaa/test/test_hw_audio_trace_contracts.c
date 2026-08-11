@@ -28,7 +28,10 @@ static HwAudioTraceStatus apply_event(HwAudio* audio,
 static void configure_directsound(HwAudio* audio, uint16_t soundcnt_h)
 {
     HwAudioNativeFrame ignored;
-    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, soundcnt_h, &ignored),
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &ignored),
+              HW_AUDIO_TRACE_OK,
+              "DirectSound master-enable write is accepted");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, soundcnt_h, &ignored),
               HW_AUDIO_TRACE_OK,
               "DirectSound routing write is accepted");
 }
@@ -155,6 +158,101 @@ static void test_trace_square_phase_spans_nr52_power_off(void)
               "later square phase sample is accepted");
     ASSERT_EQ(frame.left, 11520, "absolute mGBA square phase reaches duty index five");
     ASSERT_EQ(frame.right, 11520, "later square phase remains centered");
+    hw_audio_destroy(audio);
+}
+
+/* Pinned mGBA GBA-mode noise resets both feedback and clock origin on NR44;
+ * these observations include the matrix's first differing noise sample. */
+static void test_trace_noise_trigger_feedback_and_clock_origin(void)
+{
+    printf("Testing hw_audio trace contracts: noise trigger feedback and clock origin...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x8877, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_L routes noise to both sides at full master volume");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0x0002, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_H selects the pinned PSG gain");
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_X enables PSG");
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x79, 0xF1, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND4CNT_L loads volume-15 noise envelope");
+    ASSERT_EQ(apply_event(audio, 0, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7C, 0x00, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND4CNT_H selects the 32-cycle noise period");
+    ASSERT_EQ(apply_event(audio, 0, 5, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7D, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "initial SOUND4CNT_X trigger is accepted");
+    ASSERT_EQ(apply_event(audio, 19, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7D, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "retrigger before the first noise clock is accepted");
+    ASSERT_EQ(apply_event(audio, 44, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "sample before the retriggered clock is accepted");
+    ASSERT_EQ(frame.left, 0, "NR44 reset prevents a stale pre-trigger noise clock on left");
+    ASSERT_EQ(frame.right, 0, "NR44 reset prevents a stale pre-trigger noise clock on right");
+
+    ASSERT_EQ(apply_event(audio, 607323, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7D, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "matrix noise trigger at cycle 607323 is accepted");
+    ASSERT_EQ(apply_event(audio, 607744, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "matrix noise sample before the first mismatch is accepted");
+    ASSERT_EQ(frame.left, 11520, "thirteen post-trigger mGBA feedback clocks produce left PCM16 11520");
+    ASSERT_EQ(frame.right, 11520, "thirteen post-trigger mGBA feedback clocks produce right PCM16 11520");
+    ASSERT_EQ(apply_event(audio, 608000, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "matrix first-difference noise sample is accepted");
+    ASSERT_EQ(frame.left, 11520, "twenty-one GBA-feedback clocks reproduce the pinned left PCM16 value");
+    ASSERT_EQ(frame.right, 11520, "twenty-one GBA-feedback clocks reproduce the pinned right PCM16 value");
+    hw_audio_destroy(audio);
+}
+
+/* The frame event stays reset-time aligned while NR52 is off, so an enabled
+ * envelope observes the absolute step-seven event rather than a rebased one. */
+static void test_trace_frame_envelope_uses_absolute_nr52_cadence(void)
+{
+    printf("Testing hw_audio trace contracts: absolute NR52 frame cadence...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 6483, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_X enables after a non-frame-aligned off interval");
+    ASSERT_EQ(apply_event(audio, 6483, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x2277, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_L routes square 2 to both sides");
+    ASSERT_EQ(apply_event(audio, 6483, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0x0002, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_H selects full PSG gain");
+    ASSERT_EQ(apply_event(audio, 6483, 3, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x68, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND2CNT_L selects a high 50-percent duty phase");
+    ASSERT_EQ(apply_event(audio, 6483, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x69, 0x21, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND2CNT_H loads a decreasing pace-one envelope");
+    ASSERT_EQ(apply_event(audio, 6483, 5, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6C, 0x00, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND2CNT_X low byte selects the 32,768-cycle square period");
+    ASSERT_EQ(apply_event(audio, 6483, 6, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6D, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND2CNT_X trigger arms square 2");
+    ASSERT_EQ(apply_event(audio, 261888, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "sample immediately before the absolute step-seven event is accepted");
+    ASSERT_EQ(frame.left, 1536, "pre-event pace-one envelope volume two is audible on left");
+    ASSERT_EQ(frame.right, 1536, "pre-event pace-one envelope volume two is audible on right");
+    ASSERT_EQ(apply_event(audio, 262400, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "sample immediately after the absolute step-seven event is accepted");
+    ASSERT_EQ(frame.left, 768, "absolute step seven decrements the envelope on left without NR52 delay");
+    ASSERT_EQ(frame.right, 768, "absolute step seven decrements the envelope on right without NR52 delay");
     hw_audio_destroy(audio);
 }
 
@@ -375,6 +473,48 @@ static void test_trace_fifo_schedule_psg_write_finalizes_pending_sample(void)
               "PSG-write sample barrier schedule is accepted");
     ASSERT_EQ(fifo_sample_count, 1, "the pending explicit SAMPLE is finalized");
     ASSERT_EQ(fifo_samples[0].fifo_a, 5, "later timer cannot rewrite a SAMPLE finalized by the PSG write");
+}
+
+/* Pinned mGBA emits this source-phase shape when GBAAudioSample's mutable
+ * lastSample/sampleIndex state starts its next block at cycle 6400. */
+static void test_trace_fifo_schedule_accepts_explicit_source_phase(void)
+{
+    printf("Testing hw_audio trace contracts: explicit mGBA source phase...\n");
+    static const HwAudioTraceEvent events[] = {
+        {0, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {115, UINT32_C(0x80000000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0x0000},
+        {115, UINT32_C(0x80010000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0000},
+        {115, UINT32_C(0x80020000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x88, 0x0200},
+        {512, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {1024, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {1536, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {2048, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {2560, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {3072, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {3584, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {4096, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {4608, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {5120, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {5632, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {6400, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {6483, UINT32_C(0x80000000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x008F},
+        {6517, UINT32_C(0x80000000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0xA90E},
+        {6556, UINT32_C(0x80000000), HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x88, 0x4200},
+        {6656, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {6912, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {7168, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {7424, UINT32_C(0x80000000), HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+    };
+    HwAudioTraceFifoSample fifo_samples[17];
+    size_t fifo_sample_count = 0;
+    ASSERT_EQ(hw_audio_trace_schedule_fifo_samples(events,
+                                                   sizeof(events) / sizeof(events[0]),
+                                                   fifo_samples,
+                                                   sizeof(fifo_samples) / sizeof(fifo_samples[0]),
+                                                   &fifo_sample_count),
+              HW_AUDIO_TRACE_OK,
+              "explicit source-phase SAMPLE events are scheduled");
+    ASSERT_EQ(fifo_sample_count, 17, "every source-phase SAMPLE receives a FIFO slot");
 }
 
 /* A FIFO advances only on its selected timer and becomes silent after its word drains. */
@@ -979,7 +1119,7 @@ static void test_trace_soundbias_clipping(void)
     ASSERT_EQ(apply_event(audio, 3, 1, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "zero-bias clipping sample is accepted");
-    ASSERT_EQ(frame.left, INT16_MAX, "zero bias exposes positive DAC clipping at PCM16 maximum");
+    ASSERT_EQ(frame.left, -16768, "zero bias preserves mGBA's final int16 wrap for +1016 DAC units");
     ASSERT_EQ(frame.right, 0, "bias changes do not introduce silent-side DC");
 
     hw_audio_trace_reset(audio);
@@ -1004,7 +1144,7 @@ static void test_trace_soundbias_clipping(void)
     ASSERT_EQ(apply_event(audio, 3, 1, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "high-bias negative clipping sample is accepted");
-    ASSERT_EQ(frame.left, INT16_MIN, "high bias exposes negative DAC clipping at PCM16 minimum");
+    ASSERT_EQ(frame.left, 16480, "high bias preserves mGBA's final int16 wrap below -32768");
     ASSERT_EQ(frame.right, 0, "bias changes preserve silent unrouted output");
     hw_audio_destroy(audio);
 }
@@ -1030,17 +1170,57 @@ static void test_trace_same_cycle_reorder_is_rejected(void)
     hw_audio_destroy(audio);
 }
 
+/* DirectSound timer observations do not partition mGBA's batched noise run. */
+static void test_trace_timer_does_not_partition_noise_clock(void)
+{
+    printf("Testing hw_audio trace contracts: timer does not partition noise clock...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x8877, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_L routes noise to both sides");
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_X enables PSG");
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x79, 0xF0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND4CNT_L loads a constant volume-15 envelope");
+    ASSERT_EQ(apply_event(audio, 0, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7C, 0x00, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND4CNT_H selects the 32-cycle noise period");
+    ASSERT_EQ(apply_event(audio, 0, 5, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7D, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUND4CNT_H trigger starts noise");
+    ASSERT_EQ(apply_event(audio, 224, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "seven noise clocks establish the partition-sensitive LFSR state");
+    ASSERT_EQ(apply_event(audio, 320, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "DirectSound timer observation is accepted");
+    ASSERT_EQ(apply_event(audio, 480, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "next native sample is accepted");
+    ASSERT_EQ(frame.left, 0, "timer does not change the mGBA batched noise sample on left");
+    ASSERT_EQ(frame.right, 0, "timer does not change the mGBA batched noise sample on right");
+    hw_audio_destroy(audio);
+}
+
 void test_hw_audio_trace_contracts_run_all(void)
 {
     test_trace_sample_and_write_same_cycle_order();
     test_trace_mid_sample_write_uses_exact_cycle_phase();
     test_trace_square_phase_spans_nr52_power_off();
+    test_trace_noise_trigger_feedback_and_clock_origin();
+    test_trace_frame_envelope_uses_absolute_nr52_cadence();
     test_trace_soundbias_selects_all_dac_intervals();
     test_trace_fifo_stereo_little_endian();
     test_trace_fifo_schedule_resolves_current_sample_block();
     test_trace_fifo_schedule_empty_clock_extends_held_suffix();
     test_trace_fifo_schedule_full_pointer_alias_extends_held_suffix();
     test_trace_fifo_schedule_psg_write_finalizes_pending_sample();
+    test_trace_fifo_schedule_accepts_explicit_source_phase();
     test_trace_timer_selection_and_empty_fifo_silence();
     test_trace_fifo_reset_preserves_internal_word();
     test_trace_byte_write_value_must_fit();
@@ -1055,6 +1235,7 @@ void test_hw_audio_trace_contracts_run_all(void)
     test_trace_wave_repeated_nr52_off_clears_bank();
     test_trace_soundbias_clipping();
     test_trace_same_cycle_reorder_is_rejected();
+    test_trace_timer_does_not_partition_noise_clock();
 }
 
 #ifdef PORYAAAA_HW_AUDIO_TRACE_CONTRACTS_TEST_MAIN
