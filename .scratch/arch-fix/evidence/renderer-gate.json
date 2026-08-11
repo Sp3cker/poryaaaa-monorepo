@@ -1,0 +1,45 @@
+{
+  "profile": {
+    "project_root": "/Users/sallegrezza/dev/pokemon-hearth",
+    "voicegroup": "rs_sfx_1",
+    "midi": "sound/songs/midi/se_pc_on.mid",
+    "song_volume": 100,
+    "reverb": 50,
+    "fadeout_seconds": 0,
+    "tail_seconds": 0,
+    "duration_seconds": 1.25
+  },
+  "renderer_48000": {
+    "path": ".scratch/arch-fix/evidence/renderer-final.wav",
+    "sha256": "380c9e07fe51b13ead84842bd3e397b7fd336fbbd18d443a37b8115741976efd",
+    "frames": 60000,
+    "left_peak_pcm16": 8560,
+    "right_peak_pcm16": 8560
+  },
+  "exact_core_rate_comparison": {
+    "rate_hz": 32768,
+    "oracle_path": ".scratch/arch-fix/evidence/oracle/run1.wav",
+    "oracle_sha256": "d74fe9195e211c72aa29d794b25b862327463c853e221bdd11e768d521b6c571",
+    "renderer_path": ".scratch/arch-fix/evidence/renderer-32768-final.wav",
+    "renderer_sha256": "016aa5fdf7d6de567d53016c3956c807c048b8da2e52f38638b067e05dc080e3",
+    "frames": 40960,
+    "passed": false,
+    "first_mismatch": {
+      "frame": 557,
+      "oracle_left": 0,
+      "oracle_right": 0,
+      "renderer_left": 1706,
+      "renderer_right": 1706
+    },
+    "max_abs_left_pcm16": 7680,
+    "max_abs_right_pcm16": 7680,
+    "blocked_by": ".scratch/arch-fix/evidence/driver-gate.json"
+  },
+  "input_hashes": {
+    "renderer_binary_sha256": "50f1e45840575ebfc7be3bb73fc9ddf71c01470212e97376a7e81a12c28754d7",
+    "rom_sha256": "f24f420542315fc699fad541915e9a437e55fbc3e9cdf2dfdaf3a5a0e55466f3",
+    "elf_sha256": "ae2125dd215b1a6084931bc0b76cbbee38d82ff1a9780c8a53f8800a576b0429",
+    "midi_sha256": "672490fca6e381fd4f0d9d1fd0707b77714c52905f15321cb7206c6fb6864def",
+    "voicegroup_sha256": "46dc8966a9760bfc74a59308ae766fb6742994b97b4c37456a0b11f12974b1bd"
+  }
+}

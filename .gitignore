@@ -5,3 +5,4 @@ packages/poryaaaa/compile_commands.json
 packages/poryaaaa/plugin/target/
 .DS_STORE
 .worktrees/
+/.scratch/arch-fix/evidence/

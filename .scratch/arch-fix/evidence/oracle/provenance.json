@@ -1,0 +1,52 @@
+{
+  "fixture": "se_pc_on audio-only ROM",
+  "duration_seconds": 1.25,
+  "capture_stage": "both",
+  "bios_mode": "hle",
+  "mgba_source": "/tmp/poryaaaa-mgba-afd6f14",
+  "mgba_revision": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9",
+  "observation_patch_sha256": "de133e038fd2348439138940321833d94c81ec70c8d848a2a29f8e4191bf90b2",
+  "recorder_sha256": "c4feb83bb83bc90425b2e9765efd088f365d3c5bb305f5f5441e36da588ea9a9",
+  "mgba_changed_paths": [
+    "include/mgba/internal/gba/audio.h",
+    "src/gba/audio.c",
+    "src/gba/io.c"
+  ],
+  "mgba_untracked_paths": [],
+  "inputs": {
+    "source_root": "/Users/sallegrezza/dev/pokemon-hearth",
+    "source_rom_path": "/Users/sallegrezza/dev/pokemon-hearth/pokeemerald-hearth.gba",
+    "source_elf_path": "/Users/sallegrezza/dev/pokemon-hearth/pokeemerald-hearth.elf",
+    "archived_fixture_rom_path": ".scratch/arch-fix/evidence/oracle/fixture.gba",
+    "source_rom_sha256": "f24f420542315fc699fad541915e9a437e55fbc3e9cdf2dfdaf3a5a0e55466f3",
+    "source_elf_sha256": "ae2125dd215b1a6084931bc0b76cbbee38d82ff1a9780c8a53f8800a576b0429",
+    "song_table_sha256": "6312c3bfb6bbd3ce0bfa5c720c66ac08d4a11002ec26c19c722c6ccd85415ea4",
+    "generated_fixture_rom_sha256": "8e4a84e77041bdb5fbe97cdea7fc0aaf8e2da2453c1ec1f7065b324e4084f5df"
+  },
+  "commands": [
+    "cmake -B build -DPORYAAAA_BUILD_MGBA_REFERENCE=ON -DPORYAAAA_MGBA_SOURCE=/tmp/poryaaaa-mgba-afd6f14",
+    "packages/poryaaaa/tools/mgba-reference/record_voice.sh --decomp /Users/sallegrezza/dev/pokemon-hearth --recorder packages/poryaaaa/build/mgba_mp2k_reference --song se_pc_on --capture-stage both --duration-seconds 1.25 --output .scratch/arch-fix/evidence/oracle/runN.wav --trace-output .scratch/arch-fix/evidence/oracle/runN.trace --native-output-prefix .scratch/arch-fix/evidence/oracle/runN",
+    "packages/poryaaaa/build/mgba_audio_trace_replay --input .scratch/arch-fix/evidence/oracle/run1.trace --reference-manifest .scratch/arch-fix/evidence/oracle/run1.json --output-prefix .scratch/arch-fix/evidence/oracle/clone --solo all",
+    "python3 packages/poryaaaa/tools/mgba-reference/native_compare.py .scratch/arch-fix/evidence/oracle/run1.json .scratch/arch-fix/evidence/oracle/clone.json"
+  ],
+  "repeatability": {
+    "trace_sha256": "c8915fe8fd30e52491fd4f29488833716cb4265de8ee4e8acea6dd00a72a05c8",
+    "pcm_sha256": "b00332af55823c72f871c04ebe4a8da2817cf9d91677f7a0d95830b0f184f17c",
+    "cycles_sha256": "fc8ef839c432343a28bacd9cb6cd26c48d0cd69245f11fc5546790c497bce4dc",
+    "manifest_sha256": "0040d86d7107fc63f35cd9ffa793026f168d7fd03a32f9933162f373c9d0bf49",
+    "frontend_wav_sha256": "d74fe9195e211c72aa29d794b25b862327463c853e221bdd11e768d521b6c571"
+  },
+  "manifests": {
+    "run1_sha256": "0040d86d7107fc63f35cd9ffa793026f168d7fd03a32f9933162f373c9d0bf49",
+    "run2_sha256": "0040d86d7107fc63f35cd9ffa793026f168d7fd03a32f9933162f373c9d0bf49",
+    "clone_sha256": "b7878b386ebe2086b5fac94bf922c246d335ee4eb4ad2eaec2edaa328483f62b",
+    "comparison_sha256": "ae8352236a163f15c1fd6894430408cc38c9d96417b3e6591ec7e775b4e5cf7f"
+  },
+  "oracle_gate": {
+    "passed": true,
+    "frame_count": 81920,
+    "cycle_mismatches": 0,
+    "left_mismatches": 0,
+    "right_mismatches": 0
+  }
+}

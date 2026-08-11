@@ -2,17 +2,17 @@
 
 ## Conclusion
 
-**Fact.** The highest-priority explanation to test is the frontend mismatch: v2 uses the mGBA 0.10.5 blip frontend (`hw_resample.c:24-76`), while current mGBA uses a normalized 16-tap Nuttall-windowed sinc resampler. This is not evidence that a resonance exists or that the listening issue is proven.
+**Fact.** v2 uses the current mGBA normalized 16-tap Nuttall-windowed sinc frontend (`hw_resample.c`). This is not evidence that a resonance exists or that the listening issue is proven.
 
-Do not add a resonance filter before matched native-rate captures. First determine whether v2's source/mix matches mGBA. Migrate v2 to the current mGBA sinc only if the native-rate output matches and the remaining difference is the frontend. Reject dynamic resonance suppression as the initial implementation.
+Do not add a resonance filter before matched native-rate captures. First determine whether v2's source/mix and current-mGBA frontend stream semantics match. Reject dynamic resonance suppression as the initial implementation.
 
 ## Current v2 path
 
-**Fact.** `plugin/hw_audio/hw_audio.c:64-82` selects `32768 << sampling_cycle` as the DAC cadence; `plugin/hw_audio/hw_audio.c:145-181` runs PSG → PCM → `hw_mix` → `hw_resample`. `plugin/hw_audio/hw_mix.c:59-70,91-118,120-158` applies gains, SOUNDBIAS bias/clipping, and normalization. `plugin/hw_audio/hw_resample.c:24-76` contains the old blip table; `plugin/hw_audio/hw_resample.c:97-138` performs int16 clamping, integration, and blip_buf's 511/512 DC-blocking pole; `plugin/hw_audio/hw_resample.c:142-225` handles rates and processing.
+**Fact.** `plugin/hw_audio/hw_audio.c` selects `32768 << sampling_cycle` as the DAC cadence and runs PSG → PCM → `hw_mix` → `hw_resample`. `plugin/hw_audio/hw_mix.c:59-70,91-118,120-158` applies gains, SOUNDBIAS bias/clipping, and normalization. `plugin/hw_audio/hw_resample.c` uses the current mGBA normalized sinc with eight-frame high/low watermarks and direct native PCM16 input.
 
 **Fact.** `analog_filter` is only stored in `plugin/m4a/m4a_driver.c:135-140` and `plugin/m4a/m4a_internal.h:211-215`; it is never consumed. It is inert, but that is not proof that it is causal (or that its absence explains the issue).
 
-**Capture seams.** Capture solo channels after `hw_psg_render`/`hw_pcm_render`, pre-resampler after `hw_mix_render`, and final post-resampler output. Candidate nonlinear behavior is clipping in `hw_mix`; source candidates are PSG/noise and PCM FIFO hold; timing candidate is event segmentation; frontend candidate is the obsolete resampler.
+**Capture seams.** Capture solo channels after `hw_psg_render`/`hw_pcm_render`, pre-resampler after `hw_mix_render`, and final post-resampler output. Candidate nonlinear behavior is clipping in `hw_mix`; source candidates are PSG/noise and PCM FIFO hold; timing candidate is event segmentation; frontend candidate is streaming semantics.
 
 ## Current mGBA path
 
