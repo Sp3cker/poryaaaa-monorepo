@@ -565,6 +565,12 @@ static void porya_tempo(t_porya* x, double bpm)
  * transport is stopped; `record 0` clears MIDI so the next export starts clean. */
 static void porya_record(t_porya* x, long armed)
 {
+    // A recording boundary must not let a partial raw MIDI message cross takes.
+    x->midiStatus = 0;
+    x->midiData1 = 0;
+    x->midiBytesNeeded = 0;
+    x->midiBytesGot = 0;
+    x->midiInSysex = 0;
     if (armed != 0)
     {
         x->capture->record_on();

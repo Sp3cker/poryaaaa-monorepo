@@ -73,6 +73,8 @@ export interface LiveApiAdapter {
 //   "37"       → bar 37, beat 1, 16th 1
 //   "37.2"     → bar 37, beat 2, 16th 1
 //   "37.2.3"   → bar 37, beat 2, 16th 3
+//   "17.2.0"   → bar 17, beat 2 exactly; zero is accepted for boundary
+//                  values copied from a length-style display
 //
 // Honors the supplied time signature so 6/8 bars resolve to 3 quarter-beats
 // each, not 4. Ableton's bar.beat.sixteenth `beat` is in denominator units.
@@ -84,10 +86,10 @@ export function parseBarBeatSixteenth(
     const t = text.trim();
     if (!t) return null;
     const parts = t.split(".").map((p) => parseInt(p.trim(), 10));
-    if (parts.some((p) => !Number.isFinite(p) || p < 1)) return null;
+    if (parts.some((p, i) => !Number.isFinite(p) || p < (i === 2 ? 0 : 1))) return null;
     const bar       = parts[0];
     const beat      = parts.length > 1 ? parts[1] : 1;
-    const sixteenth = parts.length > 2 ? parts[2] : 1;
+    const sixteenth = parts.length > 2 ? Math.max(1, parts[2]) : 1;
     const quartersPerBeat = 4 / sigDen;
     return (bar - 1) * sigNum * quartersPerBeat
          + (beat - 1) * quartersPerBeat
