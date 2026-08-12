@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audio_trace_format.h"
 #if defined(_WIN32)
 #    include <io.h>
 #    include <process.h>
@@ -106,7 +107,6 @@ struct GBAAudioObservationSink
 #endif
 
 #define GBA_FRAMES_PER_SECOND 60u
-#define GBA_CLOCK_HZ 16777216u
 #define GBA_CYCLES_PER_FRAME 280896u
 #define OBSERVATION_BUFFER_CAPACITY 65536u
 #define MGBA_MASTER_VOLUME 0x100u
@@ -148,10 +148,6 @@ struct GBAAudioObservationSink
 #define AUDIO_CHANNEL_PSG (AUDIO_CHANNEL_SQ1 | AUDIO_CHANNEL_SQ2 | AUDIO_CHANNEL_WAVE | AUDIO_CHANNEL_NOISE)
 #define AUDIO_CHANNEL_DIRECTSOUND (AUDIO_CHANNEL_FIFO_A | AUDIO_CHANNEL_FIFO_B)
 #define AUDIO_CHANNEL_ALL (AUDIO_CHANNEL_PSG | AUDIO_CHANNEL_DIRECTSOUND)
-
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_SEQUENCE_SHIFT 16u
-#define TRACE_ORDER_DELAY_MASK 0xFFFFu
 
 #define FIXTURE_VOICE_OFFSET 0x00u
 #define FIXTURE_HEADER_OFFSET 0x20u
@@ -1395,7 +1391,7 @@ static bool next_trace_position(Recorder* recorder, uint64_t cycle, uint32_t* or
     {
         return false;
     }
-    *order = TRACE_ORDER_EXTENDED | (recorder->tracePosition.order << TRACE_ORDER_SEQUENCE_SHIFT);
+    *order = PORYAAAA_TRACE_ORDER_EXTENDED | (recorder->tracePosition.order << TRACE_ORDER_SEQUENCE_SHIFT);
     return true;
 }
 
@@ -1425,7 +1421,8 @@ static bool write_trace_write(Recorder* recorder, const struct GBAAudioObservati
 static bool write_trace_timer(Recorder* recorder, const struct GBAAudioObservation* observation)
 {
     uint32_t order = 0u;
-    if (observation->cyclesLate > TRACE_ORDER_DELAY_MASK || !next_trace_position(recorder, observation->cycle, &order))
+    if (observation->cyclesLate > PORYAAAA_TRACE_ORDER_DELAY_MASK ||
+        !next_trace_position(recorder, observation->cycle, &order))
         return false;
     order |= observation->cyclesLate;
     return fprintf(recorder->traceOutput,
@@ -1439,7 +1436,8 @@ static bool write_trace_timer(Recorder* recorder, const struct GBAAudioObservati
 static bool write_trace_sample(Recorder* recorder, const struct GBAAudioObservation* observation)
 {
     uint32_t order = 0u;
-    if (observation->cyclesLate > TRACE_ORDER_DELAY_MASK || !next_trace_position(recorder, observation->cycle, &order))
+    if (observation->cyclesLate > PORYAAAA_TRACE_ORDER_DELAY_MASK ||
+        !next_trace_position(recorder, observation->cycle, &order))
         return false;
     order |= observation->cyclesLate;
     return fprintf(recorder->traceOutput, "SAMPLE %" PRIu64 " %" PRIu32 "\n", observation->cycle, order) > 0;
@@ -1736,7 +1734,7 @@ static bool begin_native_capture(struct mCore* core, Recorder* recorder, const O
     {
         /* Legacy captures keep their user-duration interval; a fixed driver
            transaction adds one replay slack SAMPLE period after its callback tail. */
-        double captureCycles = options->durationSeconds * (double)GBA_CLOCK_HZ;
+        double captureCycles = options->durationSeconds * (double)PORYAAAA_GBA_CLOCK_HZ;
         if (captureCycles > (double)(UINT64_MAX - startCycle))
             return false;
         durationCycles = (uint64_t)(captureCycles + 0.5);
@@ -1776,7 +1774,7 @@ static bool prepare_native_capture(Recorder* recorder, const Options* options)
         native_open_unique_temp(recorder->nativeManifestPath, &recorder->nativeManifestTempPath);
     if (recorder->traceOutput == NULL || recorder->nativePcmOutput == NULL || recorder->nativeCyclesOutput == NULL ||
         recorder->nativeManifestOutput == NULL ||
-        fprintf(recorder->traceOutput, "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\n", GBA_CLOCK_HZ) < 0)
+        fprintf(recorder->traceOutput, PORYAAAA_AUDIO_TRACE_HEADER "\n" PORYAAAA_AUDIO_TRACE_CLOCK_LINE "\n") < 0)
     {
         return false;
     }
@@ -1938,7 +1936,7 @@ static bool write_native_manifest(const Recorder* recorder,
                       "  \"mgba_master_volume\": %u,\n"
                       "  \"bios_mode\": \"hle\",\n"
                       "  \"mgba_dirty\": %s,\n",
-                      GBA_CLOCK_HZ,
+                      PORYAAAA_GBA_CLOCK_HZ,
                       recorder->nativeFramesWritten,
                       recorder->nativeFirstCycle,
                       recorder->nativeLastCycle,

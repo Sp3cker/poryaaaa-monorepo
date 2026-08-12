@@ -1,7 +1,5 @@
 #include "hw_audio/hw_audio_trace_text.h"
-
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_DELAY_MASK 0xFFFFu
+#include "audio_trace_format.h"
 
 #include <limits.h>
 
@@ -165,7 +163,7 @@ write_manifest(const char* path, uint64_t frame_count, uint64_t first_cycle, uin
                           "  \"last_cycle\": %" PRIu64 ",\n"
                           "  \"solo_mask\": %u\n"
                           "}\n",
-                          HW_AUDIO_GBA_CLOCK_HZ,
+                          PORYAAAA_GBA_CLOCK_HZ,
                           frame_count,
                           first_cycle,
                           last_cycle,
@@ -365,9 +363,9 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
         replay->pending_fifo_sample = replay->fifo_samples[replay->fifo_sample_index++];
         replay->pending_sample_cycle = record->event.cycle;
         replay->pending_sample = true;
-        replay->pending_sample_has_explicit_deadline = (record->event.order & TRACE_ORDER_EXTENDED) != 0u;
+        replay->pending_sample_has_explicit_deadline = (record->event.order & PORYAAAA_TRACE_ORDER_EXTENDED) != 0u;
         uint32_t observation_delay =
-            replay->pending_sample_has_explicit_deadline ? record->event.order & TRACE_ORDER_DELAY_MASK : 0u;
+            replay->pending_sample_has_explicit_deadline ? record->event.order & PORYAAAA_TRACE_ORDER_DELAY_MASK : 0u;
         replay->pending_sample_deadline = record->event.cycle + observation_delay;
         replay->pending_measurement = replay->measurement_open;
         if (replay->pending_sample_has_explicit_deadline && !replay->pending_observation)

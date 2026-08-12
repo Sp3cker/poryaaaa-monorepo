@@ -2,6 +2,7 @@
 #define M4A_DRIVER_H
 
 #include <stddef.h>
+#include "audio_trace_format.h"
 
 #include "m4a_register_file.h"
 #include "m4a_pcm_ring.h"
@@ -24,7 +25,7 @@ extern "C"
     typedef void (*M4ADriverXcmdFn)(void* ctx, int trackIndex, uint8_t selector, uint32_t value);
 
     /* Canonical hardware time shared by every public event consumer. */
-#define M4A_GBA_CYCLES_PER_SECOND 16777216u
+#define M4A_GBA_CYCLES_PER_SECOND PORYAAAA_GBA_CLOCK_HZ
 #define M4A_VBLANK_CYCLES 280896u
 
     /* ---- Cycle-domain driver→chip event contract ----

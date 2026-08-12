@@ -6,15 +6,13 @@
 
 #include <stdint.h>
 
+#include "audio_trace_format.h"
 #include "hw_audio.h"
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
-
-#define HW_AUDIO_GBA_CLOCK_HZ 16777216u
-#define HW_AUDIO_GBA_IO_BASE 0x04000000u
 
     /* Hardware-comparison events use absolute GBA cycles in mGBA's signed
      * 32-bit timing range and an explicit same-cycle order. SAMPLE events

@@ -61,11 +61,15 @@ extern "C"
         uint64_t sq2_timer_cycles;
         uint8_t sq1_duty_index;
         uint8_t sq2_duty_index;
+        uint8_t sq1_sample; /* Latest mGBA-latched DAC value */
+        uint8_t sq2_sample; /* Latest mGBA-latched DAC value */
         uint32_t wave_cycles_until_update;
         uint64_t wave_pending_cycles;
+#if PORYAAAA_HW_AUDIO_TRACE
         uint64_t sq1_trace_lookahead;
         uint64_t sq2_trace_lookahead;
         uint64_t wave_trace_lookahead;
+#endif
 
         uint16_t sq1_freq; /* 11-bit freq word */
         uint16_t sq2_freq;
@@ -134,7 +138,9 @@ extern "C"
         uint8_t frame_seq_step;
         double frame_seq_accum; /* debug view of frame_seq_cycle_remainder */
         uint16_t frame_seq_cycle_remainder;
+#if PORYAAAA_HW_AUDIO_TRACE
         bool frame_seq_event_deferred;
+#endif
         uint64_t frame_seq_ticks;
         uint64_t frame_seq_length_ticks;
         uint64_t frame_seq_sweep_ticks;
@@ -150,6 +156,7 @@ extern "C"
     void hw_psg_advance_cycles(
         HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise);
 
+#if PORYAAAA_HW_AUDIO_TRACE
     /* Advance a delayed trace SAMPLE while retaining a terminal frame event
      * until the full-core observation callback completes. */
     void hw_psg_advance_staged_sample_cycles(
@@ -162,6 +169,7 @@ extern "C"
     /* Runs mGBA's separately scheduled reset-time callback without moving
      * the following absolute 32,768-cycle cadence. */
     void hw_psg_run_zero_time_frame_event(HwPsgSynth* psg);
+#endif
 
     typedef struct
     {

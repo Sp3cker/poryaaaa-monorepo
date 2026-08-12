@@ -1,4 +1,5 @@
 #include "hw_psg.h"
+#include "audio_trace_format.h"
 
 #include <string.h>
 
@@ -17,6 +18,13 @@ static const uint8_t kDutyPatterns[4] = {
     0xE1, /* 50%:   1000_0111 */
     0x7E, /* 75%:   0111_1110 */
 };
+
+/* Refresh one square DAC latch at an mGBA sample-producing event. */
+static void hw_psg_refresh_square_sample(uint8_t* sample, uint8_t duty, uint8_t duty_index, uint8_t current_volume)
+{
+    bool high = ((kDutyPatterns[duty & 3u] >> (duty_index & 7u)) & 1u) != 0;
+    *sample = high ? current_volume : 0;
+}
 
 /* mGBA's five-clock normal-width noise fast path uses these feedback masks. */
 static const uint8_t kNoiseBatchMasks[0x40] = {
@@ -150,15 +158,15 @@ static bool hw_psg_reset_envelope(HwPsgEnvelope* envelope)
     return envelope->initial_volume || envelope->direction;
 }
 
-static void hw_psg_clock_envelope(HwPsgEnvelope* envelope)
+static bool hw_psg_clock_envelope(HwPsgEnvelope* envelope)
 {
     if (envelope->dead)
-        return;
+        return false;
 
     if (envelope->next_step > 0)
         envelope->next_step--;
     if (envelope->next_step > 0)
-        return;
+        return false;
 
     if (envelope->direction)
         envelope->current_volume++;
@@ -178,17 +186,24 @@ static void hw_psg_clock_envelope(HwPsgEnvelope* envelope)
     {
         envelope->next_step = envelope->step_time;
     }
+    return true;
 }
 
 static void hw_psg_frame_envelope(HwPsgSynth* psg)
 {
     psg->frame_seq_envelope_ticks++;
-    if (psg->sq1_enabled)
-        hw_psg_clock_envelope(&psg->sq1_envelope);
-    if (psg->sq2_enabled)
-        hw_psg_clock_envelope(&psg->sq2_envelope);
+    if (psg->sq1_enabled && hw_psg_clock_envelope(&psg->sq1_envelope))
+    {
+        hw_psg_refresh_square_sample(
+            &psg->sq1_sample, psg->sq1_duty, psg->sq1_duty_index, psg->sq1_envelope.current_volume);
+    }
+    if (psg->sq2_enabled && hw_psg_clock_envelope(&psg->sq2_envelope))
+    {
+        hw_psg_refresh_square_sample(
+            &psg->sq2_sample, psg->sq2_duty, psg->sq2_duty_index, psg->sq2_envelope.current_volume);
+    }
     if (psg->noise_enabled)
-        hw_psg_clock_envelope(&psg->noise_envelope);
+        (void)hw_psg_clock_envelope(&psg->noise_envelope);
 }
 
 static void hw_psg_tick_frame_sequencer(HwPsgSynth* psg)
@@ -214,16 +229,18 @@ static void hw_psg_tick_frame_sequencer(HwPsgSynth* psg)
     }
 }
 
+#if PORYAAAA_HW_AUDIO_TRACE
 void hw_psg_run_zero_time_frame_event(HwPsgSynth* psg)
 {
     if (psg && psg->master_enabled)
         hw_psg_tick_frame_sequencer(psg);
 }
+#endif
 
 /* Advance the reset-time frame-event phase by an exact GBA-cycle span. */
 static void hw_psg_advance_frame_sequencer(HwPsgSynth* psg, uint64_t cycles)
 {
-    const uint32_t frame_period = 16777216u / 512u;
+    const uint32_t frame_period = PORYAAAA_GBA_CLOCK_HZ / 512u;
     while (cycles > 0)
     {
         uint32_t until_frame = frame_period - psg->frame_seq_cycle_remainder;
@@ -249,6 +266,8 @@ static void hw_psg_clear_channel_state(HwPsgSynth* psg)
 
     psg->sq1_freq = 0;
     psg->sq2_freq = 0;
+    psg->sq1_sample = 0;
+    psg->sq2_sample = 0;
     psg->wave_freq = 0;
 
     psg->sq1_sweep_shadow_freq = 0;
@@ -315,17 +334,18 @@ static uint8_t hw_psg_apply_wave_volume(uint8_t sample, uint8_t volume_code)
 
 /* Retain elapsed cycles while mGBA's lazy square clock is inactive, then
  * consume them with the frequency in effect at the next forced update. */
-static void hw_psg_advance_square_cycles(
+static bool hw_psg_advance_square_cycles(
     uint64_t* timer_cycles, uint8_t* duty_index, uint16_t frequency, uint64_t cycles, bool clock)
 {
     *timer_cycles += cycles;
     if (!clock || frequency >= 2048)
-        return;
+        return false;
 
     uint32_t period = 16u * (2048u - (frequency & 0x07FFu));
     uint64_t steps = *timer_cycles / period;
     *timer_cycles %= period;
     *duty_index = (uint8_t)((*duty_index + steps) & 7u);
+    return steps != 0;
 }
 
 /* Load one GBA Wave RAM word without depending on host byte order. */
@@ -445,6 +465,7 @@ static void hw_psg_force_wave(HwPsgSynth* psg)
     psg->wave_pending_cycles = 0;
 }
 
+#if PORYAAAA_HW_AUDIO_TRACE
 /* Consume callback lookahead before advancing a channel on the nominal trace. */
 static uint64_t hw_psg_consume_trace_lookahead(uint64_t* lookahead, uint64_t cycles)
 {
@@ -452,6 +473,7 @@ static uint64_t hw_psg_consume_trace_lookahead(uint64_t* lookahead, uint64_t cyc
     *lookahead -= consumed;
     return cycles - consumed;
 }
+#endif
 
 /* Retain lazy Wave cycles between forced events and keep the frame-event
  * phase on its absolute 32,768-cycle cadence while NR52 is disabled. A
@@ -459,32 +481,42 @@ static uint64_t hw_psg_consume_trace_lookahead(uint64_t* lookahead, uint64_t cyc
 static void
 hw_psg_advance_wave_and_frame_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_wave, bool defer_terminal_frame)
 {
-    const uint32_t frame_period = 16777216u / 512u;
+    const uint32_t frame_period = PORYAAAA_GBA_CLOCK_HZ / 512u;
     while (cycles > 0)
     {
         uint32_t until_frame = frame_period - psg->frame_seq_cycle_remainder;
         uint64_t chunk = cycles < until_frame ? cycles : until_frame;
         if (psg->master_enabled)
         {
+#if PORYAAAA_HW_AUDIO_TRACE
             uint64_t wave_cycles = hw_psg_consume_trace_lookahead(&psg->wave_trace_lookahead, chunk);
+#else
+            uint64_t wave_cycles = chunk;
+#endif
             psg->wave_pending_cycles += wave_cycles;
         }
         psg->frame_seq_cycle_remainder = (uint16_t)(psg->frame_seq_cycle_remainder + chunk);
         cycles -= chunk;
         if (psg->frame_seq_cycle_remainder == frame_period)
         {
+#if PORYAAAA_HW_AUDIO_TRACE
             if (psg->frame_seq_event_deferred)
             {
                 if (psg->master_enabled)
                     hw_psg_tick_frame_sequencer(psg);
                 psg->frame_seq_event_deferred = false;
             }
+#endif
             if (psg->master_enabled)
             {
                 hw_psg_force_wave(psg);
+#if PORYAAAA_HW_AUDIO_TRACE
                 if (defer_terminal_frame && cycles == 0)
                     psg->frame_seq_event_deferred = true;
                 else
+#else
+                (void)defer_terminal_frame;
+#endif
                     hw_psg_tick_frame_sequencer(psg);
             }
             psg->frame_seq_cycle_remainder = 0;
@@ -529,12 +561,25 @@ static void hw_psg_advance_cycles_internal(HwPsgSynth* psg,
     if (!psg)
         return;
 
+#if PORYAAAA_HW_AUDIO_TRACE
     uint64_t sq1_cycles = hw_psg_consume_trace_lookahead(&psg->sq1_trace_lookahead, cycles);
     uint64_t sq2_cycles = hw_psg_consume_trace_lookahead(&psg->sq2_trace_lookahead, cycles);
-    hw_psg_advance_square_cycles(
-        &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, sq1_cycles, psg->master_enabled && clock_sq1);
-    hw_psg_advance_square_cycles(
-        &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, sq2_cycles, psg->master_enabled && clock_sq2);
+#else
+    uint64_t sq1_cycles = cycles;
+    uint64_t sq2_cycles = cycles;
+#endif
+    if (hw_psg_advance_square_cycles(
+            &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, sq1_cycles, psg->master_enabled && clock_sq1))
+    {
+        hw_psg_refresh_square_sample(
+            &psg->sq1_sample, psg->sq1_duty, psg->sq1_duty_index, psg->sq1_envelope.current_volume);
+    }
+    if (hw_psg_advance_square_cycles(
+            &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, sq2_cycles, psg->master_enabled && clock_sq2))
+    {
+        hw_psg_refresh_square_sample(
+            &psg->sq2_sample, psg->sq2_duty, psg->sq2_duty_index, psg->sq2_envelope.current_volume);
+    }
     if (psg->master_enabled)
     {
         psg->noise_pending_cycles += cycles;
@@ -553,6 +598,7 @@ void hw_psg_advance_cycles(
     hw_psg_advance_cycles_internal(psg, cycles, clock_sq1, clock_sq2, clock_wave, clock_noise, false);
 }
 
+#if PORYAAAA_HW_AUDIO_TRACE
 void hw_psg_advance_staged_sample_cycles(
     HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise)
 {
@@ -569,10 +615,18 @@ void hw_psg_run_deferred_frame_event(HwPsgSynth* psg, uint64_t observation_looka
                          (psg->sq1_enabled && psg->sq1_envelope.dead != 2);
         bool clock_sq2 = psg->sq2_timer_cycles + observation_lookahead > 0x40000000u ||
                          (psg->sq2_enabled && psg->sq2_envelope.dead != 2);
-        hw_psg_advance_square_cycles(
-            &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, observation_lookahead, clock_sq1);
-        hw_psg_advance_square_cycles(
-            &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, observation_lookahead, clock_sq2);
+        if (hw_psg_advance_square_cycles(
+                &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, observation_lookahead, clock_sq1))
+        {
+            hw_psg_refresh_square_sample(
+                &psg->sq1_sample, psg->sq1_duty, psg->sq1_duty_index, psg->sq1_envelope.current_volume);
+        }
+        if (hw_psg_advance_square_cycles(
+                &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, observation_lookahead, clock_sq2))
+        {
+            hw_psg_refresh_square_sample(
+                &psg->sq2_sample, psg->sq2_duty, psg->sq2_duty_index, psg->sq2_envelope.current_volume);
+        }
         psg->wave_pending_cycles += observation_lookahead;
         hw_psg_force_wave(psg);
         psg->sq1_trace_lookahead += observation_lookahead;
@@ -582,6 +636,7 @@ void hw_psg_run_deferred_frame_event(HwPsgSynth* psg, uint64_t observation_looka
     }
     psg->frame_seq_event_deferred = false;
 }
+#endif
 
 void hw_psg_get_frame_sequencer_debug(const HwPsgSynth* psg, HwPsgFrameSequencerDebug* out)
 {
@@ -611,15 +666,9 @@ void hw_psg_sample(const HwPsgSynth* psg, uint8_t* out_sq1, uint8_t* out_sq2, ui
     }
 
     if (out_sq1)
-    {
-        bool high = ((kDutyPatterns[psg->sq1_duty] >> psg->sq1_duty_index) & 1u) != 0;
-        *out_sq1 = psg->sq1_enabled && high ? psg->sq1_envelope.current_volume : 0;
-    }
+        *out_sq1 = psg->sq1_enabled ? psg->sq1_sample : 0;
     if (out_sq2)
-    {
-        bool high = ((kDutyPatterns[psg->sq2_duty] >> psg->sq2_duty_index) & 1u) != 0;
-        *out_sq2 = psg->sq2_enabled && high ? psg->sq2_envelope.current_volume : 0;
-    }
+        *out_sq2 = psg->sq2_enabled ? psg->sq2_sample : 0;
     if (out_wave)
         *out_wave = psg->wave_sample;
     if (out_noise)
@@ -686,6 +735,8 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
                     psg->sq1_enabled = false;
                 }
             }
+            hw_psg_refresh_square_sample(
+                &psg->sq1_sample, psg->sq1_duty, psg->sq1_duty_index, psg->sq1_envelope.current_volume);
         }
         break;
 
@@ -709,6 +760,8 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
             if (psg->sq2_length_counter == 0)
                 psg->sq2_length_counter = 64;
             psg->sq2_enabled = hw_psg_reset_envelope(&psg->sq2_envelope);
+            hw_psg_refresh_square_sample(
+                &psg->sq2_sample, psg->sq2_duty, psg->sq2_duty_index, psg->sq2_envelope.current_volume);
         }
         break;
 
@@ -816,7 +869,8 @@ void hw_psg_render(
     if (frames <= 0)
         return;
 
-    uint32_t gba_cycles_per_sample = psg->render_rate > 0.0f ? (uint32_t)(16777216.0f / psg->render_rate + 0.5f) : 0;
+    uint32_t gba_cycles_per_sample =
+        psg->render_rate > 0.0f ? (uint32_t)((float)PORYAAAA_GBA_CLOCK_HZ / psg->render_rate + 0.5f) : 0;
     if (!psg->master_enabled)
     {
         if (out_sq1)
@@ -835,38 +889,24 @@ void hw_psg_render(
     for (int i = 0; i < frames; i++)
     {
         if (out_sq1)
-        {
-            bool high = ((kDutyPatterns[psg->sq1_duty] >> psg->sq1_duty_index) & 1u) != 0;
-            out_sq1[i] = psg->sq1_enabled && high ? psg->sq1_envelope.current_volume : 0;
-        }
+            out_sq1[i] = psg->sq1_enabled ? psg->sq1_sample : 0;
 
         if (out_sq2)
-        {
-            bool high = ((kDutyPatterns[psg->sq2_duty] >> psg->sq2_duty_index) & 1u) != 0;
-            out_sq2[i] = psg->sq2_enabled && high ? psg->sq2_envelope.current_volume : 0;
-        }
+            out_sq2[i] = psg->sq2_enabled ? psg->sq2_sample : 0;
 
-        if (gba_cycles_per_sample && psg->sq1_freq < 2048)
+        if (gba_cycles_per_sample &&
+            hw_psg_advance_square_cycles(
+                &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, gba_cycles_per_sample, true))
         {
-            uint32_t period = 16u * (2048u - psg->sq1_freq);
-            psg->sq1_timer_cycles += gba_cycles_per_sample;
-            if (psg->sq1_timer_cycles >= period)
-            {
-                uint64_t steps = psg->sq1_timer_cycles / period;
-                psg->sq1_timer_cycles -= steps * period;
-                psg->sq1_duty_index = (uint8_t)((psg->sq1_duty_index + steps) & 7u);
-            }
+            hw_psg_refresh_square_sample(
+                &psg->sq1_sample, psg->sq1_duty, psg->sq1_duty_index, psg->sq1_envelope.current_volume);
         }
-        if (gba_cycles_per_sample && psg->sq2_freq < 2048)
+        if (gba_cycles_per_sample &&
+            hw_psg_advance_square_cycles(
+                &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, gba_cycles_per_sample, true))
         {
-            uint32_t period = 16u * (2048u - psg->sq2_freq);
-            psg->sq2_timer_cycles += gba_cycles_per_sample;
-            if (psg->sq2_timer_cycles >= period)
-            {
-                uint64_t steps = psg->sq2_timer_cycles / period;
-                psg->sq2_timer_cycles -= steps * period;
-                psg->sq2_duty_index = (uint8_t)((psg->sq2_duty_index + steps) & 7u);
-            }
+            hw_psg_refresh_square_sample(
+                &psg->sq2_sample, psg->sq2_duty, psg->sq2_duty_index, psg->sq2_envelope.current_volume);
         }
 
         /* Wave — mGBA clocks the selected GBA bank before observing the

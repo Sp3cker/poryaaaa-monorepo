@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audio_trace_format.h"
 
 #if defined(__clang__)
 #    pragma clang diagnostic push
@@ -41,10 +42,6 @@
 #    define PORYAAAA_MGBA_REPLAY_COMPILE_FLAGS "unverified"
 #endif
 
-#define GBA_CLOCK_HZ 16777216u
-#define TRACE_LINE_CAPACITY 512u
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_DELAY_MASK 0xFFFFu
 #define MGBA_MASTER_VOLUME 0x100u
 
 #define AUDIO_CHANNEL_SQ1 (1u << 0u)
@@ -508,7 +505,7 @@ static bool load_reference_manifest(const char* path, ReferenceManifest* manifes
          json_u32_value(json_member_value(document, "audio_channel_mask"), &manifest->audioChannelMask) &&
          json_u32_value(json_member_value(document, "mgba_master_volume"), &manifest->masterVolume);
     if (!ok || strcmp(format, "poryaaaa-native-capture") != 0 || version != 1u || strcmp(source, "mgba-full") != 0 ||
-        clock != GBA_CLOCK_HZ || strcmp(manifest->mgbaCommit, baseRevision) != 0 ||
+        clock != PORYAAAA_GBA_CLOCK_HZ || strcmp(manifest->mgbaCommit, baseRevision) != 0 ||
         strcmp(manifest->sourcePolicy, "authoritative-pinned-source") != 0 || strcmp(biosMode, "hle") != 0 ||
         !is_sha256(manifest->observationPatchSha256) || !is_sha256(manifest->romSha256) ||
         !is_sha256(manifest->traceSha256) || manifest->audioChannelMask == 0u ||
@@ -1069,17 +1066,17 @@ static bool replay_trace(Replay* replay, const Options* options)
     bool measurementClosed = false;
     TracePosition position = {0};
     char line[TRACE_LINE_CAPACITY];
-    if (fgets(line, sizeof(line), input) == NULL || strcmp(line, "PORYAAAA_AUDIO_TRACE 1\n") != 0)
+    if (fgets(line, sizeof(line), input) == NULL || strcmp(line, PORYAAAA_AUDIO_TRACE_HEADER "\n") != 0)
     {
-        fprintf(stderr, "Trace must begin with PORYAAAA_AUDIO_TRACE 1\n");
+        fprintf(stderr, "Trace must begin with " PORYAAAA_AUDIO_TRACE_HEADER "\n");
         ok = false;
     }
     replay->lineNumber = 1u;
     if (ok)
     {
-        if (fgets(line, sizeof(line), input) == NULL || strcmp(line, "CLOCK 16777216\n") != 0)
+        if (fgets(line, sizeof(line), input) == NULL || strcmp(line, PORYAAAA_AUDIO_TRACE_CLOCK_LINE "\n") != 0)
         {
-            fprintf(stderr, "Trace line 2 must be CLOCK 16777216\n");
+            fprintf(stderr, "Trace line 2 must be " PORYAAAA_AUDIO_TRACE_CLOCK_LINE "\n");
             ok = false;
         }
         replay->lineNumber = 2u;
@@ -1128,11 +1125,13 @@ static bool replay_trace(Replay* replay, const Options* options)
             break;
         }
         const bool isSample = strcmp(tokens[0], "SAMPLE") == 0 && tokenCount == 3u;
-        const bool hasExplicitObservation = isSample && (order & TRACE_ORDER_EXTENDED) != 0u;
+        /* Extended zero-lateness markers follow the normal timing queue. */
+        const bool hasExplicitObservation = isSample && (order & PORYAAAA_TRACE_ORDER_EXTENDED) != 0u &&
+                                            (order & PORYAAAA_TRACE_ORDER_DELAY_MASK) != 0u;
         uint64_t observationCycle = cycle;
         if (hasExplicitObservation)
         {
-            const uint32_t cyclesLate = order & TRACE_ORDER_DELAY_MASK;
+            const uint32_t cyclesLate = order & PORYAAAA_TRACE_ORDER_DELAY_MASK;
             if (cycle > UINT64_MAX - cyclesLate || cycle + cyclesLate > INT32_MAX)
             {
                 fail_replay(replay, "SAMPLE callback cycle exceeds mGBA's replay timing range");
@@ -1197,7 +1196,8 @@ static bool replay_trace(Replay* replay, const Options* options)
         if (strcmp(tokens[0], "TIMER") == 0 && tokenCount == 4u)
         {
             uint64_t timer = 0u;
-            uint32_t cyclesLate = (order & TRACE_ORDER_EXTENDED) != 0u ? order & TRACE_ORDER_DELAY_MASK : 0u;
+            uint32_t cyclesLate =
+                (order & PORYAAAA_TRACE_ORDER_EXTENDED) != 0u ? order & PORYAAAA_TRACE_ORDER_DELAY_MASK : 0u;
             int32_t sampleEventUntil = 0;
             if (!parse_u64_decimal(tokens[3], &timer) || timer > 1u ||
                 !sample_event_until_after_lateness(replay, cyclesLate, &sampleEventUntil) ||
@@ -1272,7 +1272,7 @@ static bool write_manifest(const char* path,
                       "  \"bios_mode\": \"hle\",\n"
                       "  \"bios_path\": null,\n"
                       "  \"mgba_dirty\": %s,\n",
-                      GBA_CLOCK_HZ,
+                      PORYAAAA_GBA_CLOCK_HZ,
                       replay->frameCount,
                       replay->firstCycle,
                       replay->lastCycle,

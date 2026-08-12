@@ -104,7 +104,7 @@ static uint32_t pcm_active_rate(const M4ADriver* drv)
 
 static uint32_t pcm_div_freq(const M4ADriver* drv)
 {
-    return (16777216u / pcm_active_rate(drv) + 1u) >> 1;
+    return (PORYAAAA_GBA_CLOCK_HZ / pcm_active_rate(drv) + 1u) >> 1;
 }
 
 static uint32_t pcm_fixed_frequency(const M4ADriver* drv)

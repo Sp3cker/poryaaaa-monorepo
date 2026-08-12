@@ -111,7 +111,7 @@ hw_audio_trace_text_read(FILE* input, HwAudioTraceTextVisitor visitor, void* con
         return HW_AUDIO_TRACE_TEXT_READ_FAILED;
 
     char line[HW_AUDIO_TRACE_TEXT_LINE_CAPACITY];
-    if (!fgets(line, sizeof(line), input) || strcmp(line, "PORYAAAA_AUDIO_TRACE 1\n") != 0)
+    if (!fgets(line, sizeof(line), input) || strcmp(line, PORYAAAA_AUDIO_TRACE_HEADER "\n") != 0)
         return HW_AUDIO_TRACE_TEXT_INVALID_HEADER;
 
     bool clock_seen = false;
@@ -146,7 +146,7 @@ hw_audio_trace_text_read(FILE* input, HwAudioTraceTextVisitor visitor, void* con
         if (strcmp(tokens[0], "CLOCK") == 0)
         {
             if (token_count != 2u || !parse_u64_decimal(tokens[1], &parsed) || clock_seen || position.valid ||
-                parsed != HW_AUDIO_GBA_CLOCK_HZ)
+                parsed != PORYAAAA_GBA_CLOCK_HZ)
             {
                 if (error_line)
                     *error_line = line_number;
