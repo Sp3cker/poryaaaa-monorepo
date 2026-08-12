@@ -56,16 +56,15 @@ static uint32_t pack_fifo_word(const int8_t* ring, uint64_t cursor, uint32_t siz
     return word;
 }
 
-static void refill_fifo(M4ADriver* drv,
-                        M4ARegId fifo_reg,
-                        const int8_t* ring,
-                        uint64_t* source_cursor,
-                        uint8_t read_index,
-                        uint8_t* write_index)
+/* Emit one four-word DMA transfer and advance the modulo-eight FIFO model. */
+static void write_fifo_burst(M4ADriver* drv,
+                             M4ARegId fifo_reg,
+                             const int8_t* ring,
+                             uint64_t* source_cursor,
+                             uint8_t* write_index)
 {
     const uint32_t size = drv->pcm_dma_buf_size;
-    if (size == 0 || fifo_word_count(read_index, *write_index) >= M4A_FIFO_REFILL_WORDS ||
-        *source_cursor + M4A_FIFO_REFILL_BYTES > drv->pcm.write_cursor)
+    if (size == 0u)
         return;
 
     for (uint32_t word = 0; word < M4A_FIFO_REFILL_WORDS; word++)
@@ -76,22 +75,40 @@ static void refill_fifo(M4ADriver* drv,
     *source_cursor += M4A_FIFO_REFILL_BYTES;
 }
 
-static void consume_fifo(uint8_t* read_index, uint8_t write_index, uint8_t* internal_remaining)
+/* Start special-timing DMA only while fewer than four words remain queued. */
+static void refill_fifo(M4ADriver* drv,
+                        M4ARegId fifo_reg,
+                        const int8_t* ring,
+                        uint64_t* source_cursor,
+                        uint8_t read_index,
+                        uint8_t* write_index)
 {
-    if (!*internal_remaining && *read_index != write_index)
+    if (fifo_word_count(read_index, *write_index) >= M4A_FIFO_REFILL_WORDS)
+        return;
+    write_fifo_burst(drv, fifo_reg, ring, source_cursor, write_index);
+}
+
+static bool consume_fifo(uint8_t* read_index, uint8_t* internal_remaining, bool queued_word_available)
+{
+    if (!*internal_remaining && queued_word_available)
     {
         *read_index = (uint8_t)((*read_index + 1u) % M4A_FIFO_WORDS);
         *internal_remaining = 4;
     }
-    if (*internal_remaining)
-        (*internal_remaining)--;
+    if (!*internal_remaining)
+        return false;
+    (*internal_remaining)--;
+    return true;
 }
 
-/* A direct-sound timer overflow requests four DMA words when the modulo-8
- * FIFO has fewer than four queued words.  Writes are emitted before the
- * same-cycle TIMER event, matching GBAAudioSampleFIFO's DMA ordering. */
+/* A DirectSound timer overflow requests four DMA words when the modulo-8
+ * FIFO has fewer than four queued words.  A DMA request caused by an empty
+ * FIFO completes after that timer callback, so its first byte is consumed by
+ * the next callback. */
 static void m4a_pcm_timer_overflow(M4ADriver* drv)
 {
+    const bool fifo_a_had_word = fifo_word_count(drv->pcm_fifo_a_read, drv->pcm_fifo_a_write) != 0u;
+    const bool fifo_b_had_word = fifo_word_count(drv->pcm_fifo_b_read, drv->pcm_fifo_b_write) != 0u;
     refill_fifo(drv,
                 M4A_REG_FIFO_A,
                 drv->pcm.ring_a,
@@ -104,27 +121,37 @@ static void m4a_pcm_timer_overflow(M4ADriver* drv)
                 &drv->pcm_fifo_b_source_cursor,
                 drv->pcm_fifo_b_read,
                 &drv->pcm_fifo_b_write);
-    m4a_internal_emit_event(drv, M4A_REG_TIMER_0, 0);
-    consume_fifo(&drv->pcm_fifo_a_read, drv->pcm_fifo_a_write, &drv->pcm_fifo_a_internal_remaining);
-    consume_fifo(&drv->pcm_fifo_b_read, drv->pcm_fifo_b_write, &drv->pcm_fifo_b_internal_remaining);
+    const bool consumed_a =
+        consume_fifo(&drv->pcm_fifo_a_read, &drv->pcm_fifo_a_internal_remaining, fifo_a_had_word);
+    const bool consumed_b =
+        consume_fifo(&drv->pcm_fifo_b_read, &drv->pcm_fifo_b_internal_remaining, fifo_b_had_word);
+    if (consumed_a || consumed_b)
+        m4a_internal_emit_event(drv, M4A_REG_TIMER_0, 0);
+}
+/* Advance MP2K's seven-frame DMA epoch at the line-150 VCount callback.
+ * The disable/re-enable sequence reloads each special-timing DMA source; its
+ * preceding enabled-to-enabled START_NOW write is ignored by mGBA. */
+static void m4a_sound_vsync(M4ADriver* drv)
+{
+    if (drv->pcm_dma_counter > 1u)
+    {
+        drv->pcm_dma_counter--;
+        return;
+    }
+
+    drv->pcm_dma_counter = drv->pcm_dma_period;
+    drv->pcm_fifo_a_source_cursor = 0u;
+    drv->pcm_fifo_b_source_cursor = 0u;
 }
 
 static bool advance_pcm_timer(M4ADriver* drv)
 {
-    const uint32_t rate = drv->pcm_rate_hz ? drv->pcm_rate_hz : M4A_PCM_RATE_HZ;
-    const uint32_t whole_cycles = M4A_GBA_CYCLES_PER_SECOND / rate;
-    const uint32_t remainder = M4A_GBA_CYCLES_PER_SECOND % rate;
-    if (drv->next_pcm_timer_cycle > UINT64_MAX - whole_cycles)
+    const uint32_t samples_per_vblank =
+        drv->pcm_max_samples_per_vblank ? drv->pcm_max_samples_per_vblank : M4A_PCM_SAMPLES_PER_VBLANK;
+    const uint32_t timer_period = M4A_VBLANK_CYCLES / samples_per_vblank;
+    if (drv->next_pcm_timer_cycle > UINT64_MAX - timer_period)
         return false;
-    drv->next_pcm_timer_cycle += whole_cycles;
-    drv->pcm_timer_cycle_remainder += remainder;
-    if (drv->pcm_timer_cycle_remainder >= rate)
-    {
-        if (drv->next_pcm_timer_cycle == UINT64_MAX)
-            return false;
-        drv->next_pcm_timer_cycle++;
-        drv->pcm_timer_cycle_remainder -= rate;
-    }
+    drv->next_pcm_timer_cycle += timer_period;
     return true;
 }
 
@@ -153,14 +180,24 @@ void m4a_advance(M4ADriver* drv, int host_frames)
         return;
 
     const uint64_t end_cycle = drv->current_cycle + elapsed_cycles;
-    while (drv->next_vblank_cycle <= end_cycle || drv->next_pcm_timer_cycle <= end_cycle)
+    while (drv->next_vblank_cycle <= end_cycle || drv->next_vcount_cycle <= end_cycle ||
+           drv->next_pcm_timer_cycle <= end_cycle)
     {
-        const uint64_t next_cycle =
-            drv->next_vblank_cycle < drv->next_pcm_timer_cycle ? drv->next_vblank_cycle : drv->next_pcm_timer_cycle;
+        uint64_t next_cycle =
+            drv->next_vcount_cycle < drv->next_vblank_cycle ? drv->next_vcount_cycle : drv->next_vblank_cycle;
+        if (drv->next_pcm_timer_cycle < next_cycle)
+            next_cycle = drv->next_pcm_timer_cycle;
         drv->current_cycle = next_cycle;
         drv->event_cycle = next_cycle;
         drv->event_next_order = 0;
 
+        if (drv->next_vcount_cycle == next_cycle)
+        {
+            m4a_sound_vsync(drv);
+            if (drv->next_vcount_cycle > UINT64_MAX - M4A_VBLANK_CYCLES)
+                return;
+            drv->next_vcount_cycle += M4A_VBLANK_CYCLES;
+        }
         if (drv->next_vblank_cycle == next_cycle)
         {
             m4a_sound_main(drv);

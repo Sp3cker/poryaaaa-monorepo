@@ -47,6 +47,7 @@ struct HwAudio
     uint32_t trace_order;
     bool trace_position_valid;
     HwPcm trace_pcm;
+    bool trace_reset_frame_pending;
 
     /* Native channel values stay integral through the GBA DAC. Only the
      * final PCM16 stereo pair is converted for the host resampler. */
@@ -144,6 +145,7 @@ void hw_audio_reset(HwAudio* hw)
     hw->trace_cycle = 0;
     hw->trace_order = 0;
     hw->trace_position_valid = false;
+    hw->trace_reset_frame_pending = false;
 }
 
 void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
@@ -700,6 +702,15 @@ static void render_trace_sample(HwAudio* hw, const HwAudioTraceFifoSample* fifo_
     mix_native_chunk(hw, 1);
 }
 
+/* Consume mGBA's separately scheduled reset callback exactly once. */
+static void consume_trace_reset_frame_event(HwAudio* hw)
+{
+    if (!hw->trace_reset_frame_pending)
+        return;
+    hw_psg_run_zero_time_frame_event(&hw->psg);
+    hw->trace_reset_frame_pending = false;
+}
+
 void hw_audio_trace_reset(HwAudio* hw)
 {
     if (!hw)
@@ -721,6 +732,7 @@ void hw_audio_trace_reset(HwAudio* hw)
     hw->trace_cycle = 0;
     hw->trace_order = 0;
     hw->trace_position_valid = false;
+    hw->trace_reset_frame_pending = true;
 }
 
 static bool trace_supports_byte_register(uint32_t address)
@@ -830,6 +842,9 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
     if (status != HW_AUDIO_TRACE_OK)
         return status;
 
+    if (hw->trace_reset_frame_pending && (event->cycle > 0 || event->kind == HW_AUDIO_TRACE_SAMPLE))
+        consume_trace_reset_frame_event(hw);
+
     uint64_t prior_cycle = hw->trace_position_valid ? hw->trace_cycle : 0;
     uint64_t cycle_delta = event->cycle - prior_cycle;
     bool stale_sq1 = hw->psg.sq1_timer_cycles + cycle_delta > 0x40000000u;
@@ -894,6 +909,9 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
         {
             status = apply_trace_register_write(hw, event->address, event->width, event->value);
         }
+        if (status == HW_AUDIO_TRACE_OK && hw->trace_reset_frame_pending && event->cycle == 0 &&
+            event->address == HW_AUDIO_GBA_IO_BASE + 0x84 && hw->psg.master_enabled)
+            consume_trace_reset_frame_event(hw);
     }
     else if (event->kind == HW_AUDIO_TRACE_SAMPLE)
     {

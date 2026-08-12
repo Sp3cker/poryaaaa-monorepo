@@ -13,8 +13,7 @@ const PulseWidthModPattern gPulseWidthModPatterns[] = {
     {2, {0, 1}},
 };
 
-const uint8_t gNumPulseWidthModPatterns =
-    (uint8_t)(sizeof(gPulseWidthModPatterns) / sizeof(gPulseWidthModPatterns[0]));
+const uint8_t gNumPulseWidthModPatterns = (uint8_t)(sizeof(gPulseWidthModPatterns) / sizeof(gPulseWidthModPatterns[0]));
 
 #include <string.h>
 
@@ -217,7 +216,8 @@ static void refresh_cgb_pitches(M4ADriver* drv, int trackIndex)
     }
 }
 
-/* Re-push volume/pan into every active CGB channel on this track. */
+/* Apply ChnVolSetAsm's software-volume half for every active CGB channel.
+ * CgbSound recalculates pan and envelope goals at its envelope boundary. */
 static void refresh_cgb_volumes(M4ADriver* drv, int trackIndex)
 {
     M4ADriverTrack* track = &drv->tracks[trackIndex];
@@ -229,8 +229,6 @@ static void refresh_cgb_volumes(M4ADriver* drv, int trackIndex)
         if (ch->trackIndex != trackIndex)
             continue;
 
-        uint8_t prevR = ch->rightVolume;
-        uint8_t prevL = ch->leftVolume;
         uint32_t velocity = ch->velocity;
         int32_t rhythmPan = ch->rhythmPan;
 
@@ -248,11 +246,7 @@ static void refresh_cgb_volumes(M4ADriver* drv, int trackIndex)
             result = 0xFF;
         ch->leftVolume = (uint8_t)result;
 
-        if (ch->rightVolume != prevR || ch->leftVolume != prevL)
-        {
-            m4a_chn_vol_set_cgb(ch, track);
-            ch->modify |= M4A_MO_VOL;
-        }
+        ch->modify |= M4A_MO_VOL;
     }
 }
 
@@ -285,8 +279,7 @@ static M4ADriverCgbChan* find_track_square_channel(M4ADriver* drv, int trackInde
     return NULL;
 }
 
-static void apply_portamento_pitch(
-    M4ADriver* drv, M4ADriverTrack* track, int trackIndex, int32_t currentKey16)
+static void apply_portamento_pitch(M4ADriver* drv, M4ADriverTrack* track, int trackIndex, int32_t currentKey16)
 {
     int32_t fullPitch = currentKey16 + ((int32_t)track->keyM << 8) + track->pitM;
     int32_t key = fullPitch >> 8;
@@ -330,8 +323,7 @@ static void portamento_note_started(M4ADriver* drv, M4ADriverTrack* track, int t
         return;
 
     track->portamentoElapsed = 0;
-    if (track->portamentoDuration != 0 && track->portamentoPrevKey != 0
-        && track->portamentoPrevKey != channelKey)
+    if (track->portamentoDuration != 0 && track->portamentoPrevKey != 0 && track->portamentoPrevKey != channelKey)
     {
         track->portamentoGliding = true;
         track->portamentoTargetKey = channelKey;
@@ -474,9 +466,9 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
                 return;
         }
 
-        const bool portamentoInherit = !drv->compat_shadow_note && drv->compat_portamento_enabled
-            && t->portamentoDuration != 0
-            && (ch->status & M4A_CHN_ON) && ch->envelopeVolume != 0;
+        const bool portamentoInherit = !drv->compat_shadow_note && drv->compat_portamento_enabled &&
+                                       t->portamentoDuration != 0 && (ch->status & M4A_CHN_ON) &&
+                                       ch->envelopeVolume != 0;
         const uint8_t previousDuty = ch->dutyCycle;
 
         ch->midiKey = key;
@@ -689,8 +681,8 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
             for (int i = 0; i < maxPcm; i++)
             {
                 M4ADriverPcmChan* previous = &drv->pcmChans[i];
-                if (previous == ch || !(previous->status & M4A_CHN_ON) || previous->trackIndex != track
-                    || previous->wav != voice->wav)
+                if (previous == ch || !(previous->status & M4A_CHN_ON) || previous->trackIndex != track ||
+                    previous->wav != voice->wav)
                     continue;
                 ch->currentPointer = previous->currentPointer;
                 ch->sampleStored = previous->sampleStored;
@@ -1140,8 +1132,7 @@ static void portamento_tick(M4ADriver* drv)
         }
         else
         {
-            currentKey16 =
-                (startKey << 8) + (((targetKey - startKey) * elapsed) << 8) / totalDurationUnits;
+            currentKey16 = (startKey << 8) + (((targetKey - startKey) * elapsed) << 8) / totalDurationUnits;
         }
 
         apply_portamento_pitch(drv, track, i, currentKey16);
@@ -1190,11 +1181,9 @@ void m4a_internal_compat_effects_tick(M4ADriver* drv)
     pwm_tick(drv);
 }
 
-
-/* m4a_set_song_volume — pokeemerald m4a.c equivalent.  Stores new song
- * master, recomputes each track's effective `volume` (= rawVolume *
- * song_volume / 127), and refreshes active CGB channel L/R volumes so
- * the change is audible immediately, not only on the next CC7. */
+/* Apply the host-facing song master and refresh active software volumes.
+ * Sustaining CGB channels need their current envelope value moved with the
+ * new goal before the already-queued MO_VOL transaction reaches hardware. */
 void m4a_set_song_volume(M4ADriver* drv, uint8_t volume)
 {
     if (!drv)
@@ -1206,6 +1195,15 @@ void m4a_set_song_volume(M4ADriver* drv, uint8_t volume)
         t->volume = (uint32_t)t->rawVolume * volume / M4A_MAX_SONG_VOLUME;
         m4a_trk_vol_pit_set(t);
         refresh_cgb_volumes(drv, i);
+        for (int channelIndex = 0; channelIndex < M4A_MAX_CGB_CHANNELS; channelIndex++)
+        {
+            M4ADriverCgbChan* ch = &drv->cgb[channelIndex];
+            if (!(ch->status & M4A_CHN_ON) || ch->trackIndex != i)
+                continue;
+            m4a_chn_vol_set_cgb(ch, t);
+            if ((ch->status & M4A_CHN_ENV_MASK) == M4A_CHN_ENV_SUSTAIN)
+                ch->envelopeVolume = ch->sustainGoal;
+        }
         refresh_pcm_volumes(drv, i);
     }
 }

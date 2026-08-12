@@ -108,6 +108,8 @@ typedef struct
     size_t observedTimers[2];
     unsigned lineNumber;
     bool failed;
+    bool drainingSamples;
+    uint64_t drainEndCycle;
 } Replay;
 
 /* Keep the replay command narrow enough for comparison scripts. */
@@ -705,6 +707,8 @@ static void emit_observation(void* context, const struct GBAAudioObservation* ob
         return;
     if (replay->expectedHead == replay->expectedCount)
     {
+        if (replay->drainingSamples && observation->cycle >= replay->drainEndCycle)
+            return;
         fail_replay(replay, "mGBA emitted a SAMPLE not present in the trace");
         return;
     }
@@ -747,6 +751,50 @@ static bool advance_mgba_to(Replay* replay, uint64_t cycle)
     return !replay->failed && mTimingCurrentTime(&gba->timing) == target;
 }
 
+/* Drain delayed callbacks while discarding only batched samples beyond END. */
+static bool drain_expected_samples(Replay* replay, uint64_t endCycle)
+{
+    struct GBA* gba = replay->core->board;
+    replay->drainingSamples = true;
+    replay->drainEndCycle = endCycle;
+    while (replay->expectedHead != replay->expectedCount)
+    {
+        int32_t current = mTimingCurrentTime(&gba->timing);
+        int32_t scheduledDelta = mTimingNextEvent(&gba->timing);
+        if (scheduledDelta == INT_MAX)
+        {
+            fail_replay(replay, "mGBA has no reachable callback for a traced SAMPLE");
+            replay->drainingSamples = false;
+            return false;
+        }
+        int32_t delta = scheduledDelta < 0 ? 0 : scheduledDelta;
+        if ((int64_t)current + delta > INT32_MAX)
+        {
+            fail_replay(replay, "mGBA callback exceeds the replay timing range");
+            replay->drainingSamples = false;
+            return false;
+        }
+        size_t expectedBefore = replay->expectedHead;
+        (void)mTimingTick(&gba->timing, delta);
+        if (replay->failed)
+        {
+            replay->drainingSamples = false;
+            return false;
+        }
+        int32_t advanced = mTimingCurrentTime(&gba->timing);
+        int32_t nextDelta = mTimingNextEvent(&gba->timing);
+        if (advanced != current + delta ||
+            (advanced == current && replay->expectedHead == expectedBefore && nextDelta == scheduledDelta))
+        {
+            fail_replay(replay, "mGBA timing made no progress while draining traced SAMPLEs");
+            replay->drainingSamples = false;
+            return false;
+        }
+    }
+    replay->drainingSamples = false;
+    return true;
+}
+
 /* Reproduce the sample-event offset from mGBA's late full-core timer callback. */
 static bool sample_event_until_after_lateness(Replay* replay, uint32_t cyclesLate, int32_t* result)
 {
@@ -782,6 +830,22 @@ static bool is_audio_byte_register(uint32_t address)
     case GBA_REG_SOUND4CNT_LO + 1u:
     case GBA_REG_SOUND4CNT_HI:
     case GBA_REG_SOUND4CNT_HI + 1u:
+    case GBA_REG_WAVE_RAM0_LO:
+    case GBA_REG_WAVE_RAM0_LO + 1u:
+    case GBA_REG_WAVE_RAM0_HI:
+    case GBA_REG_WAVE_RAM0_HI + 1u:
+    case GBA_REG_WAVE_RAM1_LO:
+    case GBA_REG_WAVE_RAM1_LO + 1u:
+    case GBA_REG_WAVE_RAM1_HI:
+    case GBA_REG_WAVE_RAM1_HI + 1u:
+    case GBA_REG_WAVE_RAM2_LO:
+    case GBA_REG_WAVE_RAM2_LO + 1u:
+    case GBA_REG_WAVE_RAM2_HI:
+    case GBA_REG_WAVE_RAM2_HI + 1u:
+    case GBA_REG_WAVE_RAM3_LO:
+    case GBA_REG_WAVE_RAM3_LO + 1u:
+    case GBA_REG_WAVE_RAM3_HI:
+    case GBA_REG_WAVE_RAM3_HI + 1u:
         return true;
     default:
         return false;
@@ -986,6 +1050,30 @@ static bool replay_trace(Replay* replay, const Options* options)
             ok = false;
             break;
         }
+        /* A delayed full-core SAMPLE exactly on a pending PSG frame boundary
+         * must not force that frame callback on-time.  The real callback ran
+         * after the boundary, so _updateFrame sampled the old envelope before
+         * advancing it.  Retain the marker and let the next event cross the
+         * boundary with the same ordering. */
+        bool deferFrameBoundarySample = false;
+        if (strcmp(tokens[0], "SAMPLE") == 0 && tokenCount == 3u && (order & TRACE_ORDER_EXTENDED) != 0u &&
+            (order & TRACE_ORDER_DELAY_MASK) != 0u)
+        {
+            struct GBA* gba = replay->core->board;
+            int64_t delta = (int64_t)cycle - mTimingCurrentTime(&gba->timing);
+            deferFrameBoundarySample =
+                delta >= 0 && delta <= INT32_MAX && mTimingUntil(&gba->timing, &gba->audio.psg.frameEvent) == delta;
+        }
+        if (deferFrameBoundarySample)
+        {
+            if (!append_expected_sample(replay, cycle, measurementOpen))
+            {
+                fail_replay(replay, "could not retain expected SAMPLE");
+                ok = false;
+                break;
+            }
+            continue;
+        }
         if (!advance_mgba_to(replay, cycle))
         {
             ok = false;
@@ -1005,9 +1093,14 @@ static bool replay_trace(Replay* replay, const Options* options)
         }
         if (strcmp(tokens[0], "END") == 0 && tokenCount == 3u)
         {
-            if (!measurementOpen || replay->expectedHead != replay->expectedCount)
+            if (!measurementOpen)
             {
-                fail_replay(replay, "END has missing native samples");
+                fail_replay(replay, "END does not close an open measurement");
+                ok = false;
+                break;
+            }
+            if (!drain_expected_samples(replay, cycle))
+            {
                 ok = false;
                 break;
             }

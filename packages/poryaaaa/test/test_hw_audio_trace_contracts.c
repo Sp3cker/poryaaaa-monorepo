@@ -256,6 +256,50 @@ static void test_trace_frame_envelope_uses_absolute_nr52_cadence(void)
     hw_audio_destroy(audio);
 }
 
+/* No-ROM replay enables NR52 before mGBA's scheduled cycle-zero callback.
+ * Preserve that callback so later envelope boundaries retain the full-core epoch. */
+static void test_trace_cycle_zero_frame_event_matches_mgba_epoch(void)
+{
+    printf("Testing hw_audio trace contracts: cycle-zero mGBA frame event...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "cycle-zero SOUNDCNT_X enables PSG");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x0077, &frame),
+              HW_AUDIO_TRACE_OK,
+              "cycle-zero SOUNDCNT_L setup is accepted");
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0x0002, &frame),
+              HW_AUDIO_TRACE_OK,
+              "cycle-zero SOUNDCNT_H setup is accepted");
+    ASSERT_EQ(apply_event(audio, 280896, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x68, 0x80, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 duty transaction is accepted at the lifecycle boundary");
+    ASSERT_EQ(apply_event(audio, 280896, 1, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6C, 0x0B, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 frequency low byte is accepted");
+    ASSERT_EQ(apply_event(audio, 280896, 2, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6D, 0x06, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 frequency high byte is accepted");
+    ASSERT_EQ(apply_event(audio, 280896, 3, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x2277, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 stereo routing is accepted");
+    ASSERT_EQ(apply_event(audio, 280896, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x69, 0xF1, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 decreasing envelope is accepted");
+    ASSERT_EQ(apply_event(audio, 280896, 5, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6D, 0x86, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Sq2 trigger is accepted");
+    ASSERT_EQ(apply_event(audio, 495104, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "post-envelope native sample is accepted");
+    ASSERT_EQ(frame.left, 10752, "cycle-zero callback places Sq2 at mGBA's volume-fourteen boundary");
+    ASSERT_EQ(frame.right, 10752, "cycle-zero frame epoch remains centered");
+    hw_audio_destroy(audio);
+}
+
 /* The four SOUNDBIAS sampling-cycle encodings select all native DAC intervals. */
 static void test_trace_soundbias_selects_all_dac_intervals(void)
 {
@@ -448,10 +492,11 @@ static void test_trace_fifo_schedule_full_pointer_alias_extends_held_suffix(void
     ASSERT_EQ(fifo_samples[0].fifo_a, 0, "aliased FIFO pointer holds the empty suffix instead of consuming word zero");
 }
 
-/* PSG writes sample before mutation, so later timers cannot rewrite an earlier explicit SAMPLE. */
-static void test_trace_fifo_schedule_psg_write_finalizes_pending_sample(void)
+/* The terminal write in a candidate CGB batch closes the pending FIFO bin
+ * before a later timer can change the sample that belongs to that batch. */
+static void test_trace_fifo_schedule_cgb_batch_finalizes_pending_sample(void)
 {
-    printf("Testing hw_audio trace contracts: PSG write sample barrier...\n");
+    printf("Testing hw_audio trace contracts: CGB batch sample boundary...\n");
     static const HwAudioTraceEvent events[] = {
         {0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x88, 0x4200},
         {0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080},
@@ -459,9 +504,39 @@ static void test_trace_fifo_schedule_psg_write_finalizes_pending_sample(void)
         {0, 3, HW_AUDIO_TRACE_WRITE, 4, HW_AUDIO_GBA_IO_BASE + 0xA0, 0x00000005},
         {100, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 0},
         {256, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
-        {300, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x60, 0},
+        {300, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x65, 0},
         {400, 0, HW_AUDIO_TRACE_TIMER, 0, 0, 0},
     };
+
+    static const HwAudioTraceEvent cgb_batch_events[] = {
+        {300, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x60, 0},
+        {300, 1, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x65, 0},
+        {300, 2, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x68, 0},
+        {300, 3, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6D, 0},
+        {300, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x70, 0},
+        {300, 5, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x75, 0},
+        {300, 6, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x78, 0},
+        {300, 7, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x7D, 0},
+        {300, 8, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x80, 0},
+        {300, 9, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x81, 0},
+        {300, 10, HW_AUDIO_TRACE_WRITE, 4, HW_AUDIO_GBA_IO_BASE + 0x90, 0},
+        {300, 11, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x9F, 0},
+    };
+
+    static const HwAudioTraceEvent non_cgb_events[] = {
+        {300, 12, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0},
+        {300, 13, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x84, 0},
+        {300, 14, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x88, 0},
+        {300, 15, HW_AUDIO_TRACE_WRITE, 4, HW_AUDIO_GBA_IO_BASE + 0xA0, 0},
+        {300, 16, HW_AUDIO_TRACE_WRITE, 4, HW_AUDIO_GBA_IO_BASE + 0xA4, 0},
+        {300, 17, HW_AUDIO_TRACE_TIMER, 0, 0, 0},
+    };
+    for (size_t index = 0; index < sizeof(cgb_batch_events) / sizeof(cgb_batch_events[0]); index++)
+        ASSERT(hw_audio_trace_event_is_cgb_batch_write(&cgb_batch_events[index]),
+               "PSG, routing, and Wave RAM writes belong to a candidate CGB batch");
+    for (size_t index = 0; index < sizeof(non_cgb_events) / sizeof(non_cgb_events[0]); index++)
+        ASSERT(!hw_audio_trace_event_is_cgb_batch_write(&non_cgb_events[index]),
+               "DirectSound, power, bias, and TIMER events remain outside candidate CGB batches");
     HwAudioTraceFifoSample fifo_samples[1];
     size_t fifo_sample_count = 0;
     ASSERT_EQ(hw_audio_trace_schedule_fifo_samples(events,
@@ -470,9 +545,50 @@ static void test_trace_fifo_schedule_psg_write_finalizes_pending_sample(void)
                                                    sizeof(fifo_samples) / sizeof(fifo_samples[0]),
                                                    &fifo_sample_count),
               HW_AUDIO_TRACE_OK,
-              "PSG-write sample barrier schedule is accepted");
-    ASSERT_EQ(fifo_sample_count, 1, "the pending explicit SAMPLE is finalized");
-    ASSERT_EQ(fifo_samples[0].fifo_a, 5, "later timer cannot rewrite a SAMPLE finalized by the PSG write");
+              "CGB-batch sample boundary schedule is accepted");
+    ASSERT_EQ(fifo_sample_count, 1, "the pending candidate SAMPLE is finalized");
+    ASSERT_EQ(fifo_samples[0].fifo_a, 5, "a later timer cannot rewrite the finalized candidate SAMPLE");
+}
+
+/* Candidate SAMPLE records have no explicit callback deadline, so their
+ * terminal CGB write is committed before the staged DAC value is observed. */
+static void test_trace_staged_sample_observes_terminal_write(void)
+{
+    printf("Testing hw_audio trace contracts: post-write staged sample...\n");
+    static const HwAudioTraceEvent events[] = {
+        {0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080},
+        {0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x2277},
+        {0, 2, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x68, 0x80},
+        {0, 3, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x69, 0xF8},
+        {0, 4, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6C, 0x0B},
+        {256, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+        {300, 0, HW_AUDIO_TRACE_WRITE, 1, HW_AUDIO_GBA_IO_BASE + 0x6D, 0x86},
+        {512, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0},
+    };
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    HwAudioTraceFifoSample fifo_sample = {0};
+    hw_audio_trace_reset(audio);
+
+    for (size_t index = 0; index < 5; index++)
+        ASSERT_EQ(
+            hw_audio_trace_apply(audio, &events[index], &frame), HW_AUDIO_TRACE_OK, "square setup event is accepted");
+    ASSERT_EQ(
+        hw_audio_trace_stage_sample(audio, &events[5], &frame), HW_AUDIO_TRACE_OK, "candidate square SAMPLE is staged");
+    ASSERT(hw_audio_trace_event_is_cgb_batch_write(&events[6]), "NR24 trigger belongs to the candidate square batch");
+    ASSERT_EQ(hw_audio_trace_apply(audio, &events[6], &frame),
+              HW_AUDIO_TRACE_OK,
+              "terminal NR24 mutation is applied before observation");
+    ASSERT_EQ(hw_audio_trace_observe_sample(audio, events[5].cycle, &fifo_sample, &frame),
+              HW_AUDIO_TRACE_OK,
+              "staged candidate SAMPLE is observed after the terminal mutation");
+    ASSERT_EQ(frame.cycle, UINT64_C(256), "observed sample keeps its staged cycle");
+    ASSERT(frame.left > 0, "post-write square sample is audible on left");
+    ASSERT(frame.right > 0, "post-write square sample is audible on right");
+    ASSERT_EQ(hw_audio_trace_apply(audio, &events[7], &frame), HW_AUDIO_TRACE_OK, "next square SAMPLE is accepted");
+    ASSERT(frame.left > 0, "triggered square remains audible on the next left sample");
+    ASSERT(frame.right > 0, "triggered square remains audible on the next right sample");
+    hw_audio_destroy(audio);
 }
 
 /* Pinned mGBA emits this source-phase shape when GBAAudioSample's mutable
@@ -1030,15 +1146,15 @@ static void test_trace_wave_length_expiry_gates_sparse_delta(void)
               HW_AUDIO_TRACE_OK,
               "length-gated wave is triggered");
 
-    ASSERT_EQ(apply_event(audio, 32800, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x74, 0xC7F8, &frame),
+    ASSERT_EQ(apply_event(audio, 65568, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x74, 0xC7F8, &frame),
               HW_AUDIO_TRACE_OK,
               "sparse delta reaches length expiry before retrigger");
-    ASSERT_EQ(apply_event(audio, 32888, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 65656, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "first sample after sparse-delta retrigger is accepted");
     ASSERT_EQ(frame.left, 0, "length expiry stopped rotation before the empty final bank nibble");
     ASSERT_EQ(frame.right, 0, "length-gated sparse rotation remains centered");
-    ASSERT_EQ(apply_event(audio, 32952, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+    ASSERT_EQ(apply_event(audio, 65720, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
               HW_AUDIO_TRACE_OK,
               "next Wave clock after sparse-delta retrigger is accepted");
     ASSERT_EQ(frame.left, 768, "rotation resumes at the first populated nibble");
@@ -1214,12 +1330,14 @@ void test_hw_audio_trace_contracts_run_all(void)
     test_trace_square_phase_spans_nr52_power_off();
     test_trace_noise_trigger_feedback_and_clock_origin();
     test_trace_frame_envelope_uses_absolute_nr52_cadence();
+    test_trace_cycle_zero_frame_event_matches_mgba_epoch();
     test_trace_soundbias_selects_all_dac_intervals();
     test_trace_fifo_stereo_little_endian();
     test_trace_fifo_schedule_resolves_current_sample_block();
     test_trace_fifo_schedule_empty_clock_extends_held_suffix();
     test_trace_fifo_schedule_full_pointer_alias_extends_held_suffix();
-    test_trace_fifo_schedule_psg_write_finalizes_pending_sample();
+    test_trace_fifo_schedule_cgb_batch_finalizes_pending_sample();
+    test_trace_staged_sample_observes_terminal_write();
     test_trace_fifo_schedule_accepts_explicit_source_phase();
     test_trace_timer_selection_and_empty_fifo_silence();
     test_trace_fifo_reset_preserves_internal_word();

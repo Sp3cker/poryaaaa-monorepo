@@ -1,4 +1,9 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#    define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
@@ -6,6 +11,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#    include <io.h>
+#    include <process.h>
+#    include <sys/stat.h>
+#    include <windows.h>
+#else
+#    include <sys/stat.h>
+#    include <unistd.h>
+#endif
+
+#if defined(_WIN32) && !defined(ESTALE)
+#    define ESTALE EIO
+#endif
 #ifndef PORYAAAA_MGBA_BASE_REVISION
 #    define PORYAAAA_MGBA_BASE_REVISION "unverified"
 #endif
@@ -89,15 +107,37 @@ struct GBAAudioObservationSink
 
 #define GBA_FRAMES_PER_SECOND 60u
 #define GBA_CLOCK_HZ 16777216u
+#define GBA_CYCLES_PER_FRAME 280896u
 #define OBSERVATION_BUFFER_CAPACITY 65536u
 #define MGBA_MASTER_VOLUME 0x100u
 #define AUDIO_BUFFER_FRAMES 2048u
 #define TONE_DATA_SIZE 12u
+#define PSW_WAVEFORM_SIZE 16u
+#define DIRECTSOUND_WAVE_HEADER_SIZE 16u
+#define GBA_ROM_START 0x08000000u
+#define GBA_ROM_END 0x0A000000u
+#define DRIVER_SCENARIO_CAPTURE_TAIL_CYCLES 384u
+#define DRIVER_SCENARIO_START_FRAMES 9u
+#define DRIVER_SCENARIO_ENVELOPE_FRAMES 14u
+#define DRIVER_SCENARIO_PITCH_FRAMES 12u
+#define DRIVER_SCENARIO_VOLUME_PAN_FRAMES 12u
+#define DRIVER_SCENARIO_RETRIGGER_FRAMES 13u
+#define DRIVER_SCENARIO_RELEASE_FRAMES 14u
+#define DRIVER_TRACK_CAPACITY 32u
 #define GBA_REG_DISPSTAT 0x04000004u
+#define GBA_REG_VCOUNT 0x04000006u
 #define GBA_REG_SOUNDCNT_H 0x04000082u
+#define GBA_REG_TM0CNT_H 0x04000102u
 #define GBA_REG_IE 0x04000200u
 #define GBA_REG_IME 0x04000208u
+#define GBA_DISPSTAT_VBLANK_IRQ 0x0008u
+#define GBA_DISPSTAT_VCOUNT_IRQ 0x0020u
+#define GBA_DISPSTAT_VCOUNT_LINE_150 0x9600u
+#define GBA_IE_VBLANK 0x0001u
+#define GBA_IE_VCOUNT 0x0004u
 #define GBA_FIFO_RESET_BITS 0x8800u
+#define GBA_REG_FIFO_A 0x040000A0u
+#define GBA_REG_FIFO_B 0x040000A4u
 
 #define AUDIO_CHANNEL_SQ1 (1u << 0u)
 #define AUDIO_CHANNEL_SQ2 (1u << 1u)
@@ -124,6 +164,26 @@ typedef enum CaptureStage
     CAPTURE_STAGE_NATIVE = 1u << 1u,
 } CaptureStage;
 
+typedef enum DriverScenario
+{
+    DRIVER_SCENARIO_NONE,
+    DRIVER_SCENARIO_START,
+    DRIVER_SCENARIO_ENVELOPE,
+    DRIVER_SCENARIO_PITCH,
+    DRIVER_SCENARIO_VOLUME_PAN,
+    DRIVER_SCENARIO_RETRIGGER,
+    DRIVER_SCENARIO_RELEASE,
+} DriverScenario;
+
+typedef enum DriverFamily
+{
+    DRIVER_FAMILY_NONE,
+    DRIVER_FAMILY_DIRECTSOUND,
+    DRIVER_FAMILY_SQ1,
+    DRIVER_FAMILY_SQ2,
+    DRIVER_FAMILY_PSW,
+} DriverFamily;
+
 typedef struct TracePosition
 {
     bool valid;
@@ -138,6 +198,29 @@ typedef struct PendingTimer
     struct GBAAudioObservation observation;
 } PendingTimer;
 
+typedef struct DriverFixtureIdentity
+{
+    bool captured;
+    uint8_t toneData[TONE_DATA_SIZE];
+    uint8_t normalizedToneData[TONE_DATA_SIZE];
+    uint8_t waveform[PSW_WAVEFORM_SIZE];
+    char toneDataSha256[65];
+    char familyPayloadSha256[65];
+    char waveformSha256[65];
+    uint32_t payloadAddress;
+    uint32_t payloadSize;
+    uint8_t resolvedType;
+    DriverFamily family;
+    uint32_t soloMask;
+} DriverFixtureIdentity;
+
+typedef struct DriverTrack
+{
+    uint8_t bytes[DRIVER_TRACK_CAPACITY];
+    size_t length;
+    size_t loopOffset;
+} DriverTrack;
+
 typedef struct Options
 {
     const char* romPath;
@@ -146,6 +229,9 @@ typedef struct Options
     const char* nativeOutputPrefix;
     uint32_t mplayStart;
     uint32_t mplayAllStop;
+    uint32_t m4aVSyncOff;
+    uint32_t m4aVSyncOn;
+    uint32_t m4aVSync;
     uint32_t songStart;
     uint32_t songAddress;
     uint32_t songId;
@@ -153,6 +239,11 @@ typedef struct Options
     uint32_t soundInfo;
     uint32_t voiceAddress;
     uint32_t fixtureAddress;
+    DriverScenario driverScenario;
+    const char* elfPath;
+    const char* voicegroupSymbol;
+    uint32_t voiceIndex;
+    bool hasVoiceIndex;
     double durationSeconds;
     double bootTimeoutSeconds;
     uint8_t note;
@@ -177,6 +268,7 @@ typedef struct Recorder
     FILE* traceOutput;
     FILE* nativePcmOutput;
     FILE* nativeCyclesOutput;
+    FILE* nativeManifestOutput;
     char* nativePcmPath;
     char* nativeCyclesPath;
     char* nativeManifestPath;
@@ -192,6 +284,7 @@ typedef struct Recorder
     uint64_t nativeFramesWritten;
     uint64_t nativeFirstCycle;
     uint64_t nativeLastCycle;
+    uint64_t nativeBeginCycle;
     uint64_t nativeEndCycle;
     double sumSquares;
     int peak;
@@ -205,9 +298,26 @@ typedef struct Recorder
     bool observationOverflow;
     bool nativeCapturing;
     bool nativeFinished;
-    bool nativePublished;
     bool nativeWriteFailed;
+    bool tracePublished;
+    bool nativePcmPublished;
+    bool nativeCyclesPublished;
+    bool nativeManifestPublished;
+    bool nativePublicationFailed;
+    DriverFixtureIdentity driverIdentity;
 } Recorder;
+
+typedef struct NativeFileIdentity
+{
+#if defined(_WIN32)
+    DWORD volumeSerialNumber;
+    DWORD fileIndexHigh;
+    DWORD fileIndexLow;
+#else
+    dev_t device;
+    ino_t inode;
+#endif
+} NativeFileIdentity;
 
 /* Shows the symbol-address contract needed to invoke the ROM's real MP2K driver. */
 static void print_usage(const char* program)
@@ -241,8 +351,19 @@ static void print_usage(const char* program)
             "                            Names: sq1,sq2,wave,noise,fifo-a,fifo-b,\n"
             "                            psg,directsound,all (comma-separated)\n"
             "  --mplay-all-stop ADDRESS  Stop existing players before a voice fixture\n"
+            "  --m4a-vsync-off ADDRESS   ROM m4aSoundVSyncOff for a clean driver DMA epoch\n"
+            "  --m4a-vsync-on ADDRESS    ROM m4aSoundVSyncOn paired with --m4a-vsync-off\n"
+            "  --m4a-vsync ADDRESS       ROM m4aSoundVSync callback used to align DMA ring 0\n"
             "  --require-max-chans N     Fail unless MP2K configures this PCM channel count\n"
-            "  --fixture-address ADDRESS EWRAM scratch base (default: 0x0203F000)\n",
+            "  --fixture-address ADDRESS EWRAM scratch base (default: 0x0203F000)\n"
+            "  --scenario NAME           Fixed driver scenario: start, envelope, pitch, volume-pan,\n"
+            "                            retrigger, or release; requires voice mode and native/both capture\n"
+            "  --elf FILE                ELF matching the ROM (with --scenario)\n"
+            "  --voicegroup-symbol NAME  Voicegroup symbol (with --scenario)\n"
+            "  --voice-index N           Zero-based voice index 0-127 (with --scenario)\n"
+            "  --dump-driver-track NAME  Print default fixed track bytes for a focused behavior test\n"
+            "  --dump-driver-span NAME   Print a fixed driver measurement span\n"
+            "  --dump-driver-family TYPE Print the family and solo mask for one ToneData type\n",
             program,
             program,
             program);
@@ -291,6 +412,26 @@ static bool parse_capture_stage(const char* text, CaptureStage* result)
         *result = CAPTURE_STAGE_NATIVE;
     else if (strcmp(text, "both") == 0)
         *result = CAPTURE_STAGE_FRONTEND | CAPTURE_STAGE_NATIVE;
+    else
+        return false;
+    return true;
+}
+
+/* Parses the fixed lifecycle enum; arbitrary event scripts are intentionally unsupported. */
+static bool parse_driver_scenario(const char* text, DriverScenario* result)
+{
+    if (strcmp(text, "start") == 0)
+        *result = DRIVER_SCENARIO_START;
+    else if (strcmp(text, "envelope") == 0)
+        *result = DRIVER_SCENARIO_ENVELOPE;
+    else if (strcmp(text, "pitch") == 0)
+        *result = DRIVER_SCENARIO_PITCH;
+    else if (strcmp(text, "volume-pan") == 0)
+        *result = DRIVER_SCENARIO_VOLUME_PAN;
+    else if (strcmp(text, "retrigger") == 0)
+        *result = DRIVER_SCENARIO_RETRIGGER;
+    else if (strcmp(text, "release") == 0)
+        *result = DRIVER_SCENARIO_RELEASE;
     else
         return false;
     return true;
@@ -383,6 +524,21 @@ static bool parse_options(int argc, char** argv, Options* options)
             if (!parse_u32(value, &options->mplayAllStop))
                 return false;
         }
+        else if (strcmp(name, "--m4a-vsync-off") == 0)
+        {
+            if (!parse_u32(value, &options->m4aVSyncOff))
+                return false;
+        }
+        else if (strcmp(name, "--m4a-vsync-on") == 0)
+        {
+            if (!parse_u32(value, &options->m4aVSyncOn))
+                return false;
+        }
+        else if (strcmp(name, "--m4a-vsync") == 0)
+        {
+            if (!parse_u32(value, &options->m4aVSync))
+                return false;
+        }
         else if (strcmp(name, "--song-start") == 0)
         {
             if (!parse_u32(value, &options->songStart))
@@ -413,6 +569,21 @@ static bool parse_options(int argc, char** argv, Options* options)
         {
             if (!parse_u32(value, &options->voiceAddress))
                 return false;
+        }
+        else if (strcmp(name, "--scenario") == 0)
+        {
+            if (!parse_driver_scenario(value, &options->driverScenario))
+                return false;
+        }
+        else if (strcmp(name, "--elf") == 0)
+            options->elfPath = value;
+        else if (strcmp(name, "--voicegroup-symbol") == 0)
+            options->voicegroupSymbol = value;
+        else if (strcmp(name, "--voice-index") == 0)
+        {
+            if (!parse_u32(value, &options->voiceIndex) || options->voiceIndex > 127u)
+                return false;
+            options->hasVoiceIndex = true;
         }
         else if (strcmp(name, "--fixture-address") == 0)
         {
@@ -488,6 +659,19 @@ static bool parse_options(int argc, char** argv, Options* options)
     bool outputConfiguration =
         (!frontendCapture || options->outputPath != NULL) &&
         (!nativeCapture || (options->traceOutputPath != NULL && options->nativeOutputPrefix != NULL));
+    bool driverScenarioRequested = options->driverScenario != DRIVER_SCENARIO_NONE;
+    if (driverScenarioRequested &&
+        (!voiceMode || !nativeCapture || options->elfPath == NULL || options->voicegroupSymbol == NULL ||
+         !options->hasVoiceIndex || options->voiceIndex > 127u || options->m4aVSyncOff == 0u ||
+         options->m4aVSyncOn == 0u || options->m4aVSync == 0u))
+    {
+        return false;
+    }
+    if (!driverScenarioRequested &&
+        (options->elfPath != NULL || options->voicegroupSymbol != NULL || options->hasVoiceIndex))
+    {
+        return false;
+    }
     return options->romPath != NULL && outputConfiguration && options->mplayInfo != 0u && options->soundInfo != 0u &&
            (voiceMode || songMode || bootSongMode);
 }
@@ -778,6 +962,15 @@ static bool sha256_file(const char* path, char output[65])
     return ok;
 }
 
+/* Hashes one in-memory byte array with the recorder's portable SHA-256. */
+static void sha256_bytes(const uint8_t* data, size_t count, char output[65])
+{
+    Sha256 sha;
+    sha256_init(&sha);
+    sha256_update(&sha, data, count);
+    sha256_finish(&sha, output);
+}
+
 /* Writes one manifest string without allowing compiler flags to break JSON. */
 static bool write_json_string(FILE* output, const char* text)
 {
@@ -816,6 +1009,347 @@ static char* path_with_suffix(const char* prefix, const char* suffix)
     memcpy(path, prefix, prefixLength);
     memcpy(path + prefixLength, suffix, suffixLength + 1u);
     return path;
+}
+
+/* Closes an exclusive staging descriptor on the active host platform. */
+static int native_close_descriptor(int descriptor)
+{
+#if defined(_WIN32)
+    return _close(descriptor);
+#else
+    return close(descriptor);
+#endif
+}
+
+/* Converts an exclusive staging descriptor into a binary read/write stream. */
+static FILE* native_fdopen_binary_update(int descriptor)
+{
+#if defined(_WIN32)
+    return _fdopen(descriptor, "w+b");
+#else
+    return fdopen(descriptor, "w+b");
+#endif
+}
+
+#if defined(_WIN32)
+/* Maps Windows publication errors to the recorder's errno diagnostics. */
+static void native_set_windows_errno(DWORD error)
+{
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)
+        errno = EEXIST;
+    else if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+        errno = ENOENT;
+    else if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION)
+        errno = EACCES;
+    else
+        errno = EIO;
+}
+
+/* Recovers the Windows handle for one still-open recorder staging stream. */
+static HANDLE native_stream_handle(FILE* input)
+{
+    if (input == NULL)
+    {
+        errno = EINVAL;
+        return INVALID_HANDLE_VALUE;
+    }
+    int descriptor = _fileno(input);
+    intptr_t rawHandle = descriptor < 0 ? -1 : _get_osfhandle(descriptor);
+    if (rawHandle == -1)
+    {
+        errno = EBADF;
+        return INVALID_HANDLE_VALUE;
+    }
+    return (HANDLE)rawHandle;
+}
+
+/* Renames an open staging stream while refusing to replace an existing final. */
+static bool native_rename_stream_noreplace(FILE* input, const char* finalPath)
+{
+    HANDLE handle = native_stream_handle(input);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    int wideCount = MultiByteToWideChar(CP_ACP, 0, finalPath, -1, NULL, 0);
+    if (wideCount <= 0)
+    {
+        native_set_windows_errno(GetLastError());
+        return false;
+    }
+    size_t informationSize = sizeof(FILE_RENAME_INFO) + ((size_t)wideCount - 1u) * sizeof(WCHAR);
+    if (informationSize > UINT32_MAX)
+    {
+        errno = ENOMEM;
+        return false;
+    }
+    FILE_RENAME_INFO* information = calloc(1u, informationSize);
+    if (information == NULL)
+        return false;
+    information->ReplaceIfExists = FALSE;
+    information->FileNameLength = (DWORD)((size_t)(wideCount - 1) * sizeof(WCHAR));
+    bool converted = MultiByteToWideChar(CP_ACP, 0, finalPath, -1, information->FileName, wideCount) != 0;
+    bool renamed =
+        converted && SetFileInformationByHandle(handle, FileRenameInfo, information, (DWORD)informationSize) != 0;
+    DWORD error = renamed ? ERROR_SUCCESS : GetLastError();
+    free(information);
+    if (!renamed)
+    {
+        native_set_windows_errno(error);
+        return false;
+    }
+    return true;
+}
+
+/* Marks this exact stream for deletion without resolving a competing pathname. */
+static bool native_delete_stream(FILE* input)
+{
+    HANDLE handle = native_stream_handle(input);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    FILE_DISPOSITION_INFO information = {.DeleteFile = TRUE};
+    if (!SetFileInformationByHandle(handle, FileDispositionInfo, &information, sizeof(information)))
+    {
+        native_set_windows_errno(GetLastError());
+        return false;
+    }
+    return true;
+}
+#endif
+
+/* Captures the identity of an open stream before it is published or cleaned up. */
+static bool native_stream_identity(FILE* input, NativeFileIdentity* identity)
+{
+    if (input == NULL || identity == NULL)
+    {
+        errno = EINVAL;
+        return false;
+    }
+#if defined(_WIN32)
+    HANDLE handle = native_stream_handle(input);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, &information))
+    {
+        native_set_windows_errno(GetLastError());
+        return false;
+    }
+    *identity = (NativeFileIdentity){
+        .volumeSerialNumber = information.dwVolumeSerialNumber,
+        .fileIndexHigh = information.nFileIndexHigh,
+        .fileIndexLow = information.nFileIndexLow,
+    };
+#else
+    struct stat information;
+    if (fstat(fileno(input), &information) != 0)
+        return false;
+    *identity = (NativeFileIdentity){
+        .device = information.st_dev,
+        .inode = information.st_ino,
+    };
+#endif
+    return true;
+}
+
+/* Checks that a pathname still names the exact file object owned by this stream. */
+static bool native_path_matches_identity(const char* path, const NativeFileIdentity* expected)
+{
+    if (path == NULL || expected == NULL)
+    {
+        errno = EINVAL;
+        return false;
+    }
+#if defined(_WIN32)
+    HANDLE handle = CreateFileA(path,
+                                FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL,
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                NULL);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        native_set_windows_errno(GetLastError());
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION information;
+    bool queried = GetFileInformationByHandle(handle, &information) != 0;
+    DWORD error = queried ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    if (!queried)
+    {
+        native_set_windows_errno(error);
+        return false;
+    }
+    if (information.dwVolumeSerialNumber != expected->volumeSerialNumber ||
+        information.nFileIndexHigh != expected->fileIndexHigh || information.nFileIndexLow != expected->fileIndexLow)
+    {
+        errno = ESTALE;
+        return false;
+    }
+#else
+    struct stat information;
+    if (lstat(path, &information) != 0)
+        return false;
+    if (information.st_dev != expected->device || information.st_ino != expected->inode)
+    {
+        errno = ESTALE;
+        return false;
+    }
+#endif
+    return true;
+}
+
+/* Binds a staging or final pathname to its recorder-owned open stream. */
+static bool native_stream_path_matches(FILE* input, const char* path)
+{
+    NativeFileIdentity identity;
+    return native_stream_identity(input, &identity) && native_path_matches_identity(path, &identity);
+}
+
+/* Removes only an entry proven to name this recorder's open stream. */
+static bool native_remove_matching_stream_path(FILE* input, const char* path)
+{
+    if (!native_stream_path_matches(input, path))
+        return false;
+#if defined(_WIN32)
+    return native_delete_stream(input);
+#else
+    return unlink(path) == 0;
+#endif
+}
+
+/* Opens a collision-free sibling staging stream without following a pre-existing path. */
+static FILE* native_open_unique_temp(const char* finalPath, char** tempPath)
+{
+    *tempPath = NULL;
+#if defined(_WIN32)
+    size_t finalLength = strlen(finalPath);
+    if (finalLength > SIZE_MAX - 64u)
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+    char* path = malloc(finalLength + 64u);
+    if (path == NULL)
+        return NULL;
+    for (unsigned attempt = 0u; attempt < 1024u; ++attempt)
+    {
+        unsigned high = 0u;
+        unsigned low = 0u;
+        if (rand_s(&high) != 0 || rand_s(&low) != 0)
+        {
+            free(path);
+            errno = EIO;
+            return NULL;
+        }
+        int count = snprintf(path, finalLength + 64u, "%s.tmp.%08X%08X", finalPath, high, low);
+        if (count < 0 || (size_t)count >= finalLength + 64u)
+        {
+            free(path);
+            errno = ENOMEM;
+            return NULL;
+        }
+        HANDLE handle = CreateFileA(path,
+                                    GENERIC_READ | GENERIC_WRITE | DELETE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    NULL,
+                                    CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL,
+                                    NULL);
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            int descriptor = _open_osfhandle((intptr_t)handle, _O_RDWR | _O_BINARY);
+            if (descriptor >= 0)
+            {
+                FILE* output = native_fdopen_binary_update(descriptor);
+                if (output != NULL)
+                {
+                    *tempPath = path;
+                    return output;
+                }
+                int savedErrno = errno;
+                native_close_descriptor(descriptor);
+                DeleteFileA(path);
+                free(path);
+                errno = savedErrno;
+                return NULL;
+            }
+            int savedErrno = errno;
+            CloseHandle(handle);
+            DeleteFileA(path);
+            free(path);
+            errno = savedErrno;
+            return NULL;
+        }
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+        {
+            native_set_windows_errno(error);
+            break;
+        }
+    }
+    int savedErrno = errno;
+    free(path);
+    errno = savedErrno;
+    return NULL;
+#else
+    char* path = path_with_suffix(finalPath, ".tmp.XXXXXX");
+    if (path == NULL)
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+    int descriptor = mkstemp(path);
+    if (descriptor < 0)
+    {
+        int savedErrno = errno;
+        free(path);
+        errno = savedErrno;
+        return NULL;
+    }
+    FILE* output = native_fdopen_binary_update(descriptor);
+    if (output != NULL)
+    {
+        *tempPath = path;
+        return output;
+    }
+    int savedErrno = errno;
+    native_close_descriptor(descriptor);
+    unlink(path);
+    free(path);
+    errno = savedErrno;
+    return NULL;
+#endif
+}
+
+/* Publishes one verified staging stream without replacing an existing final path. */
+static bool native_publish_noreplace(FILE* stagedFile, const char* tempPath, const char* finalPath, bool* published)
+{
+    *published = false;
+    if (fflush(stagedFile) != 0 || !native_stream_path_matches(stagedFile, tempPath))
+        return false;
+#if defined(_WIN32)
+    if (!native_rename_stream_noreplace(stagedFile, finalPath))
+        return false;
+    *published = true;
+    return native_stream_path_matches(stagedFile, finalPath);
+#else
+    if (link(tempPath, finalPath) != 0)
+        return false;
+    *published = true;
+    return native_stream_path_matches(stagedFile, finalPath);
+#endif
+}
+
+/* Drops the moved Windows staging name after its stream has a verified final name. */
+static void native_retire_published_temp_path(char** tempPath)
+{
+#if defined(_WIN32)
+    free(*tempPath);
+    *tempPath = NULL;
+#else
+    (void)tempPath;
+#endif
 }
 
 /* Reset only recorder-owned buffered observations when the core resets. */
@@ -901,12 +1435,14 @@ static bool write_trace_timer(Recorder* recorder, const struct GBAAudioObservati
                    observation->value) > 0;
 }
 
-/* Writes a logical native sample event; PCM payload stays in the binary artifact. */
+/* Serializes sample observation lateness without adding a second trace time domain. */
 static bool write_trace_sample(Recorder* recorder, const struct GBAAudioObservation* observation)
 {
     uint32_t order = 0u;
-    return next_trace_position(recorder, observation->cycle, &order) &&
-           fprintf(recorder->traceOutput, "SAMPLE %" PRIu64 " %" PRIu32 "\n", observation->cycle, order) > 0;
+    if (observation->cyclesLate > TRACE_ORDER_DELAY_MASK || !next_trace_position(recorder, observation->cycle, &order))
+        return false;
+    order |= observation->cyclesLate;
+    return fprintf(recorder->traceOutput, "SAMPLE %" PRIu64 " %" PRIu32 "\n", observation->cycle, order) > 0;
 }
 
 /* Writes the native PCM and cycle records directly from one SAMPLE observation. */
@@ -1133,24 +1669,86 @@ static bool drain_observations(const struct mCore* core, Recorder* recorder)
     return true;
 }
 
+/* Returns the logical MP2K VBlank count that defines each fixed lifecycle. */
+static uint32_t driver_scenario_logical_vblanks(DriverScenario scenario)
+{
+    switch (scenario)
+    {
+    case DRIVER_SCENARIO_START:
+        return 1u;
+    case DRIVER_SCENARIO_ENVELOPE:
+        return 6u;
+    case DRIVER_SCENARIO_PITCH:
+    case DRIVER_SCENARIO_VOLUME_PAN:
+        return 4u;
+    case DRIVER_SCENARIO_RETRIGGER:
+        return 5u;
+    case DRIVER_SCENARIO_RELEASE:
+        return 6u;
+    case DRIVER_SCENARIO_NONE:
+        return 0u;
+    }
+    return 0u;
+}
+
+/* Returns the native frame span, including one post-action frame for observation. */
+static uint32_t driver_scenario_span_frames(DriverScenario scenario)
+{
+    switch (scenario)
+    {
+    case DRIVER_SCENARIO_START:
+        return DRIVER_SCENARIO_START_FRAMES;
+    case DRIVER_SCENARIO_ENVELOPE:
+        return DRIVER_SCENARIO_ENVELOPE_FRAMES;
+    case DRIVER_SCENARIO_PITCH:
+        return DRIVER_SCENARIO_PITCH_FRAMES;
+    case DRIVER_SCENARIO_VOLUME_PAN:
+        return DRIVER_SCENARIO_VOLUME_PAN_FRAMES;
+    case DRIVER_SCENARIO_RETRIGGER:
+        return DRIVER_SCENARIO_RETRIGGER_FRAMES;
+    case DRIVER_SCENARIO_RELEASE:
+        return DRIVER_SCENARIO_RELEASE_FRAMES;
+    case DRIVER_SCENARIO_NONE:
+        return 0u;
+    }
+    return 0u;
+}
+
+/* Keeps the replay tail outside the fixed action schedule while covering one SAMPLE period. */
+static uint64_t driver_scenario_span_cycles(DriverScenario scenario)
+{
+    if (scenario == DRIVER_SCENARIO_NONE)
+        return 0u;
+    uint64_t span =
+        (uint64_t)driver_scenario_span_frames(scenario) * GBA_CYCLES_PER_FRAME + DRIVER_SCENARIO_CAPTURE_TAIL_CYCLES;
+    return ((span + 511u) & ~UINT64_C(511)) + 512u;
+}
+
 /* Opens the measurement interval after every preceding reset/setup event was traced. */
 static bool begin_native_capture(struct mCore* core, Recorder* recorder, const Options* options)
 {
     if (!drain_observations(core, recorder))
         return false;
     uint64_t startCycle = next_sample_cycle(core);
-    double captureCycles = options->durationSeconds * (double)GBA_CLOCK_HZ;
-    if (captureCycles > (double)(UINT64_MAX - startCycle))
-        return false;
-    uint64_t durationCycles = (uint64_t)(captureCycles + 0.5);
+    uint64_t durationCycles = driver_scenario_span_cycles(options->driverScenario);
+    if (durationCycles == 0u)
+    {
+        /* Legacy captures keep their user-duration interval; a fixed driver
+           transaction adds one replay slack SAMPLE period after its callback tail. */
+        double captureCycles = options->durationSeconds * (double)GBA_CLOCK_HZ;
+        if (captureCycles > (double)(UINT64_MAX - startCycle))
+            return false;
+        durationCycles = (uint64_t)(captureCycles + 0.5);
+    }
     if (durationCycles == 0u || !write_trace_marker(recorder, "BEGIN", startCycle))
         return false;
+    recorder->nativeBeginCycle = startCycle;
     recorder->nativeEndCycle = startCycle + durationCycles;
     recorder->nativeCapturing = true;
     return true;
 }
 
-/* Opens all native outputs before reset; the observation callback only copies records. */
+/* Opens exclusive native staging streams; final destinations are never prepared by deletion. */
 static bool prepare_native_capture(Recorder* recorder, const Options* options)
 {
     recorder->observationCapacity = OBSERVATION_BUFFER_CAPACITY;
@@ -1158,34 +1756,25 @@ static bool prepare_native_capture(Recorder* recorder, const Options* options)
     recorder->nativePcmPath = path_with_suffix(options->nativeOutputPrefix, ".pcm");
     recorder->nativeCyclesPath = path_with_suffix(options->nativeOutputPrefix, ".cycles");
     recorder->nativeManifestPath = path_with_suffix(options->nativeOutputPrefix, ".json");
-    recorder->traceTempPath = path_with_suffix(options->traceOutputPath, ".tmp");
-    recorder->nativePcmTempPath = path_with_suffix(options->nativeOutputPrefix, ".pcm.tmp");
-    recorder->nativeCyclesTempPath = path_with_suffix(options->nativeOutputPrefix, ".cycles.tmp");
-    recorder->nativeManifestTempPath = path_with_suffix(options->nativeOutputPrefix, ".json.tmp");
     if (recorder->observations == NULL || recorder->nativePcmPath == NULL || recorder->nativeCyclesPath == NULL ||
-        recorder->nativeManifestPath == NULL || recorder->traceTempPath == NULL ||
-        recorder->nativePcmTempPath == NULL || recorder->nativeCyclesTempPath == NULL ||
-        recorder->nativeManifestTempPath == NULL || strcmp(options->traceOutputPath, recorder->nativePcmPath) == 0 ||
+        recorder->nativeManifestPath == NULL || strcmp(options->traceOutputPath, recorder->nativePcmPath) == 0 ||
         strcmp(options->traceOutputPath, recorder->nativeCyclesPath) == 0 ||
         strcmp(options->traceOutputPath, recorder->nativeManifestPath) == 0 ||
-        strcmp(options->traceOutputPath, recorder->nativePcmTempPath) == 0 ||
-        strcmp(options->traceOutputPath, recorder->nativeCyclesTempPath) == 0 ||
-        strcmp(options->traceOutputPath, recorder->nativeManifestTempPath) == 0)
+        (options->elfPath != NULL && (strcmp(options->elfPath, options->traceOutputPath) == 0 ||
+                                      strcmp(options->elfPath, recorder->nativePcmPath) == 0 ||
+                                      strcmp(options->elfPath, recorder->nativeCyclesPath) == 0 ||
+                                      strcmp(options->elfPath, recorder->nativeManifestPath) == 0)))
     {
+        errno = EINVAL;
         return false;
     }
-    remove(options->traceOutputPath);
-    remove(recorder->nativePcmPath);
-    remove(recorder->nativeCyclesPath);
-    remove(recorder->nativeManifestPath);
-    remove(recorder->traceTempPath);
-    remove(recorder->nativePcmTempPath);
-    remove(recorder->nativeCyclesTempPath);
-    remove(recorder->nativeManifestTempPath);
-    recorder->traceOutput = fopen(recorder->traceTempPath, "wb");
-    recorder->nativePcmOutput = fopen(recorder->nativePcmTempPath, "wb");
-    recorder->nativeCyclesOutput = fopen(recorder->nativeCyclesTempPath, "wb");
+    recorder->traceOutput = native_open_unique_temp(options->traceOutputPath, &recorder->traceTempPath);
+    recorder->nativePcmOutput = native_open_unique_temp(recorder->nativePcmPath, &recorder->nativePcmTempPath);
+    recorder->nativeCyclesOutput = native_open_unique_temp(recorder->nativeCyclesPath, &recorder->nativeCyclesTempPath);
+    recorder->nativeManifestOutput =
+        native_open_unique_temp(recorder->nativeManifestPath, &recorder->nativeManifestTempPath);
     if (recorder->traceOutput == NULL || recorder->nativePcmOutput == NULL || recorder->nativeCyclesOutput == NULL ||
+        recorder->nativeManifestOutput == NULL ||
         fprintf(recorder->traceOutput, "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\n", GBA_CLOCK_HZ) < 0)
     {
         return false;
@@ -1198,13 +1787,137 @@ static bool prepare_native_capture(Recorder* recorder, const Options* options)
     return true;
 }
 
+/* Returns the stable family label consumed by the generic lifecycle harness. */
+static const char* driver_family_name(DriverFamily family)
+{
+    switch (family)
+    {
+    case DRIVER_FAMILY_DIRECTSOUND:
+        return "directsound";
+    case DRIVER_FAMILY_SQ1:
+        return "sq1";
+    case DRIVER_FAMILY_SQ2:
+        return "sq2";
+    case DRIVER_FAMILY_PSW:
+        return "psw";
+    case DRIVER_FAMILY_NONE:
+        return NULL;
+    }
+    return NULL;
+}
+
+/* Returns the canonical manifest name for a fixed driver lifecycle. */
+static const char* driver_scenario_name(DriverScenario scenario)
+{
+    switch (scenario)
+    {
+    case DRIVER_SCENARIO_START:
+        return "start";
+    case DRIVER_SCENARIO_ENVELOPE:
+        return "envelope";
+    case DRIVER_SCENARIO_PITCH:
+        return "pitch";
+    case DRIVER_SCENARIO_VOLUME_PAN:
+        return "volume-pan";
+    case DRIVER_SCENARIO_RETRIGGER:
+        return "retrigger";
+    case DRIVER_SCENARIO_RELEASE:
+        return "release";
+    case DRIVER_SCENARIO_NONE:
+        return NULL;
+    }
+    return NULL;
+}
+
+/* Describes externally meaningful lifecycle controls without asserting a bus transaction oracle. */
+static const char* driver_scenario_high_level_action(DriverScenario scenario)
+{
+    switch (scenario)
+    {
+    case DRIVER_SCENARIO_START:
+        return "note-on at tick 0";
+    case DRIVER_SCENARIO_ENVELOPE:
+        return "note-on at tick 0; sustain through tick 6";
+    case DRIVER_SCENARIO_PITCH:
+        return "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4";
+    case DRIVER_SCENARIO_VOLUME_PAN:
+        return "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4";
+    case DRIVER_SCENARIO_RETRIGGER:
+        return "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5";
+    case DRIVER_SCENARIO_RELEASE:
+        return "note-on at tick 0; note-off at tick 2; release through tick 6";
+    case DRIVER_SCENARIO_NONE:
+        return NULL;
+    }
+    return NULL;
+}
+
+/* Appends resolved ROM fixture provenance while leaving the transaction oracle independent. */
+static bool write_driver_manifest_fields(FILE* output,
+                                         const Options* options,
+                                         const DriverFixtureIdentity* identity,
+                                         uint64_t scenarioBeginCycle,
+                                         uint64_t scenarioEndCycle,
+                                         const char elfSha256[65],
+                                         const char pcmSha256[65],
+                                         const char cyclesSha256[65])
+{
+    const char* family = driver_family_name(identity->family);
+    const char* scenario = driver_scenario_name(options->driverScenario);
+    const char* highLevelAction = driver_scenario_high_level_action(options->driverScenario);
+    bool ok =
+        family != NULL && scenario != NULL && highLevelAction != NULL && fputs("  \"elf_sha256\": ", output) >= 0 &&
+        write_json_string(output, elfSha256) && fputs(",\n", output) >= 0 &&
+        fputs("  \"voicegroup_symbol\": ", output) >= 0 && write_json_string(output, options->voicegroupSymbol) &&
+        fputs(",\n", output) >= 0 && fprintf(output, "  \"voice_index\": %" PRIu32 ",\n", options->voiceIndex) > 0 &&
+        fprintf(output, "  \"rom_voice_address\": %" PRIu32 ",\n", options->voiceAddress) > 0 &&
+        fputs("  \"family\": ", output) >= 0 && write_json_string(output, family) && fputs(",\n", output) >= 0 &&
+        fputs("  \"tone_data_sha256\": ", output) >= 0 && write_json_string(output, identity->toneDataSha256) &&
+        fputs(",\n", output) >= 0 && fputs("  \"family_payload_sha256\": ", output) >= 0 &&
+        write_json_string(output, identity->familyPayloadSha256) && fputs(",\n", output) >= 0 &&
+        fprintf(output, "  \"family_payload_size\": %" PRIu32 ",\n", identity->payloadSize) > 0 &&
+        fprintf(output, "  \"resolved_type\": %u,\n", (unsigned)identity->resolvedType) > 0 &&
+        fputs("  \"scenario\": ", output) >= 0 && write_json_string(output, scenario) && fputs(",\n", output) >= 0 &&
+        fprintf(output,
+                "  \"scenario_logical_vblanks\": %u,\n",
+                (unsigned)driver_scenario_logical_vblanks(options->driverScenario)) > 0 &&
+        fprintf(output,
+                "  \"scenario_capture_frames\": %u,\n",
+                (unsigned)driver_scenario_span_frames(options->driverScenario)) > 0 &&
+        fprintf(output,
+                "  \"scenario_span_frames\": %u,\n",
+                (unsigned)driver_scenario_span_frames(options->driverScenario)) > 0 &&
+        fprintf(output,
+                "  \"scenario_span_cycles\": %" PRIu64 ",\n",
+                driver_scenario_span_cycles(options->driverScenario)) > 0 &&
+        fprintf(output, "  \"scenario_begin_cycle\": %" PRIu64 ",\n", scenarioBeginCycle) > 0 &&
+        fprintf(output, "  \"scenario_end_cycle\": %" PRIu64 ",\n", scenarioEndCycle) > 0 &&
+        fputs("  \"high_level_action\": ", output) >= 0 && write_json_string(output, highLevelAction) &&
+        fputs(",\n", output) >= 0 && fprintf(output, "  \"note\": %u,\n", (unsigned)options->note) > 0 &&
+        fprintf(output, "  \"velocity\": %u,\n", (unsigned)options->velocity) > 0 &&
+        fprintf(output, "  \"volume\": %u,\n", (unsigned)options->volume) > 0 &&
+        fprintf(output, "  \"pan\": %u,\n", (unsigned)options->pan) > 0 && fputs("  \"pcm_sha256\": ", output) >= 0 &&
+        write_json_string(output, pcmSha256) && fputs(",\n", output) >= 0 &&
+        fputs("  \"cycles_sha256\": ", output) >= 0 && write_json_string(output, cyclesSha256);
+    if (identity->family == DRIVER_FAMILY_PSW)
+    {
+        ok = ok && fputs(",\n", output) >= 0 && fputs("  \"waveform_sha256\": ", output) >= 0 &&
+             write_json_string(output, identity->waveformSha256);
+    }
+    return ok;
+}
+
 /* Emits the exact native capture schema shared with poryaaaa_audio_trace. */
 static bool write_native_manifest(const Recorder* recorder,
                                   const Options* options,
+                                  const DriverFixtureIdentity* identity,
                                   const char romSha256[65],
-                                  const char traceSha256[65])
+                                  const char traceSha256[65],
+                                  const char elfSha256[65],
+                                  const char pcmSha256[65],
+                                  const char cyclesSha256[65])
 {
-    FILE* output = fopen(recorder->nativeManifestTempPath, "wb");
+    FILE* output = recorder->nativeManifestOutput;
     if (output == NULL)
         return false;
     bool ok = fprintf(output,
@@ -1241,87 +1954,129 @@ static bool write_native_manifest(const Recorder* recorder,
          write_json_string(output, PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256) && fputs(",\n", output) >= 0 &&
          fputs("  \"compiler\": ", output) >= 0 && write_json_string(output, PORYAAAA_MGBA_RECORDER_COMPILER) &&
          fputs(",\n", output) >= 0 && fputs("  \"compiler_flags\": ", output) >= 0 &&
-         write_json_string(output, PORYAAAA_MGBA_RECORDER_COMPILE_FLAGS) && fputs(",\n", output) >= 0 &&
-         fputs("  \"rom_sha256\": ", output) >= 0 && write_json_string(output, romSha256) &&
+         write_json_string(output, PORYAAAA_MGBA_RECORDER_COMPILE_FLAGS) && fputs(",\n", output) >= 0;
+    ok = ok && fputs("  \"rom_sha256\": ", output) >= 0 && write_json_string(output, romSha256) &&
          fputs(",\n", output) >= 0 && fputs("  \"trace_sha256\": ", output) >= 0 &&
-         write_json_string(output, traceSha256) && fputs("\n}\n", output) >= 0;
+         write_json_string(output, traceSha256);
+    if (identity != NULL)
+        ok = ok && fputs(",\n", output) >= 0 &&
+             write_driver_manifest_fields(output,
+                                          options,
+                                          identity,
+                                          recorder->nativeBeginCycle,
+                                          recorder->nativeEndCycle,
+                                          elfSha256,
+                                          pcmSha256,
+                                          cyclesSha256);
+    ok = ok && fputs("\n}\n", output) >= 0;
     if (fflush(output) != 0)
         ok = false;
-    if (fclose(output) != 0)
-        ok = false;
-    if (!ok)
-        remove(recorder->nativeManifestTempPath);
     return ok;
 }
 
-/* Publishes complete native siblings only after the measurement and trace are complete. */
+/* Publishes a complete native sibling set without replacing any destination. */
 static bool finish_native_capture(Recorder* recorder, const Options* options)
 {
     if (recorder->nativeWriteFailed || !recorder->nativeFinished || recorder->nativeFramesWritten == 0u ||
         recorder->nativePeak == 0 || recorder->traceOutput == NULL || recorder->nativePcmOutput == NULL ||
-        recorder->nativeCyclesOutput == NULL)
+        recorder->nativeCyclesOutput == NULL || recorder->nativeManifestOutput == NULL)
     {
         return false;
     }
-    bool traceClosed = fclose(recorder->traceOutput) == 0;
-    recorder->traceOutput = NULL;
-    bool pcmClosed = fclose(recorder->nativePcmOutput) == 0;
-    recorder->nativePcmOutput = NULL;
-    bool cyclesClosed = fclose(recorder->nativeCyclesOutput) == 0;
-    recorder->nativeCyclesOutput = NULL;
-    if (!traceClosed || !pcmClosed || !cyclesClosed)
+    bool outputsFlushed = fflush(recorder->traceOutput) == 0 && fflush(recorder->nativePcmOutput) == 0 &&
+                          fflush(recorder->nativeCyclesOutput) == 0;
+    if (!outputsFlushed)
         return false;
 
     char romSha256[65];
     char traceSha256[65];
-    if (!sha256_file(options->romPath, romSha256) || !sha256_file(recorder->traceTempPath, traceSha256) ||
-        !write_native_manifest(recorder, options, romSha256, traceSha256))
+    char elfSha256[65];
+    char pcmSha256[65];
+    char cyclesSha256[65];
+    const DriverFixtureIdentity* identity =
+        options->driverScenario != DRIVER_SCENARIO_NONE ? &recorder->driverIdentity : NULL;
+    bool hashesOk = sha256_file(options->romPath, romSha256) && sha256_file(recorder->traceTempPath, traceSha256);
+    if (identity != NULL)
+    {
+        hashesOk = hashesOk && sha256_file(options->elfPath, elfSha256) &&
+                   sha256_file(recorder->nativePcmTempPath, pcmSha256) &&
+                   sha256_file(recorder->nativeCyclesTempPath, cyclesSha256);
+    }
+    if (!hashesOk ||
+        !write_native_manifest(recorder, options, identity, romSha256, traceSha256, elfSha256, pcmSha256, cyclesSha256))
     {
         return false;
     }
-    remove(options->traceOutputPath);
-    remove(recorder->nativePcmPath);
-    remove(recorder->nativeCyclesPath);
-    remove(recorder->nativeManifestPath);
-    if (rename(recorder->traceTempPath, options->traceOutputPath) != 0 ||
-        rename(recorder->nativePcmTempPath, recorder->nativePcmPath) != 0 ||
-        rename(recorder->nativeCyclesTempPath, recorder->nativeCyclesPath) != 0 ||
-        rename(recorder->nativeManifestTempPath, recorder->nativeManifestPath) != 0)
+    if (!native_publish_noreplace(
+            recorder->traceOutput, recorder->traceTempPath, options->traceOutputPath, &recorder->tracePublished))
     {
-        remove(options->traceOutputPath);
-        remove(recorder->nativePcmPath);
-        remove(recorder->nativeCyclesPath);
-        remove(recorder->nativeManifestPath);
-        return false;
+        goto publication_failed;
     }
-    recorder->nativePublished = true;
+    native_retire_published_temp_path(&recorder->traceTempPath);
+    if (!native_publish_noreplace(recorder->nativePcmOutput,
+                                  recorder->nativePcmTempPath,
+                                  recorder->nativePcmPath,
+                                  &recorder->nativePcmPublished))
+    {
+        goto publication_failed;
+    }
+    native_retire_published_temp_path(&recorder->nativePcmTempPath);
+    if (!native_publish_noreplace(recorder->nativeCyclesOutput,
+                                  recorder->nativeCyclesTempPath,
+                                  recorder->nativeCyclesPath,
+                                  &recorder->nativeCyclesPublished))
+    {
+        goto publication_failed;
+    }
+    native_retire_published_temp_path(&recorder->nativeCyclesTempPath);
+    if (!native_publish_noreplace(recorder->nativeManifestOutput,
+                                  recorder->nativeManifestTempPath,
+                                  recorder->nativeManifestPath,
+                                  &recorder->nativeManifestPublished))
+    {
+        goto publication_failed;
+    }
+    native_retire_published_temp_path(&recorder->nativeManifestTempPath);
     return true;
+
+publication_failed:
+    recorder->nativePublicationFailed = true;
+    return false;
 }
 
-/* Releases partially written native artifacts after any unsuccessful recorder path. */
+/* Releases only recorder-owned entries, retaining complete stages after publication failures. */
 static void discard_native_capture(Recorder* recorder, const Options* options, bool successful)
 {
+    if (!successful)
+    {
+        if (recorder->nativeManifestPublished)
+            native_remove_matching_stream_path(recorder->nativeManifestOutput, recorder->nativeManifestPath);
+        if (recorder->nativeCyclesPublished)
+            native_remove_matching_stream_path(recorder->nativeCyclesOutput, recorder->nativeCyclesPath);
+        if (recorder->nativePcmPublished)
+            native_remove_matching_stream_path(recorder->nativePcmOutput, recorder->nativePcmPath);
+        if (recorder->tracePublished)
+            native_remove_matching_stream_path(recorder->traceOutput, options->traceOutputPath);
+    }
+    if (!recorder->nativePublicationFailed)
+    {
+        if (recorder->traceTempPath != NULL)
+            native_remove_matching_stream_path(recorder->traceOutput, recorder->traceTempPath);
+        if (recorder->nativePcmTempPath != NULL)
+            native_remove_matching_stream_path(recorder->nativePcmOutput, recorder->nativePcmTempPath);
+        if (recorder->nativeCyclesTempPath != NULL)
+            native_remove_matching_stream_path(recorder->nativeCyclesOutput, recorder->nativeCyclesTempPath);
+        if (recorder->nativeManifestTempPath != NULL)
+            native_remove_matching_stream_path(recorder->nativeManifestOutput, recorder->nativeManifestTempPath);
+    }
     if (recorder->traceOutput != NULL)
         fclose(recorder->traceOutput);
     if (recorder->nativePcmOutput != NULL)
         fclose(recorder->nativePcmOutput);
     if (recorder->nativeCyclesOutput != NULL)
         fclose(recorder->nativeCyclesOutput);
-    if (recorder->traceTempPath != NULL)
-        remove(recorder->traceTempPath);
-    if (recorder->nativePcmTempPath != NULL)
-        remove(recorder->nativePcmTempPath);
-    if (recorder->nativeCyclesTempPath != NULL)
-        remove(recorder->nativeCyclesTempPath);
-    if (recorder->nativeManifestTempPath != NULL)
-        remove(recorder->nativeManifestTempPath);
-    if (recorder->nativePublished && !successful)
-    {
-        remove(options->traceOutputPath);
-        remove(recorder->nativePcmPath);
-        remove(recorder->nativeCyclesPath);
-        remove(recorder->nativeManifestPath);
-    }
+    if (recorder->nativeManifestOutput != NULL)
+        fclose(recorder->nativeManifestOutput);
     free(recorder->observations);
     free(recorder->nativePcmPath);
     free(recorder->nativeCyclesPath);
@@ -1333,6 +2088,7 @@ static void discard_native_capture(Recorder* recorder, const Options* options, b
     recorder->traceOutput = NULL;
     recorder->nativePcmOutput = NULL;
     recorder->nativeCyclesOutput = NULL;
+    recorder->nativeManifestOutput = NULL;
 }
 
 /* Runs one full frame then drains observations while no mGBA callback is active. */
@@ -1356,25 +2112,147 @@ static void inject_voice(struct mCore* core, uint32_t sourceAddress, uint32_t de
         core->busWrite8(core, destinationAddress + i, (uint8_t)core->busRead8(core, sourceAddress + i));
 }
 
-/* Builds a one-track tied-note song in EWRAM for deterministic isolated playback. */
-static void inject_song(struct mCore* core, const Options* options)
+/* Resolves only the hardware families covered by the fixed differential matrix. */
+static bool resolve_driver_family(uint8_t type, DriverFamily* family, uint32_t* soloMask)
 {
-    uint32_t voiceAddress = options->fixtureAddress + FIXTURE_VOICE_OFFSET;
-    uint32_t headerAddress = options->fixtureAddress + FIXTURE_HEADER_OFFSET;
-    uint32_t trackAddress = options->fixtureAddress + FIXTURE_TRACK_OFFSET;
-    uint32_t loopAddress = trackAddress + 13u;
+    switch (type)
+    {
+    case 0x00u:
+        *family = DRIVER_FAMILY_DIRECTSOUND;
+        *soloMask = AUDIO_CHANNEL_DIRECTSOUND;
+        return true;
+    case 0x01u:
+        *family = DRIVER_FAMILY_SQ1;
+        *soloMask = AUDIO_CHANNEL_SQ1;
+        return true;
+    case 0x02u:
+        *family = DRIVER_FAMILY_SQ2;
+        *soloMask = AUDIO_CHANNEL_SQ2;
+        return true;
+    case 0x03u:
+    case 0x0Bu:
+        *family = DRIVER_FAMILY_PSW;
+        *soloMask = AUDIO_CHANNEL_WAVE;
+        return true;
+    default:
+        return false;
+    }
+}
 
-    inject_voice(core, options->voiceAddress, voiceAddress);
+/* Rejects malformed ROM spans before payload hashing can read a mirrored bus address. */
+static bool is_gba_rom_span(uint32_t address, uint32_t size)
+{
+    return address >= GBA_ROM_START && address <= GBA_ROM_END && size <= GBA_ROM_END - address;
+}
 
-    core->busWrite32(core, headerAddress, 1u); /* trackCount=1, blockCount=priority=reverb=0 */
-    core->busWrite32(core, headerAddress + 4u, voiceAddress);
-    core->busWrite32(core, headerAddress + 8u, trackAddress);
+/* Hashes the original ROM payload incrementally so DirectSound identity needs no host allocation. */
+static bool sha256_rom_bytes(struct mCore* core, uint32_t address, uint32_t size, char output[65])
+{
+    if (!is_gba_rom_span(address, size))
+        return false;
+    Sha256 sha;
+    sha256_init(&sha);
+    uint8_t buffer[256];
+    uint32_t offset = 0u;
+    while (offset < size)
+    {
+        uint32_t count = size - offset;
+        if (count > sizeof(buffer))
+            count = sizeof(buffer);
+        for (uint32_t i = 0u; i < count; ++i)
+            buffer[i] = (uint8_t)core->busRead8(core, address + offset + i);
+        sha256_update(&sha, buffer, count);
+        offset += count;
+    }
+    sha256_finish(&sha, output);
+    return true;
+}
 
-    const uint8_t commands[] = {
+/* Reads a GBA little-endian pointer or size from the byte-exact ROM representation. */
+static uint32_t read_le_u32(const uint8_t bytes[4])
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) | ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+/* Captures the real ToneData and only payload needed to prove the resolved family fixture. */
+static bool capture_driver_identity(struct mCore* core, const Options* options, DriverFixtureIdentity* identity)
+{
+    for (uint32_t i = 0u; i < TONE_DATA_SIZE; ++i)
+        identity->toneData[i] = (uint8_t)core->busRead8(core, options->voiceAddress + i);
+    identity->resolvedType = identity->toneData[0];
+    if (!resolve_driver_family(identity->resolvedType, &identity->family, &identity->soloMask))
+    {
+        fprintf(stderr,
+                "Driver fixture at 0x%08" PRIX32 " has unsupported ToneData type 0x%02X\n",
+                options->voiceAddress,
+                (unsigned)identity->resolvedType);
+        return false;
+    }
+    memcpy(identity->normalizedToneData, identity->toneData, TONE_DATA_SIZE);
+    memset(identity->normalizedToneData + 4u, 0, 4u);
+    sha256_bytes(identity->normalizedToneData, TONE_DATA_SIZE, identity->toneDataSha256);
+    if (identity->family == DRIVER_FAMILY_PSW)
+    {
+        identity->payloadAddress = read_le_u32(identity->toneData + 4u);
+        identity->payloadSize = PSW_WAVEFORM_SIZE;
+        if (!sha256_rom_bytes(core, identity->payloadAddress, identity->payloadSize, identity->familyPayloadSha256))
+            return false;
+        for (uint32_t i = 0u; i < PSW_WAVEFORM_SIZE; ++i)
+            identity->waveform[i] = (uint8_t)core->busRead8(core, identity->payloadAddress + i);
+        sha256_bytes(identity->waveform, PSW_WAVEFORM_SIZE, identity->waveformSha256);
+    }
+    else if (identity->family == DRIVER_FAMILY_DIRECTSOUND)
+    {
+        uint8_t header[DIRECTSOUND_WAVE_HEADER_SIZE];
+        identity->payloadAddress = read_le_u32(identity->toneData + 4u);
+        if (!is_gba_rom_span(identity->payloadAddress, DIRECTSOUND_WAVE_HEADER_SIZE))
+            return false;
+        for (uint32_t i = 0u; i < DIRECTSOUND_WAVE_HEADER_SIZE; ++i)
+            header[i] = (uint8_t)core->busRead8(core, identity->payloadAddress + i);
+        uint32_t sampleSize = read_le_u32(header + 12u);
+        if (sampleSize > UINT32_MAX - DIRECTSOUND_WAVE_HEADER_SIZE)
+            return false;
+        identity->payloadSize = DIRECTSOUND_WAVE_HEADER_SIZE + sampleSize;
+        if (!sha256_rom_bytes(core, identity->payloadAddress, identity->payloadSize, identity->familyPayloadSha256))
+            return false;
+    }
+    else
+    {
+        const uint8_t squarePayload[] = {
+            identity->toneData[3],
+            identity->toneData[4],
+            identity->toneData[8],
+            identity->toneData[9],
+            identity->toneData[10],
+            identity->toneData[11],
+        };
+        identity->payloadSize = 6u;
+        sha256_bytes(squarePayload, sizeof(squarePayload), identity->familyPayloadSha256);
+    }
+    identity->captured = true;
+    return true;
+}
+
+/* Appends bytes to the compact MP2K track without admitting arbitrary scripts. */
+static bool append_driver_track_bytes(DriverTrack* track, const uint8_t* bytes, size_t length)
+{
+    if (length > sizeof(track->bytes) - track->length)
+        return false;
+    memcpy(track->bytes + track->length, bytes, length);
+    track->length += length;
+    return true;
+}
+
+/* Builds fixed MP2K controls independently of any expected hardware transactions. */
+static bool build_driver_fixture_track(const Options* options, DriverTrack* track)
+{
+    *track = (DriverTrack){0};
+    const uint8_t prefix[] = {
         0xBCu,
         0u, /* KEYSH 0 */
         0xBBu,
-        60u, /* TEMPO 120 BPM */
+        (options->driverScenario == DRIVER_SCENARIO_NONE || options->driverScenario == DRIVER_SCENARIO_START) ? 60u
+                                                                                                              : 75u,
         0xBDu,
         0u, /* VOICE 0 */
         0xBEu,
@@ -1384,17 +2262,172 @@ static void inject_song(struct mCore* core, const Options* options)
         0xCFu,
         options->note,
         options->velocity, /* TIE */
-        0xB0u,             /* W96 */
-        0xB2u,             /* GOTO loop */
     };
-    for (size_t i = 0u; i < sizeof(commands); ++i)
-        core->busWrite8(core, trackAddress + (uint32_t)i, commands[i]);
-    uint32_t gotoAddress = trackAddress + (uint32_t)sizeof(commands);
-    for (uint32_t i = 0u; i < sizeof(loopAddress); ++i)
-        core->busWrite8(core, gotoAddress + i, (uint8_t)(loopAddress >> (i * 8u)));
+    if (!append_driver_track_bytes(track, prefix, sizeof(prefix)))
+        return false;
+    switch (options->driverScenario)
+    {
+    case DRIVER_SCENARIO_NONE:
+    case DRIVER_SCENARIO_START:
+    {
+        const uint8_t commands[] = {0xB0u, 0xB2u, 0u, 0u, 0u, 0u};
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, commands, sizeof(commands));
+    }
+    case DRIVER_SCENARIO_ENVELOPE:
+    {
+        const uint8_t commands[] = {0x86u, 0xB2u, 0u, 0u, 0u, 0u}; /* W06; GOTO */
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, commands, sizeof(commands));
+    }
+    case DRIVER_SCENARIO_PITCH:
+    {
+        const uint8_t beforeBend[] = {0x82u, 0xC0u, 0x50u};         /* W02; BEND +16 */
+        const uint8_t afterBend[] = {0x82u, 0xB2u, 0u, 0u, 0u, 0u}; /* W02; GOTO */
+        if (!append_driver_track_bytes(track, beforeBend, sizeof(beforeBend)))
+            return false;
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, afterBend, sizeof(afterBend));
+    }
+    case DRIVER_SCENARIO_VOLUME_PAN:
+    {
+        const uint8_t beforeControls[] = {0x82u, 0xBEu, 32u, 0xBFu, 127u}; /* W02; VOL; PAN */
+        const uint8_t afterControls[] = {0x82u, 0xB2u, 0u, 0u, 0u, 0u};    /* W02; GOTO */
+        if (!append_driver_track_bytes(track, beforeControls, sizeof(beforeControls)))
+            return false;
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, afterControls, sizeof(afterControls));
+    }
+    case DRIVER_SCENARIO_RETRIGGER:
+    {
+        const uint8_t beforeRetrigger[] = {
+            0x82u, 0xCEu, options->note, 0x81u, 0xCFu, options->note, options->velocity}; /* W02; EOT; W01; TIE */
+        const uint8_t afterRetrigger[] = {0x82u, 0xB2u, 0u, 0u, 0u, 0u};                  /* W02; GOTO */
+        if (!append_driver_track_bytes(track, beforeRetrigger, sizeof(beforeRetrigger)))
+            return false;
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, afterRetrigger, sizeof(afterRetrigger));
+    }
+    case DRIVER_SCENARIO_RELEASE:
+    {
+        const uint8_t beforeRelease[] = {0x82u, 0xCEu, options->note}; /* W02; EOT */
+        const uint8_t afterRelease[] = {0x84u, 0xB2u, 0u, 0u, 0u, 0u}; /* W04; GOTO */
+        if (!append_driver_track_bytes(track, beforeRelease, sizeof(beforeRelease)))
+            return false;
+        track->loopOffset = track->length;
+        return append_driver_track_bytes(track, afterRelease, sizeof(afterRelease));
+    }
+    }
+    return false;
+}
 
+/* Writes a relocation-safe one-track driver fixture in EWRAM. */
+static bool inject_fixture_track(struct mCore* core, const Options* options)
+{
+    DriverTrack track;
+    if (!build_driver_fixture_track(options, &track) || track.length < sizeof(uint32_t) ||
+        track.loopOffset >= track.length - sizeof(uint32_t))
+    {
+        return false;
+    }
+    uint32_t headerAddress = options->fixtureAddress + FIXTURE_HEADER_OFFSET;
+    uint32_t trackAddress = options->fixtureAddress + FIXTURE_TRACK_OFFSET;
+    uint32_t loopAddress = trackAddress + (uint32_t)track.loopOffset;
+    size_t pointerOffset = track.length - sizeof(uint32_t);
+    for (uint32_t i = 0u; i < sizeof(loopAddress); ++i)
+        track.bytes[pointerOffset + i] = (uint8_t)(loopAddress >> (i * 8u));
+    core->busWrite32(core, headerAddress, 1u); /* trackCount=1, blockCount=priority=reverb=0 */
+    core->busWrite32(core, headerAddress + 4u, options->fixtureAddress + FIXTURE_VOICE_OFFSET);
+    core->busWrite32(core, headerAddress + 8u, trackAddress);
+    for (size_t i = 0u; i < track.length; ++i)
+        core->busWrite8(core, trackAddress + (uint32_t)i, track.bytes[i]);
+    return true;
+}
+
+/* Exposes fixed bytecode so focused tests verify control dispatch without a bus oracle. */
+static bool dump_driver_fixture_track(const char* scenarioName)
+{
+    DriverScenario scenario;
+    if (!parse_driver_scenario(scenarioName, &scenario))
+        return false;
+    Options options = {
+        .fixtureAddress = 0x0203F000u,
+        .driverScenario = scenario,
+        .note = 60u,
+        .velocity = 127u,
+        .volume = 127u,
+        .pan = 64u,
+    };
+    DriverTrack track;
+    if (!build_driver_fixture_track(&options, &track) || track.length < sizeof(uint32_t) ||
+        track.loopOffset >= track.length - sizeof(uint32_t))
+    {
+        return false;
+    }
+    uint32_t loopAddress = options.fixtureAddress + FIXTURE_TRACK_OFFSET + (uint32_t)track.loopOffset;
+    size_t pointerOffset = track.length - sizeof(uint32_t);
+    for (uint32_t i = 0u; i < sizeof(loopAddress); ++i)
+        track.bytes[pointerOffset + i] = (uint8_t)(loopAddress >> (i * 8u));
+    for (size_t i = 0u; i < track.length; ++i)
+    {
+        if (printf("%02X", track.bytes[i]) < 0)
+            return false;
+    }
+    return putchar('\n') != EOF;
+}
+
+/* Exposes fixed measurement spans to the focused adapter behavior test. */
+static bool dump_driver_scenario_span(const char* scenarioName)
+{
+    DriverScenario scenario;
+    if (!parse_driver_scenario(scenarioName, &scenario))
+        return false;
+    return printf("%" PRIu64 "\n", driver_scenario_span_cycles(scenario)) >= 0;
+}
+
+/* Exposes type dispatch so focused tests cover every accepted family without a ROM fixture. */
+static bool dump_driver_family(const char* typeText)
+{
+    uint32_t type = 0u;
+    DriverFamily family = DRIVER_FAMILY_NONE;
+    uint32_t soloMask = 0u;
+    if (!parse_u32(typeText, &type) || type > UINT8_MAX || !resolve_driver_family((uint8_t)type, &family, &soloMask))
+        return false;
+    const char* name = driver_family_name(family);
+    return name != NULL && printf("%s %" PRIu32 "\n", name, soloMask) >= 0;
+}
+
+/* Builds a one-track song in EWRAM for deterministic isolated playback. */
+static bool inject_song(struct mCore* core, const Options* options, const DriverFixtureIdentity* identity)
+{
+    uint32_t fixtureVoiceAddress = options->fixtureAddress + FIXTURE_VOICE_OFFSET;
+    switch (options->driverScenario)
+    {
+    case DRIVER_SCENARIO_NONE:
+        inject_voice(core, options->voiceAddress, fixtureVoiceAddress);
+        break;
+    case DRIVER_SCENARIO_START:
+    case DRIVER_SCENARIO_ENVELOPE:
+    case DRIVER_SCENARIO_PITCH:
+    case DRIVER_SCENARIO_VOLUME_PAN:
+    case DRIVER_SCENARIO_RETRIGGER:
+    case DRIVER_SCENARIO_RELEASE:
+        if (!identity->captured)
+            return false;
+        for (uint32_t i = 0u; i < TONE_DATA_SIZE; ++i)
+            core->busWrite8(core, fixtureVoiceAddress + i, identity->toneData[i]);
+        for (uint32_t i = 0u; i < TONE_DATA_SIZE; ++i)
+        {
+            if (core->busRead8(core, fixtureVoiceAddress + i) != identity->toneData[i])
+                return false;
+        }
+        break;
+    }
+    if (!inject_fixture_track(core, options))
+        return false;
     uint32_t runnerAddress = options->fixtureAddress + FIXTURE_RUNNER_OFFSET;
     core->busWrite16(core, runnerAddress, 0xE7FEu); /* b runner; VBlank IRQ preempts it */
+    return true;
 }
 
 /* Starts either the injected voice fixture or a real ROM song. */
@@ -1416,9 +2449,46 @@ static bool start_fixture(struct mCore* core, const Options* options)
            core->writeRegister(core, "lr", runnerAddress) && core->writeRegister(core, "pc", startAddress);
 }
 
+static bool
+wait_for_runner_ident(struct mCore* core, Recorder* recorder, const Options* options, uint32_t expectedSoundIdent);
 static bool wait_for_runner(struct mCore* core, Recorder* recorder, const Options* options);
 
-/* Stops boot-time players so a hardware FIFO capture contains only the injected voice. */
+/* Invokes one no-argument ROM routine and verifies its expected SoundInfo lock state. */
+static bool call_rom_void(
+    struct mCore* core, Recorder* recorder, const Options* options, uint32_t address, uint32_t expectedSoundIdent)
+{
+    int32_t runnerAddress = (int32_t)(options->fixtureAddress + FIXTURE_RUNNER_OFFSET + 1u);
+    return core->writeRegister(core, "lr", runnerAddress) &&
+           core->writeRegister(core, "pc", (int32_t)(address & ~1u)) &&
+           wait_for_runner_ident(core, recorder, options, expectedSoundIdent);
+}
+
+/* Reinitializes the real MP2K DMA streams, then pauses timer 0 so the
+ * next natural VCount callback can arm a fresh seven-frame epoch. */
+static bool restart_pcm_dma(struct mCore* core, Recorder* recorder, const Options* options, uint16_t* timerControl)
+{
+    if (!call_rom_void(core, recorder, options, options->m4aVSyncOff, MP2K_MAGIC + 10u))
+        return false;
+
+    if (!call_rom_void(core, recorder, options, options->m4aVSyncOn, MP2K_MAGIC))
+        return false;
+
+    *timerControl = core->busRead16(core, GBA_REG_TM0CNT_H);
+    core->busWrite16(core, GBA_REG_TM0CNT_H, 0u);
+    uint16_t soundControl = core->busRead16(core, GBA_REG_SOUNDCNT_H);
+    core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl | GBA_FIFO_RESET_BITS);
+    core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl);
+    uint64_t resetCycle = current_gba_cycle(core);
+    do
+    {
+        core->runLoop(core);
+        if (!drain_observations(core, recorder))
+            return false;
+    } while (next_sample_cycle(core) <= resetCycle);
+    return true;
+}
+
+/* Stops boot-time players and drains the FIFO reset before arming the fixture. */
 static bool stop_existing_audio(struct mCore* core, Recorder* recorder, const Options* options)
 {
     if (options->mplayAllStop == 0u)
@@ -1435,15 +2505,27 @@ static bool stop_existing_audio(struct mCore* core, Recorder* recorder, const Op
     for (uint32_t channel = 0u; channel < 12u; ++channel)
         core->busWrite8(core, options->soundInfo + 80u + channel * 64u, 0u);
     core->busWrite8(core, options->soundInfo + 5u, 0u);
+    core->busWrite8(core, options->soundInfo + 14u, 0u);
+    core->busWrite8(core, options->soundInfo + 15u, 0u);
     for (uint32_t sample = 0u; sample < 3168u; ++sample)
         core->busWrite8(core, options->soundInfo + 848u + sample, 0u);
     uint16_t soundControl = core->busRead16(core, GBA_REG_SOUNDCNT_H);
+    uint64_t resetCycle = current_gba_cycle(core);
     core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl | GBA_FIFO_RESET_BITS);
     core->busWrite16(core, GBA_REG_SOUNDCNT_H, soundControl);
+
+    /* Let the next mGBA sample boundary pass while every player is stopped.
+       Its reset writes must be setup records before the fixture marker. */
+    do
+    {
+        core->runLoop(core);
+        if (!drain_observations(core, recorder))
+            return false;
+    } while (next_sample_cycle(core) <= resetCycle);
     return true;
 }
 
-/* Boots until MP2K and the ROM's real VBlank interrupt path are both live. */
+/* Boots until MP2K and both audio-driving video interrupt paths are live. */
 static bool wait_for_mp2k(struct mCore* core, Recorder* recorder, const Options* options)
 {
     uint64_t maxFrames = (uint64_t)(options->bootTimeoutSeconds * GBA_FRAMES_PER_SECOND + 0.5);
@@ -1451,9 +2533,13 @@ static bool wait_for_mp2k(struct mCore* core, Recorder* recorder, const Options*
     {
         if (!run_frame_and_drain(core, recorder))
             return false;
+        const uint16_t dispstat = core->busRead16(core, GBA_REG_DISPSTAT);
+        const uint16_t enabledInterrupts = core->busRead16(core, GBA_REG_IE);
         if (core->busRead32(core, options->mplayInfo + 52u) == MP2K_MAGIC &&
-            (core->busRead16(core, GBA_REG_DISPSTAT) & 0x8u) != 0u &&
-            (core->busRead16(core, GBA_REG_IE) & 0x1u) != 0u && (core->busRead16(core, GBA_REG_IME) & 0x1u) != 0u)
+            (dispstat & (GBA_DISPSTAT_VBLANK_IRQ | GBA_DISPSTAT_VCOUNT_IRQ | 0xFF00u)) ==
+                (GBA_DISPSTAT_VBLANK_IRQ | GBA_DISPSTAT_VCOUNT_IRQ | GBA_DISPSTAT_VCOUNT_LINE_150) &&
+            (enabledInterrupts & (GBA_IE_VBLANK | GBA_IE_VCOUNT)) == (GBA_IE_VBLANK | GBA_IE_VCOUNT) &&
+            (core->busRead16(core, GBA_REG_IME) & 0x1u) != 0u)
         {
             return true;
         }
@@ -1461,7 +2547,7 @@ static bool wait_for_mp2k(struct mCore* core, Recorder* recorder, const Options*
     return false;
 }
 
-/* Steps past runFrame's video boundary so SoundMain is not abandoned while locked. */
+/* Steps through the video IRQ epilogue so later fixture calls do not strand it. */
 static bool wait_for_sound_main_idle(struct mCore* core, Recorder* recorder, const Options* options)
 {
     for (uint32_t iteration = 0u; iteration < 1000u; ++iteration)
@@ -1471,8 +2557,11 @@ static bool wait_for_sound_main_idle(struct mCore* core, Recorder* recorder, con
         if (!core->readRegister(core, "cpsr", &cpsr) || !core->readRegister(core, "pc", &programCounter))
             return false;
 
+        const uint16_t enabledInterrupts = core->busRead16(core, GBA_REG_IE);
         if (core->busRead32(core, options->soundInfo) == MP2K_MAGIC && (cpsr & 0x3F) == 0x3F &&
-            (uint32_t)programCounter >= 0x02000000u)
+            (uint32_t)programCounter >= 0x02000000u &&
+            (enabledInterrupts & (GBA_IE_VBLANK | GBA_IE_VCOUNT)) == (GBA_IE_VBLANK | GBA_IE_VCOUNT) &&
+            (core->busRead16(core, GBA_REG_IME) & 0x1u) != 0u)
         {
             return true;
         }
@@ -1482,8 +2571,9 @@ static bool wait_for_sound_main_idle(struct mCore* core, Recorder* recorder, con
     return false;
 }
 
-/* Steps an injected ROM call until it returns to the EWRAM runner. */
-static bool wait_for_runner(struct mCore* core, Recorder* recorder, const Options* options)
+/* Steps an injected ROM call until it returns with the requested SoundInfo state. */
+static bool
+wait_for_runner_ident(struct mCore* core, Recorder* recorder, const Options* options, uint32_t expectedSoundIdent)
 {
     for (uint32_t iteration = 0u; iteration < 1000u; ++iteration)
     {
@@ -1492,7 +2582,7 @@ static bool wait_for_runner(struct mCore* core, Recorder* recorder, const Option
             return false;
         if ((uint32_t)programCounter >= options->fixtureAddress + FIXTURE_RUNNER_OFFSET &&
             (uint32_t)programCounter < options->fixtureAddress + FIXTURE_RUNNER_OFFSET + 4u &&
-            core->busRead32(core, options->soundInfo) == MP2K_MAGIC)
+            core->busRead32(core, options->soundInfo) == expectedSoundIdent)
         {
             return true;
         }
@@ -1505,12 +2595,50 @@ static bool wait_for_runner(struct mCore* core, Recorder* recorder, const Option
     core->readRegister(core, "pc", &programCounter);
     fprintf(stderr,
             "Emulated ROM call timed out (pc=0x%08" PRIX32 ", cpsr=0x%08" PRIX32 ", mplay=0x%08" PRIX32
-            ", sound=0x%08" PRIX32 ")\n",
+            ", sound=0x%08" PRIX32 ", expected=0x%08" PRIX32 ")\n",
             (uint32_t)programCounter,
             (uint32_t)cpsr,
             core->busRead32(core, options->mplayInfo + 52u),
-            core->busRead32(core, options->soundInfo));
+            core->busRead32(core, options->soundInfo),
+            expectedSoundIdent);
     return false;
+}
+
+/* Waits for ordinary ROM calls, which must leave SoundInfo unlocked. */
+static bool wait_for_runner(struct mCore* core, Recorder* recorder, const Options* options)
+{
+    return wait_for_runner_ident(core, recorder, options, MP2K_MAGIC);
+}
+
+/* Cross one frame with both MP2K callbacks locked, then stop in VBlank so each
+ * fixed fixture has one stable begin phase. */
+static bool align_driver_capture_after_vblank(struct mCore* core, Recorder* recorder, const Options* options)
+{
+    const uint32_t lockedIdent = MP2K_MAGIC + 10u;
+    core->busWrite32(core, options->soundInfo, lockedIdent);
+    bool aligned = run_frame_and_drain(core, recorder);
+    bool reachedVBlank = false;
+    for (uint32_t iteration = 0u; aligned && iteration < 1000u; ++iteration)
+    {
+        int32_t cpsr = 0;
+        int32_t programCounter = 0;
+        const uint16_t vcount = core->busRead16(core, GBA_REG_VCOUNT);
+        if (!core->readRegister(core, "cpsr", &cpsr) || !core->readRegister(core, "pc", &programCounter))
+        {
+            aligned = false;
+            break;
+        }
+        if (vcount >= 160u && (cpsr & 0x3F) == 0x3F &&
+            (uint32_t)programCounter >= options->fixtureAddress + FIXTURE_RUNNER_OFFSET &&
+            (uint32_t)programCounter < options->fixtureAddress + FIXTURE_RUNNER_OFFSET + 4u)
+        {
+            reachedVBlank = true;
+            break;
+        }
+        aligned = run_loop_and_drain(core, recorder);
+    }
+    core->busWrite32(core, options->soundInfo, MP2K_MAGIC);
+    return aligned && reachedVBlank;
 }
 
 /* Opens the legacy frontend WAV at the rate exposed by pinned mGBA. */
@@ -1550,7 +2678,7 @@ static bool capture_reference(struct mCore* core, Recorder* recorder, const Opti
     bool frontendRequested = (options->captureStage & CAPTURE_STAGE_FRONTEND) != 0u;
     bool nativeRequested = (options->captureStage & CAPTURE_STAGE_NATIVE) != 0u;
     if ((frontendRequested && !begin_frontend_capture(recorder, options)) ||
-        (nativeRequested && !begin_native_capture(core, recorder, options)))
+        (nativeRequested && !recorder->nativeCapturing && !begin_native_capture(core, recorder, options)))
     {
         return false;
     }
@@ -1646,6 +2774,13 @@ static bool capture_boot_song(struct mCore* core, Recorder* recorder, const Opti
 /* Owns the full mGBA lifecycle so no emulator state leaks into production code. */
 int main(int argc, char** argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--dump-driver-track") == 0)
+        return dump_driver_fixture_track(argv[2]) ? 0 : 2;
+    if (argc == 3 && strcmp(argv[1], "--dump-driver-span") == 0)
+        return dump_driver_scenario_span(argv[2]) ? 0 : 2;
+    if (argc == 3 && strcmp(argv[1], "--dump-driver-family") == 0)
+        return dump_driver_family(argv[2]) ? 0 : 2;
+
     Options options;
     if (!parse_options(argc, argv, &options))
     {
@@ -1698,21 +2833,21 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    if (nativeRequested)
-    {
-        if (!prepare_native_capture(&recorder, &options))
-        {
-            fprintf(stderr, "Could not open native trace artifacts: %s\n", strerror(errno));
-            goto cleanup;
-        }
-#if PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE
-        GBAAudioSetObservationSink(&((struct GBA*)core->board)->audio, &recorder.observationSink);
-#endif
-    }
-
     core->reset(core);
-    if (nativeRequested)
-        reset_observations(&recorder);
+    if (options.driverScenario != DRIVER_SCENARIO_NONE)
+    {
+        if (!capture_driver_identity(core, &options, &recorder.driverIdentity))
+        {
+            fprintf(stderr, "Driver fixture identity validation failed\n");
+            goto unload;
+        }
+        if (options.hasMute || (options.hasSolo && options.enabledChannels != recorder.driverIdentity.soloMask))
+        {
+            fprintf(stderr, "Fixed driver scenarios derive the solo mask from the resolved ToneData family\n");
+            goto unload;
+        }
+        options.enabledChannels = recorder.driverIdentity.soloMask;
+    }
     if (frontendRequested)
     {
         recorder.sampleRate = core->audioSampleRate(core);
@@ -1726,6 +2861,18 @@ int main(int argc, char** argv)
     {
         fprintf(stderr, "mGBA core does not expose GBA audio channel controls\n");
         goto unload;
+    }
+    if (nativeRequested)
+    {
+        if (!prepare_native_capture(&recorder, &options))
+        {
+            fprintf(stderr, "Could not open native trace artifacts: %s\n", strerror(errno));
+            goto unload;
+        }
+#if PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE
+        GBAAudioSetObservationSink(&((struct GBA*)core->board)->audio, &recorder.observationSink);
+#endif
+        reset_observations(&recorder);
     }
     uint32_t expectedHeader =
         options.songAddress != 0u ? options.songAddress : options.fixtureAddress + FIXTURE_HEADER_OFFSET;
@@ -1754,13 +2901,39 @@ int main(int argc, char** argv)
     }
 
     if (options.voiceAddress != 0u)
-        inject_song(core, &options);
+    {
+        if (!inject_song(core, &options, &recorder.driverIdentity))
+        {
+            fprintf(stderr, "Unsupported driver fixture scenario\n");
+            goto unload;
+        }
+    }
     else
         core->busWrite16(core, options.fixtureAddress + FIXTURE_RUNNER_OFFSET, 0xE7FEu);
     if (!stop_existing_audio(core, &recorder, &options))
     {
         fprintf(stderr, "Could not stop boot-time audio before the reference fixture\n");
         goto unload;
+    }
+    uint16_t pcmTimerControl = 0u;
+    if (options.driverScenario != DRIVER_SCENARIO_NONE && !restart_pcm_dma(core, &recorder, &options, &pcmTimerControl))
+    {
+        fprintf(stderr, "Could not align MP2K DirectSound DMA before the reference fixture\n");
+        goto unload;
+    }
+    if (options.driverScenario != DRIVER_SCENARIO_NONE && !align_driver_capture_after_vblank(core, &recorder, &options))
+    {
+        fprintf(stderr, "Could not align the lifecycle fixture after VBlank\n");
+        goto unload;
+    }
+    if (options.driverScenario != DRIVER_SCENARIO_NONE)
+    {
+        if (!begin_native_capture(core, &recorder, &options))
+        {
+            fprintf(stderr, "Could not open the aligned lifecycle capture interval\n");
+            goto unload;
+        }
+        core->busWrite16(core, GBA_REG_TM0CNT_H, pcmTimerControl);
     }
     if (!start_fixture(core, &options))
     {

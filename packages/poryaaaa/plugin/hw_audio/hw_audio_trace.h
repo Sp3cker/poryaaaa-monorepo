@@ -1,6 +1,7 @@
 #ifndef HW_AUDIO_TRACE_H
 #define HW_AUDIO_TRACE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include <stdint.h>
@@ -34,6 +35,9 @@ extern "C"
         uint32_t address;
         uint32_t value;
     } HwAudioTraceEvent;
+
+    /* Returns true for writes emitted inside one candidate CGB transaction. */
+    bool hw_audio_trace_event_is_cgb_batch_write(const HwAudioTraceEvent* event);
 
     typedef struct
     {

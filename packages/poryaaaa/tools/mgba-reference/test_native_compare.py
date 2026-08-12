@@ -59,6 +59,15 @@ def write_capture(
     manifest_path.with_suffix(".cycles").write_bytes(cycle_bytes)
 
 
+def write_trace(path, sample_positions, events=()):
+    """Write one strict trace whose source SAMPLE positions are test-controlled."""
+    lines = ["PORYAAAA_AUDIO_TRACE 1", "CLOCK 16777216", "BEGIN 0 0", *events]
+    for cycle, order in sample_positions:
+        lines.append(f"SAMPLE {cycle} {order}")
+    lines.append(f"END {sample_positions[-1][0] + 1} 0")
+    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
 class NativeCompareTest(unittest.TestCase):
     """Prove exact timing and stereo integer mismatches fail automation."""
 
@@ -73,10 +82,15 @@ class NativeCompareTest(unittest.TestCase):
         """Remove generated capture artifacts."""
         self.temporary_directory.cleanup()
 
-    def run_compare(self, reference, candidate):
+    def run_compare(self, reference, candidate, reference_trace=None, candidate_trace=None):
         """Invoke the comparator exactly as capture automation does."""
+        command = [sys.executable, str(TOOL), str(reference), str(candidate)]
+        if reference_trace is not None:
+            command.extend(["--reference-trace", str(reference_trace)])
+        if candidate_trace is not None:
+            command.extend(["--candidate-trace", str(candidate_trace)])
         return subprocess.run(
-            [sys.executable, str(TOOL), str(reference), str(candidate)],
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -128,6 +142,63 @@ class NativeCompareTest(unittest.TestCase):
             },
         )
         self.assertEqual(result["max_abs_left_error_pcm16"], 1)
+
+    def test_pcm_mismatch_reports_unretimed_causal_source_samples(self):
+        """The first PCM mismatch must cite each trace's real preceding SAMPLE."""
+        reference = self.directory / "reference.json"
+        candidate = self.directory / "candidate.json"
+        reference_trace = self.directory / "reference.trace"
+        candidate_trace = self.directory / "candidate.trace"
+        candidate_frames = list(self.frames)
+        candidate_frames[7] = (candidate_frames[7][0], candidate_frames[7][1] + 1)
+        sample_positions = [(0, 4), (512, 11), (1024, 18), (1536, 25), (2048, 32)]
+        write_capture(reference, self.frames, self.cycles)
+        write_capture(candidate, candidate_frames, self.cycles)
+        directsound_events = [
+            "WRITE 0 1 2 0x04000084 0x00000080",
+            "WRITE 0 2 2 0x04000082 0x00000300",
+            "WRITE 0 3 4 0x040000A0 0x04030201",
+            "TIMER 256 0 0",
+        ]
+        write_trace(reference_trace, sample_positions, directsound_events)
+        write_trace(candidate_trace, sample_positions, directsound_events)
+
+        completed = self.run_compare(reference, candidate, reference_trace, candidate_trace)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
+        mismatch = json.loads(completed.stdout)["first_mismatch"]
+        self.assertEqual(mismatch["frame_index"], 7)
+        self.assertEqual(mismatch["reference_cycle"], 1792)
+        self.assertEqual(mismatch["reference_left"], -81)
+        self.assertEqual(mismatch["candidate_right"], 224)
+        self.assertEqual(
+            mismatch["reference_causal_sample"],
+            {"ordinal": 4, "line": 11, "cycle": 1536, "order": 25, "cycle_delta": 256},
+        )
+        self.assertEqual(mismatch["candidate_causal_sample"], mismatch["reference_causal_sample"])
+
+    def test_trace_hash_mismatch_rejects_unrelated_causal_source(self):
+        """Attribution must not pair a hashed capture with another trace."""
+        reference = self.directory / "reference.json"
+        candidate = self.directory / "candidate.json"
+        reference_trace = self.directory / "reference.trace"
+        candidate_trace = self.directory / "candidate.trace"
+        sample_positions = [(0, 0), (512, 0)]
+        write_capture(
+            reference,
+            self.frames,
+            self.cycles,
+            manifest_overrides={"trace_sha256": "0" * 64},
+        )
+        write_capture(candidate, self.frames, self.cycles)
+        write_trace(reference_trace, sample_positions)
+        write_trace(candidate_trace, sample_positions)
+
+        completed = self.run_compare(reference, candidate, reference_trace, candidate_trace)
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("trace_sha256 does not match reference trace", completed.stderr)
 
     def test_stereo_swap_fails_both_channels(self):
         """Swapped routing must not disappear through a mono fold."""

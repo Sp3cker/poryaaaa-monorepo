@@ -183,14 +183,14 @@ static bool run_chip_sq2(int sample_rate, int frames, int block, float* left, fl
         return false;
 
     M4ARegWrite setup[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 1},
+        {0, M4A_REG_NR51, 0x22, 2},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 3},
+        {0, M4A_REG_NR21, 0x80, 4},
+        {0, M4A_REG_NR22, 0xF8, 5},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 6},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 7},
     };
 
     for (int done = 0; done < frames;)
@@ -218,10 +218,10 @@ static bool run_chip_pcm(int sample_rate, int frames, int block, float* left, fl
         return false;
 
     M4ARegWrite setup[] = {
-        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 2) | (1u << 3)},
-        {0, M4A_REG_FIFO_A, 0x7F40C000u},
-        {0, M4A_REG_FIFO_B, 0x8040C000u},
-        {0, M4A_REG_TIMER_0, 0},
+        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 2) | (1u << 3), 0},
+        {0, M4A_REG_FIFO_A, 0x7F40C000u, 1},
+        {0, M4A_REG_FIFO_B, 0x8040C000u, 2},
+        {0, M4A_REG_TIMER_0, 0, 3},
     };
 
     for (int done = 0; done < frames;)

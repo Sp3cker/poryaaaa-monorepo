@@ -1,5 +1,8 @@
 #include "hw_audio/hw_audio_trace_text.h"
 
+#define TRACE_ORDER_EXTENDED 0x80000000u
+#define TRACE_ORDER_DELAY_MASK 0xFFFFu
+
 #include <limits.h>
 
 #include <errno.h>
@@ -231,8 +234,10 @@ typedef struct
     HwAudioTraceFifoSample pending_fifo_sample;
     uint64_t pending_sample_cycle;
     uint64_t pending_sample_deadline;
+    bool pending_sample_has_explicit_deadline;
     bool pending_sample;
     bool pending_measurement;
+    bool pending_candidate_cgb_batch;
     bool measurement_open;
     uint64_t frame_count;
     uint64_t first_cycle;
@@ -241,7 +246,26 @@ typedef struct
     bool output_failed;
 } ReplayContext;
 
-/* Emit one staged sample when mGBA's next native sample interval matures. */
+/* Publish one already-observed staged sample and close its pending slot. */
+static bool publish_pending_sample(ReplayContext* replay, const HwAudioNativeFrame* frame)
+{
+    replay->pending_sample = false;
+    replay->pending_candidate_cgb_batch = false;
+    if (!replay->pending_measurement)
+        return true;
+    if (!write_pcm16_frame(replay->pcm, frame) || !write_cycle(replay->cycles, frame->cycle))
+    {
+        replay->output_failed = true;
+        return false;
+    }
+    if (replay->frame_count == 0)
+        replay->first_cycle = frame->cycle;
+    replay->last_cycle = frame->cycle;
+    replay->frame_count++;
+    return true;
+}
+
+/* Emit one staged sample after every event observed before mGBA produced it. */
 static bool emit_pending_sample(ReplayContext* replay)
 {
     if (!replay->pending_sample)
@@ -252,19 +276,7 @@ static bool emit_pending_sample(ReplayContext* replay)
         replay->audio, replay->pending_sample_cycle, &replay->pending_fifo_sample, &frame);
     if (replay->apply_status != HW_AUDIO_TRACE_OK)
         return false;
-    replay->pending_sample = false;
-    if (!replay->pending_measurement)
-        return true;
-    if (!write_pcm16_frame(replay->pcm, &frame) || !write_cycle(replay->cycles, frame.cycle))
-    {
-        replay->output_failed = true;
-        return false;
-    }
-    if (replay->frame_count == 0)
-        replay->first_cycle = frame.cycle;
-    replay->last_cycle = frame.cycle;
-    replay->frame_count++;
-    return true;
+    return publish_pending_sample(replay, &frame);
 }
 
 /* Replay each parsed event while preserving the trace interval for PCM output. */
@@ -289,12 +301,17 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
         replay->apply_status = HW_AUDIO_TRACE_INVALID_ARGUMENT;
         return false;
     }
-    size_t event_index = replay->event_index++;
-    if (replay->pending_sample && record->event.cycle >= replay->pending_sample_deadline &&
-        !emit_pending_sample(replay))
-        return false;
-
+    replay->event_index++;
     HwAudioNativeFrame frame;
+    if (replay->pending_sample)
+    {
+        bool reached_observation =
+            replay->pending_sample_has_explicit_deadline
+                ? record->event.cycle >= replay->pending_sample_deadline
+                : record->event.cycle > replay->pending_sample_cycle;
+        if (reached_observation && !emit_pending_sample(replay))
+            return false;
+    }
     if (record->event.kind == HW_AUDIO_TRACE_SAMPLE)
     {
         if (!emit_pending_sample(replay))
@@ -310,21 +327,25 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
         replay->pending_fifo_sample = replay->fifo_samples[replay->fifo_sample_index++];
         replay->pending_sample_cycle = record->event.cycle;
         replay->pending_sample = true;
-        replay->pending_sample_deadline = UINT64_MAX;
-        for (size_t index = event_index + 1u; index < replay->event_count; ++index)
-        {
-            if (replay->events[index].kind == HW_AUDIO_TRACE_SAMPLE)
-            {
-                replay->pending_sample_deadline = replay->events[index].cycle;
-                break;
-            }
-        }
+        replay->pending_sample_has_explicit_deadline = (record->event.order & TRACE_ORDER_EXTENDED) != 0u;
+        uint32_t observation_delay =
+            replay->pending_sample_has_explicit_deadline ? record->event.order & TRACE_ORDER_DELAY_MASK : 0u;
+        replay->pending_sample_deadline = record->event.cycle + observation_delay;
         replay->pending_measurement = replay->measurement_open;
         return true;
     }
 
     replay->apply_status = hw_audio_trace_apply(replay->audio, &record->event, &frame);
-    return replay->apply_status == HW_AUDIO_TRACE_OK;
+    if (replay->apply_status != HW_AUDIO_TRACE_OK)
+        return false;
+    if (replay->pending_sample && !replay->pending_sample_has_explicit_deadline &&
+        hw_audio_trace_event_is_cgb_batch_write(&record->event))
+        replay->pending_candidate_cgb_batch = true;
+    bool final_event_at_cycle =
+        replay->event_index == replay->event_count || replay->events[replay->event_index].cycle != record->event.cycle;
+    if (replay->pending_candidate_cgb_batch && final_event_at_cycle)
+        return emit_pending_sample(replay);
+    return true;
 }
 
 /* Convert one shared-grammar trace into atomic PCM, cycle, and manifest artifacts. */
