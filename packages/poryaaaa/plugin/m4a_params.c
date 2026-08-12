@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "m4a_engine.h"
+#include "m4a_plugin.h"
 
 enum
 {
     PARAM_PROGRAM_BASE = 0,
-    PARAM_COUNT = MAX_TRACKS,
+    PARAM_COUNT = M4A_PLUGIN_TRACK_COUNT,
 };
 
 static uint8_t clamp_u8_param(double value, uint8_t minValue, uint8_t maxValue)
@@ -24,7 +24,7 @@ static uint8_t clamp_u8_param(double value, uint8_t minValue, uint8_t maxValue)
 
 static bool is_program_param(clap_id param_id, int* trackIndex)
 {
-    if (param_id < PARAM_PROGRAM_BASE || param_id >= PARAM_PROGRAM_BASE + MAX_TRACKS)
+    if (param_id < PARAM_PROGRAM_BASE || param_id >= PARAM_PROGRAM_BASE + M4A_PLUGIN_TRACK_COUNT)
         return false;
     if (trackIndex)
         *trackIndex = (int)(param_id - PARAM_PROGRAM_BASE);
@@ -33,13 +33,13 @@ static bool is_program_param(clap_id param_id, int* trackIndex)
 
 void m4a_params_init(M4APluginData* data)
 {
-    for (int i = 0; i < MAX_TRACKS; ++i)
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; ++i)
         atomic_init(&data->programParams[i], (uint8_t)i);
 }
 
 void m4a_params_set_program(M4APluginData* data, int trackIndex, uint8_t program)
 {
-    if (trackIndex < 0 || trackIndex >= MAX_TRACKS)
+    if (trackIndex < 0 || trackIndex >= M4A_PLUGIN_TRACK_COUNT)
         return;
 
     atomic_store(&data->programParams[trackIndex], program);
@@ -51,29 +51,25 @@ static void apply_param_value(M4APluginData* data, clap_id param_id, double valu
     if (!is_program_param(param_id, &trackIndex))
         return;
 
-    /* Host params live as doubles, but the m4a engine stores the raw 0..127
-     * program number per track. Mirror first, then push into the engine if
-     * audio is active. */
+    /* Host params live as doubles; the driver stores raw 0..127 program
+     * numbers per track. Mirror first, then push them while audio is active. */
     uint8_t program = clamp_u8_param(value, 0, 127);
     m4a_params_set_program(data, trackIndex, program);
-    if (data->activated)
-    {
-        m4a_engine_program_change(&data->engine, trackIndex, program);
-    }
+    if (data->activated && data->driver)
+        m4a_program_change(data->driver, trackIndex, program);
 }
 
-void m4a_params_sync_to_engine(M4APluginData* data)
+void m4a_params_sync_to_driver(M4APluginData* data)
 {
-    if (!data->engine.voiceGroup)
+    if (!data->driver)
         return;
 
-    /* m4a_engine_init() zeroes every track, so whenever we rebuild or reload
-     * engine state we need to replay the stored program selection back into
-     * each track's currentProgram/currentVoice pair. */
-    for (int trackIndex = 0; trackIndex < MAX_TRACKS; ++trackIndex)
+    /* A fresh driver has no host-program state. Replay the stored selections
+     * whenever activation, reset, or a voicegroup reload replaces it. */
+    for (int trackIndex = 0; trackIndex < M4A_PLUGIN_TRACK_COUNT; ++trackIndex)
     {
         uint8_t program = atomic_load(&data->programParams[trackIndex]);
-        m4a_engine_program_change(&data->engine, trackIndex, program);
+        m4a_program_change(data->driver, trackIndex, program);
     }
 }
 
@@ -84,9 +80,9 @@ void m4a_params_process_event(M4APluginData* data, const clap_event_param_value_
 
 bool m4a_params_state_save(M4APluginData* data, const clap_ostream_t* stream)
 {
-    /* Persist the param mirror explicitly. currentProgram also exists inside
-     * the engine, but that copy gets rebuilt on activate/reset. */
-    for (int i = 0; i < MAX_TRACKS; ++i)
+    /* Persist the host-owned program mirror explicitly. Driver state is
+     * rebuilt on activation and reset. */
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; ++i)
     {
         uint8_t program = atomic_load(&data->programParams[i]);
         if (stream->write(stream, &program, 1) != 1)
@@ -100,7 +96,7 @@ void m4a_params_state_load(M4APluginData* data, const clap_istream_t* stream)
 {
     /* Program bytes are optional so old states still load cleanly; missing
      * entries naturally fall back to program 0. */
-    for (int i = 0; i < MAX_TRACKS; ++i)
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; ++i)
     {
         uint8_t program = 0;
         stream->read(stream, &program, 1);

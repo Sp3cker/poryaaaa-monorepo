@@ -12,7 +12,6 @@ fn main() {
         .include(manifest_dir.join("voicegroup"))
         .include(manifest_dir.join("../../../shared"))
         .include(manifest_dir.join("../../voicegroup-core/include"));
-
     if cfg!(target_env = "msvc") {
         build
             .define("_CRT_SECURE_NO_WARNINGS", None)
@@ -39,7 +38,6 @@ fn main() {
 }
 
 const NATIVE_SOURCES: &[&str] = &[
-    "m4a_engine.c",
     "m4a_tables.c",
     "m4a/m4a_driver.c",
     "m4a/m4a_freq.c",
@@ -65,7 +63,6 @@ const NATIVE_SOURCES: &[&str] = &[
 ];
 
 const NATIVE_HEADERS: &[&str] = &[
-    "m4a_engine.h",
     "m4a_tables.h",
     "m4a/m4a_driver.h",
     "m4a/m4a_freq.h",

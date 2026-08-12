@@ -1,7 +1,6 @@
 use crate::midi_activity::MidiActivity;
 use nice_plug::prelude::NoteEvent;
 
-const MAX_RENDER_FRAMES: usize = crate::ffi::M4A_ENGINE_MAX_PROCESS_FRAMES;
 
 // Keeps the process loop independent from the C FFI wrapper shape.
 pub(crate) trait ProcessRuntime {
@@ -87,8 +86,9 @@ pub(crate) fn drain_midi_activity<NextEvent>(
 
 fn render_span<R: ProcessRuntime>(runtime: &mut R, left: &mut [f32], right: &mut [f32]) {
     let mut offset = 0;
+    let max_frames = crate::ffi::recommended_max_advance_frames();
     while offset < left.len() {
-        let end = (offset + MAX_RENDER_FRAMES).min(left.len());
+        let end = (offset + max_frames).min(left.len());
         runtime.process(&mut left[offset..end], &mut right[offset..end]);
         offset = end;
     }
@@ -319,9 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn process_chunks_render_spans_above_engine_limit() {
+    fn process_chunks_render_spans_above_driver_limit() {
         let mut runtime = RecordingRuntime::default();
-        let frames = crate::ffi::M4A_ENGINE_MAX_PROCESS_FRAMES * 2 + 1;
+        let max_frames = crate::ffi::recommended_max_advance_frames();
+        let frames = max_frames * 2 + 1;
         let mut left = vec![0.0; frames];
         let mut right = vec![0.0; frames];
 
@@ -330,8 +331,8 @@ mod tests {
         assert_eq!(
             runtime.actions,
             [
-                Action::Render(crate::ffi::M4A_ENGINE_MAX_PROCESS_FRAMES),
-                Action::Render(crate::ffi::M4A_ENGINE_MAX_PROCESS_FRAMES),
+                Action::Render(max_frames),
+                Action::Render(max_frames),
                 Action::Render(1)
             ]
         );

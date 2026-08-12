@@ -1,8 +1,7 @@
 #include "m4a_internal.h"
 #include "m4a_freq.h"
-#include "../m4a_engine.h"
 
-const PulseWidthModPattern gPulseWidthModPatterns[] = {
+const M4APulseWidthModPattern gPulseWidthModPatterns[] = {
     {0, {0}},
     {3, {2, 1, 0}},
     {3, {0, 1, 2}},
@@ -61,8 +60,8 @@ void m4a_trk_vol_pit_set(M4ADriverTrack* track)
     track->pitM = (uint8_t)pitchVal;
 }
 
-/* Resolve the active voice for `voice` at `key` — handles keysplit /
- * keysplit-all (rhythm) entries.  Mirrors v1 resolve_voice. */
+/* Resolve the active voice for `voice` at `key`, handling keysplit and
+ * keysplit-all (rhythm) entries. */
 static ToneData* resolve_voice(ToneData* voice, uint8_t key)
 {
     if (!voice)
@@ -112,9 +111,9 @@ static uint32_t pcm_fixed_frequency(const M4ADriver* drv)
     return (uint32_t)(((uint64_t)0x800000u * M4A_PCM_RATE_HZ) / pcm_active_rate(drv));
 }
 
-/* Re-push pitch into every active PCM channel on this track.  Mirrors
- * v1 refresh_channel_pitches' PCM half: recompute fw step from the
- * track's keyM/pitM, applying the active PCM-rate scaling note_on uses. */
+/* Re-push pitch into every active PCM channel on this track.  Recomputes the
+ * PCM step from the track's keyM/pitM, applying the active PCM-rate scaling
+ * used by note_on. */
 static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
 {
     M4ADriverTrack* track = &drv->tracks[trackIndex];
@@ -137,7 +136,7 @@ static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
         int32_t finalKey = (int32_t)ch->key + track->keyM;
         if (finalKey < 0)
             finalKey = 0;
-        if (!drv->compat_respect_base_midi_key && finalKey > 127)
+        if (finalKey > 127)
             finalKey = 127;
         uint32_t f = m4a_midi_key_to_freq(ch->wav, (uint8_t)finalKey, track->pitM);
         ch->frequency = (uint32_t)((uint64_t)f * divFreq);
@@ -319,7 +318,7 @@ static void apply_portamento_pitch(M4ADriver* drv, M4ADriverTrack* track, int tr
 
 static void portamento_note_started(M4ADriver* drv, M4ADriverTrack* track, int trackIndex, uint8_t channelKey)
 {
-    if (!drv->compat_portamento_enabled)
+    if (!drv->portamento_enabled)
         return;
 
     track->portamentoElapsed = 0;
@@ -379,7 +378,7 @@ void m4a_internal_disable_pwm(M4ADriver* drv)
         track->pwmSpeedCounter = 0;
         track->pwmStep = 0;
     }
-    drv->compat_pwm_active = false;
+    drv->pwm_active = false;
 }
 
 /* ---- Public ingress ---- */
@@ -416,17 +415,12 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
     uint8_t voiceType = voice->type & VOICE_TYPE_CGB_MASK;
     int8_t rhythmPan = 0;
     uint8_t useKey = key;
-    int32_t pcmBaseAdjust = 0;
 
     if (t->currentVoice.type & VOICE_KEYSPLIT_ALL)
     {
         useKey = voice->key;
         if (voice->panSweep & 0x80)
             rhythmPan = (int8_t)((voice->panSweep - 0xC0) * 2);
-    }
-    else if (voiceType == 0 && drv->compat_respect_base_midi_key)
-    {
-        pcmBaseAdjust = 60 - (int32_t)voice->key;
     }
 
     /* Refresh derived track values before computing channel state. */
@@ -437,17 +431,11 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         finalKey = 0;
     if (finalKey > 127)
         finalKey = 127;
-    int32_t pcmKey = (int32_t)useKey + pcmBaseAdjust;
-    if (pcmKey < 0)
-        pcmKey = 0;
-    if (pcmKey > 255)
-        pcmKey = 255;
-    int32_t pcmFinalKey = pcmKey + t->keyM;
-    int32_t pcmFinalKeyMax = drv->compat_respect_base_midi_key ? 178 : 127;
+    int32_t pcmFinalKey = (int32_t)useKey + t->keyM;
     if (pcmFinalKey < 0)
         pcmFinalKey = 0;
-    if (pcmFinalKey > pcmFinalKeyMax)
-        pcmFinalKey = pcmFinalKeyMax;
+    if (pcmFinalKey > 127)
+        pcmFinalKey = 127;
 
     uint8_t combinedPriority = t->priority;
 
@@ -457,7 +445,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         M4ADriverCgbChan* ch = &drv->cgb[cgbIdx];
 
         /* Priority steal: lower numbers win.  Within equal priority, lower
-         * track index wins (matches v1 / m4a behaviour). */
+         * track index wins. */
         if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP))
         {
             if (ch->priority > combinedPriority)
@@ -466,9 +454,8 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
                 return;
         }
 
-        const bool portamentoInherit = !drv->compat_shadow_note && drv->compat_portamento_enabled &&
-                                       t->portamentoDuration != 0 && (ch->status & M4A_CHN_ON) &&
-                                       ch->envelopeVolume != 0;
+        const bool portamentoInherit = drv->portamento_enabled && t->portamentoDuration != 0 &&
+                                       (ch->status & M4A_CHN_ON) && ch->envelopeVolume != 0;
         const uint8_t previousDuty = ch->dutyCycle;
 
         ch->midiKey = key;
@@ -514,17 +501,14 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
             if (voiceType == 1)
                 ch->sweep = ((voice->panSweep & 0x80) || !(voice->panSweep & 0x70)) ? 0x08 : voice->panSweep;
 
-            if (drv->compat_pwm_enabled && t->pwmSpeed != 0 && t->pwmPattern != 0)
+            if (drv->pwm_enabled && t->pwmSpeed != 0 && t->pwmPattern != 0)
             {
-                const PulseWidthModPattern* pattern = &gPulseWidthModPatterns[t->pwmPattern];
+                const M4APulseWidthModPattern* pattern = &gPulseWidthModPatterns[t->pwmPattern];
                 if (pattern->numSteps != 0)
                 {
                     ch->dutyCycle = pattern->duty[0];
-                    if (!drv->compat_shadow_note)
-                    {
-                        t->pwmStep = 0;
-                        t->pwmSpeedCounter = t->pwmSpeed;
-                    }
+                    t->pwmStep = 0;
+                    t->pwmSpeedCounter = t->pwmSpeed;
                 }
             }
         }
@@ -551,8 +535,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
             m4a_drv_cgb_start(ch);
         }
 
-        if (!drv->compat_shadow_note)
-            portamento_note_started(drv, t, track, ch->key);
+        portamento_note_started(drv, t, track, ch->key);
     }
     else
     {
@@ -568,7 +551,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         int bestTrackIndex = track;
         bool bestIsStopping = false;
         uint8_t maxPcm = drv->max_pcm_channels;
-        if ((maxPcm == 0 && !drv->compat_zero_pcm_is_silent) || maxPcm > M4A_MAX_PCM_CHANNELS)
+        if (maxPcm > M4A_MAX_PCM_CHANNELS)
             maxPcm = M4A_MAX_PCM_CHANNELS;
 
         for (int i = 0; i < maxPcm; i++)
@@ -628,7 +611,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         }
 
         ch->midiKey = key;
-        ch->key = (uint8_t)pcmKey;
+        ch->key = useKey;
         ch->velocity = velocity;
         ch->priority = combinedPriority;
         ch->trackIndex = track;
@@ -676,7 +659,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
          * DirectSound playback from an offset inside the source sample. */
         m4a_drv_pcm_start(ch, voice->wav, voice->type, t->extendedValue);
 
-        if (!drv->compat_shadow_note && drv->compat_portamento_enabled && t->portamentoDuration != 0)
+        if (drv->portamento_enabled && t->portamentoDuration != 0)
         {
             for (int i = 0; i < maxPcm; i++)
             {
@@ -696,8 +679,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
             }
         }
 
-        if (!drv->compat_shadow_note)
-            portamento_note_started(drv, t, track, ch->key);
+        portamento_note_started(drv, t, track, ch->key);
     }
 }
 
@@ -728,21 +710,15 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
 
 /* ---- xCmd (XCMD-via-MIDI-CC) helpers ----------------------------------
  *
- * Direct ports of v1's plugin/m4a_engine.c statics, retargeted to v2's
- * M4ADriverTrack field names.  Selector → byte-count map and LE
- * assembly are byte-for-byte identical; xcmd_apply mutates the same
- * track-level fields (currentVoice.* and pseudoEcho*) the v1 engine
- * touches, so notes started after the xCmd see the changed ADSR /
- * pseudo-echo values via the existing note_on copy in m4a_note_on().
+ * The selector→byte-count map and little-endian assembly implement the
+ * current xCmd protocol.  xcmd_apply mutates track-level currentVoice and
+ * pseudo-echo fields so notes started after an xCmd use the updated ADSR and
+ * pseudo-echo values through m4a_note_on().
  *
- * Two deviations from v1 documented in xcmd.md and approved upstream:
- *   - 0x01 (xWAVE): notify-only.  v1 stores the 4-byte LE payload as a
- *     pointer cast into currentVoice.wav.  In poryaaaa that integer is
- *     a ROM address from the original game, not a valid host pointer
- *     — applying it would dangle.  An address→loaded-sample resolver
- *     can be added later; until then the callback gets the raw u32 and
- *     plugin code can dispatch.
- *   - 0x0D: store in extendedValue and notify (matches v1).
+ * xWAVE (0x01) is notify-only: its four-byte payload is a ROM address, not a
+ * valid host pointer.  A future address-to-loaded-sample resolver can apply
+ * it once plugin code provides one.  Selector 0x0D stores its value in
+ * extendedValue and notifies the host callback.
  */
 /* xCmd 0x0C (xWAIT) is intentionally absent — there's no song-script
  * interpreter in the v2 MIDI ingress path that could honour it, so it
@@ -835,8 +811,8 @@ static void xcmd_apply(M4ADriver* drv, int trackIndex, M4ADriverTrack* t)
         break;
     }
 
-    /* Selector stays sticky (matches v1).  Only the byte-count resets so
-     * a subsequent 0x1D/0x1F starts refilling for the same selector. */
+    /* Selector stays sticky.  Only the byte-count resets so a subsequent
+     * 0x1D/0x1F starts refilling for the same selector. */
     t->extendedCommandCount = 0;
 }
 
@@ -856,7 +832,7 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
             clear_mod_m(drv, track);
         break;
     case 0x05: /* Portamento time */
-        if (drv->compat_portamento_enabled)
+        if (drv->portamento_enabled)
             t->portamentoDuration = value;
         break;
     case 0x07: /* Volume */
@@ -890,11 +866,9 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
         {
             t->modT = value;
             /* Re-derive volMR/volML/keyM/pitM before pushing into
-             * channels — modT switches *which* axis modM modulates
-             * (vibrato/tremolo/autopan), so the derived track values
-             * change even though raw vol/pan/bend didn't.  V1
-             * refresh_volumes does this implicitly via the embedded
-             * trk_vol_pit_set call. */
+             * channels — modT switches which axis modM modulates
+             * (vibrato/tremolo/autopan), so the derived track values change
+             * even though raw vol/pan/bend did not. */
             m4a_trk_vol_pit_set(t);
             refresh_cgb_volumes(drv, track);
             refresh_cgb_pitches(drv, track);
@@ -904,7 +878,7 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
         break;
     case 0x17: /* PWMC */
     {
-        if (!drv->compat_pwm_enabled)
+        if (!drv->pwm_enabled)
             break;
         uint8_t pattern = value;
         if (pattern >= gNumPulseWidthModPatterns)
@@ -915,7 +889,7 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
         break;
     }
     case 0x19: /* PWMS */
-        if (!drv->compat_pwm_enabled)
+        if (!drv->pwm_enabled)
             break;
         if (value > 0)
         {
@@ -929,7 +903,7 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
                 t->pwmSpeedCounter = value;
             }
             t->pwmSpeed = value;
-            drv->compat_pwm_active = true;
+            drv->pwm_active = true;
         }
         else
         {
@@ -1041,10 +1015,9 @@ void m4a_all_notes_off(M4ADriver* drv, int track)
     reset_portamento_note_state(&drv->tracks[track]);
 }
 
-/* m4a_internal_lfo_tick — pokeemerald m4a.c equivalent (mirrors v1's
- * m4a_lfo_tick at m4a_engine.c:870).  Fired by m4a_main.c's tempoC
- * overflow loop (tempoI/150 ticks per vblank).  For each track with
- * an active modulator (mod != 0 and lfoSpeed != 0):
+/* m4a_internal_lfo_tick is the driver's pokeemerald m4a.c equivalent.  It
+ * is fired by m4a_main.c's tempoC overflow loop (tempoI/150 ticks per
+ * vblank).  For each active modulator (mod != 0 and lfoSpeed != 0):
  *
  *   1. If lfoDelayC > 0, decrement and skip — the modulator is in its
  *      "delay" phase post-trigger.
@@ -1057,9 +1030,9 @@ void m4a_all_notes_off(M4ADriver* drv, int track)
  *   5. If newModM differs from current modM, store it, recompute
  *      track-derived state via m4a_trk_vol_pit_set, and refresh active
  *      CGB / PCM channels on this track.  Volume axis (volMR/volML) is
- *      always refreshed; pitch axis is refreshed only when modT == 0
- *      (vibrato — v1 m4a_engine.c:920 condition).  modT == 1 (tremolo)
- *      and modT == 2 (autopan) only need volume. */
+ *      always refreshed; pitch is refreshed only when modT == 0
+ *      (vibrato).  modT == 1 (tremolo) and modT == 2 (autopan) only need
+ *      volume refresh. */
 void m4a_internal_lfo_tick(M4ADriver* drv)
 {
     if (!drv)
@@ -1107,7 +1080,7 @@ void m4a_internal_lfo_tick(M4ADriver* drv)
 
 static void portamento_tick(M4ADriver* drv)
 {
-    if (!drv->compat_portamento_enabled)
+    if (!drv->portamento_enabled)
         return;
 
     for (int i = 0; i < M4A_MAX_TRACKS; i++)
@@ -1141,7 +1114,7 @@ static void portamento_tick(M4ADriver* drv)
 
 static void pwm_tick(M4ADriver* drv)
 {
-    if (!drv->compat_pwm_active || drv->compat_skip_pwm_tick)
+    if (!drv->pwm_active)
         return;
 
     bool anyActive = false;
@@ -1156,7 +1129,7 @@ static void pwm_tick(M4ADriver* drv)
         if (!ch)
             continue;
 
-        const PulseWidthModPattern* pattern = &gPulseWidthModPatterns[track->pwmPattern];
+        const M4APulseWidthModPattern* pattern = &gPulseWidthModPatterns[track->pwmPattern];
         if (pattern->numSteps == 0)
             continue;
         if (--track->pwmSpeedCounter > 0)
@@ -1170,10 +1143,10 @@ static void pwm_tick(M4ADriver* drv)
         ch->dutyCycle = pattern->duty[step];
         ch->modify |= M4A_MO_DUTY;
     }
-    drv->compat_pwm_active = anyActive;
+    drv->pwm_active = anyActive;
 }
 
-void m4a_internal_compat_effects_tick(M4ADriver* drv)
+void m4a_internal_effects_tick(M4ADriver* drv)
 {
     if (!drv)
         return;
@@ -1212,9 +1185,9 @@ void m4a_all_sound_off(M4ADriver* drv)
 {
     if (!drv)
         return;
-    /* CC 0x78 / panic stop: all channels silent immediately, no envelope
-     * release.  Mirrors v1's m4a_engine_all_sound_off → channel_stop, and
-     * the real m4a writes that zero NRx2/NR52. */
+    /* CC 0x78 / panic stop: all channels silent immediately, with no envelope
+     * release.  The driver writes zero NRx2/NR52 values, matching the ROM
+     * behavior. */
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
         M4ADriverCgbChan* ch = &drv->cgb[i];

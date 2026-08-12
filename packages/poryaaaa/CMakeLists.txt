@@ -170,13 +170,6 @@ enable_testing()
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
-# ---- Porydaw-compatible static engine core ----
-add_subdirectory(plugin/porydaw)
-
-# m4a audio engine sources (shared between plugin, renderer, tests).
-set(ENGINE_SOURCES
-    plugin/m4a_engine.c
-)
 
 # ---- CLAP Plugin ----
 set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
@@ -184,11 +177,10 @@ set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
     ${PUGL_SOURCES}
 )
@@ -202,11 +194,10 @@ endif()
 poryaaaa_enable_project_source_warnings(
     plugin/m4a_plugin.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
 )
 
 target_include_directories(poryaaaa PRIVATE
@@ -296,7 +287,6 @@ endif()
 # ---- WAV Export Test ----
 add_executable(poryaaaa_test
     test/test_wav_export.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_test)
 poryaaaa_enable_project_warnings(poryaaaa_test)
@@ -313,7 +303,6 @@ endif()
 # ---- CLI Renderer ----
 add_executable(poryaaaa_render
     cmd/poryaaaa_render.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_render)
 poryaaaa_enable_project_warnings(poryaaaa_render)
@@ -659,9 +648,8 @@ add_executable(poryaaaa_unit_tests
     test/test_voicegroup_loader.c
     test/test_hw_audio_contracts.c
     ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
-    ${ENGINE_SOURCES}
 )
 target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
@@ -687,8 +675,7 @@ endif()
 # ---- Engine lifecycle/leak harness ----
 add_executable(poryaaaa_engine_lifecycle
     test/test_engine_lifecycle.c
-    plugin/m4a_engine_recorder.cpp
-    ${ENGINE_SOURCES}
+    plugin/m4a_recorder.cpp
 )
 target_compile_features(poryaaaa_engine_lifecycle PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_engine_lifecycle)

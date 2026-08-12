@@ -20,13 +20,13 @@ extern "C"
      * sequencing remains external because the DAW or renderer owns it. */
     typedef struct M4ADriver M4ADriver;
 
-    /* Mirror of M4AEngineXcmdFn so v2 can be wired into poryaaaa's xcmd path
-     * without dragging in m4a_engine.h. */
+    /* xCmd callback owned by direct driver consumers. */
     typedef void (*M4ADriverXcmdFn)(void* ctx, int trackIndex, uint8_t selector, uint32_t value);
 
     /* Canonical hardware time shared by every public event consumer. */
 #define M4A_GBA_CYCLES_PER_SECOND PORYAAAA_GBA_CLOCK_HZ
 #define M4A_VBLANK_CYCLES 280896u
+#define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
 
     /* ---- Cycle-domain driver→chip event contract ----
      *
@@ -105,7 +105,9 @@ extern "C"
     /* Voicegroup wiring (driver receives an already-populated ToneData*). */
     void m4a_driver_set_voicegroup(M4ADriver* drv, ToneData* vg);
     void m4a_driver_refresh_voices(M4ADriver* drv);
-
+    /* Optional musical effects are disabled by default for direct runtimes. */
+    void m4a_driver_set_portamento_enabled(M4ADriver* drv, bool enabled);
+    void m4a_driver_set_pwm_enabled(M4ADriver* drv, bool enabled);
     /* MIDI ingress. */
     void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity);
     void m4a_note_off(M4ADriver* drv, int track, uint8_t key);
@@ -120,6 +122,8 @@ extern "C"
     void m4a_set_master_volume(M4ADriver* drv, uint8_t volume); /* 0..15 m4a master */
     void m4a_set_reverb_amount(M4ADriver* drv, uint8_t amount); /* 0..127 */
     void m4a_set_analog_filter(M4ADriver* drv, bool enabled);   /* chip-side LPF */
+    /* Zero deliberately disables DirectSound allocation; positive values are
+     * clamped to M4A_MAX_PCM_CHANNELS. */
     void m4a_set_max_pcm_channels(M4ADriver* drv, uint8_t maxChannels);
     void m4a_set_tempo_bpm(M4ADriver* drv, double bpm);
 
@@ -134,7 +138,9 @@ extern "C"
     /* Returns the completed absolute GBA cycle of the host-facing advance. */
     uint64_t m4a_driver_current_cycle(const M4ADriver* drv);
 
-    /* Rebase a fresh driver's absolute timeline before its first render. */
+    /* Rebase a driver with no pending writes to an absolute timeline.  The
+     * next SoundMain callback remains on hardware VBlank cadence; PCM timing
+     * restarts from this cycle. */
     bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle);
 
     /* Read-only accessor for non-timing consumers (UI, params, debug). */
@@ -153,6 +159,7 @@ extern "C"
  * Capacity / chunking: the queue is bounded. m4a_get_events_dropped() returns a
  * monotonic counter incremented on overflow; tests assert it stays 0. */
 #define M4A_RECOMMENDED_MAX_ADVANCE_FRAMES 2048
+    int m4a_driver_recommended_max_advance_frames(void);
 
     const M4ARegWriteBatch* m4a_get_pending_writes(const M4ADriver* drv);
     void m4a_consume_writes(M4ADriver* drv);

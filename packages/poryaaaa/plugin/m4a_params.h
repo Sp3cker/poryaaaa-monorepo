@@ -3,8 +3,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <clap/ext/params.h>
-#include "m4a_plugin.h"
+#include <clap/clap.h>
+
+typedef struct M4APluginData M4APluginData;
 
 #ifdef __cplusplus
 extern "C"
@@ -13,7 +14,7 @@ extern "C"
 
     void m4a_params_init(M4APluginData* data);
     void m4a_params_set_program(M4APluginData* data, int trackIndex, uint8_t program);
-    void m4a_params_sync_to_engine(M4APluginData* data);
+    void m4a_params_sync_to_driver(M4APluginData* data);
     void m4a_params_process_event(M4APluginData* data, const clap_event_param_value_t* ev);
     bool m4a_params_state_save(M4APluginData* data, const clap_ostream_t* stream);
     void m4a_params_state_load(M4APluginData* data, const clap_istream_t* stream);
