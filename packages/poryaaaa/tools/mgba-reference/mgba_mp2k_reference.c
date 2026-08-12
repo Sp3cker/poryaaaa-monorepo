@@ -116,7 +116,7 @@ struct GBAAudioObservationSink
 #define DIRECTSOUND_WAVE_HEADER_SIZE 16u
 #define GBA_ROM_START 0x08000000u
 #define GBA_ROM_END 0x0A000000u
-#define DRIVER_SCENARIO_CAPTURE_TAIL_CYCLES 384u
+#define DRIVER_SCENARIO_CAPTURE_TAIL_CYCLES 8192u
 #define DRIVER_SCENARIO_START_FRAMES 9u
 #define DRIVER_SCENARIO_ENVELOPE_FRAMES 14u
 #define DRIVER_SCENARIO_PITCH_FRAMES 12u
@@ -1714,7 +1714,8 @@ static uint32_t driver_scenario_span_frames(DriverScenario scenario)
     return 0u;
 }
 
-/* Keeps the replay tail outside the fixed action schedule while covering one SAMPLE period. */
+/* Keep action scheduling fixed while retaining the final SoundMain callback
+ * after its native VBlank phase and one replay-slack SAMPLE period. */
 static uint64_t driver_scenario_span_cycles(DriverScenario scenario)
 {
     if (scenario == DRIVER_SCENARIO_NONE)

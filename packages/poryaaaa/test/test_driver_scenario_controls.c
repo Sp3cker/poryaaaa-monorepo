@@ -171,12 +171,12 @@ static void test_all_lifecycle_scenarios(void)
         {2u, DRIVER_TEST_NOTE_OFF, 60u, 0u, 0},
     };
 
-    test_scenario_schedule("start", 1u, 9u, 2529280u, start, sizeof(start) / sizeof(start[0]));
-    test_scenario_schedule("envelope", 6u, 14u, 3933696u, start, sizeof(start) / sizeof(start[0]));
-    test_scenario_schedule("pitch", 4u, 12u, 3372032u, pitch, sizeof(pitch) / sizeof(pitch[0]));
-    test_scenario_schedule("volume-pan", 4u, 12u, 3372032u, volume_pan, sizeof(volume_pan) / sizeof(volume_pan[0]));
-    test_scenario_schedule("retrigger", 5u, 13u, 3652608u, retrigger, sizeof(retrigger) / sizeof(retrigger[0]));
-    test_scenario_schedule("release", 6u, 14u, 3933696u, release, sizeof(release) / sizeof(release[0]));
+    test_scenario_schedule("start", 1u, 9u, 2536960u, start, sizeof(start) / sizeof(start[0]));
+    test_scenario_schedule("envelope", 6u, 14u, 3941376u, start, sizeof(start) / sizeof(start[0]));
+    test_scenario_schedule("pitch", 4u, 12u, 3379712u, pitch, sizeof(pitch) / sizeof(pitch[0]));
+    test_scenario_schedule("volume-pan", 4u, 12u, 3379712u, volume_pan, sizeof(volume_pan) / sizeof(volume_pan[0]));
+    test_scenario_schedule("retrigger", 5u, 13u, 3660800u, retrigger, sizeof(retrigger) / sizeof(retrigger[0]));
+    test_scenario_schedule("release", 6u, 14u, 3941376u, release, sizeof(release) / sizeof(release[0]));
 }
 
 static void test_unknown_scenario_fails(void)
@@ -932,7 +932,7 @@ static void test_family_identity_and_manifest(void)
                               &options,
                               driver_find_scenario("start"),
                               0u,
-                              2529280u,
+                              2536960u,
                               "voicegroup_fixture",
                               4u,
                               wave_voice.type,
@@ -949,7 +949,7 @@ static void test_family_identity_and_manifest(void)
         ASSERT(strstr(text, "\"format\": \"poryaaaa-driver-candidate-trace\"") != NULL,
                "manifest identifies the generic candidate adapter");
         ASSERT(strstr(text, "\"family\": \"psw\"") != NULL, "manifest records derived family");
-        ASSERT(strstr(text, "\"trace_begin_cycle\": 0") != NULL && strstr(text, "\"trace_end_cycle\": 2529280") != NULL,
+        ASSERT(strstr(text, "\"trace_begin_cycle\": 0") != NULL && strstr(text, "\"trace_end_cycle\": 2536960") != NULL,
                "manifest commits the measured trace interval");
         ASSERT(strstr(text, "\"driver_origin_cycle\": 0") != NULL,
                "manifest commits the family-specific driver timeline origin");

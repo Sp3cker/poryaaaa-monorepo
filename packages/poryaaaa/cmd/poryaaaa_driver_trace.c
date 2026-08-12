@@ -50,16 +50,18 @@
 #include "voicegroup/voicegroup_loader.h"
 #include "voicegroup/voicegroup_types.h"
 
-/* Every family shares one observation span. The seven-frame settle tail exposes
- * DirectSound only after MP2K's zeroed DMA ring has made a complete pass. */
+/* Every family shares one observation span. The eight-frame settle tail exposes
+ * DirectSound only after MP2K's zeroed DMA ring has made a complete pass. The
+ * endpoint grace retains the final native SoundMain callback after its VBlank. */
 #define DRIVER_START_CAPTURE_FRAMES 9u
 #define DRIVER_ENVELOPE_CAPTURE_FRAMES 14u
 #define DRIVER_PITCH_CAPTURE_FRAMES 12u
 #define DRIVER_VOLUME_PAN_CAPTURE_FRAMES 12u
 #define DRIVER_RETRIGGER_CAPTURE_FRAMES 13u
 #define DRIVER_RELEASE_CAPTURE_FRAMES 14u
+#define DRIVER_CAPTURE_TAIL_CYCLES 8192u
 #define DRIVER_CAPTURE_END_CYCLE(frames)                                                                               \
-    ((((uint64_t)(frames) * M4A_VBLANK_CYCLES + 384u + 511u) & ~UINT64_C(511)) + UINT64_C(512))
+    ((((uint64_t)(frames) * M4A_VBLANK_CYCLES + DRIVER_CAPTURE_TAIL_CYCLES + 511u) & ~UINT64_C(511)) + UINT64_C(512))
 #define DRIVER_HOST_RATE_HZ 44100u
 #define DRIVER_WAVEFORM_SIZE 16u
 #define DRIVER_NORMALIZED_TONE_SIZE 12u

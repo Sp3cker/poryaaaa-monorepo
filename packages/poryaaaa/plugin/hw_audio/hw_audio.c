@@ -16,6 +16,8 @@
  * HwAudio struct — at HW_AUDIO_INTERNAL_CHUNK=1024 the six per-channel
  * scratch buffers add up to 24 KB. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
+#define TRACE_ORDER_EXTENDED 0x80000000u
+#define TRACE_ORDER_DELAY_MASK 0xFFFFu
 
 struct HwAudio
 {
@@ -882,7 +884,13 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
             event->address == HW_AUDIO_GBA_IO_BASE + 0x80)
             clock_noise = true;
     }
-    hw_psg_advance_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave, clock_noise);
+    bool defer_terminal_frame = event->kind == HW_AUDIO_TRACE_SAMPLE && !observe_sample &&
+                                (event->order & TRACE_ORDER_EXTENDED) != 0u &&
+                                (event->order & TRACE_ORDER_DELAY_MASK) != 0u;
+    if (defer_terminal_frame)
+        hw_psg_advance_staged_sample_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave, clock_noise);
+    else
+        hw_psg_advance_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave, clock_noise);
     if (preapply_wave_bank)
     {
         /* Frame events consume the old bank first; NR30 then selects bank
@@ -980,6 +988,12 @@ HwAudioTraceStatus hw_audio_trace_observe_sample(HwAudio* hw,
     frame->left = hw->native_l[0];
     frame->right = hw->native_r[0];
     return HW_AUDIO_TRACE_OK;
+}
+
+void hw_audio_trace_finish_sample_observation(HwAudio* hw, uint64_t observation_cycle)
+{
+    if (hw && observation_cycle >= hw->trace_cycle)
+        hw_psg_run_deferred_frame_event(&hw->psg, observation_cycle - hw->trace_cycle);
 }
 
 const char* hw_audio_trace_status_string(HwAudioTraceStatus status)

@@ -99,6 +99,9 @@ extern "C"
                                                      const HwAudioTraceFifoSample* fifo_sample,
                                                      HwAudioNativeFrame* frame);
 
+    /* Complete a retained frame callback at its full-core observation cycle. */
+    void hw_audio_trace_finish_sample_observation(HwAudio* hw, uint64_t observation_cycle);
+
     const char* hw_audio_trace_status_string(HwAudioTraceStatus status);
 
 #ifdef __cplusplus

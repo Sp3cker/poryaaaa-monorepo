@@ -63,6 +63,9 @@ extern "C"
         uint8_t sq2_duty_index;
         uint32_t wave_cycles_until_update;
         uint64_t wave_pending_cycles;
+        uint64_t sq1_trace_lookahead;
+        uint64_t sq2_trace_lookahead;
+        uint64_t wave_trace_lookahead;
 
         uint16_t sq1_freq; /* 11-bit freq word */
         uint16_t sq2_freq;
@@ -131,6 +134,7 @@ extern "C"
         uint8_t frame_seq_step;
         double frame_seq_accum; /* debug view of frame_seq_cycle_remainder */
         uint16_t frame_seq_cycle_remainder;
+        bool frame_seq_event_deferred;
         uint64_t frame_seq_ticks;
         uint64_t frame_seq_length_ticks;
         uint64_t frame_seq_sweep_ticks;
@@ -145,6 +149,15 @@ extern "C"
      * cadence across trace and live rendering. */
     void hw_psg_advance_cycles(
         HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise);
+
+    /* Advance a delayed trace SAMPLE while retaining a terminal frame event
+     * until the full-core observation callback completes. */
+    void hw_psg_advance_staged_sample_cycles(
+        HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise);
+
+    /* Run mGBA's frame callback at its delayed observation time, then retain
+     * the lookahead so later nominal trace events do not clock channels twice. */
+    void hw_psg_run_deferred_frame_event(HwPsgSynth* psg, uint64_t observation_lookahead);
 
     /* Runs mGBA's separately scheduled reset-time callback without moving
      * the following absolute 32,768-cycle cadence. */

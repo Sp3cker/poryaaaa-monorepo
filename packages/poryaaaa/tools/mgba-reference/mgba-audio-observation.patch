@@ -1,5 +1,5 @@
 diff --git a/include/mgba/internal/gba/audio.h b/include/mgba/internal/gba/audio.h
-index fba5090bf..a8a1d5eff 100644
+index fba5090bf..695af22b2 100644
 --- a/include/mgba/internal/gba/audio.h
 +++ b/include/mgba/internal/gba/audio.h
 @@ -10,11 +10,11 @@
@@ -59,16 +59,17 @@ index fba5090bf..a8a1d5eff 100644
  void GBAAudioReset(struct GBAAudio* audio);
  void GBAAudioDeinit(struct GBAAudio* audio);
  
-@@ -279,6 +302,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value);
+@@ -279,6 +302,8 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value);
  uint32_t GBAAudioReadWaveRAM(struct GBAAudio* audio, int address);
  uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value);
  void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles);
 +void GBAAudioSampleFIFOWithSampleEvent(struct GBAAudio* audio, int fifoId, int32_t cycles, int32_t sampleEventUntil);
++void GBAAudioRunSampleEvent(struct GBAAudio* audio, uint32_t cyclesLate);
  
  void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp);
  
 diff --git a/src/gba/audio.c b/src/gba/audio.c
-index 1e913554f..9c4b1d6c7 100644
+index 1e913554f..74c0a01a5 100644
 --- a/src/gba/audio.c
 +++ b/src/gba/audio.c
 @@ -5,8 +5,8 @@
@@ -161,7 +162,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->sampleEvent.context = audio;
  	audio->sampleEvent.name = "GBA Audio Sample";
  	audio->sampleEvent.callback = _sample;
-@@ -47,6 +118,10 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
+@@ -47,6 +119,10 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
  }
  
  void GBAAudioReset(struct GBAAudio* audio) {
@@ -172,7 +173,7 @@ index 1e913554f..9c4b1d6c7 100644
  	GBAudioReset(&audio->psg);
  	mTimingDeschedule(&audio->p->timing, &audio->psg.frameEvent);
  	mTimingSchedule(&audio->p->timing, &audio->psg.frameEvent, 0);
-@@ -121,35 +196,41 @@ void GBAAudioScheduleFifoDma(struct GBAAudio* audio, int number, struct GBADMA*
+@@ -121,35 +197,41 @@ void GBAAudioScheduleFifoDma(struct GBAAudio* audio, int number, struct GBADMA*
  
  void GBAAudioWriteSOUND1CNT_LO(struct GBAAudio* audio, uint16_t value) {
  	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
@@ -214,7 +215,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->psg.ch3.size = GBAudioRegisterBankGetSize(value);
  	audio->psg.ch3.bank = GBAudioRegisterBankGetBank(value);
  	GBAudioWriteNR30(&audio->psg, value);
-@@ -157,35 +238,41 @@ void GBAAudioWriteSOUND3CNT_LO(struct GBAAudio* audio, uint16_t value) {
+@@ -157,35 +239,41 @@ void GBAAudioWriteSOUND3CNT_LO(struct GBAAudio* audio, uint16_t value) {
  
  void GBAAudioWriteSOUND3CNT_HI(struct GBAAudio* audio, uint16_t value) {
  	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
@@ -256,7 +257,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->volume = GBARegisterSOUNDCNT_HIGetVolume(value);
  	audio->volumeChA = GBARegisterSOUNDCNT_HIGetVolumeChA(value);
  	audio->volumeChB = GBARegisterSOUNDCNT_HIGetVolumeChB(value);
-@@ -207,6 +294,7 @@ void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
+@@ -207,6 +295,7 @@ void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
  
  void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
  	GBAAudioSample(audio, mTimingCurrentTime(&audio->p->timing));
@@ -264,7 +265,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->enable = GBAudioEnableGetEnable(value);
  	GBAudioWriteNR52(&audio->psg, value);
  	if (!audio->enable) {
-@@ -227,6 +315,7 @@ void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
+@@ -227,6 +316,7 @@ void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
  void GBAAudioWriteSOUNDBIAS(struct GBAAudio* audio, uint16_t value) {
  	int32_t timestamp = mTimingCurrentTime(&audio->p->timing);
  	GBAAudioSample(audio, timestamp);
@@ -272,7 +273,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->soundbias = value;
  	int32_t oldSampleInterval = audio->sampleInterval;
  	audio->sampleInterval = 0x200 >> GBARegisterSOUNDBIASGetResolution(value);
-@@ -252,6 +341,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value) {
+@@ -252,6 +342,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value) {
  	}
  
  	GBAudioRun(&audio->psg, mTimingCurrentTime(audio->psg.timing), 0x4);
@@ -280,7 +281,7 @@ index 1e913554f..9c4b1d6c7 100644
  	audio->psg.ch3.wavedata32[address | (bank * 4)] = value;
  }
  
-@@ -281,6 +371,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
+@@ -281,6 +372,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
  		mLOG(GBA_AUDIO, ERROR, "Bad FIFO write to address 0x%03x", address);
  		return value;
  	}
@@ -288,7 +289,7 @@ index 1e913554f..9c4b1d6c7 100644
  	channel->fifo[channel->fifoWrite] = value;
  	++channel->fifoWrite;
  	if (channel->fifoWrite == GBA_AUDIO_FIFO_SIZE) {
-@@ -289,7 +380,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
+@@ -289,7 +381,7 @@ uint32_t GBAAudioWriteFIFO(struct GBAAudio* audio, int address, uint32_t value)
  	return channel->fifo[channel->fifoWrite];
  }
  
@@ -297,7 +298,7 @@ index 1e913554f..9c4b1d6c7 100644
  	struct GBAAudioFIFO* channel;
  	if (fifoId == 0) {
  		channel = &audio->chA;
-@@ -323,7 +414,7 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
+@@ -323,7 +415,7 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
  			channel->fifoRead = 0;
  		}
  	}
@@ -306,7 +307,7 @@ index 1e913554f..9c4b1d6c7 100644
  	int bits = 2 << GBARegisterSOUNDBIASGetResolution(audio->soundbias);
  	until += 1 << (9 - GBARegisterSOUNDBIASGetResolution(audio->soundbias));
  	until >>= 9 - GBARegisterSOUNDBIASGetResolution(audio->soundbias);
-@@ -335,11 +426,16 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
+@@ -335,11 +427,16 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
  		channel->samples[i] = channel->internalSample;
  	}
  	if (channel->internalRemaining) {
@@ -323,7 +324,7 @@ index 1e913554f..9c4b1d6c7 100644
  static int _applyBias(struct GBAAudio* audio, int sample) {
  	sample += GBARegisterSOUNDBIASGetBias(audio->soundbias);
  	if (sample >= 0x400) {
-@@ -352,11 +448,13 @@ static int _applyBias(struct GBAAudio* audio, int sample) {
+@@ -352,11 +449,13 @@ static int _applyBias(struct GBAAudio* audio, int sample) {
  
  void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
  	timestamp -= audio->lastSample;
@@ -339,7 +340,7 @@ index 1e913554f..9c4b1d6c7 100644
  		int16_t sampleLeft = 0;
  		int16_t sampleRight = 0;
  		int psgShift = 4 - audio->volume;
-@@ -389,6 +487,8 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
+@@ -389,6 +488,8 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
  		sampleRight = _applyBias(audio, sampleRight);
  		audio->currentSamples[sample].left = sampleLeft;
  		audio->currentSamples[sample].right = sampleRight;
@@ -348,7 +349,7 @@ index 1e913554f..9c4b1d6c7 100644
  	}
  
  	audio->sampleIndex = sample;
-@@ -412,7 +512,8 @@ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+@@ -412,7 +513,8 @@ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate) {
  		if (audio->p->stream->postAudioFrame) {
  			int i;
  			for (i = 0; i < samples; ++i) {
@@ -358,6 +359,18 @@ index 1e913554f..9c4b1d6c7 100644
  			}
  		}
  		if (audio->p->stream->postAudioBuffer) {
+@@ -430,6 +532,11 @@ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+ 	mTimingSchedule(timing, &audio->sampleEvent, SAMPLE_INTERVAL - cyclesLate);
+ }
+ 
++void GBAAudioRunSampleEvent(struct GBAAudio* audio, uint32_t cyclesLate) {
++	mTimingDeschedule(&audio->p->timing, &audio->sampleEvent);
++	_sample(&audio->p->timing, audio, cyclesLate);
++}
++
+ void GBAAudioSerialize(const struct GBAAudio* audio, struct GBASerializedState* state) {
+ 	GBAudioPSGSerialize(&audio->psg, &state->audio.psg, &state->audio.flags);
+ 
 diff --git a/src/gba/io.c b/src/gba/io.c
 index 658036e4c..7c4305502 100644
 --- a/src/gba/io.c
