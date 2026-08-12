@@ -937,6 +937,67 @@ static void test_trace_wave_ram_bank_and_trigger_delay(void)
     hw_audio_destroy(audio);
 }
 
+/* mGBA's late frame callback clocks Wave at the callback cycle, then avoids
+ * counting that lookahead again when nominal SAMPLE timestamps catch up. */
+static void test_trace_delayed_frame_callback_clocks_wave_once(void)
+{
+    printf("Testing hw_audio trace contracts: delayed frame callback Wave clock...\n");
+    HwAudio* audio = hw_audio_create(48000.0f);
+    HwAudioNativeFrame frame;
+    HwAudioTraceFifoSample fifo_sample = {0};
+    hw_audio_trace_reset(audio);
+
+    ASSERT_EQ(apply_event(audio, 0, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x80, 0x4477, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_L routes Wave to both sides");
+    ASSERT_EQ(apply_event(audio, 0, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x82, 0x0002, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_H sets full PSG volume");
+    ASSERT_EQ(apply_event(audio, 0, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x84, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "SOUNDCNT_X enables PSG");
+    ASSERT_EQ(apply_event(audio, 0, 3, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x70, 0x0040, &frame),
+              HW_AUDIO_TRACE_OK,
+              "NR30 exposes Wave RAM bank zero");
+    ASSERT_EQ(apply_event(audio, 0, 4, HW_AUDIO_TRACE_WRITE, 4, HW_AUDIO_GBA_IO_BASE + 0x90, 0x67452312, &frame),
+              HW_AUDIO_TRACE_OK,
+              "Wave RAM receives distinct consecutive nibbles");
+    ASSERT_EQ(apply_event(audio, 32731, 0, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x70, 0x0080, &frame),
+              HW_AUDIO_TRACE_OK,
+              "wave DAC selects the populated bank before the frame boundary");
+    ASSERT_EQ(apply_event(audio, 32731, 1, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x72, 0x2000, &frame),
+              HW_AUDIO_TRACE_OK,
+              "wave volume is configured");
+    ASSERT_EQ(apply_event(audio, 32731, 2, HW_AUDIO_TRACE_WRITE, 2, HW_AUDIO_GBA_IO_BASE + 0x74, 0x87FF, &frame),
+              HW_AUDIO_TRACE_OK,
+              "wave trigger places a clock between nominal and callback cycles");
+
+    HwAudioTraceEvent delayed_sample = {
+        32768,
+        UINT32_C(0x80000006),
+        HW_AUDIO_TRACE_SAMPLE,
+        0,
+        0,
+        0,
+    };
+    ASSERT_EQ(hw_audio_trace_stage_sample(audio, &delayed_sample, &frame),
+              HW_AUDIO_TRACE_OK,
+              "frame-boundary SAMPLE is staged with a six-cycle callback delay");
+    hw_audio_trace_finish_sample_observation(audio, 32774);
+    ASSERT_EQ(hw_audio_trace_observe_sample(audio, delayed_sample.cycle, &fifo_sample, &frame),
+              HW_AUDIO_TRACE_OK,
+              "staged SAMPLE is observed after the delayed frame callback");
+    ASSERT_EQ(frame.left, 1536, "callback lookahead reaches the second Wave nibble on left");
+    ASSERT_EQ(frame.right, 1536, "callback lookahead reaches the second Wave nibble on right");
+
+    ASSERT_EQ(apply_event(audio, 32776, 0, HW_AUDIO_TRACE_SAMPLE, 0, 0, 0, &frame),
+              HW_AUDIO_TRACE_OK,
+              "nominal SAMPLE catches up after the delayed callback");
+    ASSERT_EQ(frame.left, 1536, "callback lookahead is not counted twice on left");
+    ASSERT_EQ(frame.right, 1536, "callback lookahead is not counted twice on right");
+    hw_audio_destroy(audio);
+}
+
 /* An active NR30 write selects its bank before mGBA forces the overdue Wave clock. */
 static void test_trace_wave_nr30_selects_bank_before_clock(void)
 {
@@ -1346,6 +1407,7 @@ void test_hw_audio_trace_contracts_run_all(void)
     test_trace_fifo_schedule_rejects_duplicate_sample_slot();
     test_trace_text_rejects_signed_and_overflowing_numbers();
     test_trace_wave_ram_bank_and_trigger_delay();
+    test_trace_delayed_frame_callback_clocks_wave_once();
     test_trace_wave_nr30_selects_bank_before_clock();
     test_trace_wave_ram_write_forces_pending_clock();
     test_trace_wave_nr52_disable_preserves_residual_ram_phase();
