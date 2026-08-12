@@ -151,14 +151,14 @@ class NativeCompareTest(unittest.TestCase):
         candidate_trace = self.directory / "candidate.trace"
         candidate_frames = list(self.frames)
         candidate_frames[7] = (candidate_frames[7][0], candidate_frames[7][1] + 1)
-        sample_positions = [(0, 4), (512, 11), (1024, 18), (1536, 25), (2048, 32)]
+        sample_positions = [(0, 5), (512, 11), (1024, 18), (1536, 25), (2048, 32)]
         write_capture(reference, self.frames, self.cycles)
         write_capture(candidate, candidate_frames, self.cycles)
         directsound_events = [
             "WRITE 0 1 2 0x04000084 0x00000080",
             "WRITE 0 2 2 0x04000082 0x00000300",
             "WRITE 0 3 4 0x040000A0 0x04030201",
-            "TIMER 256 0 0",
+            "TIMER 0 4 0",
         ]
         write_trace(reference_trace, sample_positions, directsound_events)
         write_trace(candidate_trace, sample_positions, directsound_events)
@@ -183,7 +183,7 @@ class NativeCompareTest(unittest.TestCase):
         candidate = self.directory / "candidate.json"
         reference_trace = self.directory / "reference.trace"
         candidate_trace = self.directory / "candidate.trace"
-        sample_positions = [(0, 0), (512, 0)]
+        sample_positions = [(0, 1), (512, 0)]
         write_capture(
             reference,
             self.frames,
