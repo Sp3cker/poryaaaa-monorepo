@@ -235,6 +235,8 @@ typedef struct
     uint64_t pending_sample_cycle;
     uint64_t pending_sample_deadline;
     bool pending_sample_has_explicit_deadline;
+    uint64_t pending_observation_deadline;
+    bool pending_observation;
     bool pending_sample;
     bool pending_measurement;
     bool pending_candidate_cgb_batch;
@@ -279,6 +281,29 @@ static bool emit_pending_sample(ReplayContext* replay)
     return publish_pending_sample(replay, &frame);
 }
 
+/* Complete each full-core SAMPLE callback after its final staged sample and
+ * before a later callback's sample is observed. */
+static bool finish_due_sample_observation(ReplayContext* replay, uint64_t cycle, bool force)
+{
+    while (replay->pending_observation && (force || cycle >= replay->pending_observation_deadline))
+    {
+        const uint64_t observation_deadline = replay->pending_observation_deadline;
+        if (replay->pending_sample && replay->pending_sample_has_explicit_deadline &&
+            replay->pending_sample_deadline <= observation_deadline && !emit_pending_sample(replay))
+        {
+            return false;
+        }
+        hw_audio_trace_finish_sample_observation(replay->audio, observation_deadline);
+        replay->pending_observation = false;
+        if (replay->pending_sample && replay->pending_sample_has_explicit_deadline)
+        {
+            replay->pending_observation_deadline = replay->pending_sample_deadline;
+            replay->pending_observation = true;
+        }
+    }
+    return true;
+}
+
 /* Replay each parsed event while preserving the trace interval for PCM output. */
 static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
 {
@@ -290,7 +315,7 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
     }
     if (record->kind == HW_AUDIO_TRACE_TEXT_END)
     {
-        if (!emit_pending_sample(replay))
+        if (!finish_due_sample_observation(replay, record->cycle, true) || !emit_pending_sample(replay))
             return false;
         replay->measurement_open = false;
         return true;
@@ -303,12 +328,13 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
     }
     replay->event_index++;
     HwAudioNativeFrame frame;
+    if (!finish_due_sample_observation(replay, record->event.cycle, false))
+        return false;
     if (replay->pending_sample)
     {
-        bool reached_observation =
-            replay->pending_sample_has_explicit_deadline
-                ? record->event.cycle >= replay->pending_sample_deadline
-                : record->event.cycle > replay->pending_sample_cycle;
+        bool reached_observation = replay->pending_sample_has_explicit_deadline
+                                       ? record->event.cycle >= replay->pending_sample_deadline
+                                       : record->event.cycle > replay->pending_sample_cycle;
         if (reached_observation && !emit_pending_sample(replay))
             return false;
     }
@@ -332,6 +358,11 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
             replay->pending_sample_has_explicit_deadline ? record->event.order & TRACE_ORDER_DELAY_MASK : 0u;
         replay->pending_sample_deadline = record->event.cycle + observation_delay;
         replay->pending_measurement = replay->measurement_open;
+        if (replay->pending_sample_has_explicit_deadline && !replay->pending_observation)
+        {
+            replay->pending_observation_deadline = replay->pending_sample_deadline;
+            replay->pending_observation = true;
+        }
         return true;
     }
 

@@ -445,9 +445,19 @@ static void hw_psg_force_wave(HwPsgSynth* psg)
     psg->wave_pending_cycles = 0;
 }
 
+/* Consume callback lookahead before advancing a channel on the nominal trace. */
+static uint64_t hw_psg_consume_trace_lookahead(uint64_t* lookahead, uint64_t cycles)
+{
+    uint64_t consumed = cycles < *lookahead ? cycles : *lookahead;
+    *lookahead -= consumed;
+    return cycles - consumed;
+}
+
 /* Retain lazy Wave cycles between forced events and keep the frame-event
- * phase on its absolute 32,768-cycle cadence while NR52 is disabled. */
-static void hw_psg_advance_wave_and_frame_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_wave)
+ * phase on its absolute 32,768-cycle cadence while NR52 is disabled. A
+ * delayed SAMPLE can retain its terminal event until observation completes. */
+static void
+hw_psg_advance_wave_and_frame_cycles(HwPsgSynth* psg, uint64_t cycles, bool clock_wave, bool defer_terminal_frame)
 {
     const uint32_t frame_period = 16777216u / 512u;
     while (cycles > 0)
@@ -455,15 +465,27 @@ static void hw_psg_advance_wave_and_frame_cycles(HwPsgSynth* psg, uint64_t cycle
         uint32_t until_frame = frame_period - psg->frame_seq_cycle_remainder;
         uint64_t chunk = cycles < until_frame ? cycles : until_frame;
         if (psg->master_enabled)
-            psg->wave_pending_cycles += chunk;
+        {
+            uint64_t wave_cycles = hw_psg_consume_trace_lookahead(&psg->wave_trace_lookahead, chunk);
+            psg->wave_pending_cycles += wave_cycles;
+        }
         psg->frame_seq_cycle_remainder = (uint16_t)(psg->frame_seq_cycle_remainder + chunk);
         cycles -= chunk;
         if (psg->frame_seq_cycle_remainder == frame_period)
         {
+            if (psg->frame_seq_event_deferred)
+            {
+                if (psg->master_enabled)
+                    hw_psg_tick_frame_sequencer(psg);
+                psg->frame_seq_event_deferred = false;
+            }
             if (psg->master_enabled)
             {
                 hw_psg_force_wave(psg);
-                hw_psg_tick_frame_sequencer(psg);
+                if (defer_terminal_frame && cycles == 0)
+                    psg->frame_seq_event_deferred = true;
+                else
+                    hw_psg_tick_frame_sequencer(psg);
             }
             psg->frame_seq_cycle_remainder = 0;
         }
@@ -495,16 +517,24 @@ void hw_psg_set_render_rate(HwPsgSynth* psg, float render_rate)
     psg->render_rate = render_rate;
 }
 
-void hw_psg_advance_cycles(
-    HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise)
+/* Share channel-cycle advancement while selecting terminal frame ordering. */
+static void hw_psg_advance_cycles_internal(HwPsgSynth* psg,
+                                           uint64_t cycles,
+                                           bool clock_sq1,
+                                           bool clock_sq2,
+                                           bool clock_wave,
+                                           bool clock_noise,
+                                           bool defer_terminal_frame)
 {
     if (!psg)
         return;
 
+    uint64_t sq1_cycles = hw_psg_consume_trace_lookahead(&psg->sq1_trace_lookahead, cycles);
+    uint64_t sq2_cycles = hw_psg_consume_trace_lookahead(&psg->sq2_trace_lookahead, cycles);
     hw_psg_advance_square_cycles(
-        &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, cycles, psg->master_enabled && clock_sq1);
+        &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, sq1_cycles, psg->master_enabled && clock_sq1);
     hw_psg_advance_square_cycles(
-        &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, cycles, psg->master_enabled && clock_sq2);
+        &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, sq2_cycles, psg->master_enabled && clock_sq2);
     if (psg->master_enabled)
     {
         psg->noise_pending_cycles += cycles;
@@ -514,7 +544,43 @@ void hw_psg_advance_cycles(
             psg->noise_pending_cycles = 0;
         }
     }
-    hw_psg_advance_wave_and_frame_cycles(psg, cycles, clock_wave);
+    hw_psg_advance_wave_and_frame_cycles(psg, cycles, clock_wave, defer_terminal_frame);
+}
+
+void hw_psg_advance_cycles(
+    HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise)
+{
+    hw_psg_advance_cycles_internal(psg, cycles, clock_sq1, clock_sq2, clock_wave, clock_noise, false);
+}
+
+void hw_psg_advance_staged_sample_cycles(
+    HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise)
+{
+    hw_psg_advance_cycles_internal(psg, cycles, clock_sq1, clock_sq2, clock_wave, clock_noise, true);
+}
+
+void hw_psg_run_deferred_frame_event(HwPsgSynth* psg, uint64_t observation_lookahead)
+{
+    if (!psg || !psg->frame_seq_event_deferred)
+        return;
+    if (psg->master_enabled)
+    {
+        bool clock_sq1 = psg->sq1_timer_cycles + observation_lookahead > 0x40000000u ||
+                         (psg->sq1_enabled && psg->sq1_envelope.dead != 2);
+        bool clock_sq2 = psg->sq2_timer_cycles + observation_lookahead > 0x40000000u ||
+                         (psg->sq2_enabled && psg->sq2_envelope.dead != 2);
+        hw_psg_advance_square_cycles(
+            &psg->sq1_timer_cycles, &psg->sq1_duty_index, psg->sq1_freq, observation_lookahead, clock_sq1);
+        hw_psg_advance_square_cycles(
+            &psg->sq2_timer_cycles, &psg->sq2_duty_index, psg->sq2_freq, observation_lookahead, clock_sq2);
+        psg->wave_pending_cycles += observation_lookahead;
+        hw_psg_force_wave(psg);
+        psg->sq1_trace_lookahead += observation_lookahead;
+        psg->sq2_trace_lookahead += observation_lookahead;
+        psg->wave_trace_lookahead += observation_lookahead;
+        hw_psg_tick_frame_sequencer(psg);
+    }
+    psg->frame_seq_event_deferred = false;
 }
 
 void hw_psg_get_frame_sequencer_debug(const HwPsgSynth* psg, HwPsgFrameSequencerDebug* out)

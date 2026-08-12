@@ -89,9 +89,10 @@ typedef struct
 typedef struct
 {
     uint64_t cycle;
+    uint64_t observationCycle;
     bool capture;
+    bool explicitObservation;
 } ExpectedSample;
-
 typedef struct
 {
     struct mCore* core;
@@ -644,7 +645,8 @@ static void fail_replay(Replay* replay, const char* message)
 }
 
 /* Keep every emitted native sample paired with a prior explicit SAMPLE marker. */
-static bool append_expected_sample(Replay* replay, uint64_t cycle, bool capture)
+static bool append_expected_sample(
+    Replay* replay, uint64_t cycle, uint64_t observationCycle, bool capture, bool explicitObservation)
 {
     if (replay->expectedCount == replay->expectedCapacity)
     {
@@ -659,7 +661,9 @@ static bool append_expected_sample(Replay* replay, uint64_t cycle, bool capture)
     }
     replay->expectedSamples[replay->expectedCount++] = (ExpectedSample){
         .cycle = cycle,
+        .observationCycle = observationCycle,
         .capture = capture,
+        .explicitObservation = explicitObservation,
     };
     return true;
 }
@@ -751,6 +755,59 @@ static bool advance_mgba_to(Replay* replay, uint64_t cycle)
     return !replay->failed && mTimingCurrentTime(&gba->timing) == target;
 }
 
+/* Dispatch one traced sample-event batch when the standalone timing queue did
+ * not naturally reach the full core's callback phase. */
+static bool run_expected_sample_batch(Replay* replay, uint64_t observationCycle)
+{
+    struct GBA* gba = replay->core->board;
+    if (mTimingCurrentTime(&gba->timing) < 0 || (uint64_t)mTimingCurrentTime(&gba->timing) != observationCycle)
+        return false;
+    size_t batchEnd = replay->expectedHead;
+    while (batchEnd < replay->expectedCount && replay->expectedSamples[batchEnd].explicitObservation &&
+           replay->expectedSamples[batchEnd].observationCycle == observationCycle)
+    {
+        ++batchEnd;
+    }
+    if (batchEnd == replay->expectedHead || gba->audio.sampleInterval <= 0)
+        return false;
+    const uint64_t timestamp = replay->expectedSamples[batchEnd - 1u].cycle + (uint32_t)gba->audio.sampleInterval;
+    if (timestamp > observationCycle || observationCycle - timestamp > UINT32_MAX)
+        return false;
+    const size_t expectedBefore = replay->expectedHead;
+    GBAAudioRunSampleEvent(&gba->audio, (uint32_t)(observationCycle - timestamp));
+    return !replay->failed && replay->expectedHead > expectedBefore;
+}
+
+/* Run delayed SAMPLE batches at their recorded full-core callback cycles.
+ * Samples observed by a write at this same cycle remain queued until that
+ * write enters mGBA; matching SAMPLE markers remain queued until complete. */
+static bool advance_due_sample_observations(Replay* replay, uint64_t cycle, uint64_t preservedObservationCycle)
+{
+    while (replay->expectedHead != replay->expectedCount)
+    {
+        const ExpectedSample* expected = &replay->expectedSamples[replay->expectedHead];
+        if (!expected->explicitObservation || expected->observationCycle > cycle ||
+            expected->observationCycle == preservedObservationCycle)
+        {
+            return true;
+        }
+        const uint64_t observationCycle = expected->observationCycle;
+        if (!advance_mgba_to(replay, observationCycle))
+            return false;
+        if (observationCycle == cycle)
+            return true;
+        if (replay->expectedHead != replay->expectedCount &&
+            replay->expectedSamples[replay->expectedHead].explicitObservation &&
+            replay->expectedSamples[replay->expectedHead].observationCycle == observationCycle &&
+            !run_expected_sample_batch(replay, observationCycle))
+        {
+            fail_replay(replay, "mGBA emitted no SAMPLE at the traced callback cycle");
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Drain delayed callbacks while discarding only batched samples beyond END. */
 static bool drain_expected_samples(Replay* replay, uint64_t endCycle)
 {
@@ -760,14 +817,29 @@ static bool drain_expected_samples(Replay* replay, uint64_t endCycle)
     while (replay->expectedHead != replay->expectedCount)
     {
         int32_t current = mTimingCurrentTime(&gba->timing);
-        int32_t scheduledDelta = mTimingNextEvent(&gba->timing);
-        if (scheduledDelta == INT_MAX)
+        const ExpectedSample* expected = &replay->expectedSamples[replay->expectedHead];
+        int32_t delta = 0;
+        if (expected->explicitObservation)
         {
-            fail_replay(replay, "mGBA has no reachable callback for a traced SAMPLE");
-            replay->drainingSamples = false;
-            return false;
+            if (expected->observationCycle > INT32_MAX || expected->observationCycle < (uint64_t)current)
+            {
+                fail_replay(replay, "traced SAMPLE callback is outside the replay timing range");
+                replay->drainingSamples = false;
+                return false;
+            }
+            delta = (int32_t)expected->observationCycle - current;
         }
-        int32_t delta = scheduledDelta < 0 ? 0 : scheduledDelta;
+        else
+        {
+            int32_t scheduledDelta = mTimingNextEvent(&gba->timing);
+            if (scheduledDelta == INT_MAX)
+            {
+                fail_replay(replay, "mGBA has no reachable callback for a traced SAMPLE");
+                replay->drainingSamples = false;
+                return false;
+            }
+            delta = scheduledDelta < 0 ? 0 : scheduledDelta;
+        }
         if ((int64_t)current + delta > INT32_MAX)
         {
             fail_replay(replay, "mGBA callback exceeds the replay timing range");
@@ -782,9 +854,14 @@ static bool drain_expected_samples(Replay* replay, uint64_t endCycle)
             return false;
         }
         int32_t advanced = mTimingCurrentTime(&gba->timing);
-        int32_t nextDelta = mTimingNextEvent(&gba->timing);
-        if (advanced != current + delta ||
-            (advanced == current && replay->expectedHead == expectedBefore && nextDelta == scheduledDelta))
+        if (expected->explicitObservation && replay->expectedHead == expectedBefore &&
+            !run_expected_sample_batch(replay, expected->observationCycle))
+        {
+            fail_replay(replay, "mGBA emitted no SAMPLE while draining the traced callback batch");
+            replay->drainingSamples = false;
+            return false;
+        }
+        if (advanced != current + delta || (!expected->explicitObservation && replay->expectedHead == expectedBefore))
         {
             fail_replay(replay, "mGBA timing made no progress while draining traced SAMPLEs");
             replay->drainingSamples = false;
@@ -1050,31 +1127,30 @@ static bool replay_trace(Replay* replay, const Options* options)
             ok = false;
             break;
         }
-        /* A delayed full-core SAMPLE exactly on a pending PSG frame boundary
-         * must not force that frame callback on-time.  The real callback ran
-         * after the boundary, so _updateFrame sampled the old envelope before
-         * advancing it.  Retain the marker and let the next event cross the
-         * boundary with the same ordering. */
-        bool deferFrameBoundarySample = false;
-        if (strcmp(tokens[0], "SAMPLE") == 0 && tokenCount == 3u && (order & TRACE_ORDER_EXTENDED) != 0u &&
-            (order & TRACE_ORDER_DELAY_MASK) != 0u)
+        const bool isSample = strcmp(tokens[0], "SAMPLE") == 0 && tokenCount == 3u;
+        const bool hasExplicitObservation = isSample && (order & TRACE_ORDER_EXTENDED) != 0u;
+        uint64_t observationCycle = cycle;
+        if (hasExplicitObservation)
         {
-            struct GBA* gba = replay->core->board;
-            int64_t delta = (int64_t)cycle - mTimingCurrentTime(&gba->timing);
-            deferFrameBoundarySample =
-                delta >= 0 && delta <= INT32_MAX && mTimingUntil(&gba->timing, &gba->audio.psg.frameEvent) == delta;
-        }
-        if (deferFrameBoundarySample)
-        {
-            if (!append_expected_sample(replay, cycle, measurementOpen))
+            const uint32_t cyclesLate = order & TRACE_ORDER_DELAY_MASK;
+            if (cycle > UINT64_MAX - cyclesLate || cycle + cyclesLate > INT32_MAX)
             {
-                fail_replay(replay, "could not retain expected SAMPLE");
+                fail_replay(replay, "SAMPLE callback cycle exceeds mGBA's replay timing range");
+                ok = false;
+                break;
+            }
+            observationCycle = cycle + cyclesLate;
+            if (!advance_due_sample_observations(replay, cycle, observationCycle) ||
+                !append_expected_sample(replay, cycle, observationCycle, measurementOpen, true))
+            {
+                if (!replay->failed)
+                    fail_replay(replay, "could not retain expected SAMPLE");
                 ok = false;
                 break;
             }
             continue;
         }
-        if (!advance_mgba_to(replay, cycle))
+        if (!advance_due_sample_observations(replay, cycle, UINT64_MAX) || !advance_mgba_to(replay, cycle))
         {
             ok = false;
             break;
@@ -1108,9 +1184,9 @@ static bool replay_trace(Replay* replay, const Options* options)
             measurementClosed = true;
             continue;
         }
-        if (strcmp(tokens[0], "SAMPLE") == 0 && tokenCount == 3u)
+        if (isSample)
         {
-            if (!append_expected_sample(replay, cycle, measurementOpen))
+            if (!append_expected_sample(replay, cycle, cycle, measurementOpen, false))
             {
                 fail_replay(replay, "could not retain expected SAMPLE");
                 ok = false;
