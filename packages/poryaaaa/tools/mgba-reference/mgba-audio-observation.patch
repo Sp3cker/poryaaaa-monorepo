@@ -81,7 +81,7 @@ index 1e913554f..9c4b1d6c7 100644
  #include <mgba/internal/gba/dma.h>
  #include <mgba/internal/gba/gba.h>
  #include <mgba/internal/gba/io.h>
-@@ -25,7 +25,78 @@ static const int SAMPLE_INTERVAL = GBA_ARM7TDMI_FREQUENCY / 0x4000;
+@@ -25,7 +25,79 @@ static const int SAMPLE_INTERVAL = GBA_ARM7TDMI_FREQUENCY / 0x4000;
  static int _applyBias(struct GBAAudio* audio, int sample);
  static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate);
  
@@ -115,9 +115,10 @@ index 1e913554f..9c4b1d6c7 100644
 +		return;
 +	}
 +
-+	int64_t cycle = (int64_t) mTimingGlobalTime(&audio->p->timing) +
-+	    ((int64_t) timestamp - (int64_t) mTimingCurrentTime(&audio->p->timing));
-+	if (cycle < 0) {
++	uint64_t observationCycle = mTimingGlobalTime(&audio->p->timing);
++	int64_t cycle =
++	    (int64_t) observationCycle + ((int64_t) timestamp - (int64_t) mTimingCurrentTime(&audio->p->timing));
++	if (cycle < 0 || (uint64_t) cycle > observationCycle) {
 +		return;
 +	}
 +
@@ -127,7 +128,7 @@ index 1e913554f..9c4b1d6c7 100644
 +	observation.width = 0;
 +	observation.address = 0;
 +	observation.value = 0;
-+	observation.cyclesLate = 0;
++	observation.cyclesLate = (uint32_t) (observationCycle - (uint64_t) cycle);
 +	observation.left = left;
 +	observation.right = right;
 +	sink->emit(sink->context, &observation);

@@ -340,6 +340,30 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_audio_trace PRIVATE m)
 endif()
 
+# ---- Driver lifecycle candidate trace ----
+# Loads one supported voicegroup slot, derives its hardware family from
+# ToneData, drives one fixed lifecycle, and serializes its pending bus events.
+add_executable(poryaaaa_driver_trace
+    cmd/poryaaaa_driver_trace.c
+)
+poryaaaa_enable_project_warnings(poryaaaa_driver_trace)
+target_include_directories(poryaaaa_driver_trace PRIVATE plugin)
+target_link_libraries(poryaaaa_driver_trace PRIVATE m4a_driver voicegroup_loader)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_driver_trace PRIVATE m)
+endif()
+
+# ---- Driver lifecycle candidate controls and manifest identity ----
+add_executable(poryaaaa_driver_scenario_controls_tests
+    test/test_driver_scenario_controls.c
+)
+poryaaaa_enable_project_warnings(poryaaaa_driver_scenario_controls_tests)
+target_include_directories(poryaaaa_driver_scenario_controls_tests PRIVATE plugin test)
+target_link_libraries(poryaaaa_driver_scenario_controls_tests PRIVATE m4a_driver voicegroup_loader)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_driver_scenario_controls_tests PRIVATE m)
+endif()
+
 # ---- Focused native audio trace tests ----
 add_executable(poryaaaa_hw_audio_trace_tests
     test/test_hw_audio_trace.c
@@ -641,6 +665,7 @@ endif()
 
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
+    test/test_m4a_v2.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_hw_audio_trace.c

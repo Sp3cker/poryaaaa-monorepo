@@ -311,3 +311,131 @@ tools/mgba-reference/capture_directsound_fixture.sh
 The command is intentionally red until DirectSound parity meets the declared
 level, correlation, and gain-fitted-residual thresholds. A red comparison with
 `alignment_passed: true` means the captures match in time but not waveform.
+
+## Driver lifecycle validation
+
+The opt-in driver lifecycle matrix differentially validates retained transaction
+emission and hardware interpretation for Programmable Sound Wave (PSW),
+DirectSound, Square 1, and Square 2 against the pinned full-ROM mGBA reference.
+Each fixed scenario drives the real MP2K driver on the reference side and only
+public `M4ADriver` controls on the candidate side.
+
+### Build inputs and targets
+
+The reference recorder requires a patched checkout of mGBA revision
+`afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9`; installed system mGBA libraries
+are not an acceptable substitute. Configure the package with that checkout:
+
+```bash
+cd packages/poryaaaa
+cmake -B build \
+  -DPORYAAAA_BUILD_MGBA_REFERENCE=ON \
+  -DPORYAAAA_MGBA_SOURCE=/path/to/mgba-audio-reference
+cmake --build build --target mgba_mp2k_reference
+cmake --build build --target mgba_audio_trace_replay
+cmake --build build --target poryaaaa_driver_trace
+cmake --build build --target poryaaaa_audio_trace
+```
+
+The external decomp is also required. It is deliberately not built or changed
+by this harness; the expected local checkout is
+`/Users/spencer/dev/hearth-test`, with its `pokeemerald-hearth.gba` and
+`pokeemerald-hearth.elf` already built.
+
+### Commands and fixed matrix
+
+The matrix is opt-in: it is not part of the default package build or test run.
+It runs every fixed fixture/scenario cell twice independently:
+
+```bash
+python3 tools/mgba-reference/validate_driver_matrix.py \
+  --decomp /Users/spencer/dev/hearth-test \
+  --output-dir build/driver-validation/lifecycle
+```
+
+`validate_driver.py` runs one cell. It derives the family fail-closed from the
+resolved ToneData; callers do not select a family:
+
+```bash
+python3 tools/mgba-reference/validate_driver.py \
+  --decomp /Users/spencer/dev/hearth-test \
+  --voicegroup voicegroup_rg_poke_center \
+  --voice 4 \
+  --scenario start \
+  --output-dir build/driver-validation/directsound-start
+```
+
+Both commands accept `--note`, `--velocity`, `--volume`, and `--pan` controls
+(each `0` through `127`). The fixed scenario enum is `start`, `envelope`,
+`pitch`, `volume-pan`, `retrigger`, and `release`. The candidate command used
+by the validator is `poryaaaa_driver_trace PROJECT_ROOT VOICEGROUP VOICE_INDEX
+--scenario SCENARIO --trace-output FILE` with the same optional controls.
+`driver_compare.py REFERENCE.trace CANDIDATE.trace --family FAMILY --output
+RESULT.json` is the standalone transaction comparator; normal validation
+derives its profile from manifests rather than accepting a family flag.
+
+The baseline has 30 cells (five fixtures times six scenarios):
+
+| Family | Canonical fixture |
+| --- | --- |
+| PSW normal | `voicegroup_aa_girl:4` |
+| PSW alternate | `voicegroup_poke_center:1` |
+| DirectSound | `voicegroup_rg_poke_center:4` |
+| Square 1 | `voicegroup_vs_wild:1` |
+| Square 2 | `voicegroup_vs_wild:4` |
+
+### Gates and diagnostics
+
+- `transaction_exact` requires exact retained event order, kind, width, address,
+  value, and same-cycle order. Its projections are PSW NR30--NR34, NR50/NR51,
+  and Wave RAM; Sq1 `0x04000060`--`0x04000065` plus routing; Sq2
+  `0x04000068`--`0x0400006D` plus routing; and DirectSound FIFO A/B words,
+  TIMER records, and routing/setup.
+- `payload_exact` independently checks the effective family payload: PSW wave
+  bytes, Sq1 sweep/duty/envelope, Sq2 duty/envelope/frequency, or DirectSound
+  FIFO streams and setup. Equal final bytes never excuse a different
+  transaction shape.
+- `logical_state_exact` finds the first divergent post-ordinal family state.
+  Sq1 retains NR10 sweep separately, Sq2 has no fabricated sweep state, and
+  DirectSound retains FIFO queue/head/held-sample and timer state.
+- `reference_hardware_exact` and `candidate_hardware_exact` require the
+  respective trace to replay bit/cycle-identically in pinned mGBA and
+  poryaaaa. `reference_native_exact` additionally requires reference trace
+  replay to match the full-ROM native capture.
+
+Comparator and replay reports retain the first transaction divergence or first
+native-sample divergence, respectively, with their source ordinal and observed
+cycle. Cycle deltas and SAMPLE-boundary crossings are diagnostics only:
+transaction equality never claims absolute ARM instruction-cycle parity.
+These gates also do not claim reference-versus-candidate whole-engine parity or
+use that comparison as a pass gate.
+
+### Published artifacts
+
+Successful matrix output is published atomically only after both runs agree on
+canonical manifests and artifact hashes. A gate or infrastructure failure keeps
+the complete staged diagnostics in the sibling
+`build/driver-validation/lifecycle.failed/` directory.
+
+```text
+build/driver-validation/lifecycle/
+├── matrix_report.json
+└── cases/
+    └── directsound-start/
+        ├── first/
+        │   ├── manifest.json
+        │   ├── reference.trace
+        │   ├── candidate.trace
+        │   ├── candidate.trace.manifest.json
+        │   ├── reference-native.{pcm,cycles,json}
+        │   ├── reference-mgba.{pcm,cycles,json}
+        │   ├── reference-pory.{pcm,cycles,json}
+        │   ├── candidate-mgba.{pcm,cycles,json}
+        │   ├── candidate-pory.{pcm,cycles,json}
+        │   ├── driver-compare.json
+        │   ├── reference-hardware-compare.json
+        │   ├── candidate-hardware-compare.json
+        │   └── reference-native-compare.json
+        └── repeat/
+            └── ...
+```

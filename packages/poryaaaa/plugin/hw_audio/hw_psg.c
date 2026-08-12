@@ -26,7 +26,8 @@ static const uint8_t kNoiseBatchMasks[0x40] = {
     0x17, 0x16, 0x14, 0x15, 0x11, 0x10, 0x12, 0x13, 0x1B, 0x1A, 0x18, 0x19, 0x1D, 0x1C, 0x1E, 0x1F,
 };
 
-/* Establish the reset-time epoch for mGBA's absolute frame event. */
+/* Establish the absolute reset-time cadence. Trace replay models mGBA's
+ * separately scheduled zero-time frame callback at its observed boundary. */
 static void hw_psg_reset_frame_sequencer(HwPsgSynth* psg, uint8_t step)
 {
     psg->frame_seq_step = (uint8_t)(step & 7u);
@@ -211,6 +212,12 @@ static void hw_psg_tick_frame_sequencer(HwPsgSynth* psg)
     default:
         break;
     }
+}
+
+void hw_psg_run_zero_time_frame_event(HwPsgSynth* psg)
+{
+    if (psg && psg->master_enabled)
+        hw_psg_tick_frame_sequencer(psg);
 }
 
 /* Advance the reset-time frame-event phase by an exact GBA-cycle span. */
@@ -548,9 +555,15 @@ void hw_psg_sample(const HwPsgSynth* psg, uint8_t* out_sq1, uint8_t* out_sq2, ui
         *out_sq2 = psg->sq2_enabled && high ? psg->sq2_envelope.current_volume : 0;
     }
     if (out_wave)
-        *out_wave = psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048 ? psg->wave_sample : 0;
+        *out_wave = psg->wave_sample;
     if (out_noise)
         *out_noise = psg->noise_enabled && psg->noise_last_sample ? psg->noise_envelope.current_volume : 0;
+}
+
+static void hw_psg_write_wave_ram_byte(HwPsgSynth* psg, uint32_t offset, uint8_t value)
+{
+    uint32_t bank = psg->master_enabled ? !psg->wave_bank : 1u;
+    psg->wave_ram[bank * 16u + offset] = value;
 }
 
 void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
@@ -665,11 +678,16 @@ void hw_psg_apply_event(HwPsgSynth* psg, const M4ARegWrite* ev)
             psg->wave_cycles_until_update = 0;
         break;
     case M4A_REG_WAVE_RAM_BYTE:
+        hw_psg_write_wave_ram_byte(psg, (v >> 8) & 0x0F, (uint8_t)v);
+        break;
+    case M4A_REG_WAVE_RAM_WORD_0:
+    case M4A_REG_WAVE_RAM_WORD_1:
+    case M4A_REG_WAVE_RAM_WORD_2:
+    case M4A_REG_WAVE_RAM_WORD_3:
     {
-        uint32_t addr = (v >> 8) & 0x0F;
-        uint8_t byte = (uint8_t)(v & 0xFF);
-        uint32_t bank = psg->master_enabled ? !psg->wave_bank : 1u;
-        psg->wave_ram[bank * 16u + addr] = byte;
+        uint32_t offset = 4u * (ev->reg - M4A_REG_WAVE_RAM_WORD_0);
+        for (uint32_t i = 0; i < 4; i++)
+            hw_psg_write_wave_ram_byte(psg, offset + i, (uint8_t)(v >> (8u * i)));
         break;
     }
 
@@ -790,7 +808,7 @@ void hw_psg_render(
         if (gba_cycles_per_sample)
             hw_psg_advance_wave_cycles(psg, gba_cycles_per_sample);
         if (out_wave)
-            out_wave[i] = psg->wave_enabled && psg->wave_dac_on && psg->wave_freq < 2048 ? psg->wave_sample : 0;
+            out_wave[i] = psg->wave_sample;
 
         /* Noise follows the same exact-cycle path as trace replay. */
         if (gba_cycles_per_sample)

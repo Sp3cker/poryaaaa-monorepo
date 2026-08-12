@@ -143,15 +143,21 @@ static void clock_fifo(FifoSchedule* schedule, ScheduledFifo* fifo, const HwAudi
     }
 }
 
+/* Identify the driver-written PSG ranges whose same-cycle transaction must
+ * complete before an overdue candidate SAMPLE is observed. */
+bool hw_audio_trace_event_is_cgb_batch_write(const HwAudioTraceEvent* event)
+{
+    if (!event || event->kind != HW_AUDIO_TRACE_WRITE)
+        return false;
+    const uint32_t offset = event->address - HW_AUDIO_GBA_IO_BASE;
+    return (offset >= 0x60u && offset <= 0x65u) || (offset >= 0x68u && offset <= 0x6Du) ||
+           (offset >= 0x70u && offset <= 0x75u) || (offset >= 0x78u && offset <= 0x7Du) ||
+           (offset >= 0x80u && offset <= 0x81u) || (offset >= 0x90u && offset <= 0x9Fu);
+}
+
 /* Apply writes that determine FIFO scheduling without duplicating the audio mixer. */
 static bool apply_schedule_write(FifoSchedule* schedule, const HwAudioTraceEvent* event)
 {
-    bool sample_barrier =
-        (event->address >= HW_AUDIO_GBA_IO_BASE + 0x60 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x80) ||
-        event->address == HW_AUDIO_GBA_IO_BASE + 0x84 || event->address == HW_AUDIO_GBA_IO_BASE + 0x88;
-    if (sample_barrier && !emit_pending_samples(schedule))
-        return false;
-
     switch (event->address)
     {
     case HW_AUDIO_GBA_IO_BASE + 0x82:
@@ -225,6 +231,7 @@ HwAudioTraceStatus hw_audio_trace_schedule_fifo_samples(const HwAudioTraceEvent*
         .output_capacity = sample_capacity,
         .block_end = TRACE_SAMPLE_BLOCK_CYCLES,
     };
+    bool candidate_cgb_batch = false;
     for (size_t index = 0; index < event_count; index++)
     {
         const HwAudioTraceEvent* event = &events[index];
@@ -254,6 +261,15 @@ HwAudioTraceStatus hw_audio_trace_schedule_fifo_samples(const HwAudioTraceEvent*
                                                            event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
                        ? HW_AUDIO_TRACE_UNSUPPORTED_WIDTH
                        : HW_AUDIO_TRACE_INVALID_ARGUMENT;
+        if (event->kind == HW_AUDIO_TRACE_WRITE && hw_audio_trace_event_is_cgb_batch_write(event))
+            candidate_cgb_batch = true;
+        bool final_event_at_cycle = index + 1u == event_count || events[index + 1u].cycle != event->cycle;
+        if (candidate_cgb_batch && final_event_at_cycle)
+        {
+            if (!emit_pending_samples(&schedule))
+                return HW_AUDIO_TRACE_INVALID_ARGUMENT;
+            candidate_cgb_batch = false;
+        }
         schedule.prior_cycle = event->cycle;
         schedule.prior_order = event->order;
         schedule.position_valid = true;

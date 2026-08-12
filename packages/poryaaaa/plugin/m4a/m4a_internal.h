@@ -29,6 +29,10 @@ extern "C"
 /* PCM block geometry retains the m4a driver's canonical 59.7275-Hz rate. */
 #define M4A_PCM_VBLANK_RATE_NUMERATOR 23891u
 #define M4A_PCM_VBLANK_RATE_DENOMINATOR 400u
+/* Pokemon Emerald runs m4aSoundVSync at line 150, ten scanlines before
+ * SoundMain's line-160 VBlank callback. */
+#define M4A_GBA_SCANLINE_CYCLES 1232u
+#define M4A_VCOUNT_TO_VBLANK_CYCLES (10u * M4A_GBA_SCANLINE_CYCLES)
 
 /* Channel `status` flag bits — match pokeemerald m4a_internal.h CHN_*.
  * We mirror the real m4a constants so disasm reads match. */
@@ -149,17 +153,16 @@ extern "C"
         uint8_t panMask;
         uint8_t modify; /* M4A_MO_* bits — what needs writing this tick */
 
-        uint16_t frequency;    /* sq1/sq2/wave: 11-bit GB freq.
-                                 noise: NR43 byte (clock_shift<<4|divisor_code) | period_bit */
-        uint32_t* wavePointer; /* programmable wave (32 nibbles, 16 bytes) */
+        uint16_t frequency;          /* sq1/sq2/wave: 11-bit GB freq.
+                                       noise: NR43 byte (clock_shift<<4|divisor_code) | period_bit */
+        uint32_t* wavePointer;       /* programmable wave (32 nibbles, 16 bytes) */
+        uint32_t* loadedWavePointer; /* wave RAM payload last loaded by CgbSound */
 
         int trackIndex;
 
-        /* Set by m4a_drv_cgb_start for wave channels (type 3) to mark the
-         * wave RAM as dirty.  Next emit_vol_write fires 16 byte-granular
-         * WAVE_RAM_BYTE events and clears the flag.  Mirrors real m4a's
-         * STMIA-write pattern in CgbSound when the chip writes a fresh
-         * wave to NR_3 (only safe while wave_dac_on=false). */
+        /* Retained for the legacy audition stop path.  Wave RAM reloads are
+         * governed solely by loadedWavePointer, which intentionally survives
+         * channel disable like the ROM's currentPointer cache. */
         bool waveRamPending;
 
         /* Set by m4a_drv_cgb_start and consumed by emit_vol_write.  Wave
@@ -260,13 +263,14 @@ extern "C"
         uint32_t host_rate_hz;
         uint64_t host_cycle_remainder;
         uint64_t current_cycle;
+        uint64_t next_vcount_cycle;
         uint64_t next_vblank_cycle;
-
         /* DirectSound's DMA/timer scheduler.  The mixer writes the circular
          * software source ring at VBlank; DMA refills each hardware FIFO in
          * four-word bursts before the selected timer consumes one byte. */
         uint64_t next_pcm_timer_cycle;
-        uint32_t pcm_timer_cycle_remainder;
+        uint8_t pcm_dma_counter;
+        uint8_t pcm_dma_period;
         uint64_t pcm_fifo_a_source_cursor;
         uint64_t pcm_fifo_b_source_cursor;
         uint8_t pcm_fifo_a_read;
@@ -298,12 +302,17 @@ extern "C"
         M4ADriverCgbChan cgb[M4A_MAX_CGB_CHANNELS];
         M4ADriverPcmChan pcmChans[M4A_MAX_PCM_CHANNELS];
 
-        /* SoundMainRAM intermediate mix buffer (int16 stereo, pre-clamp,
-         * pre-reverb).  Reverb runs in-place here; results are clamped to
-         * int8 and written into the public M4APcmRing.  Active samples per
-         * vblank are bounded by the static capacity. */
+        /* SoundMainRAM accumulates a stereo sample as one 00LL00RR packed
+         * word.  The ARM MLA deliberately lets the right product carry into
+         * the left lane; the later downsampler separates both FIFO bytes. */
+        uint32_t pcmMixPacked[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
         int16_t pcmMixL[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
         int16_t pcmMixR[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
+
+        /* SoundMainRAM carries the discarded low seven mixer bits between
+         * adjacent output samples independently for the two packed lanes. */
+        uint8_t pcm_noise_shape_left;
+        uint8_t pcm_noise_shape_right;
 
         /* Reverb delay-line state.  Vanilla Sappy SoundMainRAM_Reverb is a
          * 4-tap design: read current L+R and (current+frameSize) L+R, sum,
@@ -322,10 +331,6 @@ extern "C"
         int8_t reverbBufL[M4A_PCM_MAX_DMA_BUF_SIZE];
         int8_t reverbBufR[M4A_PCM_MAX_DMA_BUF_SIZE];
         uint16_t reverbPos;
-
-        /* The facade may publish one current-state PCM block for this fresh
-         * ring epoch before the next scheduled SoundMain tick. */
-        bool pcm_prefill_pending;
 
         /* Public contract output (driver→chip).  CgbSound writes regs each
          * tick; SoundMainRAM writes pcm.ring_a/ring_b each vblank. */

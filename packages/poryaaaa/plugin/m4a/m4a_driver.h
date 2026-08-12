@@ -60,9 +60,15 @@ extern "C"
         M4A_REG_NR52,
         M4A_REG_SOUNDCNT_H,
         M4A_REG_SOUNDBIAS,
-        /* Per §6c: wave RAM is byte-granular (16 events for a full rewrite,
-         * matching m4a's STMIA write order).  value = (addr_in_wave_ram << 8) | byte. */
+        /* Generic byte event retained for replaying external trace writes.
+         * value = (addr_in_wave_ram << 8) | byte. */
         M4A_REG_WAVE_RAM_BYTE,
+        /* ROM CgbSound's four fixed little-endian 32-bit Wave RAM stores.
+         * value is the raw word payload for 0x04000090 + 4 * word_index. */
+        M4A_REG_WAVE_RAM_WORD_0,
+        M4A_REG_WAVE_RAM_WORD_1,
+        M4A_REG_WAVE_RAM_WORD_2,
+        M4A_REG_WAVE_RAM_WORD_3,
         /* Canonical DirectSound bus observations.  FIFO values are one
          * little-endian 32-bit word; TIMER event values identify timer 0/1. */
         M4A_REG_FIFO_A,
@@ -129,9 +135,6 @@ extern "C"
 
     /* Rebase a fresh driver's absolute timeline before its first render. */
     bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle);
-    /* Publish exactly one current-state PCM block for a fresh ring epoch.
-     * Unlike SoundMain, this does not advance gate, envelope, or LFO state. */
-    void m4a_driver_prefill_pcm(M4ADriver* drv);
 
     /* Read-only accessor for non-timing consumers (UI, params, debug). */
     const M4ARegisterFile* m4a_get_register_file(const M4ADriver* drv);

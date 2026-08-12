@@ -137,6 +137,13 @@ static bool map_register_write(
         *value = source->value & 0xFFu;
         return true;
     }
+    case M4A_REG_WAVE_RAM_WORD_0:
+    case M4A_REG_WAVE_RAM_WORD_1:
+    case M4A_REG_WAVE_RAM_WORD_2:
+    case M4A_REG_WAVE_RAM_WORD_3:
+        *width = 4u;
+        *address = HW_AUDIO_GBA_IO_BASE + 0x90u + 4u * (source->reg - M4A_REG_WAVE_RAM_WORD_0);
+        return true;
     case M4A_REG_FIFO_A:
         *width = 4u;
         *address = HW_AUDIO_GBA_IO_BASE + 0xA0u;
@@ -176,15 +183,73 @@ bool m4a_driver_trace_begin(
     return true;
 }
 
+/* Focused PSW seam: same header grammar as m4a_driver_trace_begin, with the
+ * caller's canonical setup writes serialized first and BEGIN following the
+ * setup's last cycle-0 order.  Reuses map_register_write (so NR50/NR51 merge
+ * into soundcnt_l identically to driver events) and accept_position. */
+bool m4a_driver_trace_begin_with_setup(M4ADriverTraceWriter* writer,
+                                       FILE* output,
+                                       uint64_t begin_cycle,
+                                       uint64_t end_cycle,
+                                       uint16_t soundcnt_l,
+                                       const M4ARegWrite* setup,
+                                       size_t setup_count)
+{
+    if (!writer || !output || end_cycle <= begin_cycle || (setup_count != 0u && !setup))
+        return false;
+    memset(writer, 0, sizeof(*writer));
+    writer->output = output;
+    writer->begin_cycle = begin_cycle;
+    writer->end_cycle = end_cycle;
+    writer->soundcnt_l = soundcnt_l;
+    if (fprintf(output, "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\n", HW_AUDIO_GBA_CLOCK_HZ) < 0)
+        return false;
+
+    for (size_t index = 0; index < setup_count; index++)
+    {
+        const M4ARegWrite* source = &setup[index];
+        uint8_t width = 0u;
+        uint32_t address = 0u;
+        uint32_t value = 0u;
+        if (!map_register_write(writer, source, &width, &address, &value) ||
+            !accept_position(writer, source->cycle, source->order) ||
+            fprintf(writer->output,
+                    "WRITE %" PRIu64 " %" PRIu32 " %u 0x%08" PRIX32 " 0x%08" PRIX32 "\n",
+                    source->cycle,
+                    source->order,
+                    (unsigned)width,
+                    address,
+                    value) < 0)
+        {
+            return false;
+        }
+    }
+    /* BEGIN follows the last cycle-0 setup write at the next valid order. */
+    uint32_t order = 0u;
+    if (writer->position_valid && writer->previous_cycle == begin_cycle)
+        order = writer->previous_order + 1u;
+    if (!accept_position(writer, begin_cycle, order) ||
+        fprintf(writer->output, "BEGIN %" PRIu64 " %" PRIu32 "\n", begin_cycle, order) < 0)
+    {
+        return false;
+    }
+    writer->open = true;
+    return true;
+}
+
 bool m4a_driver_trace_write_batch(M4ADriverTraceWriter* writer, const M4ARegWriteBatch* batch)
 {
     if (!writer || !writer->open || !batch)
         return false;
-    for (size_t index = 0; index < batch->count; index++)
+    size_t index = 0u;
+    while (index < batch->count)
     {
         const M4ARegWrite* source = &batch->events[index];
         if (source->cycle < writer->begin_cycle || source->cycle > writer->end_cycle)
+        {
+            index++;
             continue;
+        }
         if (source->reg == M4A_REG_TIMER_0 || source->reg == M4A_REG_TIMER_1)
         {
             const uint32_t timer = source->reg == M4A_REG_TIMER_0 ? 0u : 1u;
@@ -197,6 +262,7 @@ bool m4a_driver_trace_write_batch(M4ADriverTraceWriter* writer, const M4ARegWrit
             {
                 return false;
             }
+            index++;
             continue;
         }
 
@@ -215,6 +281,19 @@ bool m4a_driver_trace_write_batch(M4ADriverTraceWriter* writer, const M4ARegWrit
         {
             return false;
         }
+        index++;
+    }
+    return true;
+}
+
+bool m4a_driver_trace_write_sample(M4ADriverTraceWriter* writer, uint64_t cycle, uint32_t order)
+{
+    if (!writer || !writer->open || cycle < writer->begin_cycle || cycle > writer->end_cycle)
+        return false;
+    if (!accept_position(writer, cycle, order) ||
+        fprintf(writer->output, "SAMPLE %" PRIu64 " %" PRIu32 "\n", cycle, order) < 0)
+    {
+        return false;
     }
     return true;
 }

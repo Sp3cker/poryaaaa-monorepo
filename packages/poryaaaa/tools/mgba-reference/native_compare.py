@@ -15,10 +15,20 @@ class ComparisonError(Exception):
 
 
 def parse_args():
-    """Expose the exact two-capture comparison used by automation."""
+    """Expose exact capture comparison with optional source-trace attribution."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference", type=Path, help="reference capture .json manifest")
     parser.add_argument("candidate", type=Path, help="candidate capture .json manifest")
+    parser.add_argument(
+        "--reference-trace",
+        type=Path,
+        help="version-1 trace that produced the reference capture",
+    )
+    parser.add_argument(
+        "--candidate-trace",
+        type=Path,
+        help="version-1 trace that produced the candidate capture",
+    )
     return parser.parse_args()
 
 
@@ -29,6 +39,149 @@ def sha256_file(path):
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def parse_decimal(token, maximum, path, line_number):
+    """Parse one unsigned trace token without accepting another numeric grammar."""
+    if not token or not token.isascii() or not token.isdecimal():
+        raise ComparisonError(f"{path}: trace line {line_number}: invalid decimal token")
+    value = int(token)
+    if value > maximum:
+        raise ComparisonError(f"{path}: trace line {line_number}: decimal token overflows")
+    return value
+
+
+def parse_hex_u32(token, path, line_number):
+    """Parse the shared trace format's exact unsigned hexadecimal representation."""
+    if (
+        len(token) <= 2
+        or not token.startswith("0x")
+        or not token[2:].isascii()
+        or any(character not in "0123456789abcdefABCDEF" for character in token[2:])
+    ):
+        raise ComparisonError(f"{path}: trace line {line_number}: invalid hexadecimal token")
+    value = int(token[2:], 16)
+    if value > 0xFFFFFFFF:
+        raise ComparisonError(f"{path}: trace line {line_number}: hexadecimal token overflows")
+    return value
+
+
+def load_trace_samples(path):
+    """Retain measured SAMPLE source positions without changing their timing."""
+    try:
+        lines = path.read_bytes().splitlines(keepends=True)
+    except OSError as error:
+        raise ComparisonError(f"cannot read trace {path}: {error}") from error
+    if not lines or lines[0] != b"PORYAAAA_AUDIO_TRACE 1\n":
+        raise ComparisonError(f"{path}: trace must begin with PORYAAAA_AUDIO_TRACE 1")
+
+    clock_seen = False
+    measurement_open = False
+    measurement_closed = False
+    position = None
+    source_sample_ordinal = 0
+    samples = []
+    for line_number, raw_line in enumerate(lines[1:], start=2):
+        if len(raw_line) >= 512 or not raw_line.endswith(b"\n"):
+            raise ComparisonError(f"{path}: trace line {line_number}: unterminated or exceeds grammar limit")
+        raw_line = raw_line[:-1]
+        if raw_line in {b"", b"\r"} or raw_line.startswith(b"#"):
+            continue
+        if b"\r" in raw_line or b"\t" in raw_line:
+            raise ComparisonError(f"{path}: trace line {line_number}: invalid token grammar")
+        try:
+            text = raw_line.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ComparisonError(f"{path}: trace line {line_number}: non-ASCII token") from error
+        tokens = text.split(" ")
+        if not tokens or any(not token for token in tokens):
+            raise ComparisonError(f"{path}: trace line {line_number}: invalid token grammar")
+
+        kind = tokens[0]
+        if kind == "CLOCK":
+            if (
+                len(tokens) != 2
+                or clock_seen
+                or position is not None
+                or parse_decimal(tokens[1], 0xFFFFFFFFFFFFFFFF, path, line_number) != 16777216
+            ):
+                raise ComparisonError(f"{path}: trace line {line_number}: invalid CLOCK")
+            clock_seen = True
+            continue
+        if not clock_seen:
+            raise ComparisonError(f"{path}: trace line {line_number}: event before CLOCK")
+        if len(tokens) < 3:
+            raise ComparisonError(f"{path}: trace line {line_number}: invalid event")
+        cycle = parse_decimal(tokens[1], 0xFFFFFFFFFFFFFFFF, path, line_number)
+        order = parse_decimal(tokens[2], 0xFFFFFFFF, path, line_number)
+        if position is not None and (cycle < position[0] or (cycle == position[0] and order <= position[1])):
+            raise ComparisonError(f"{path}: trace line {line_number}: events are not strictly ordered")
+        position = (cycle, order)
+
+        if kind == "BEGIN":
+            if len(tokens) != 3 or measurement_open or measurement_closed:
+                raise ComparisonError(f"{path}: trace line {line_number}: invalid BEGIN")
+            measurement_open = True
+            continue
+        if kind == "END":
+            if len(tokens) != 3 or not measurement_open or measurement_closed:
+                raise ComparisonError(f"{path}: trace line {line_number}: invalid END")
+            measurement_open = False
+            measurement_closed = True
+            continue
+        if measurement_closed:
+            raise ComparisonError(f"{path}: trace line {line_number}: event after END")
+        if kind == "WRITE":
+            if len(tokens) != 6:
+                raise ComparisonError(f"{path}: trace line {line_number}: invalid WRITE")
+            parse_decimal(tokens[3], 0xFF, path, line_number)
+            parse_hex_u32(tokens[4], path, line_number)
+            parse_hex_u32(tokens[5], path, line_number)
+            continue
+        if kind == "TIMER":
+            if len(tokens) != 4 or parse_decimal(tokens[3], 1, path, line_number) > 1:
+                raise ComparisonError(f"{path}: trace line {line_number}: invalid TIMER")
+            continue
+        if kind != "SAMPLE" or len(tokens) != 3:
+            raise ComparisonError(f"{path}: trace line {line_number}: invalid event")
+        source_sample_ordinal += 1
+        if measurement_open:
+            samples.append(
+                {
+                    "ordinal": source_sample_ordinal,
+                    "line": line_number,
+                    "cycle": cycle,
+                    "order": order,
+                }
+            )
+
+    if not clock_seen or measurement_open or not measurement_closed:
+        raise ComparisonError(f"{path}: trace requires one closed measurement")
+    if not samples:
+        raise ComparisonError(f"{path}: trace measurement has no SAMPLE records")
+    return samples
+
+
+def source_sample_at_or_before(samples, cycle):
+    """Find the last observed source SAMPLE without aligning or retiming it."""
+    low = 0
+    high = len(samples)
+    while low < high:
+        midpoint = (low + high) // 2
+        if samples[midpoint]["cycle"] <= cycle:
+            low = midpoint + 1
+        else:
+            high = midpoint
+    if low == 0:
+        return None
+    sample = samples[low - 1]
+    return {
+        "ordinal": sample["ordinal"],
+        "line": sample["line"],
+        "cycle": sample["cycle"],
+        "order": sample["order"],
+        "cycle_delta": cycle - sample["cycle"],
+    }
 
 
 def load_capture(manifest_path):
@@ -134,8 +287,45 @@ def load_capture(manifest_path):
     }
 
 
-def compare(reference, candidate):
+def validate_trace_provenance(capture, trace_path, samples, label):
+    """Bind a capture to its supplied source trace before reporting causality."""
+    expected_hash = capture["manifest"].get("trace_sha256")
+    actual_hash = sha256_file(trace_path)
+    if expected_hash is not None:
+        if (
+            not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+            or any(character not in "0123456789abcdef" for character in expected_hash)
+        ):
+            raise ComparisonError(f"{capture['manifest_path']}: trace_sha256 must be a lowercase SHA-256 string")
+        if expected_hash != actual_hash:
+            raise ComparisonError(
+                f"{capture['manifest_path']}: trace_sha256 does not match {label} trace {trace_path}"
+            )
+    if source_sample_at_or_before(samples, capture["first_cycle"]) is None:
+        raise ComparisonError(
+            f"{capture['manifest_path']}: {label} trace has no SAMPLE at or before the first capture frame"
+        )
+    return actual_hash
+
+
+def attach_causal_samples(mismatch, reference_samples, candidate_samples):
+    """Attach real source SAMPLE positions to an already-found PCM mismatch."""
+    if reference_samples is None:
+        return mismatch
+    mismatch["reference_causal_sample"] = source_sample_at_or_before(
+        reference_samples, mismatch["reference_cycle"]
+    )
+    mismatch["candidate_causal_sample"] = source_sample_at_or_before(
+        candidate_samples, mismatch["candidate_cycle"]
+    )
+    return mismatch
+
+
+def compare(reference, candidate, reference_samples=None, candidate_samples=None):
     """Find every timing and stereo integer mismatch at matching frame indices."""
+    if (reference_samples is None) != (candidate_samples is None):
+        raise ComparisonError("source trace attribution requires both traces")
     contract_failures = []
     for field in (
         "clock_hz",
@@ -234,6 +424,10 @@ def compare(reference, candidate):
                         "candidate_right": candidate_right,
                         "right_error": right_error,
                     }
+                    if reference_samples is not None:
+                        first_mismatch = attach_causal_samples(
+                            first_mismatch, reference_samples, candidate_samples
+                        )
     except OSError as error:
         raise ComparisonError(f"cannot map capture artifacts: {error}") from error
 
@@ -273,7 +467,29 @@ def main():
     try:
         reference = load_capture(args.reference)
         candidate = load_capture(args.candidate)
-        result = compare(reference, candidate)
+        if bool(args.reference_trace) != bool(args.candidate_trace):
+            raise ComparisonError("source trace attribution requires both --reference-trace and --candidate-trace")
+        reference_samples = None
+        candidate_samples = None
+        reference_trace_hash = None
+        candidate_trace_hash = None
+        if args.reference_trace:
+            reference_samples = load_trace_samples(args.reference_trace)
+            candidate_samples = load_trace_samples(args.candidate_trace)
+            reference_trace_hash = validate_trace_provenance(
+                reference, args.reference_trace, reference_samples, "reference"
+            )
+            candidate_trace_hash = validate_trace_provenance(
+                candidate, args.candidate_trace, candidate_samples, "candidate"
+            )
+        result = compare(reference, candidate, reference_samples, candidate_samples)
+        if reference_trace_hash is not None:
+            result["hashes"].update(
+                {
+                    "reference_trace_sha256": reference_trace_hash,
+                    "candidate_trace_sha256": candidate_trace_hash,
+                }
+            )
         print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
         return 0 if result["passed"] else 1
     except ComparisonError as error:

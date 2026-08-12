@@ -615,7 +615,6 @@ compat_start_audition_pcm(M4AEngine* engine, int primaryIndex, int trackIndex, u
 
 static void compat_render_driver(M4ADriver* driver, HwAudio* hw, float* outL, float* outR, int frames)
 {
-    m4a_driver_prefill_pcm(driver);
     m4a_advance(driver, frames);
     hw_audio_render_events(hw, m4a_get_pending_writes(driver), outL, outR, frames);
     m4a_consume_writes(driver);
@@ -695,7 +694,7 @@ bool m4a_engine_init(M4AEngine* engine, float sampleRate)
     engine->songMasterVolume = MAX_SONG_VOLUME;
     engine->volume = MAX_SONG_VOLUME;
     engine->maxPcmChannels = 5;
-    engine->c15 = 14;
+    engine->c15 = 0;
     memset(engine->primaryPcmAuditionSlot, -1, sizeof(engine->primaryPcmAuditionSlot));
     engine->polyEventClock = M4A_POLY_TICK_NONE;
     engine->tempoD = 150;
@@ -726,9 +725,9 @@ bool m4a_engine_init(M4AEngine* engine, float sampleRate)
         m4a_engine_destroy(engine);
         return false;
     }
-    engine->driver->c15 = 14;
-    engine->shadowDriver->c15 = 14;
-    engine->auditionDriver->c15 = 14;
+    engine->driver->c15 = 0;
+    engine->shadowDriver->c15 = 0;
+    engine->auditionDriver->c15 = 0;
 
     compat_apply_public_state(engine);
     compat_sync_public_state(engine);

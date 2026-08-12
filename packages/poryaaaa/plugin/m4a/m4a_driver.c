@@ -30,7 +30,7 @@ static uint32_t pcm_active_rate(const M4ADriver* drv, float requested_rate)
 static uint32_t pcm_max_samples_per_vblank(uint32_t rate)
 {
     const uint64_t numerator = (uint64_t)rate * M4A_PCM_VBLANK_RATE_DENOMINATOR;
-    uint32_t samples = (uint32_t)((numerator + M4A_PCM_VBLANK_RATE_NUMERATOR - 1) / M4A_PCM_VBLANK_RATE_NUMERATOR);
+    uint32_t samples = (uint32_t)(numerator / M4A_PCM_VBLANK_RATE_NUMERATOR);
     if (samples == 0)
         samples = 1;
     if (samples > M4A_PCM_MAX_SAMPLES_PER_VBLANK)
@@ -67,7 +67,9 @@ static uint16_t m4a_soundcnt_h_value(const M4ADriver* drv, uint16_t extra_bits)
 
 static void m4a_reset_pcm_fifo_scheduler(M4ADriver* drv)
 {
-    const uint32_t rate = drv->pcm_rate_hz ? drv->pcm_rate_hz : M4A_PCM_RATE_HZ;
+    const uint32_t samples_per_vblank =
+        drv->pcm_max_samples_per_vblank ? drv->pcm_max_samples_per_vblank : M4A_PCM_SAMPLES_PER_VBLANK;
+    const uint32_t timer_period = M4A_VBLANK_CYCLES / samples_per_vblank;
     drv->pcm_fifo_a_source_cursor = 0;
     drv->pcm_fifo_b_source_cursor = 0;
     drv->pcm_fifo_a_read = 0;
@@ -76,22 +78,24 @@ static void m4a_reset_pcm_fifo_scheduler(M4ADriver* drv)
     drv->pcm_fifo_b_write = 0;
     drv->pcm_fifo_a_internal_remaining = 0;
     drv->pcm_fifo_b_internal_remaining = 0;
-    drv->next_pcm_timer_cycle = drv->current_cycle + M4A_GBA_CYCLES_PER_SECOND / rate;
-    drv->pcm_timer_cycle_remainder = M4A_GBA_CYCLES_PER_SECOND % rate;
+    drv->next_pcm_timer_cycle = drv->current_cycle + timer_period;
 }
 
 static void m4a_reset_pcm_output_state(M4ADriver* drv)
 {
+    memset(drv->pcmMixPacked, 0, sizeof(drv->pcmMixPacked));
     memset(drv->pcmMixL, 0, sizeof(drv->pcmMixL));
     memset(drv->pcmMixR, 0, sizeof(drv->pcmMixR));
     memset(drv->reverbBufL, 0, sizeof(drv->reverbBufL));
     memset(drv->reverbBufR, 0, sizeof(drv->reverbBufR));
     drv->reverbPos = 0;
+    drv->pcm_noise_shape_left = 0;
+    drv->pcm_noise_shape_right = 0;
     drv->pcm_vblank_remainder = 0;
     memset(&drv->pcm, 0, sizeof(drv->pcm));
     drv->pcm.pcm_rate_hz = drv->pcm_rate_hz;
     drv->pcm.pcm_dma_buf_size = drv->pcm_dma_buf_size;
-    drv->pcm_prefill_pending = true;
+    drv->pcm_dma_counter = 0;
 }
 
 static void m4a_driver_configure_pcm(M4ADriver* drv, float requested_rate, bool emit_fifo_reset)
@@ -110,6 +114,10 @@ static void m4a_driver_configure_pcm(M4ADriver* drv, float requested_rate, bool 
     drv->pcm_rate_hz = rate;
     drv->pcm_max_samples_per_vblank = max_samples;
     drv->pcm_dma_buf_size = buffer_size;
+    uint32_t dma_period = buffer_size / max_samples;
+    if (dma_period == 0u)
+        dma_period = 1u;
+    drv->pcm_dma_period = (uint8_t)dma_period;
     m4a_reset_pcm_output_state(drv);
     m4a_reset_pcm_fifo_scheduler(drv);
 
@@ -150,13 +158,14 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->host_rate = host_sample_rate;
     m4a_internal_recompute_host_timing(drv);
     drv->next_vblank_cycle = M4A_VBLANK_CYCLES;
+    drv->next_vcount_cycle = M4A_VBLANK_CYCLES - M4A_VCOUNT_TO_VBLANK_CYCLES;
     drv->event_range_begin_cycle = 0;
     drv->event_cycle = 0;
     m4a_driver_configure_pcm(drv, (float)M4A_PCM_RATE_HZ, false);
     drv->song_volume = 127;
     drv->master_volume = 12;
     drv->tempo_bpm = 120.0;
-    drv->c15 = 14;
+    drv->c15 = 0;
     /* Raw v2 callers have the complete PCM pool unless they explicitly
      * configure a narrower one.  The legacy facade applies its own default. */
     drv->max_pcm_channels = M4A_MAX_PCM_CHANNELS;
@@ -186,16 +195,12 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->tempoI = drv->tempoD;
     drv->tempoC = 0;
 
-    /* All four CGB channel `type` slots populated; chip indexing matches the
-     * register-file layout (sq1, sq2, wave, noise).  panMask = 0xFF means
-     * "no per-channel routing restriction" — m4a_chn_vol_set_cgb's
-     * ch->pan &= ch->panMask must not zero pan when the cgb_pan() result
-     * is 0xFF (centered) or 0x0F/0xF0 (hard-panned). */
+    /* CGB channel masks match the ROM's per-channel left/right routing bits. */
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
         drv->cgb[i].type = (uint8_t)(i + 1);
         drv->cgb[i].trackIndex = -1;
-        drv->cgb[i].panMask = 0xFF;
+        drv->cgb[i].panMask = (uint8_t)(0x11 << i);
     }
 
     /* MIDI tracks without CC7 start at full volume before song scaling. */
@@ -398,6 +403,7 @@ bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle)
 
     drv->current_cycle = cycle;
     drv->next_vblank_cycle = cycle + M4A_VBLANK_CYCLES;
+    drv->next_vcount_cycle = cycle + M4A_VBLANK_CYCLES - M4A_VCOUNT_TO_VBLANK_CYCLES;
     m4a_reset_pcm_fifo_scheduler(drv);
     drv->event_range_begin_cycle = cycle;
     drv->event_cycle = cycle;

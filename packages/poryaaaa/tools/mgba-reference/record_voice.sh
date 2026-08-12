@@ -14,6 +14,8 @@ capture_stage="frontend"
 trace_output=""
 native_output_prefix=""
 voice_index=""
+driver_scenario=""
+driver_scenario_supplied=false
 nm_tool="${ARM_NONE_EABI_NM:-arm-none-eabi-nm}"
 forwarded=()
 
@@ -39,6 +41,8 @@ Options:
   --pan N                  Forwarded to the recorder
   --fixture-address ADDR   Forwarded to the recorder
   --require-max-chans N    Require the ROM's observed MP2K PCM channel count
+  --scenario NAME          Fixed driver scenario: start, envelope, pitch, volume-pan,
+                           retrigger, or release; requires voice mode and native/both
 EOF
 }
 
@@ -56,6 +60,16 @@ while (($#)); do
         --capture-stage)
             capture_stage="$2"
             forwarded+=("$1" "$2")
+            shift 2
+            ;;
+        --scenario)
+            if (($# < 2)); then
+                echo "--scenario requires a name" >&2
+                usage
+                exit 2
+            fi
+            driver_scenario="$2"
+            driver_scenario_supplied=true
             shift 2
             ;;
         --trace-output)
@@ -113,6 +127,27 @@ if [[ -z "$song" ]]; then
         echo "Voice index must be a non-negative integer: $voice_index" >&2
         exit 2
     fi
+fi
+if [[ "$driver_scenario_supplied" == true ]]; then
+    if [[ -n "$song" ]]; then
+        echo "--scenario requires voice mode (--voicegroup/--voice)" >&2
+        exit 2
+    fi
+    case "$driver_scenario" in
+        start|envelope|pitch|volume-pan|retrigger|release) ;;
+        *)
+            echo "Unsupported driver scenario: $driver_scenario" >&2
+            echo "Supported: start, envelope, pitch, volume-pan, retrigger, release" >&2
+            exit 2
+            ;;
+    esac
+    case "$capture_stage" in
+        native|both) ;;
+        *)
+            echo "--scenario requires --capture-stage native or both" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 rom="${rom:-$decomp/pokeemerald-hearth.gba}"
@@ -203,9 +238,22 @@ fi
 
 mplay_start="$(lookup_symbol MPlayStart)"
 mplay_all_stop="$(lookup_symbol m4aMPlayAllStop)"
+m4a_vsync_off="$(lookup_symbol m4aSoundVSyncOff)"
+m4a_vsync_on="$(lookup_symbol m4aSoundVSyncOn)"
+m4a_vsync="$(lookup_symbol m4aSoundVSync)"
 mplay_info="$(lookup_symbol gMPlayInfo_BGM)"
 voicegroup_address="$(lookup_symbol "$voicegroup")"
 voice_address="$(printf '0x%08X' "$((voicegroup_address + voice_index * 12))")"
+
+driver_args=()
+if [[ "$driver_scenario_supplied" == true ]]; then
+    driver_args=(
+        --scenario "$driver_scenario"
+        --elf "$elf"
+        --voicegroup-symbol "$voicegroup"
+        --voice-index "$voice_index"
+    )
+fi
 
 echo "Recording $voicegroup[$voice_index] at $voice_address through ROM MP2K + mGBA" >&2
 exec "$recorder" \
@@ -213,7 +261,11 @@ exec "$recorder" \
     ${output_args[@]+"${output_args[@]}"} \
     --mplay-start "$mplay_start" \
     --mplay-all-stop "$mplay_all_stop" \
+    --m4a-vsync-off "$m4a_vsync_off" \
+    --m4a-vsync-on "$m4a_vsync_on" \
+    --m4a-vsync "$m4a_vsync" \
     --mplay-info "$mplay_info" \
     --sound-info "$sound_info" \
     --voice-address "$voice_address" \
+    ${driver_args[@]+"${driver_args[@]}"} \
     "${forwarded[@]}"

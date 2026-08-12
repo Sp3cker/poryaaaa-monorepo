@@ -146,6 +146,10 @@ extern "C"
     void hw_psg_advance_cycles(
         HwPsgSynth* psg, uint64_t cycles, bool clock_sq1, bool clock_sq2, bool clock_wave, bool clock_noise);
 
+    /* Runs mGBA's separately scheduled reset-time callback without moving
+     * the following absolute 32,768-cycle cadence. */
+    void hw_psg_run_zero_time_frame_event(HwPsgSynth* psg);
+
     typedef struct
     {
         uint8_t frame_step;
