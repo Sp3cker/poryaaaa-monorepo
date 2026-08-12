@@ -54,7 +54,7 @@
  * DirectSound only after MP2K's zeroed DMA ring has made a complete pass. The
  * endpoint grace retains the final native SoundMain callback after its VBlank. */
 #define DRIVER_START_CAPTURE_FRAMES 9u
-#define DRIVER_ENVELOPE_CAPTURE_FRAMES 14u
+#define DRIVER_ENVELOPE_CAPTURE_FRAMES 15u
 #define DRIVER_PITCH_CAPTURE_FRAMES 12u
 #define DRIVER_VOLUME_PAN_CAPTURE_FRAMES 12u
 #define DRIVER_RETRIGGER_CAPTURE_FRAMES 13u

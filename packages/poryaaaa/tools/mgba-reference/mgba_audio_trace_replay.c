@@ -831,14 +831,14 @@ static bool drain_expected_samples(Replay* replay, uint64_t endCycle)
         }
         else
         {
-            int32_t scheduledDelta = mTimingNextEvent(&gba->timing);
+            int32_t scheduledDelta = mTimingUntil(&gba->timing, &gba->audio.sampleEvent);
             if (scheduledDelta == INT_MAX)
             {
                 fail_replay(replay, "mGBA has no reachable callback for a traced SAMPLE");
                 replay->drainingSamples = false;
                 return false;
             }
-            delta = scheduledDelta < 0 ? 0 : scheduledDelta;
+            delta = scheduledDelta <= 0 ? 1 : scheduledDelta;
         }
         if ((int64_t)current + delta > INT32_MAX)
         {

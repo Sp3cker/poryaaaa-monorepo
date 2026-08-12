@@ -328,13 +328,16 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
     }
     replay->event_index++;
     HwAudioNativeFrame frame;
-    if (!finish_due_sample_observation(replay, record->event.cycle, false))
+    bool preserve_observation = record->event.kind == HW_AUDIO_TRACE_SAMPLE && replay->pending_observation &&
+                                replay->pending_observation_deadline == record->event.cycle;
+    if (!preserve_observation && !finish_due_sample_observation(replay, record->event.cycle, false))
         return false;
     if (replay->pending_sample)
     {
         bool reached_observation = replay->pending_sample_has_explicit_deadline
                                        ? record->event.cycle >= replay->pending_sample_deadline
-                                       : record->event.cycle > replay->pending_sample_cycle;
+                                       : record->event.cycle > replay->pending_sample_cycle &&
+                                             !hw_audio_trace_event_is_cgb_batch_write(&record->event);
         if (reached_observation && !emit_pending_sample(replay))
             return false;
     }
@@ -363,6 +366,8 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
             replay->pending_observation_deadline = replay->pending_sample_deadline;
             replay->pending_observation = true;
         }
+        if (preserve_observation && !finish_due_sample_observation(replay, record->event.cycle, false))
+            return false;
         return true;
     }
 
