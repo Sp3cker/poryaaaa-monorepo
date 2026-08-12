@@ -20,12 +20,12 @@ FAMILIES = {
     "psw": {"type": 3, "solo": "wave", "mask": 4},
 }
 SCENARIOS = {
-    "start": {"logical_vblanks": 1, "high_level_action": "note-on at tick 0"},
-    "envelope": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; sustain through tick 6"},
-    "pitch": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4"},
-    "volume-pan": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4"},
-    "retrigger": {"logical_vblanks": 5, "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5"},
-    "release": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6"},
+    "start": {"logical_vblanks": 1, "capture_frames": 9, "span_cycles": 2_536_960, "high_level_action": "note-on at tick 0"},
+    "envelope": {"logical_vblanks": 6, "capture_frames": 15, "span_cycles": 4_222_464, "high_level_action": "note-on at tick 0; sustain through tick 6"},
+    "pitch": {"logical_vblanks": 4, "capture_frames": 12, "span_cycles": 3_379_712, "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4"},
+    "volume-pan": {"logical_vblanks": 4, "capture_frames": 12, "span_cycles": 3_379_712, "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4"},
+    "retrigger": {"logical_vblanks": 5, "capture_frames": 15, "span_cycles": 4_222_464, "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5"},
+    "release": {"logical_vblanks": 6, "capture_frames": 14, "span_cycles": 3_941_376, "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6"},
 }
 
 
@@ -47,12 +47,12 @@ families = {
     "psw": {"type": 3, "solo": "wave", "mask": 4},
 }
 scenarios = {
-    "start": {"logical_vblanks": 1, "high_level_action": "note-on at tick 0"},
-    "envelope": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; sustain through tick 6"},
-    "pitch": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4"},
-    "volume-pan": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4"},
-    "retrigger": {"logical_vblanks": 5, "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5"},
-    "release": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6"},
+    "start": {"logical_vblanks": 1, "capture_frames": 9, "span_cycles": 2536960, "high_level_action": "note-on at tick 0"},
+    "envelope": {"logical_vblanks": 6, "capture_frames": 15, "span_cycles": 4222464, "high_level_action": "note-on at tick 0; sustain through tick 6"},
+    "pitch": {"logical_vblanks": 4, "capture_frames": 12, "span_cycles": 3379712, "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4"},
+    "volume-pan": {"logical_vblanks": 4, "capture_frames": 12, "span_cycles": 3379712, "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4"},
+    "retrigger": {"logical_vblanks": 5, "capture_frames": 15, "span_cycles": 4222464, "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5"},
+    "release": {"logical_vblanks": 6, "capture_frames": 14, "span_cycles": 3941376, "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6"},
 }
 if family not in families:
     raise SystemExit(90)
@@ -104,16 +104,20 @@ def write_capture(prefix, source, trace=None):
         decomp = Path(option("--decomp"))
         scenario = option("--scenario")
         contract = scenarios[scenario]
-        span = contract["logical_vblanks"] * 512
+        span = contract["span_cycles"]
+        capture_frames = contract["capture_frames"]
+        if os.environ.get("MOCK_TRUNCATE_SCENARIO") == "1":
+            capture_frames -= 1
+            span -= 280896
         document.update({
             "trace_sha256": hashlib.sha256(Path(trace).read_bytes()).hexdigest(),
             "rom_sha256": hashlib.sha256((decomp / "pokeemerald-hearth.gba").read_bytes()).hexdigest(),
             "elf_sha256": hashlib.sha256((decomp / "pokeemerald-hearth.elf").read_bytes()).hexdigest(),
             "tone_data_sha256": tone_hash(), "family_payload_sha256": payload_hash(),
             "pcm_sha256": hashlib.sha256(pcm.read_bytes()).hexdigest(), "cycles_sha256": hashlib.sha256(cycles.read_bytes()).hexdigest(),
-            "rom_voice_address": 0x08000000, "scenario_span_frames": contract["logical_vblanks"],
+            "rom_voice_address": 0x08000000, "scenario_span_frames": capture_frames,
             "scenario_span_cycles": span, "scenario_begin_cycle": 0, "scenario_end_cycle": span,
-            "scenario_logical_vblanks": contract["logical_vblanks"], "scenario_capture_frames": contract["logical_vblanks"],
+            "scenario_logical_vblanks": contract["logical_vblanks"], "scenario_capture_frames": capture_frames,
             "high_level_action": contract["high_level_action"], "voicegroup_symbol": "voicegroup_fixture", "voice_index": 7,
             "resolved_type": spec["type"], "family": family, "scenario": scenario, **controls(),
             "audio_channel_mask": spec["mask"], "mgba_master_volume": 256, "bios_mode": "hle",
@@ -154,6 +158,11 @@ elif role == "candidate_trace":
     trace = option("--trace-output")
     trace_hash = write_trace(trace)
     contract = scenarios[scenario]
+    capture_frames = contract["capture_frames"]
+    span = contract["span_cycles"]
+    if os.environ.get("MOCK_TRUNCATE_SCENARIO") == "1":
+        capture_frames -= 1
+        span -= 280896
     resolved_type = spec["type"]
     if os.environ.get("MOCK_FIXTURE_MISMATCH") == "type":
         resolved_type = 11 if resolved_type != 11 else 3
@@ -167,10 +176,10 @@ elif role == "candidate_trace":
     document = {
         "format": "poryaaaa-driver-candidate-trace", "version": 1, "source": "poryaaaa-driver",
         "trace_format": "PORYAAAA_AUDIO_TRACE", "trace_version": 1, "clock_hz": 16777216,
-        "trace_begin_cycle": 0, "trace_end_cycle": contract["logical_vblanks"] * 512,
+        "trace_begin_cycle": 0, "trace_end_cycle": span,
         "driver_origin_cycle": 1005 if family == "directsound" else 0,
-        "logical_vblanks": contract["logical_vblanks"], "capture_frames": contract["logical_vblanks"],
-        "capture_span_cycles": contract["logical_vblanks"] * 512, "high_level_action": contract["high_level_action"],
+        "logical_vblanks": contract["logical_vblanks"], "capture_frames": capture_frames,
+        "capture_span_cycles": span, "high_level_action": contract["high_level_action"],
         "voicegroup_symbol": "voicegroup_fixture", "voice_index": 7, "family": family, "resolved_type": resolved_type,
         "tone_data_sha256": tone_hash(), "family_payload_sha256": payload, "scenario": scenario,
         "trace_sha256": trace_hash, "rom_sha256": rom_hash,
@@ -328,7 +337,15 @@ class ValidateDriverTest(unittest.TestCase):
                 self.assertEqual(manifest["scenario"], scenario)
                 self.assertEqual(manifest["scenario_timing"]["logical_vblanks"], expected["logical_vblanks"])
                 self.assertEqual(manifest["scenario_timing"]["high_level_action"], expected["high_level_action"])
+                self.assertEqual(manifest["scenario_timing"]["capture_frames"], expected["capture_frames"])
+                self.assertEqual(manifest["scenario_timing"]["span_cycles"], expected["span_cycles"])
                 self.log_path.write_text("", encoding="utf-8")
+
+    def test_identically_truncated_adapter_windows_fail_before_comparison(self):
+        completed = self.run_validator(scenario="retrigger", MOCK_TRUNCATE_SCENARIO="1")
+        self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
+        self.assertFalse(self.output.exists())
+        self.assertEqual([call["role"] for call in self.tool_log()], ["record_voice"])
 
     def test_fixture_identity_mismatch_fails_before_comparator(self):
         for mismatch in ("type", "payload"):
