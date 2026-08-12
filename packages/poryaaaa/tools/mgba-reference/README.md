@@ -324,7 +324,21 @@ public `M4ADriver` controls on the candidate side.
 
 The reference recorder requires a patched checkout of mGBA revision
 `afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9`; installed system mGBA libraries
-are not an acceptable substitute. Configure the package with that checkout:
+are not an acceptable substitute.
+Apply the checked-in observation patch to a clean checkout before configuring:
+
+```bash
+git -C /path/to/mgba-audio-reference checkout afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9
+git -C /path/to/mgba-audio-reference apply --check \
+  /path/to/poryaaaa-monorepo/packages/poryaaaa/tools/mgba-reference/mgba-audio-observation.patch
+git -C /path/to/mgba-audio-reference apply \
+  /path/to/poryaaaa-monorepo/packages/poryaaaa/tools/mgba-reference/mgba-audio-observation.patch
+```
+
+Use a disposable checkout or worktree for this opt-in patch; do not apply it to
+an mGBA tree used for unrelated builds.
+
+Configure the package with that patched checkout:
 
 ```bash
 cd packages/poryaaaa
@@ -402,6 +416,25 @@ The baseline has 30 cells (five fixtures times six scenarios):
   respective trace to replay bit/cycle-identically in pinned mGBA and
   poryaaaa. `reference_native_exact` additionally requires reference trace
   replay to match the full-ROM native capture.
+Replay preserves the trace's observed callback semantics. A `SAMPLE` record can
+represent a delayed native callback: same-cycle CGB writes are applied only
+after the pending observation when the trace's ordering requires it. Single-byte
+NR32 writes also advance Wave state, as mGBA does before changing the volume
+code. These details are covered by the bit-exact hardware gates rather than by
+retiming either trace.
+
+DirectSound comparison canonicalizes each complete refill as FIFO A words, FIFO
+B words, then its TIMER record. This preserves per-FIFO payload and refill
+association across the native DMA observer and CPU-free driver adapter; it does
+not claim raw A/B DMA interleaving or an independently measured FIFO-underflow
+cycle. The fixed DirectSound fixture routes through timer 0, so timer-1 routing
+is outside this matrix's scope.
+
+Only the reference trace has a full-ROM native capture. Candidate hardware
+parity compares pinned mGBA and poryaaaa replay of the candidate's CPU-free
+driver trace; it is not a second native execution of that candidate scenario.
+Hardware-envelope scenarios can correctly have no extra bus transaction while
+their longer SAMPLE window still exercises the independent replay models.
 
 Comparator and replay reports retain the first transaction divergence or first
 native-sample divergence, respectively, with their source ordinal and observed
@@ -409,6 +442,9 @@ cycle. Cycle deltas and SAMPLE-boundary crossings are diagnostics only:
 transaction equality never claims absolute ARM instruction-cycle parity.
 These gates also do not claim reference-versus-candidate whole-engine parity or
 use that comparison as a pass gate.
+A successful fixed matrix reports `case_count: 30`, `passed_case_count: 30`,
+`failed_case_count: 0`, and `matrix_exact: true`. Every cell must pass all six
+gates on both independent runs and must report `deterministic: true`.
 
 ### Published artifacts
 
