@@ -1391,7 +1391,7 @@ static bool next_trace_position(Recorder* recorder, uint64_t cycle, uint32_t* or
     {
         return false;
     }
-    *order = PORYAAAA_TRACE_ORDER_EXTENDED | (recorder->tracePosition.order << TRACE_ORDER_SEQUENCE_SHIFT);
+    *order = PORYAAAA_TRACE_ORDER_EXTENDED | (recorder->tracePosition.order << PORYAAAA_TRACE_ORDER_SEQUENCE_SHIFT);
     return true;
 }
 

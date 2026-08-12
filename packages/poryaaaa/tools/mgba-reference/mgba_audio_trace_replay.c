@@ -1065,7 +1065,7 @@ static bool replay_trace(Replay* replay, const Options* options)
     bool measurementOpen = false;
     bool measurementClosed = false;
     TracePosition position = {0};
-    char line[TRACE_LINE_CAPACITY];
+    char line[PORYAAAA_AUDIO_TRACE_LINE_CAPACITY];
     if (fgets(line, sizeof(line), input) == NULL || strcmp(line, PORYAAAA_AUDIO_TRACE_HEADER "\n") != 0)
     {
         fprintf(stderr, "Trace must begin with " PORYAAAA_AUDIO_TRACE_HEADER "\n");
