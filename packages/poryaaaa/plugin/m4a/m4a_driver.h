@@ -147,11 +147,9 @@ extern "C"
     const M4ARegisterFile* m4a_get_register_file(const M4ADriver* drv);
     const M4APcmRing* m4a_get_pcm_ring(const M4ADriver* drv);
 
-    /* Mutable accessor for the chip's render path.  The chip *consumes*
-     * edge-trigger latches (trigger_sq1/sq2/wave/noise) by clearing them
-     * after applying the corresponding NRx4 write — see §6a "Edge-trigger
-     * latches" in HW_AUDIO_SCAFFOLD_PLAN.md.  Other consumers should use
-     * the const accessor above. */
+    /* Mutable accessor for the snapshot render path.  Rendering consumes the
+     * trigger_sq1/sq2/wave/noise edge latches by clearing them after the
+     * corresponding NRx4 write. Other consumers use the const accessor. */
     M4ARegisterFile* m4a_get_register_file_mut(M4ADriver* drv);
 
 /* Layer 1.5 event-stream accessors.

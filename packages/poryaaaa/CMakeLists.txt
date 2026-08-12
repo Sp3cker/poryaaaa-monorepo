@@ -156,9 +156,8 @@ endif()
 add_subdirectory(plugin/voicegroup)
 
 # ---- Recorder (MIDI capture + SMF writer) ----
-# Vendored from the old ccomidi_recorder.clap project.  Pure C++23.
-# Engine will own a RecorderCore instance; M4L wrapper consumes it via
-# the engine accessor.  See recorder integration plan.md.
+# Pure C++23. The CLAP plugin owns an M4ARecorder; the M4L external has a
+# separate capture path. See recorder integration plan.md.
 add_subdirectory(plugin/recorder)
 
 # Trace capture/replay is a developer toolchain, never part of the shipping
@@ -166,7 +165,7 @@ add_subdirectory(plugin/recorder)
 option(PORYAAAA_BUILD_TRACE_TOOLS "Build audio trace capture and replay tools" OFF)
 enable_testing()
 
-# ---- v2 audio engine: m4a software driver + hw_audio chip emulation ----
+# ---- Direct audio runtime libraries: M4ADriver + HwAudio ----
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
@@ -690,13 +689,16 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_engine_lifecycle PRIVATE m)
 endif()
 
-# ---- v2 link wiring ----
+# ---- Direct runtime link wiring: M4ADriver + HwAudio ----
 set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
                          poryaaaa_unit_tests poryaaaa_engine_lifecycle)
 
 foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
     target_link_libraries(${_tgt} PRIVATE m4a_driver hw_audio)
 endforeach()
+# These product and test runtimes link the direct driver/chip pair, never a
+# public engine wrapper. Its canonical render sequence is documented in
+# plugin/hw_audio/hw_audio.h.
 
 # Link-graph gates keep shipping targets free of trace parser, scheduler,
 # replay, writer, and trace-runtime objects. They inspect CMake's resolved

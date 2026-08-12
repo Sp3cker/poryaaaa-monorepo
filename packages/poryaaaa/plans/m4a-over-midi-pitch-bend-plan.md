@@ -25,7 +25,7 @@ Current live playback mismatch:
 - `packages/poryaaaa/plugin/m4a_plugin.c` currently converts `0xE0` to signed 14-bit MIDI:
   ```c
   int16_t bend = ((int16_t)msg[2] << 7 | msg[1]) - 8192;
-  m4a_engine_pitch_bend(&data->engine, channel, bend);
+  m4a_driver_pitch_bend(data->driver, channel, bend);
   ```
 - `packages/poryaaaa/plugin/m4a/m4a_track.c` currently stores `bend >> 7`, which is generic MIDI-ish and lets `data1` affect audio.
 - poryaaaa recorder currently pushes raw MIDI bytes after engine dispatch:
@@ -70,12 +70,10 @@ user bend -32, BENDR 2  -> data2 32 -> track->bend -32 -> effective -64
 ## File Map
 
 - `packages/poryaaaa/plugin/m4a_plugin.c`: CLAP MIDI event dispatch for live plugin playback; decode `0xE0` using `msg[2] - 64`; leave recorder push raw.
-- `packages/poryaaaa/plugin/m4a_engine.h`: update pitch-bend API comment/signature to say the argument is decoded M4A bend units.
-- `packages/poryaaaa/plugin/m4a_engine.c`: forward decoded M4A bend units to the driver.
 - `packages/poryaaaa/plugin/m4a/m4a_driver.h`: update driver pitch-bend signature/comment to M4A bend units.
 - `packages/poryaaaa/plugin/m4a/m4a_track.c`: store decoded M4A bend units directly, no `>> 7`.
-- `packages/poryaaaa/cmd/poryaaaa_render.c`: decode CLI-renderer MIDI pitch bend from MSB/data2 with `data2 - 64` before calling engine/driver.
-- `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`: decode Max external pitch bend from `d2 - 64` before calling engine/driver.
+- `packages/poryaaaa/cmd/poryaaaa_render.c`: decode CLI-renderer MIDI pitch bend from MSB/data2 with `data2 - 64` before calling driver.
+- `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.c`: decode Max external pitch bend from `d2 - 64` before calling driver.
 - `packages/poryaaaa/test/test_engine.c`: add focused engine tests for direct bend storage and `BENDR` multiplication.
 - `packages/ccomidi/src/core/`: only add bend packing here if standalone ccomidi has a true M4A pitch-bend dial/control path. Do not alter raw MIDI pass-through.
 - `packages/ccomidi/src/tests/test_sender_core.cpp`: add tests only if standalone ccomidi starts emitting M4A pitch bend from an internal dial/control.
@@ -195,46 +193,29 @@ git commit -m "fix(poryaaaa): store pitch bend as M4A units"
 
 **Files:**
 
-- Modify: `packages/poryaaaa/plugin/m4a_engine.h`
-- Modify: `packages/poryaaaa/plugin/m4a_engine.c`
+- Modify: `packages/poryaaaa/plugin/m4a/m4a_driver.h`
+- Modify: `packages/poryaaaa/plugin/m4a/m4a_track.c`
 - Modify: `packages/poryaaaa/plugin/m4a_plugin.c`
 - Modify: `packages/poryaaaa/cmd/poryaaaa_render.c`
-- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
+- Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.c`
 
-- [ ] **Step 1: Update engine API wording and type**
+- [ ] **Step 1: Update driver API wording and type**
 
-In `packages/poryaaaa/plugin/m4a_engine.h`, replace:
-
-```c
-void m4a_engine_pitch_bend(M4AEngine *engine, int trackIndex, int16_t bend);
-```
-
-with:
+In `packages/poryaaaa/plugin/m4a/m4a_driver.h`:
 
 ```c
 /* Decoded M4A BEND units: -64..+63. MIDI carriers must be decoded by callers. */
-void m4a_engine_pitch_bend(M4AEngine *engine, int trackIndex, int8_t bend);
+void m4a_driver_pitch_bend(M4ADriver *drv, int trackIndex, int8_t bend);
 ```
 
-In `packages/poryaaaa/plugin/m4a_engine.c`, replace:
+In `packages/poryaaaa/plugin/m4a/m4a_track.c`:
 
 ```c
-void m4a_engine_pitch_bend(M4AEngine *engine, int trackIndex, int16_t bend)
+void m4a_driver_pitch_bend(M4ADriver *drv, int trackIndex, int8_t bend)
 {
-	if (trackIndex < 0 || trackIndex >= MAX_TRACKS)
+	if (trackIndex < 0 || trackIndex >= M4A_DRIVER_TRACK_COUNT)
 		return;
-	m4a_pitch_bend(engine->driver, trackIndex, bend);
-}
-```
-
-with:
-
-```c
-void m4a_engine_pitch_bend(M4AEngine *engine, int trackIndex, int8_t bend)
-{
-	if (trackIndex < 0 || trackIndex >= MAX_TRACKS)
-		return;
-	m4a_pitch_bend(engine->driver, trackIndex, bend);
+	m4a_pitch_bend(drv, trackIndex, bend);
 }
 ```
 
@@ -246,7 +227,7 @@ In `packages/poryaaaa/plugin/m4a_plugin.c`, replace the `0xE0` case with:
     case 0xE0: /* Pitch Bend: M4A-over-MIDI carrier, data2 is c_v-centered. */
     {
         int8_t bend = (int8_t)((int)msg[2] - 64);
-        m4a_engine_pitch_bend(&data->engine, channel, bend);
+        m4a_driver_pitch_bend(data->driver, channel, bend);
         break;
     }
 ```
@@ -262,23 +243,10 @@ m4a_recorder_push_beats(data->recorder, recorder_beats, msg[0], msg[1], msg[2]);
 In `packages/poryaaaa/cmd/poryaaaa_render.c`, replace the render-time pitch bend case:
 
 ```c
-    case 0xE: /* Pitch Bend — convert MIDI 14-bit unsigned to signed -8192..+8191 */
-    {
-        int16_t bend = (int16_t)(((int)(ev->data1 << 7) | ev->data0) - 8192);
-        m4a_engine_pitch_bend(engine, trackIdx, bend);
-        m4a_pitch_bend(g_v2_drv, trackIdx, bend);
-        break;
-    }
-```
-
-with:
-
-```c
     case 0xE: /* Pitch Bend: M4A-over-MIDI carrier, data1 is c_v-centered MSB. */
     {
         int8_t bend = (int8_t)((int)ev->data1 - 64);
-        m4a_engine_pitch_bend(engine, trackIdx, bend);
-        m4a_pitch_bend(g_v2_drv, trackIdx, bend);
+        m4a_driver_pitch_bend(drv, trackIdx, bend);
         break;
     }
 ```
@@ -291,20 +259,8 @@ In `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`, replace:
 
 ```c++
         case 0xE: {
-            int16_t signed14 = (int16_t)(((d2 << 7) | d1) - 8192);
-            m4a_engine_pitch_bend(&x->engine, ch, signed14);
-            m4a_pitch_bend(x->m4a_v2, ch, signed14);
-            break;
-        }
-```
-
-with:
-
-```c++
-        case 0xE: {
             int8_t bend = (int8_t)((int)d2 - 64);
-            m4a_engine_pitch_bend(&x->engine, ch, bend);
-            m4a_pitch_bend(x->m4a_v2, ch, bend);
+            m4a_driver_pitch_bend(x->driver, ch, bend);
             break;
         }
 ```
@@ -323,11 +279,11 @@ Run the package-local M4L build/test command only if this checkout has its M4L b
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/poryaaaa/plugin/m4a_engine.h \
-        packages/poryaaaa/plugin/m4a_engine.c \
+git add packages/poryaaaa/plugin/m4a/m4a_driver.h \
+        packages/poryaaaa/plugin/m4a/m4a_track.c \
         packages/poryaaaa/plugin/m4a_plugin.c \
         packages/poryaaaa/cmd/poryaaaa_render.c \
-        packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp
+        packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.c
 git commit -m "fix(poryaaaa): decode M4A pitch bend carrier at ingress"
 ```
 

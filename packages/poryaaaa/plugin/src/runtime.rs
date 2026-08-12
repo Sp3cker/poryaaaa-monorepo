@@ -106,10 +106,18 @@ impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DriverCreateFailed { sample_rate } => {
-                write!(f, "Failed to create m4a driver at sample rate {}", sample_rate)
+                write!(
+                    f,
+                    "Failed to create m4a driver at sample rate {}",
+                    sample_rate
+                )
             }
             Self::HardwareCreateFailed { sample_rate } => {
-                write!(f, "Failed to create hardware renderer at sample rate {}", sample_rate)
+                write!(
+                    f,
+                    "Failed to create hardware renderer at sample rate {}",
+                    sample_rate
+                )
             }
             Self::InvalidCString { field } => {
                 write!(f, "Field '{}' contains interior NUL byte", field)
@@ -362,7 +370,9 @@ fn last_voicegroup_error() -> String {
     if ptr.is_null() {
         return "voicegroup_load failed".to_owned();
     }
-    let message = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    let message = unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
     if message.is_empty() {
         "voicegroup_load failed".to_owned()
     } else {

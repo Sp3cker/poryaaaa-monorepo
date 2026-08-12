@@ -226,9 +226,8 @@ cmd/
 plugin/
   m4a_plugin.c/.h             CLAP entry point, MIDI event handling, extension dispatch
   m4a_gui.cpp/.h              Dear ImGui + Pugl settings GUI (C++ with C interface)
-  m4a_engine.c/.h             Public engine wrapper: MIDI routing and v2 driver/chip ownership
-  m4a/                        M4A software driver: tracks, commands, PCM/CGB event generation
-  hw_audio/                   GBA audio hardware emulation: PSG, DirectSound, mixing, reverb
+  m4a/                        M4ADriver: tracks, commands, PCM/CGB event generation
+  hw_audio/                   HwAudio: GBA audio hardware emulation, PSG, DirectSound, mixing, reverb
   m4a_tables.c/.h             Frequency/scale tables (from m4a_tables.c)
   voicegroup_loader.c/.h      Project discovery, .inc/.s parser, sample loader
 
@@ -254,6 +253,10 @@ imgui/                   Dear ImGui (submodule)
 | `CLAP_EXT_TIMER_SUPPORT` | 16 ms timer that drives GUI rendering and applies live parameter changes |
 
 ### How the engine works
+
+Each runtime directly owns an `M4ADriver` and an `HwAudio`; there is no public
+engine wrapper. The canonical direct-render sequence is defined by the
+[`HwAudio` event-render contract](plugin/hw_audio/hw_audio.h).
 
 The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelopes and LFO. The complete hardware mix is generated at the SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`) and converted to the configured host rate by the same `blip_buf` frontend used by mGBA.
 

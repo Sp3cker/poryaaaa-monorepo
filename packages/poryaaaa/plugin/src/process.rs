@@ -1,7 +1,6 @@
 use crate::midi_activity::MidiActivity;
 use nice_plug::prelude::NoteEvent;
 
-
 // Keeps the process loop independent from the C FFI wrapper shape.
 pub(crate) trait ProcessRuntime {
     fn set_tempo_bpm(&mut self, bpm: f64);

@@ -10,7 +10,7 @@ After the C++23 build is understood and stable, a second implementation phase ma
 
 The C++23 build probe applies to project-owned C++ and Objective-C++ surfaces:
 
-- `poryaaaa`, for plugin/GUI C++ sources such as `plugin/m4a_gui.cpp`, `plugin/imgui_impl_pugl.cpp`, and `plugin/m4a_engine_recorder.cpp`
+- `poryaaaa`, for plugin/GUI C++ sources such as `plugin/m4a_gui.cpp`, `plugin/imgui_impl_pugl.cpp`, and `plugin/m4a_recorder.h`
 - `recorder`, for `plugin/recorder/recorder_core.cpp` and `plugin/recorder/smf_writer.cpp`
 - `poryaaaa_unit_tests`, only for the C++ recorder bridge it compiles
 
@@ -20,7 +20,6 @@ The first phase does not intentionally modernize source code. Source edits in ph
 
 These modules remain C11 in the first phase:
 
-- `plugin/m4a_engine.c`
 - `plugin/m4a/`
 - `plugin/hw_audio/`
 - `plugin/voicegroup/`

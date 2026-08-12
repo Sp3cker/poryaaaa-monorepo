@@ -13,9 +13,8 @@
  * resulting audio to a WAV file.  There are no automated assertions
  * here: the binary's job is to produce a listenable artifact for human
  * ears (or for diff against another build).  CI does NOT gate on its
- * output, and parity / spectral / level claims should NOT be derived
- * from this WAV — see HW_AUDIO_SCAFFOLD_PLAN.md §12 for the actual
- * parity gates (steps 9 + 10 + 11).
+ * output, and parity, spectral, or level claims should not be derived
+ * from this WAV. See docs/arch-parity-fix-plan.md for the parity gates.
  *
  * Usage: poryaaaa_test <project_root> <voicegroup_name> [output.wav]
  *

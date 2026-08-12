@@ -1115,11 +1115,10 @@ static void test_v2_pcm_ring_fills(void)
     free(wd);
 }
 
-/* PCM frequency parity (response to v3 follow-up #1).  V1 multiplies
- * MidiKeyToFreq by divFreq before storing.  Verify v2's fw advances at
- * the same rate as v1 by comparing the resulting per-vblank wave-sample
- * step against the canonical formula.  The first PCM tick advances fw
- * by `frequency`; integer-sample step = frequency >> 23. */
+/* PCM frequency scaling multiplies MidiKeyToFreq by divFreq before storing.
+ * Verify fw advances at the rate required by the canonical formula.  The
+ * first PCM tick advances fw by `frequency`; integer-sample step =
+ * frequency >> 23. */
 static void test_v2_pcm_frequency_scale(void)
 {
     printf("Testing v2 PCM frequency divFreq scaling...\n");
@@ -1884,9 +1883,9 @@ static void test_v2_pcm_cc7_refresh(void)
  *
  * The reverb stage runs in-place on the int16 pcmMix buffer (4-tap
  * sum scaled by amount>>9, added to current mix) and writes the
- * INT8-clamped wet output back into the delay buffer (matches v1
- * m4a_reverb.c: real m4a's delay buffer IS the int8 FIFO, so future
- * tap reads see byte-clamped values).  An int16 delay buffer would
+ * INT8-clamped wet output back into the delay buffer.  Real m4a's delay
+ * buffer is the int8 FIFO, so future tap reads see byte-clamped values.
+ * An int16 delay buffer would
  * silently feed back values outside the FIFO range on heavy mixes.
  *
  * This test exercises the pipeline end-to-end:
@@ -2846,7 +2845,7 @@ static void test_v2_wave_disable_events(void)
  * autopan).  When modM is non-zero (LFO running), switching modT must
  * recompute volMR/volML/keyM/pitM via m4a_trk_vol_pit_set BEFORE
  * pushing into channels — otherwise channels see stale derived values.
- * This is what v1 refresh_volumes does implicitly. */
+ * m4a_trk_vol_pit_set provides that required refresh. */
 static void test_v2_modt_recomputes_track_state(void)
 {
     printf("Testing v2 MODT recomputes derived track state...\n");
@@ -2965,11 +2964,11 @@ capture_sq2_freq_under_lfo(uint8_t mod_cc, uint8_t lfos_cc, uint8_t lfodl_cc, ui
     m4a_driver_destroy(drv);
 }
 
-/* ---- v2 XCMD-via-MIDI-CC tests ----------------------------------------
+/* ---- XCMD-via-MIDI-CC tests ------------------------------------------
  *
- * The v2 driver implements the same two-CC XCMD protocol the v1 engine
- * has (CC 0x1E selector, then 0x1D/0x1F payload bytes), but mutates v2's
- * own M4ADriverTrack / M4ADriverPcmChan / M4ADriverCgbChan fields.  These
+ * The driver implements the two-CC XCMD protocol (CC 0x1E selector, then
+ * 0x1D/0x1F payload bytes) and mutates M4ADriverTrack, M4ADriverPcmChan,
+ * and M4ADriverCgbChan fields.  These
  * tests prove field mutation, propagation into newly-started notes,
  * little-endian multi-byte assembly, partial/invalid safety, and sticky-
  * selector behaviour.  See xcmd.md.
@@ -3228,7 +3227,7 @@ static void test_v2_xcmd_protocol_safety(void)
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x10, "v2 0x1D with no selector does not mutate state");
     ASSERT_EQ(cap.called, 0, "v2 0x1D with no selector does not notify");
 
-    /* Unknown selector (e.g. 0x03 — gap in v1's table) → dataLength==0,
+    /* Unknown selector (for example, the 0x03 table gap) has no payload,
      * so any subsequent payload is discarded silently. */
     v2_send_xcmd_select(drv, 0, 0x03);
     m4a_cc(drv, 0, 0x1D, 0xAA);
@@ -3250,8 +3249,8 @@ static void test_v2_xcmd_protocol_safety(void)
     ASSERT_EQ(drv->tracks[0].extendedCommandBytes[0], 0, "v2 0x1E zeroes the payload buffer");
 
     /* Sticky selector: after a complete xATTA dispatch, another payload
-     * byte without a fresh 0x1E must apply to xATTA again.  This matches
-     * v1 + real m4a (the selector is sticky until the next CMD_XCMD). */
+     * byte without a fresh 0x1E must apply to xATTA again, matching real
+     * m4a: the selector is sticky until the next CMD_XCMD. */
     v2_send_xcmd_bytes(drv, 0, (uint8_t[]){0x70}, 1); /* completes xATTA */
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x70, "v2 sticky-selector dispatch 1: xATTA(0x70) applies");
     ASSERT_EQ(cap.called, 1, "v2 sticky-selector dispatch 1: callback fired once");
@@ -5591,9 +5590,8 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * current mGBA sinc frontend to host. Per-cadence tests live in the §12.10a
  * block below (cadence sweep + direct internal_rate switching assertion).
  *
- * They do NOT prove parity against mGBA / real-hardware captures —
- * that's §12.10b, still open.  See HW_AUDIO_SCAFFOLD_PLAN.md §12
- * "Blocking gates before parity claims" for the full open-gate list. */
+ * They do NOT prove parity against mGBA or real-hardware captures. See
+ * docs/arch-parity-fix-plan.md for the authoritative parity gates. */
 
 static void test_chip_canned_soundbias_dc_offset(void)
 {
