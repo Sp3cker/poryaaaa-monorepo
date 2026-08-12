@@ -150,6 +150,12 @@ EVENT_CLASSES = {
     ),
 }
 
+# These DirectSound paths are optional in an individual fixture/scenario run.
+# The complete 30-cell matrix must nevertheless exercise each path at least once.
+AGGREGATE_REQUIRED_EVENT_CLASSES = {
+    "directsound": ("fifo_a_word", "fifo_b_word", "timer_0", "timer_1"),
+}
+
 
 class InfrastructureFailure(Exception):
     """A matrix tool or its published diagnostics were unusable."""
@@ -531,10 +537,17 @@ def coverage_report(case_reports: list[dict[str, Any]], stage: Path) -> dict[str
                     }
                 )
             unexercised_required = [event["name"] for event in events if event["required"] and not event["exercised"]]
+            aggregate_required = AGGREGATE_REQUIRED_EVENT_CLASSES.get(family, ())
+            event_by_name = {event["name"]: event for event in events}
+            unexercised_aggregate = [
+                name for name in aggregate_required if not event_by_name[name]["exercised"]
+            ]
             family_reports[family] = {
                 "required_event_coverage": events,
                 "unexercised_required_event_classes": unexercised_required,
-                "complete": not unexercised_required,
+                "aggregate_required_event_classes": list(aggregate_required),
+                "unexercised_aggregate_event_classes": unexercised_aggregate,
+                "complete": not unexercised_required and not unexercised_aggregate,
             }
         source_reports[source] = {
             "families": family_reports,

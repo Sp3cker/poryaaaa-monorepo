@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 package_dir="$(cd "$script_dir/../.." && pwd)"
+(cd "$package_dir" && python3 -m py_compile tools/mgba-reference/*.py)
 recorder="${1:-$package_dir/build/mgba_mp2k_reference}"
 wrapper="$script_dir/record_voice.sh"
 
@@ -25,6 +26,9 @@ cat <<'SYMBOLS'
 02000000 T gSoundInfo
 02000004 T MPlayStart
 02000008 T m4aMPlayAllStop
+02000010 T m4aSoundVSyncOff
+02000014 T m4aSoundVSyncOn
+02000018 T m4aSoundVSync
 0200000C T gMPlayInfo_BGM
 02010000 T voicegroup_chaos
 SYMBOLS
@@ -79,12 +83,12 @@ expect_track volume-pan BC00BB4BBD00BE7FBF40CF3C7F82BE20BF7F82B252F00302
 expect_track retrigger BC00BB4BBD00BE7FBF40CF3C7F82CE3C81CF3C7F82B254F00302
 expect_track release BC00BB4BBD00BE7FBF40CF3C7F82CE3C84B250F00302
 
-expect_span start 562688
-expect_span envelope 1967616
-expect_span pitch 1405440
-expect_span volume-pan 1405440
-expect_span retrigger 1686528
-expect_span release 1967616
+expect_span start 2536960
+expect_span envelope 4222464
+expect_span pitch 3379712
+expect_span volume-pan 3379712
+expect_span retrigger 4222464
+expect_span release 3941376
 
 expect_family 0x00 "directsound 48"
 expect_family 0x01 "sq1 1"

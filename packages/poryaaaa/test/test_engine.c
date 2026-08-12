@@ -23,8 +23,6 @@ extern void m4a_cgb_sound(M4ADriver* drv);
 
 extern void m4a_trk_vol_pit_set(M4ADriverTrack* track);
 void test_hw_mix_run_all(void);
-void test_hw_audio_trace_run_all(void);
-void test_hw_audio_trace_contracts_run_all(void);
 void test_voicegroup_loader_run_all(void);
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY
 void test_voicegroup_core_parity_run_all(void);
@@ -32,6 +30,7 @@ void test_voicegroup_core_parity_run_all(void);
 void test_recorder_core_run_all(void);
 void test_m4a_v2_run_all(void);
 void test_gui_assets_run_all(void);
+void test_hw_audio_contracts_run_all(void);
 
 /* Test helper: advance the driver in chunks no larger than the bounded
  * event queue can hold, consuming between chunks.  Required for tests
@@ -6612,8 +6611,6 @@ int main(void)
     test_chip_canned_soundbias_dc_offset();
     test_chip_canned_soundbias_clip_asymmetric();
     test_hw_mix_run_all();
-    test_hw_audio_trace_run_all();
-    test_hw_audio_trace_contracts_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();
@@ -6626,6 +6623,7 @@ int main(void)
     test_chip_canned_solo_mask_isolates_channels();
     test_chip_canned_solo_mask_empty_falls_back_to_full();
     test_chip_canned_soundbias_cycle_0_vs_3_levels();
+    test_hw_audio_contracts_run_all();
     test_m4a_v2_run_all();
     test_voicegroup_loader_run_all();
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY

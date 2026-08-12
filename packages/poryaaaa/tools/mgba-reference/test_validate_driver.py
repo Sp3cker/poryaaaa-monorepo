@@ -14,10 +14,11 @@ from pathlib import Path
 
 TOOL = Path(__file__).with_name("validate_driver.py")
 FAMILIES = {
-    "directsound": {"type": 0, "solo": "directsound", "mask": 48},
-    "sq1": {"type": 1, "solo": "sq1", "mask": 1},
-    "sq2": {"type": 2, "solo": "sq2", "mask": 2},
-    "psw": {"type": 3, "solo": "wave", "mask": 4},
+    "directsound": {"type": 0, "family": "directsound", "solo": "directsound", "mask": 48},
+    "sq1": {"type": 1, "family": "sq1", "solo": "sq1", "mask": 1},
+    "sq2": {"type": 2, "family": "sq2", "solo": "sq2", "mask": 2},
+    "psw": {"type": 3, "family": "psw", "solo": "wave", "mask": 4},
+    "psw-alt": {"type": 11, "family": "psw", "solo": "wave", "mask": 4},
 }
 SCENARIOS = {
     "start": {"logical_vblanks": 1, "capture_frames": 9, "span_cycles": 2_536_960, "high_level_action": "note-on at tick 0"},
@@ -41,10 +42,11 @@ role = Path(sys.argv[0]).stem.removesuffix("_mock")
 args = sys.argv[1:]
 family = os.environ.get("MOCK_FAMILY", "psw")
 families = {
-    "directsound": {"type": 0, "solo": "directsound", "mask": 48},
-    "sq1": {"type": 1, "solo": "sq1", "mask": 1},
-    "sq2": {"type": 2, "solo": "sq2", "mask": 2},
-    "psw": {"type": 3, "solo": "wave", "mask": 4},
+    "directsound": {"type": 0, "family": "directsound", "solo": "directsound", "mask": 48},
+    "sq1": {"type": 1, "family": "sq1", "solo": "sq1", "mask": 1},
+    "sq2": {"type": 2, "family": "sq2", "solo": "sq2", "mask": 2},
+    "psw": {"type": 3, "family": "psw", "solo": "wave", "mask": 4},
+    "psw-alt": {"type": 11, "family": "psw", "solo": "wave", "mask": 4},
 }
 scenarios = {
     "start": {"logical_vblanks": 1, "capture_frames": 9, "span_cycles": 2536960, "high_level_action": "note-on at tick 0"},
@@ -57,6 +59,7 @@ scenarios = {
 if family not in families:
     raise SystemExit(90)
 spec = families[family]
+family_name = spec["family"]
 published = Path(os.environ["MOCK_PUBLISHED"])
 log_path = Path(os.environ["MOCK_LOG"])
 
@@ -119,7 +122,7 @@ def write_capture(prefix, source, trace=None):
             "scenario_span_cycles": span, "scenario_begin_cycle": 0, "scenario_end_cycle": span,
             "scenario_logical_vblanks": contract["logical_vblanks"], "scenario_capture_frames": capture_frames,
             "high_level_action": contract["high_level_action"], "voicegroup_symbol": "voicegroup_fixture", "voice_index": 7,
-            "resolved_type": spec["type"], "family": family, "scenario": scenario, **controls(),
+            "resolved_type": spec["type"], "family": family_name, "scenario": scenario, **controls(),
             "audio_channel_mask": spec["mask"], "mgba_master_volume": 256, "bios_mode": "hle",
             "mgba_commit": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9",
             "mgba_base_revision": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9",
@@ -171,19 +174,26 @@ elif role == "candidate_trace":
         payload = "0" * 64
     decomp = Path(args[0])
     rom_hash = hashlib.sha256((decomp / "pokeemerald-hearth.gba").read_bytes()).hexdigest()
+    elf_hash = hashlib.sha256((decomp / "pokeemerald-hearth.elf").read_bytes()).hexdigest()
     if os.environ.get("MOCK_CANDIDATE_ROM_HASH_MISMATCH") == "1":
         rom_hash = "0" * 64
+    if os.environ.get("MOCK_CANDIDATE_ELF_HASH_MISMATCH") == "1":
+        elf_hash = "0" * 64
+    action_tick_schedule = [True] * contract["logical_vblanks"] + [False]
+    if os.environ.get("MOCK_ACTION_TICK_SCHEDULE_MISMATCH") == "1":
+        action_tick_schedule[-1] = True
     document = {
         "format": "poryaaaa-driver-candidate-trace", "version": 1, "source": "poryaaaa-driver",
         "trace_format": "PORYAAAA_AUDIO_TRACE", "trace_version": 1, "clock_hz": 16777216,
         "trace_begin_cycle": 0, "trace_end_cycle": span,
-        "driver_origin_cycle": 1005 if family == "directsound" else 0,
+        "driver_origin_cycle": 1005 if family_name == "directsound" else 0,
         "logical_vblanks": contract["logical_vblanks"], "capture_frames": capture_frames,
         "capture_span_cycles": span, "high_level_action": contract["high_level_action"],
-        "voicegroup_symbol": "voicegroup_fixture", "voice_index": 7, "family": family, "resolved_type": resolved_type,
+        "action_tick_schedule": action_tick_schedule,
+        "voicegroup_symbol": "voicegroup_fixture", "voice_index": 7, "family": family_name, "resolved_type": resolved_type,
         "tone_data_sha256": tone_hash(), "family_payload_sha256": payload, "scenario": scenario,
-        "trace_sha256": trace_hash, "rom_sha256": rom_hash,
-        "elf_sha256": hashlib.sha256((decomp / "pokeemerald-hearth.elf").read_bytes()).hexdigest(), **controls(),
+        "trace_sha256": trace_hash, "rom_sha256": rom_hash, "elf_sha256": elf_hash,
+        **controls(),
     }
     Path(str(trace) + ".manifest.json").write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
 elif role in {"mgba_replay", "pory_replay"}:
@@ -192,15 +202,15 @@ elif role in {"mgba_replay", "pory_replay"}:
         raise SystemExit(92)
     write_capture(option("--output-prefix"), "mgba-clone" if role == "mgba_replay" else "poryaaaa", trace)
 elif role == "driver_compare":
-    if option("--family") != family:
+    if option("--family") != family_name:
         raise SystemExit(92)
     output = Path(option("--output"))
     transaction = os.environ.get("MOCK_COMPARE_EXIT", "0") == "0"
     output.write_text(json.dumps({
-        "family": family, "transaction_exact": transaction, "payload_exact": True, "logical_state_exact": True,
+        "family": family_name, "transaction_exact": transaction, "payload_exact": True, "logical_state_exact": True,
         "cycle_exact": True, "reference_event_count": 1, "candidate_event_count": 1,
         "first_divergence": None if transaction else {"kind": "transaction", "ordinal": 0},
-        "logical_state_divergence": None, "payload": {"kind": family}, "timing": {},
+        "logical_state_divergence": None, "payload": {"kind": family_name}, "timing": {},
         "hashes": {
             "reference_trace_sha256": hashlib.sha256(Path(args[0]).read_bytes()).hexdigest(),
             "candidate_trace_sha256": hashlib.sha256(Path(args[1]).read_bytes()).hexdigest(),
@@ -313,7 +323,7 @@ class ValidateDriverTest(unittest.TestCase):
                 self.assertNotIn("--solo", recorder)
                 self.assertEqual(self.option(recorder, "--scenario"), "start")
                 comparator = next(call["argv"] for call in calls if call["role"] == "driver_compare")
-                self.assertEqual(self.option(comparator, "--family"), family)
+                self.assertEqual(self.option(comparator, "--family"), spec["family"])
                 replay_calls = [call["argv"] for call in calls if call["role"] in {"mgba_replay", "pory_replay"}]
                 self.assertEqual(len(replay_calls), 4)
                 self.assertTrue(all(self.option(call, "--solo") == spec["solo"] for call in replay_calls))
@@ -321,7 +331,7 @@ class ValidateDriverTest(unittest.TestCase):
                 self.assertEqual(len(native_calls), 3)
                 self.assertTrue(all("--reference-trace" in call and "--candidate-trace" in call for call in native_calls))
                 manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-                self.assertEqual(manifest["family"], family)
+                self.assertEqual(manifest["family"], spec["family"])
                 self.assertEqual(manifest["fixture"]["resolved_type"], spec["type"])
                 self.assertEqual(manifest["status"], "passed")
                 self.assert_artifacts(output)
@@ -339,7 +349,18 @@ class ValidateDriverTest(unittest.TestCase):
                 self.assertEqual(manifest["scenario_timing"]["high_level_action"], expected["high_level_action"])
                 self.assertEqual(manifest["scenario_timing"]["capture_frames"], expected["capture_frames"])
                 self.assertEqual(manifest["scenario_timing"]["span_cycles"], expected["span_cycles"])
+                self.assertEqual(
+                    manifest["scenario_timing"]["action_tick_schedule"],
+                    [True] * expected["logical_vblanks"] + [False],
+                )
                 self.log_path.write_text("", encoding="utf-8")
+
+    def test_final_settled_tick_must_reject_new_actions(self):
+        completed = self.run_validator(MOCK_ACTION_TICK_SCHEDULE_MISMATCH="1")
+
+        self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
+        self.assertFalse(self.output.exists())
+        self.assertEqual([call["role"] for call in self.tool_log()], ["record_voice", "candidate_trace"])
 
     def test_identically_truncated_adapter_windows_fail_before_comparison(self):
         completed = self.run_validator(scenario="retrigger", MOCK_TRUNCATE_SCENARIO="1")
@@ -361,6 +382,13 @@ class ValidateDriverTest(unittest.TestCase):
 
     def test_candidate_rom_pairing_mismatch_fails_before_comparator(self):
         completed = self.run_validator(MOCK_CANDIDATE_ROM_HASH_MISMATCH="1")
+        self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
+        self.assertFalse(self.output.exists())
+        self.assertTrue(self.output.with_name(self.output.name + ".failed").is_dir())
+        self.assertEqual([call["role"] for call in self.tool_log()], ["record_voice", "candidate_trace"])
+
+    def test_candidate_elf_pairing_mismatch_fails_before_comparator(self):
+        completed = self.run_validator(MOCK_CANDIDATE_ELF_HASH_MISMATCH="1")
         self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
         self.assertFalse(self.output.exists())
         self.assertTrue(self.output.with_name(self.output.name + ".failed").is_dir())
