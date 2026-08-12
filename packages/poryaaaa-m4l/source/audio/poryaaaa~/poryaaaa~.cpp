@@ -397,8 +397,7 @@ static void porya_perform64(t_porya* x,
         if (chunk > (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
             chunk = (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
         m4a_advance(x->m4a, (int)chunk);
-        hw_audio_render_events(
-            x->hw, m4a_get_pending_writes(x->m4a), m4a_get_pcm_ring(x->m4a), sL + off, sR + off, (int)chunk);
+        hw_audio_render_events(x->hw, m4a_get_pending_writes(x->m4a), sL + off, sR + off, (int)chunk);
         m4a_consume_writes(x->m4a);
         off += chunk;
         toGo -= chunk;
