@@ -175,7 +175,7 @@ static void test_all_lifecycle_scenarios(void)
     test_scenario_schedule("envelope", 6u, 15u, 4222464u, start, sizeof(start) / sizeof(start[0]));
     test_scenario_schedule("pitch", 4u, 12u, 3379712u, pitch, sizeof(pitch) / sizeof(pitch[0]));
     test_scenario_schedule("volume-pan", 4u, 12u, 3379712u, volume_pan, sizeof(volume_pan) / sizeof(volume_pan[0]));
-    test_scenario_schedule("retrigger", 5u, 13u, 3660800u, retrigger, sizeof(retrigger) / sizeof(retrigger[0]));
+    test_scenario_schedule("retrigger", 5u, 15u, 4222464u, retrigger, sizeof(retrigger) / sizeof(retrigger[0]));
     test_scenario_schedule("release", 6u, 14u, 3941376u, release, sizeof(release) / sizeof(release[0]));
 }
 
