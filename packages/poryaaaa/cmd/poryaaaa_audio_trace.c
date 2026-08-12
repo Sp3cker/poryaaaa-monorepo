@@ -334,10 +334,19 @@ static bool replay_record(void* context, const HwAudioTraceTextRecord* record)
         return false;
     if (replay->pending_sample)
     {
+        bool candidate_batch_write = hw_audio_trace_event_is_cgb_batch_write(&record->event);
+        bool sample_at_event_cycle = record->event.kind == HW_AUDIO_TRACE_SAMPLE;
+        for (size_t index = replay->event_index;
+             candidate_batch_write && !sample_at_event_cycle && index < replay->event_count &&
+             replay->events[index].cycle == record->event.cycle;
+             ++index)
+        {
+            sample_at_event_cycle = replay->events[index].kind == HW_AUDIO_TRACE_SAMPLE;
+        }
         bool reached_observation = replay->pending_sample_has_explicit_deadline
                                        ? record->event.cycle >= replay->pending_sample_deadline
                                        : record->event.cycle > replay->pending_sample_cycle &&
-                                             !hw_audio_trace_event_is_cgb_batch_write(&record->event);
+                                             (!candidate_batch_write || sample_at_event_cycle);
         if (reached_observation && !emit_pending_sample(replay))
             return false;
     }

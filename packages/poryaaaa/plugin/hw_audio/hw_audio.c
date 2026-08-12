@@ -874,10 +874,9 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
             clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
             clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
         }
-        if (((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75 &&
-              !(event->width == 1 && event->address == HW_AUDIO_GBA_IO_BASE + 0x73)) ||
-             event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
-             (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)))
+        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75) ||
+            event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
+            (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0))
             clock_wave = true;
         preapply_wave_bank = event->address == HW_AUDIO_GBA_IO_BASE + 0x70;
         if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x78 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x7D) ||
