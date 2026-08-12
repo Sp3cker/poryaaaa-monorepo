@@ -39,12 +39,42 @@ DRIVER_ORIGIN_CYCLES = {
     "psw": 0,
 }
 SCENARIO_CONTRACTS = {
-    "start": {"logical_vblanks": 1, "high_level_action": "note-on at tick 0"},
-    "envelope": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; sustain through tick 6"},
-    "pitch": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4"},
-    "volume-pan": {"logical_vblanks": 4, "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4"},
-    "retrigger": {"logical_vblanks": 5, "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5"},
-    "release": {"logical_vblanks": 6, "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6"},
+    "start": {
+        "logical_vblanks": 1,
+        "capture_frames": 9,
+        "span_cycles": 2_536_960,
+        "high_level_action": "note-on at tick 0",
+    },
+    "envelope": {
+        "logical_vblanks": 6,
+        "capture_frames": 15,
+        "span_cycles": 4_222_464,
+        "high_level_action": "note-on at tick 0; sustain through tick 6",
+    },
+    "pitch": {
+        "logical_vblanks": 4,
+        "capture_frames": 12,
+        "span_cycles": 3_379_712,
+        "high_level_action": "note-on at tick 0; pitch bend +16 at tick 2; sustain through tick 4",
+    },
+    "volume-pan": {
+        "logical_vblanks": 4,
+        "capture_frames": 12,
+        "span_cycles": 3_379_712,
+        "high_level_action": "note-on at tick 0; volume 32 and pan 127 at tick 2; sustain through tick 4",
+    },
+    "retrigger": {
+        "logical_vblanks": 5,
+        "capture_frames": 15,
+        "span_cycles": 4_222_464,
+        "high_level_action": "note-on at tick 0; note-off at tick 2; note-on at tick 3; sustain through tick 5",
+    },
+    "release": {
+        "logical_vblanks": 6,
+        "capture_frames": 14,
+        "span_cycles": 3_941_376,
+        "high_level_action": "note-on at tick 0; note-off at tick 2; release through tick 6",
+    },
 }
 REQUIRED_GATES = (
     "transaction_exact",
@@ -258,6 +288,8 @@ def validate_scenario(
     capture_frames = require_integer(field(document, capture_frames_field, label), f"{label}.{capture_frames_field}", 1)
     span_cycles = require_integer(field(document, span_cycles_field, label), f"{label}.{span_cycles_field}", 1)
     require_equal(logical_vblanks, contract["logical_vblanks"], f"{label}.{logical_vblanks_field}")
+    require_equal(capture_frames, contract["capture_frames"], f"{label}.{capture_frames_field}")
+    require_equal(span_cycles, contract["span_cycles"], f"{label}.{span_cycles_field}")
     require_equal(require_string(field(document, "high_level_action", label), f"{label}.high_level_action"), contract["high_level_action"], f"{label}.high_level_action")
     return {
         "logical_vblanks": logical_vblanks,
