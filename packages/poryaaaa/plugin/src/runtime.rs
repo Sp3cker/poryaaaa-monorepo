@@ -3,26 +3,60 @@ use crate::process::ProcessRuntime;
 use std::ffi::{CStr, CString};
 use std::ptr::NonNull;
 
-pub(crate) struct EngineHandle {
-    ptr: NonNull<ffi::M4AEngine>,
+struct DriverHandle {
+    ptr: NonNull<ffi::M4ADriver>,
 }
 
-impl EngineHandle {
-    fn new(sample_rate: f32) -> Result<Self, EngineError> {
-        let ptr = unsafe { ffi::m4a_engine_create(sample_rate) };
-        let ptr = NonNull::new(ptr).ok_or(EngineError::EngineCreateFailed { sample_rate })?;
-        Ok(Self { ptr })
+impl DriverHandle {
+    fn new(sample_rate: f32) -> Result<Self, RuntimeError> {
+        let ptr = unsafe { ffi::m4a_driver_create(sample_rate) };
+        let ptr = NonNull::new(ptr).ok_or(RuntimeError::DriverCreateFailed { sample_rate })?;
+        let mut driver = Self { ptr };
+        unsafe {
+            ffi::m4a_driver_set_portamento_enabled(driver.as_mut_ptr(), 1);
+            ffi::m4a_driver_set_pwm_enabled(driver.as_mut_ptr(), 1);
+            ffi::m4a_set_max_pcm_channels(driver.as_mut_ptr(), 5);
+        }
+        Ok(driver)
     }
 
-    fn as_ptr(&mut self) -> *mut ffi::M4AEngine {
+    fn as_const_ptr(&self) -> *const ffi::M4ADriver {
+        self.ptr.as_ptr()
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut ffi::M4ADriver {
         self.ptr.as_ptr()
     }
 }
 
-impl Drop for EngineHandle {
+impl Drop for DriverHandle {
     fn drop(&mut self) {
         unsafe {
-            ffi::m4a_engine_free(self.ptr.as_ptr());
+            ffi::m4a_driver_destroy(self.as_mut_ptr());
+        }
+    }
+}
+
+struct HardwareHandle {
+    ptr: NonNull<ffi::HwAudio>,
+}
+
+impl HardwareHandle {
+    fn new(sample_rate: f32) -> Result<Self, RuntimeError> {
+        let ptr = unsafe { ffi::hw_audio_create(sample_rate) };
+        let ptr = NonNull::new(ptr).ok_or(RuntimeError::HardwareCreateFailed { sample_rate })?;
+        Ok(Self { ptr })
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut ffi::HwAudio {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for HardwareHandle {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::hw_audio_destroy(self.as_mut_ptr());
         }
     }
 }
@@ -32,16 +66,16 @@ pub(crate) struct LoadedVoiceGroupHandle {
 }
 
 impl LoadedVoiceGroupHandle {
-    fn load(project_root: &str, bank: &str) -> Result<Self, EngineError> {
+    fn load(project_root: &str, bank: &str) -> Result<Self, RuntimeError> {
         let project_root_c =
-            CString::new(project_root).map_err(|_| EngineError::InvalidCString {
+            CString::new(project_root).map_err(|_| RuntimeError::InvalidCString {
                 field: "project_root",
             })?;
         let bank_c =
-            CString::new(bank).map_err(|_| EngineError::InvalidCString { field: "bank" })?;
+            CString::new(bank).map_err(|_| RuntimeError::InvalidCString { field: "bank" })?;
         let ptr = unsafe { ffi::voicegroup_load(project_root_c.as_ptr(), bank_c.as_ptr()) };
         let ptr = NonNull::new(ptr)
-            .ok_or_else(|| EngineError::VoicegroupLoadFailed(last_voicegroup_error()))?;
+            .ok_or_else(|| RuntimeError::VoicegroupLoadFailed(last_voicegroup_error()))?;
         Ok(Self { ptr })
     }
 
@@ -59,67 +93,80 @@ impl Drop for LoadedVoiceGroupHandle {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum EngineError {
-    EngineCreateFailed { sample_rate: f32 },
+pub enum RuntimeError {
+    DriverCreateFailed { sample_rate: f32 },
+    HardwareCreateFailed { sample_rate: f32 },
     InvalidCString { field: &'static str },
     VoicegroupLoadFailed(String),
     VoicegroupHasNoVoices,
     ResetFailed,
 }
 
-impl std::fmt::Display for EngineError {
+impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EngineCreateFailed { sample_rate } => {
-                write!(f, "Failed to create engine at sample rate {}", sample_rate)
+            Self::DriverCreateFailed { sample_rate } => {
+                write!(
+                    f,
+                    "Failed to create m4a driver at sample rate {}",
+                    sample_rate
+                )
+            }
+            Self::HardwareCreateFailed { sample_rate } => {
+                write!(
+                    f,
+                    "Failed to create hardware renderer at sample rate {}",
+                    sample_rate
+                )
             }
             Self::InvalidCString { field } => {
                 write!(f, "Field '{}' contains interior NUL byte", field)
             }
             Self::VoicegroupLoadFailed(msg) => write!(f, "Voicegroup load failed: {}", msg),
             Self::VoicegroupHasNoVoices => write!(f, "Loaded voicegroup has no voices"),
-            Self::ResetFailed => write!(f, "Engine reset failed"),
+            Self::ResetFailed => write!(f, "Runtime reset failed"),
         }
     }
 }
 
-impl std::error::Error for EngineError {}
+impl std::error::Error for RuntimeError {}
 
 #[derive(Clone, Copy, PartialEq)]
-pub struct EngineConfig {
+pub struct RuntimeConfig {
     pub sample_rate: f32,
     pub volume: u8,
     pub reverb: u8,
 }
 
-pub struct M4aEngine {
-    pub(crate) engine: Option<EngineHandle>,
-    pub(crate) voicegroup: Option<LoadedVoiceGroupHandle>,
+pub struct M4aRuntime {
+    driver: Option<DriverHandle>,
+    hardware: Option<HardwareHandle>,
+    voicegroup: Option<LoadedVoiceGroupHandle>,
     last_applied_rate: f32,
 }
 
-// SAFETY: M4aEngine wraps raw C pointers, but is owned by a single host/plugin thread
-// at any given time (serialized via `Arc<Mutex<Option<M4aEngine>>>`). Access to the
-// internal pointers is always serialized, and the underlying heap-allocated C engine
-// is address-stable across moves. It does not implement `Sync`.
-unsafe impl Send for M4aEngine {}
+// SAFETY: M4aRuntime owns address-stable native driver and hardware allocations.
+// It is used by a single host/plugin thread at a time through
+// Arc<Mutex<Option<M4aRuntime>>>. It does not implement Sync.
+unsafe impl Send for M4aRuntime {}
 
-impl M4aEngine {
-    pub fn new(config: EngineConfig) -> Result<Self, EngineError> {
-        let engine = EngineHandle::new(config.sample_rate)?;
-        let mut this = Self {
-            engine: Some(engine),
+impl M4aRuntime {
+    pub fn new(config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        let (driver, hardware) = Self::create_native(config.sample_rate)?;
+        let mut runtime = Self {
+            driver: Some(driver),
+            hardware: Some(hardware),
             voicegroup: None,
             last_applied_rate: config.sample_rate,
         };
-        this.set_volume(config.volume);
-        this.set_reverb_amount(config.reverb);
-        Ok(this)
+        runtime.set_volume(config.volume);
+        runtime.set_reverb_amount(config.reverb);
+        Ok(runtime)
     }
 
-    pub fn load_voicegroup(&mut self, project_root: &str, bank: &str) -> Result<(), EngineError> {
+    pub fn load_voicegroup(&mut self, project_root: &str, bank: &str) -> Result<(), RuntimeError> {
         let mut loaded = LoadedVoiceGroupHandle::load(project_root, bank)?;
-        let voices = loaded.voices().ok_or(EngineError::VoicegroupHasNoVoices)?;
+        let voices = loaded.voices().ok_or(RuntimeError::VoicegroupHasNoVoices)?;
         self.bind_voicegroup_ptr(Some(voices));
         self.voicegroup = Some(loaded);
         Ok(())
@@ -130,27 +177,37 @@ impl M4aEngine {
         self.voicegroup = None;
     }
 
-    pub fn reset(&mut self) -> Result<(), EngineError> {
-        let Some(engine) = self.engine.as_mut() else {
-            return Err(EngineError::ResetFailed);
-        };
-        let ok = unsafe { ffi::m4a_engine_reset(engine.as_ptr()) };
-        if ok {
-            self.rebind_loaded_voicegroup();
-            Ok(())
-        } else {
+    pub fn reset(&mut self) -> Result<(), RuntimeError> {
+        if self.driver.is_none() || self.hardware.is_none() {
             self.retire_after_failed_reset();
-            Err(EngineError::ResetFailed)
+            return Err(RuntimeError::ResetFailed);
         }
+
+        self.destroy_native();
+        let (driver, hardware) = match Self::create_native(self.last_applied_rate) {
+            Ok(handles) => handles,
+            Err(_) => {
+                self.retire_after_failed_reset();
+                return Err(RuntimeError::ResetFailed);
+            }
+        };
+        self.driver = Some(driver);
+        self.hardware = Some(hardware);
+        self.rebind_loaded_voicegroup();
+        Ok(())
     }
 
     #[allow(dead_code)]
-    pub fn reconfigure(&mut self, config: EngineConfig) -> Result<(), EngineError> {
-        if self.engine.is_none() || (config.sample_rate - self.last_applied_rate).abs() > 0.001 {
+    pub fn reconfigure(&mut self, config: RuntimeConfig) -> Result<(), RuntimeError> {
+        if self.driver.is_none()
+            || self.hardware.is_none()
+            || (config.sample_rate - self.last_applied_rate).abs() > 0.001
+        {
             self.clear_voicegroup();
-            self.engine = None;
-            let engine = EngineHandle::new(config.sample_rate)?;
-            self.engine = Some(engine);
+            self.destroy_native();
+            let (driver, hardware) = Self::create_native(config.sample_rate)?;
+            self.driver = Some(driver);
+            self.hardware = Some(hardware);
             self.last_applied_rate = config.sample_rate;
         } else {
             self.reset()?;
@@ -161,38 +218,54 @@ impl M4aEngine {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.voicegroup.is_some() && self.engine.is_some()
+        self.voicegroup.is_some() && self.driver.is_some() && self.hardware.is_some()
     }
 
     pub fn set_volume(&mut self, volume: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_set_volume(engine.as_ptr(), volume) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_set_song_volume(driver.as_mut_ptr(), volume) }
         }
     }
 
     pub fn set_reverb_amount(&mut self, amount: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_set_reverb_amount(engine.as_ptr(), amount) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_set_reverb_amount(driver.as_mut_ptr(), amount) }
         }
     }
 
     #[allow(dead_code)]
     pub fn all_notes_off(&mut self, track: i32) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_all_notes_off(engine.as_ptr(), track) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_all_notes_off(driver.as_mut_ptr(), track) }
         }
     }
 
     #[allow(dead_code)]
     pub fn all_sound_off(&mut self) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_all_sound_off(engine.as_ptr()) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_all_sound_off(driver.as_mut_ptr()) }
         }
+    }
+
+    fn create_native(sample_rate: f32) -> Result<(DriverHandle, HardwareHandle), RuntimeError> {
+        let driver = DriverHandle::new(sample_rate)?;
+        let hardware = HardwareHandle::new(sample_rate)?;
+        Ok((driver, hardware))
+    }
+
+    // Hardware must release before its driver. This is also used after a failed
+    // allocation transaction, so each successfully created native allocation has
+    // one owning Rust handle and one corresponding destructor call.
+    fn destroy_native(&mut self) {
+        let hardware = self.hardware.take();
+        let driver = self.driver.take();
+        drop(hardware);
+        drop(driver);
     }
 
     fn retire_after_failed_reset(&mut self) {
         self.clear_voicegroup();
-        self.engine = None;
+        self.destroy_native();
     }
 
     fn rebind_loaded_voicegroup(&mut self) {
@@ -204,73 +277,91 @@ impl M4aEngine {
     }
 
     fn bind_voicegroup_ptr(&mut self, voices: Option<NonNull<ffi::ToneData>>) {
-        if let Some(engine) = self.engine.as_mut() {
+        if let Some(driver) = self.driver.as_mut() {
             unsafe {
-                ffi::m4a_engine_set_voicegroup(
-                    engine.as_ptr(),
+                ffi::m4a_driver_set_voicegroup(
+                    driver.as_mut_ptr(),
                     voices.map_or(std::ptr::null_mut(), NonNull::as_ptr),
                 );
             }
         }
     }
+
+    fn render_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let (Some(driver), Some(hardware)) = (self.driver.as_mut(), self.hardware.as_mut()) else {
+            return;
+        };
+        let frames = i32::try_from(left.len()).expect("driver render chunk fits c_int");
+
+        unsafe {
+            ffi::m4a_advance(driver.as_mut_ptr(), frames);
+            let writes = ffi::m4a_get_pending_writes(driver.as_const_ptr());
+            ffi::hw_audio_render_events(
+                hardware.as_mut_ptr(),
+                writes,
+                left.as_mut_ptr(),
+                right.as_mut_ptr(),
+                frames,
+            );
+            ffi::m4a_consume_writes(driver.as_mut_ptr());
+        }
+    }
 }
 
-impl ProcessRuntime for M4aEngine {
+impl ProcessRuntime for M4aRuntime {
     fn set_tempo_bpm(&mut self, bpm: f64) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_set_tempo_bpm(engine.as_ptr(), bpm) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_set_tempo_bpm(driver.as_mut_ptr(), bpm) }
         }
     }
 
     fn note_on(&mut self, track: i32, key: u8, velocity: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_note_on(engine.as_ptr(), track, key, velocity) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_note_on(driver.as_mut_ptr(), track, key, velocity) }
         }
     }
 
     fn note_off(&mut self, track: i32, key: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_note_off(engine.as_ptr(), track, key) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_note_off(driver.as_mut_ptr(), track, key) }
         }
     }
 
     fn program_change(&mut self, track: i32, program: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_program_change(engine.as_ptr(), track, program) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_program_change(driver.as_mut_ptr(), track, program) }
         }
     }
 
     fn cc(&mut self, track: i32, cc: u8, value: u8) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_cc(engine.as_ptr(), track, cc, value) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_cc(driver.as_mut_ptr(), track, cc, value) }
         }
     }
 
     fn pitch_bend(&mut self, track: i32, bend: i16) {
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe { ffi::m4a_engine_pitch_bend(engine.as_ptr(), track, bend) }
+        if let Some(driver) = self.driver.as_mut() {
+            unsafe { ffi::m4a_pitch_bend(driver.as_mut_ptr(), track, bend) }
         }
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         debug_assert_eq!(left.len(), right.len());
-        let frames = left.len().min(i32::MAX as usize) as i32;
-        if let Some(engine) = self.engine.as_mut() {
-            unsafe {
-                ffi::m4a_engine_process(
-                    engine.as_ptr(),
-                    left.as_mut_ptr(),
-                    right.as_mut_ptr(),
-                    frames,
-                )
-            }
+        let total_frames = left.len().min(right.len());
+        let max_frames = ffi::recommended_max_advance_frames();
+        let mut offset = 0;
+        while offset < total_frames {
+            let end = (offset + max_frames).min(total_frames);
+            self.render_chunk(&mut left[offset..end], &mut right[offset..end]);
+            offset = end;
         }
     }
 }
 
-impl Drop for M4aEngine {
+impl Drop for M4aRuntime {
     fn drop(&mut self) {
         self.clear_voicegroup();
+        self.destroy_native();
     }
 }
 
@@ -294,39 +385,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn engine_reconfigure_and_reset() {
-        let config = EngineConfig {
+    fn runtime_reconfigure_and_reset() {
+        let config = RuntimeConfig {
             sample_rate: 44100.0,
             volume: 100,
             reverb: 10,
         };
-        let mut engine = M4aEngine::new(config).expect("create engine");
-        assert!(!engine.is_ready());
+        let mut runtime = M4aRuntime::new(config).expect("create runtime");
+        assert!(!runtime.is_ready());
 
-        // Reset should succeed when engine exists
-        assert!(engine.reset().is_ok());
+        assert!(runtime.reset().is_ok());
+        assert!(runtime.reconfigure(config).is_ok());
 
-        // Reconfiguring to the same sample rate does not recreate engine
-        assert!(engine.reconfigure(config).is_ok());
-
-        // Reconfiguring to a different sample rate works
-        let new_config = EngineConfig {
+        let new_config = RuntimeConfig {
             sample_rate: 48000.0,
             volume: 120,
             reverb: 20,
         };
-        assert!(engine.reconfigure(new_config).is_ok());
+        assert!(runtime.reconfigure(new_config).is_ok());
     }
 
     #[test]
-    fn failed_reset_retires_engine() {
-        let config = EngineConfig {
+    fn failed_reset_retires_native_handles() {
+        let config = RuntimeConfig {
             sample_rate: 44100.0,
             volume: 100,
             reverb: 10,
         };
-        let mut engine = M4aEngine::new(config).expect("create engine");
-        engine.engine = None; // simulate failure or force retirement
-        assert!(engine.reset().is_err());
+        let mut runtime = M4aRuntime::new(config).expect("create runtime");
+        runtime.driver = None;
+
+        assert!(runtime.reset().is_err());
+        assert!(runtime.driver.is_none());
+        assert!(runtime.hardware.is_none());
     }
 }

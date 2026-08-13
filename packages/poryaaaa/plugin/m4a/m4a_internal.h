@@ -15,8 +15,19 @@ extern "C"
 #endif
 
 #define M4A_MAX_TRACKS 16
-#define M4A_MAX_CGB_CHANNELS 4  /* sq1, sq2, wave, noise */
-#define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
+#define M4A_MAX_CGB_CHANNELS 4 /* sq1, sq2, wave, noise */
+
+#define M4A_MAX_PWM_PATTERN_STEPS 7
+
+    typedef struct
+    {
+        uint8_t numSteps;
+        uint8_t duty[M4A_MAX_PWM_PATTERN_STEPS];
+    } M4APulseWidthModPattern;
+
+    extern const M4APulseWidthModPattern gPulseWidthModPatterns[];
+    extern const uint8_t gNumPulseWidthModPatterns;
+
 /* Layer 1.5 event-queue capacity.  A 2048-frame render at the maximum
  * supported PCM rate emits one TIMER per byte plus FIFO refill writes;
  * leave room for dense CGB writes in that same render span. */
@@ -42,9 +53,9 @@ extern "C"
 #define M4A_CHN_START 0x20
 #define M4A_CHN_IEC 0x04 /* In Echo/pseudo-echo */
 /* Envelope phase ordinals.  Encoded so `status--` walks the envelope
- * forward (ATTACK→DECAY→SUSTAIN→RELEASE), matching v1 m4a_engine.h and
- * pokeemerald m4a_internal.h.  m4a_cgb.c / m4a_pcm.c rely on this
- * ordering when transitioning between phases. */
+ * forward (ATTACK→DECAY→SUSTAIN→RELEASE), matching the ROM driver
+ * ordering.  m4a_cgb.c / m4a_pcm.c rely on this ordering when
+ * transitioning between phases. */
 #define M4A_CHN_ENV_MASK 0x03
 #define M4A_CHN_ENV_RELEASE 0x00
 #define M4A_CHN_ENV_SUSTAIN 0x01
@@ -56,9 +67,8 @@ extern "C"
 #define M4A_MO_VOL 0x2  /* re-emit NRx2 + NRx4-with-trigger */
 #define M4A_MO_DUTY 0x4 /* re-emit square NRx1 duty/length write */
 
-    /* Driver-internal track state.  Shape mirrors v1's M4ATrack so the disasm
-     * comparison path stays clean.  Field set is the minimum needed for Layer 1
-     * (CGB envelope/pitch); PCM-specific fields land in step 2. */
+    /* Driver-internal track state.  Field set is the minimum needed for
+     * CGB envelope/pitch and PCM synthesis. */
     typedef struct
     {
         uint8_t flags;
@@ -92,7 +102,7 @@ extern "C"
         uint8_t pseudoEchoVolume;
         uint8_t pseudoEchoLength;
 
-        /* Legacy facade-only opt-in effect state. */
+        /* Per-track portamento and pulse-width modulation state. */
         uint8_t portamentoDuration;
         uint8_t portamentoPrevKey;
         uint8_t portamentoTargetKey;
@@ -104,8 +114,7 @@ extern "C"
         uint8_t pwmStep;
         uint8_t priority;
 
-        /* xCmd (XCMD-via-MIDI-CC) state.  Two-CC protocol mirrors v1
-         * (plugin/m4a_engine.c:779-796): CC 0x1E sets `extendedCommand`,
+        /* xCmd (XCMD-via-MIDI-CC) state.  CC 0x1E sets `extendedCommand`;
          * CC 0x1D/0x1F appends payload bytes.  When `extendedCommandCount`
          * reaches `xcmd_data_length(extendedCommand)` we apply.  Selector is
          * sticky after apply — only the byte count resets.  See xcmd.md. */
@@ -119,9 +128,8 @@ extern "C"
     } M4ADriverTrack;
 
     /* Driver-internal CGB channel state (one per square 1, square 2, wave,
-     * noise — total 4).  Equivalent to v1's M4ACGBChannel, narrowed to driver
-     * concerns: hardware *runtime* state (phase accum, LFSR, declick) lives in
-     * hw_audio.  This struct is what m4a software ticks. */
+     * noise — total 4).  Hardware runtime state (phase accum, LFSR,
+     * declick) lives in hw_audio.  This struct is what the driver ticks. */
     typedef struct
     {
         uint8_t status;    /* M4A_CHN_* flags */
@@ -160,20 +168,15 @@ extern "C"
 
         int trackIndex;
 
-        /* Retained for the legacy audition stop path.  Wave RAM reloads are
-         * governed solely by loadedWavePointer, which intentionally survives
-         * channel disable like the ROM's currentPointer cache. */
-        bool waveRamPending;
-
         /* Set by m4a_drv_cgb_start and consumed by emit_vol_write.  Wave
          * uses it to limit NR34 trigger to fresh notes; square and noise
          * follow the ROM's trigger-on-volume-write behavior. */
         bool freshStart;
     } M4ADriverCgbChan;
 
-    /* Driver-internal PCM channel state.  Mirrors v1's M4APCMChannel.  All
-     * voice synthesis happens here in software (real m4a's SoundMainRAM);
-     * the hardware FIFOs only ever see the post-mix int8 stream. */
+    /* Driver-internal PCM channel state.  Voice synthesis happens here in
+     * software (the ROM's SoundMainRAM); the hardware FIFOs only receive
+     * the post-mix int8 stream. */
     typedef struct
     {
         uint8_t status; /* M4A_CHN_* flags */
@@ -231,24 +234,19 @@ extern "C"
         M4ADriverXcmdFn xcmd_fn;
         void* xcmd_ctx;
 
-        /* Plugin-level config (mirrored from host/GUI; not yet audible — wired
-         * for §12a's "no shadow state" goal). */
+        /* Direct host configuration. */
         uint8_t song_volume;
         uint8_t master_volume;
         uint8_t reverb_amount;
         bool analog_filter;
         uint8_t max_pcm_channels;
         double tempo_bpm;
-        bool compat_respect_base_midi_key;
-        bool compat_portamento_enabled;
-        bool compat_pwm_enabled;
-        bool compat_pwm_active;
-        bool compat_shadow_note;
-        bool compat_zero_pcm_is_silent;
-        bool compat_skip_pwm_tick;
+        bool portamento_enabled;
+        bool pwm_enabled;
+        bool pwm_active;
 
-        /* m4a tempo accumulator (vblank-clocked).  Fires LFO ticks when tempoC
-         * crosses 150.  Mirrors v1's tempoD/tempoU/tempoI/tempoC. */
+        /* m4a tempo accumulator (vblank-clocked).  Fires LFO ticks when
+         * tempoC crosses 150. */
         uint16_t tempoD;
         uint16_t tempoU;
         uint16_t tempoI;
@@ -320,14 +318,14 @@ extern "C"
          * canonical DMA buffer's duration as the PCM rate changes; the
          * other tap remains one active vblank ahead.
          *
-         * Type is int8 because real m4a's reverb buffer IS the int8 FIFO
-         * buffer (gPcmDmaBuffer) — wet samples are clamped to int8 range
-         * before writeback so future tap reads see the same values that
-         * would have been DMA'd.  v1 uses int8 too (m4a_reverb.c).  An
-         * int16 buffer here would diverge on heavy mixes where pcmMix
-         * temporarily exceeds [-128, 127] before the final clamp-to-int8
-         * stage; the delay line would feed those out-of-range values back
-         * into subsequent reverb sums, drifting from real-hardware behavior. */
+         * Type is int8 because the ROM reverb buffer is the int8 FIFO buffer
+         * (gPcmDmaBuffer) — wet samples are clamped to int8 range before
+         * writeback so future tap reads see the same values that would have
+         * been DMA'd.  An int16 buffer here would diverge on heavy mixes where
+         * pcmMix temporarily exceeds [-128, 127] before the final
+         * clamp-to-int8 stage; the delay line would feed those out-of-range
+         * values back into subsequent reverb sums, drifting from
+         * real-hardware behavior. */
         int8_t reverbBufL[M4A_PCM_MAX_DMA_BUF_SIZE];
         int8_t reverbBufR[M4A_PCM_MAX_DMA_BUF_SIZE];
         uint16_t reverbPos;
@@ -347,18 +345,16 @@ extern "C"
     void m4a_internal_emit_event(M4ADriver* drv, M4ARegId reg, uint32_t value);
 
     /* Run one LFO tempo tick across all tracks.  Called from m4a_main.c's
-     * tempoC-overflow loop.  Mirrors v1's m4a_lfo_tick (m4a_engine.c:870):
-     * each track with mod != 0 and lfoSpeed != 0 advances lfoSpeedC by
-     * lfoSpeed, derives a triangle-wave sample, and folds it into modM.
-     * When modM changes, the track's derived state is recomputed and
+     * tempoC-overflow loop: each track with mod != 0 and lfoSpeed != 0
+     * advances lfoSpeedC, derives a triangle-wave sample, and folds it into
+     * modM.  When modM changes, the track's derived state is recomputed and
      * active CGB / PCM channels on this track are refreshed. */
     void m4a_internal_lfo_tick(M4ADriver* drv);
 
-    /* Legacy facade-only control seams. */
-    void m4a_internal_compat_effects_tick(M4ADriver* drv);
+    /* Per-vblank driver effect scheduling and effect reset helpers. */
+    void m4a_internal_effects_tick(M4ADriver* drv);
     void m4a_internal_reset_portamento(M4ADriver* drv);
     void m4a_internal_disable_pwm(M4ADriver* drv);
-    void m4a_internal_compat_tick(M4ADriver* drv);
 
     /* Recompute every active PCM channel's source step after its mix rate
      * changes.  The next SoundMainRAM event consumes the corrected step. */

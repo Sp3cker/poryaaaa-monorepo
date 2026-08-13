@@ -2,7 +2,7 @@ use crate::{
     editor,
     params::VoicegroupLoadStatus,
     process::{self, ProcessRuntime},
-    runtime::{EngineConfig, M4aEngine},
+    runtime::{M4aRuntime, RuntimeConfig},
     shared_projects_json, PoryaaaaParams, PROGRAM_COUNT,
 };
 use nice_plug::prelude::*;
@@ -21,7 +21,7 @@ pub enum PoryaaaaBackgroundTask {
 
 pub struct PoryaaaaPlugin {
     params: Arc<PoryaaaaParams>,
-    runtime: Arc<Mutex<Option<M4aEngine>>>,
+    runtime: Arc<Mutex<Option<M4aRuntime>>>,
     gui_notifier: PollSubNotifier,
     last_host_tempo_bpm: Option<f64>,
     last_applied_audio_settings: Option<crate::params::AudioSettings>,
@@ -107,7 +107,7 @@ impl PoryaaaaPlugin {
             .lock()
             .expect("runtime lock")
             .as_ref()
-            .is_some_and(M4aEngine::is_ready)
+            .is_some_and(M4aRuntime::is_ready)
     }
 
     /// Lets tests seed persisted params without exposing the production field.
@@ -257,12 +257,12 @@ impl Plugin for PoryaaaaPlugin {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         let audio_settings = self.params.audio_settings();
-        let config = EngineConfig {
+        let config = RuntimeConfig {
             sample_rate: buffer_config.sample_rate,
             volume: audio_settings.volume,
             reverb: audio_settings.reverb,
         };
-        let mut runtime = match M4aEngine::new(config) {
+        let mut runtime = match M4aRuntime::new(config) {
             Ok(runtime) => runtime,
             Err(err) => {
                 self.set_runtime_voicegroup_error(err.to_string());

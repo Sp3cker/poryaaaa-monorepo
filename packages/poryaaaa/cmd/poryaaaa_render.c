@@ -30,8 +30,6 @@
 #    pragma GCC diagnostic pop
 #endif
 
-#include <errno.h>
-#include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,50 +41,13 @@
 #    include <dlfcn.h>
 #endif
 
-#include "m4a_engine.h"
 #include "voicegroup/voicegroup_loader.h"
 
 #include "m4a/m4a_driver.h"
-#include "m4a/m4a_driver_trace.h"
 #include "hw_audio/hw_audio.h"
-#include "hw_audio/hw_audio_trace.h"
 
-static M4ADriver* g_v2_drv;
-static HwAudio* g_v2_hw;
-static M4ADriverTraceWriter* g_driver_trace_writer;
-static bool g_driver_trace_failed;
-
-/* Parse an absolute GBA cycle without accepting a partial or signed value. */
-static bool parse_u64(const char* text, uint64_t* value)
-{
-    if (!text || !text[0] || text[0] == '-')
-        return false;
-    char* end = NULL;
-    errno = 0;
-    unsigned long long parsed = strtoull(text, &end, 10);
-    uint64_t converted = (uint64_t)parsed;
-    if (errno || !end || *end || (unsigned long long)converted != parsed)
-        return false;
-    *value = converted;
-    return true;
-}
-
-/* Convert a host-frame duration to whole GBA cycles without assuming a host rate. */
-static bool host_frames_to_gba_cycles(uint64_t frames, uint32_t sample_rate, uint64_t* cycles)
-{
-    if (!sample_rate || !cycles)
-        return false;
-    uint64_t whole_seconds = frames / sample_rate;
-    uint64_t remainder_frames = frames % sample_rate;
-    if (whole_seconds > UINT64_MAX / M4A_GBA_CYCLES_PER_SECOND)
-        return false;
-    uint64_t whole_cycles = whole_seconds * M4A_GBA_CYCLES_PER_SECOND;
-    uint64_t remainder_cycles = remainder_frames * M4A_GBA_CYCLES_PER_SECOND / sample_rate;
-    if (whole_cycles > UINT64_MAX - remainder_cycles)
-        return false;
-    *cycles = whole_cycles + remainder_cycles;
-    return true;
-}
+static M4ADriver* g_driver;
+static HwAudio* g_hw_audio;
 
 /* ========================================================================
  * WAV writing helpers (matching test_wav_export.c)
@@ -881,7 +842,6 @@ static void print_usage(const char* prog)
             "Output (at least one required):\n"
             "  --output <file.wav>         Write rendered audio to WAV file\n"
             "  --play                      Play audio through computer speakers\n"
-            "  --driver-trace-output <file>  Write exact emitted CGB/control bus events\n"
             "\n"
             "Audio options:\n"
             "  --song-volume <0-127>       Song master volume (default: 127)\n"
@@ -898,8 +858,6 @@ static void print_usage(const char* prog)
             "                                (fadeout occupies the final --fadeout seconds)\n"
             "\n"
             "Capture options:\n"
-            "  --driver-trace-start-cycle <n>  Absolute GBA BEGIN cycle (default: 0);\n"
-            "                                   trace output requires --sample-rate 65536\n"
             "  --solo <name>               Render only one channel/group; matches the\n"
             "                              patched mGBA capture tool's --solo names so\n"
             "                              the same name selects the same channel on\n"
@@ -916,8 +874,8 @@ static void print_usage(const char* prog)
             prog);
 }
 
-/* Dispatch one RenderEvent to the engine */
-static void dispatch_event(M4AEngine* engine, const RenderEvent* ev, int useTrackIndex)
+/* Dispatch one RenderEvent to the driver */
+static void dispatch_event(const RenderEvent* ev, int useTrackIndex)
 {
     /* For Type 1 MIDIs, use the SMF track number as the engine track index
      * so that tracks sharing the same MIDI channel get separate engine tracks.
@@ -929,38 +887,32 @@ static void dispatch_event(M4AEngine* engine, const RenderEvent* ev, int useTrac
     case RENDER_EVENT_TEMPO:
     {
         double bpm = (double)((uint16_t)ev->data0 | ((uint16_t)ev->data1 << 8));
-        m4a_engine_set_tempo_bpm(engine, bpm);
-        m4a_set_tempo_bpm(g_v2_drv, bpm);
+        m4a_set_tempo_bpm(g_driver, bpm);
         break;
     }
     case 0x8: /* Note Off */
-        m4a_engine_note_off(engine, trackIdx, ev->data0);
-        m4a_note_off(g_v2_drv, trackIdx, ev->data0);
+        m4a_note_off(g_driver, trackIdx, ev->data0);
         break;
     case 0x9: /* Note On */
-        m4a_engine_note_on(engine, trackIdx, ev->data0, ev->data1);
-        m4a_note_on(g_v2_drv, trackIdx, ev->data0, ev->data1);
+        m4a_note_on(g_driver, trackIdx, ev->data0, ev->data1);
         break;
     case 0xB: /* Control Change */
-        m4a_engine_cc(engine, trackIdx, ev->data0, ev->data1);
-        m4a_cc(g_v2_drv, trackIdx, ev->data0, ev->data1);
+        m4a_cc(g_driver, trackIdx, ev->data0, ev->data1);
         break;
     case 0xC: /* Program Change */
-        m4a_engine_program_change(engine, trackIdx, ev->data0);
-        m4a_program_change(g_v2_drv, trackIdx, ev->data0);
+        m4a_program_change(g_driver, trackIdx, ev->data0);
         break;
     case 0xE: /* Pitch Bend — convert MIDI 14-bit unsigned to signed -8192..+8191 */
     {
         int16_t bend = (int16_t)(((int)(ev->data1 << 7) | ev->data0) - 8192);
-        m4a_engine_pitch_bend(engine, trackIdx, bend);
-        m4a_pitch_bend(g_v2_drv, trackIdx, bend);
+        m4a_pitch_bend(g_driver, trackIdx, bend);
         break;
     }
     }
 }
 
 /* Render a block of frames, chunked to fit in int. */
-static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t startSample, uint64_t frameCount)
+static void render_frames(float* outL, float* outR, uint64_t startSample, uint64_t frameCount)
 {
     uint64_t remaining = frameCount;
     uint64_t pos = startSample;
@@ -971,17 +923,11 @@ static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t 
          * overflows — see m4a_driver.h on M4A_RECOMMENDED_MAX_ADVANCE_FRAMES. */
         uint64_t cap = (uint64_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
         int chunk = (remaining > cap) ? (int)cap : (int)remaining;
-        (void)engine;
-        m4a_advance(g_v2_drv, chunk);
-        const M4ARegWriteBatch* writes = m4a_get_pending_writes(g_v2_drv);
-        if (g_driver_trace_writer && !g_driver_trace_failed &&
-            !m4a_driver_trace_write_batch(g_driver_trace_writer, writes))
-        {
-            g_driver_trace_failed = true;
-        }
+        m4a_advance(g_driver, chunk);
+        const M4ARegWriteBatch* writes = m4a_get_pending_writes(g_driver);
         if (outL && outR)
-            hw_audio_render_events(g_v2_hw, writes, outL + pos, outR + pos, chunk);
-        m4a_consume_writes(g_v2_drv);
+            hw_audio_render_events(g_hw_audio, writes, outL + pos, outR + pos, chunk);
+        m4a_consume_writes(g_driver);
         pos += (uint64_t)chunk;
         remaining -= (uint64_t)chunk;
     }
@@ -999,8 +945,6 @@ int main(int argc, char* argv[])
     const char* vgName = argv[2];
     const char* midiPath = NULL;
     const char* outputPath = NULL;
-    const char* driverTracePath = NULL;
-    uint64_t driverTraceStartCycle = 0;
     bool doPlay = false;
     int songVolume = 127;
     int reverbAmount = 0;
@@ -1022,18 +966,6 @@ int main(int argc, char* argv[])
         else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc)
         {
             outputPath = argv[++i];
-        }
-        else if (strcmp(argv[i], "--driver-trace-output") == 0 && i + 1 < argc)
-        {
-            driverTracePath = argv[++i];
-        }
-        else if (strcmp(argv[i], "--driver-trace-start-cycle") == 0 && i + 1 < argc)
-        {
-            if (!parse_u64(argv[++i], &driverTraceStartCycle))
-            {
-                fprintf(stderr, "Error: --driver-trace-start-cycle must be an unsigned 64-bit cycle\n");
-                return 1;
-            }
         }
         else if (strcmp(argv[i], "--play") == 0)
         {
@@ -1060,8 +992,8 @@ int main(int argc, char* argv[])
             maxChannels = atoi(argv[++i]);
             if (maxChannels < 1)
                 maxChannels = 1;
-            if (maxChannels > MAX_PCM_CHANNELS)
-                maxChannels = MAX_PCM_CHANNELS;
+            if (maxChannels > M4A_MAX_PCM_CHANNELS)
+                maxChannels = M4A_MAX_PCM_CHANNELS;
         }
         else if (strcmp(argv[i], "--cgb-only") == 0)
         {
@@ -1115,20 +1047,10 @@ int main(int argc, char* argv[])
         print_usage(argv[0]);
         return 1;
     }
-    if (!outputPath && !doPlay && !driverTracePath)
+    if (!outputPath && !doPlay)
     {
-        fprintf(stderr, "Error: at least one of --output, --play, or --driver-trace-output is required\n\n");
+        fprintf(stderr, "Error: at least one of --output or --play is required\n\n");
         print_usage(argv[0]);
-        return 1;
-    }
-    if (driverTracePath && outputPath && strcmp(driverTracePath, outputPath) == 0)
-    {
-        fprintf(stderr, "Error: --driver-trace-output and --output must name different files\n");
-        return 1;
-    }
-    if (driverTracePath && outputPath && strcmp(driverTracePath, outputPath) == 0)
-    {
-        fprintf(stderr, "Error: --driver-trace-output and --output must name different files\n");
         return 1;
     }
 
@@ -1281,18 +1203,6 @@ int main(int argc, char* argv[])
         renderEvts = events->events;
         renderEvtCount = events->count;
     }
-    uint64_t driverTraceDurationCycles = 0;
-    if (driverTracePath &&
-        (totalSamples == 0u ||
-         !host_frames_to_gba_cycles(totalSamples, (uint32_t)sampleRateHz, &driverTraceDurationCycles) ||
-         driverTraceDurationCycles > UINT64_MAX - driverTraceStartCycle))
-    {
-        fprintf(stderr, "Error: driver trace interval exceeds the GBA cycle range\n");
-        free(extEvts);
-        free(events->events);
-        free(events);
-        return 1;
-    }
 
     printf(
         "  Total render: %.2f s (%llu samples)\n", (double)totalSamples / sampleRate, (unsigned long long)totalSamples);
@@ -1327,26 +1237,17 @@ int main(int argc, char* argv[])
     }
     printf("Voicegroup loaded successfully.\n");
 
-    /* ---- Initialize engine ---- */
-    M4AEngine engine;
-    if (!m4a_engine_init(&engine, (float)sampleRate))
-    {
-        fprintf(stderr, "Failed to initialize M4A engine\n");
-        voicegroup_free(vg);
-        free(extEvts);
-        free(events->events);
-        free(events);
-        return 1;
-    }
+    /* ---- Initialize audio runtime ---- */
     const bool renderAudio = outputPath || doPlay;
-    g_v2_drv = m4a_driver_create((float)sampleRate);
-    g_v2_hw = renderAudio ? hw_audio_create((float)sampleRate) : NULL;
-    if (!g_v2_drv || (renderAudio && !g_v2_hw))
+    g_driver = m4a_driver_create((float)sampleRate);
+    g_hw_audio = renderAudio ? hw_audio_create((float)sampleRate) : NULL;
+    if (!g_driver || (renderAudio && !g_hw_audio))
     {
-        fprintf(stderr, "Failed to initialize M4A driver trace path\n");
-        hw_audio_destroy(g_v2_hw);
-        m4a_driver_destroy(g_v2_drv);
-        m4a_engine_destroy(&engine);
+        fprintf(stderr, "Failed to initialize M4A audio runtime\n");
+        hw_audio_destroy(g_hw_audio);
+        g_hw_audio = NULL;
+        m4a_driver_destroy(g_driver);
+        g_driver = NULL;
         voicegroup_free(vg);
         free(extEvts);
         free(events->events);
@@ -1360,24 +1261,28 @@ int main(int argc, char* argv[])
         {
             fprintf(stderr, "Error: --solo: unknown channel name '%s'\n\n", soloName);
             print_usage(argv[0]);
+            hw_audio_destroy(g_hw_audio);
+            g_hw_audio = NULL;
+            m4a_driver_destroy(g_driver);
+            g_driver = NULL;
+            voicegroup_free(vg);
+            free(extEvts);
+            free(events->events);
+            free(events);
             return 1;
         }
-        if (g_v2_hw)
+        if (g_hw_audio)
         {
-            hw_audio_set_solo_mask(g_v2_hw, mask);
+            hw_audio_set_solo_mask(g_hw_audio, mask);
             printf("Solo mask: %s (0x%02X)\n", soloName, (unsigned)mask);
         }
     }
-    m4a_engine_set_voicegroup(&engine, vg->voices);
-    m4a_engine_set_song_volume(&engine, (uint8_t)songVolume);
+    m4a_driver_set_voicegroup(g_driver, vg->voices);
+    m4a_set_song_volume(g_driver, (uint8_t)songVolume);
     /* MIDI default tempo is 120 BPM until a Set Tempo event applies. */
-    m4a_engine_set_tempo_bpm(&engine, 120.0);
-    m4a_driver_set_voicegroup(g_v2_drv, vg->voices);
-    m4a_set_song_volume(g_v2_drv, (uint8_t)songVolume);
-    m4a_set_tempo_bpm(g_v2_drv, 120.0);
-    m4a_engine_set_reverb_amount(&engine, (uint8_t)reverbAmount);
-    m4a_set_reverb_amount(g_v2_drv, (uint8_t)reverbAmount);
-    m4a_set_max_pcm_channels(g_v2_drv, cgbOnly ? 0 : (uint8_t)maxChannels);
+    m4a_set_tempo_bpm(g_driver, 120.0);
+    m4a_set_reverb_amount(g_driver, (uint8_t)reverbAmount);
+    m4a_set_max_pcm_channels(g_driver, cgbOnly ? 0 : (uint8_t)maxChannels);
 
     /* ---- Allocate output buffers only when audio is requested ---- */
     float* outL = NULL;
@@ -1392,53 +1297,16 @@ int main(int argc, char* argv[])
                 stderr, "Out of memory allocating audio buffers (%llu samples)\n", (unsigned long long)totalSamples);
             free(outL);
             free(outR);
-            m4a_engine_destroy(&engine);
-            m4a_driver_destroy(g_v2_drv);
-            g_v2_drv = NULL;
-            hw_audio_destroy(g_v2_hw);
-            g_v2_hw = NULL;
+            hw_audio_destroy(g_hw_audio);
+            g_hw_audio = NULL;
+            m4a_driver_destroy(g_driver);
+            g_driver = NULL;
             voicegroup_free(vg);
             free(extEvts);
             free(events->events);
             free(events);
             return 1;
         }
-    }
-
-    M4ADriverTraceWriter driverTrace = {0};
-    FILE* driverTraceOutput = NULL;
-    g_driver_trace_writer = NULL;
-    g_driver_trace_failed = false;
-    if (driverTracePath)
-    {
-        driverTraceOutput = fopen(driverTracePath, "wb");
-        uint64_t driverTraceEndCycle = driverTraceStartCycle + driverTraceDurationCycles;
-        const M4ARegisterFile* registers = m4a_get_register_file(g_v2_drv);
-        uint16_t soundcntL =
-            (uint16_t)(((uint16_t)registers->master_vol_left << 4u) | registers->master_vol_right |
-                       ((uint16_t)registers->pan_mask_left << 12u) | ((uint16_t)registers->pan_mask_right << 8u));
-        if (!driverTraceOutput || !m4a_driver_set_initial_cycle(g_v2_drv, driverTraceStartCycle) ||
-            !m4a_driver_trace_begin(
-                &driverTrace, driverTraceOutput, driverTraceStartCycle, driverTraceEndCycle, soundcntL))
-        {
-            fprintf(stderr, "Could not create driver trace '%s': %s\n", driverTracePath, strerror(errno));
-            if (driverTraceOutput)
-                fclose(driverTraceOutput);
-            remove(driverTracePath);
-            free(outL);
-            free(outR);
-            m4a_engine_destroy(&engine);
-            m4a_driver_destroy(g_v2_drv);
-            g_v2_drv = NULL;
-            hw_audio_destroy(g_v2_hw);
-            g_v2_hw = NULL;
-            voicegroup_free(vg);
-            free(extEvts);
-            free(events->events);
-            free(events);
-            return 1;
-        }
-        g_driver_trace_writer = &driverTrace;
     }
 
     /* ---- Rendering loop ---- */
@@ -1455,15 +1323,15 @@ int main(int argc, char* argv[])
 
         /* Render audio up to this event */
         if (ev->samplePos > samplePos)
-            render_frames(&engine, outL, outR, samplePos, ev->samplePos - samplePos);
+            render_frames(outL, outR, samplePos, ev->samplePos - samplePos);
 
         samplePos = ev->samplePos;
-        dispatch_event(&engine, ev, useTrackIndex);
+        dispatch_event(ev, useTrackIndex);
     }
 
     /* Render remaining frames (tail / fadeout section) */
     if (samplePos < totalSamples)
-        render_frames(&engine, outL, outR, samplePos, totalSamples - samplePos);
+        render_frames(outL, outR, samplePos, totalSamples - samplePos);
 
     /* ---- Apply fadeout envelope ---- */
     if (outL && outR && fadeStartSample != UINT64_MAX && fadeStartSample < totalSamples)
@@ -1475,27 +1343,6 @@ int main(int argc, char* argv[])
             outL[fadeStartSample + i] *= gain;
             outR[fadeStartSample + i] *= gain;
         }
-    }
-
-    bool driverTraceOk = true;
-    if (g_driver_trace_writer)
-    {
-        bool traceFinished = !g_driver_trace_failed && m4a_driver_trace_end(g_driver_trace_writer);
-        bool traceClosed = fclose(driverTraceOutput) == 0;
-        if (!traceFinished || !traceClosed)
-        {
-            fprintf(stderr, "Could not finish driver trace '%s'\n", driverTracePath);
-            remove(driverTracePath);
-            driverTraceOk = false;
-        }
-        else
-        {
-            printf("Driver trace written to %s\n", driverTracePath);
-            fprintf(stderr,
-                    "Driver trace begins after setup: defaults/configuration not emitted through M4ARegWriteBatch are "
-                    "excluded\n");
-        }
-        g_driver_trace_writer = NULL;
     }
 
     printf("Rendering complete.\n");
@@ -1574,15 +1421,14 @@ int main(int argc, char* argv[])
     /* ---- Cleanup ---- */
     free(outL);
     free(outR);
-    m4a_engine_destroy(&engine);
-    m4a_driver_destroy(g_v2_drv);
-    g_v2_drv = NULL;
-    hw_audio_destroy(g_v2_hw);
-    g_v2_hw = NULL;
+    hw_audio_destroy(g_hw_audio);
+    g_hw_audio = NULL;
+    m4a_driver_destroy(g_driver);
+    g_driver = NULL;
     voicegroup_free(vg);
     free(extEvts);
     free(events->events);
     free(events);
 
-    return driverTraceOk ? 0 : 1;
+    return 0;
 }

@@ -93,32 +93,30 @@ extern "C"
     void hw_audio_set_solo_mask(HwAudio* hw, uint32_t mask);
     uint32_t hw_audio_get_solo_mask(const HwAudio* hw);
 
-    /* LEGACY SNAPSHOT API — superseded by hw_audio_render_events() at
-     * Layer 1.5 (§12 step 3, closed).  No production v2 caller routes
-     * through this function.  It is retained as a no-render trigger-
-     * consumption path for any caller that hasn't migrated: writes zeros
-     * to outL/outR; clears trigger_sq1/sq2/wave/noise on the mutable
-     * register file (see HW_AUDIO_SCAFFOLD_PLAN.md §6a).  Will be removed
-     * once the scaffold-era integration tests migrate to the event API.
+    /* Snapshot render path. Production callers use
+     * hw_audio_render_events(). This function writes zeroes to outL/outR and
+     * consumes the snapshot's trigger_sq1/sq2/wave/noise latches.
      *
-     * `regs` is non-const so the trigger latches can be cleared.  Pass
-     * via m4a_get_register_file_mut(drv); m4a_get_register_file() remains
-     * const for non-timing consumers. */
+     * `regs` is non-const because trigger consumption clears those latches.
+     * Pass it via m4a_get_register_file_mut(drv); non-timing consumers use
+     * m4a_get_register_file(). */
     void
     hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames);
 
-    /* Cycle-domain production API.  `events` carries an explicit absolute
-     * [begin_cycle, end_cycle] interval.  The renderer advances chip state
-     * to every ordered event cycle before applying it; `frames` only sizes
-     * the public host output buffer and never timestamps a register write.
+    /* Cycle-domain production API. Direct runtimes own paired M4ADriver and
+     * HwAudio instances. `events` carries an explicit absolute [begin_cycle,
+     * end_cycle] interval. The renderer advances chip state to every ordered
+     * event cycle before applying it; `frames` only sizes the public host
+     * output buffer and never timestamps a register write.
      *
-     * Caller convention:
-     *   1. m4a_advance(drv, frames)             // queue cycle events
-     *   2. hw_audio_render_events(...)          // render batch interval
-     *   3. m4a_consume_writes(drv)              // begin next interval
+     * Canonical direct-render sequence:
+     *   1. m4a_advance(drv, frames)              // queue cycle writes
+     *   2. m4a_get_pending_writes(drv)           // obtain that write batch
+     *   3. hw_audio_render_events(...)           // render the batch interval
+     *   4. m4a_consume_writes(drv)               // begin the next interval
      *
-     * The register snapshot is observable for UI/debug only; hardware
-     * timing consumes the ordered event stream. */
+     * The register snapshot is observable for UI/debug only; hardware timing
+     * consumes the ordered event stream. */
     void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* outL, float* outR, int frames);
 
 #ifdef __cplusplus

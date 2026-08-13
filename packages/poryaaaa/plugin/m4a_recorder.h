@@ -1,5 +1,5 @@
-#ifndef M4A_ENGINE_RECORDER_H
-#define M4A_ENGINE_RECORDER_H
+#ifndef M4A_RECORDER_H
+#define M4A_RECORDER_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,4 +34,4 @@ class RecorderCore;
 ccomidi::RecorderCore* m4a_recorder_core(M4ARecorder* recorder);
 #endif
 
-#endif /* M4A_ENGINE_RECORDER_H */
+#endif /* M4A_RECORDER_H */

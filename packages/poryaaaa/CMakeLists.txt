@@ -156,22 +156,19 @@ endif()
 add_subdirectory(plugin/voicegroup)
 
 # ---- Recorder (MIDI capture + SMF writer) ----
-# Vendored from the old ccomidi_recorder.clap project.  Pure C++23.
-# Engine will own a RecorderCore instance; M4L wrapper consumes it via
-# the engine accessor.  See recorder integration plan.md.
+# Pure C++23. The CLAP plugin owns an M4ARecorder; the M4L external has a
+# separate capture path. See recorder integration plan.md.
 add_subdirectory(plugin/recorder)
 
-# ---- v2 audio engine: m4a software driver + hw_audio chip emulation ----
+# Trace capture/replay is a developer toolchain, never part of the shipping
+# plugin, normal renderer, or default unit-test graph.
+option(PORYAAAA_BUILD_TRACE_TOOLS "Build audio trace capture and replay tools" OFF)
+enable_testing()
+
+# ---- Direct audio runtime libraries: M4ADriver + HwAudio ----
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
-# ---- Porydaw-compatible static engine core ----
-add_subdirectory(plugin/porydaw)
-
-# m4a audio engine sources (shared between plugin, renderer, tests).
-set(ENGINE_SOURCES
-    plugin/m4a_engine.c
-)
 
 # ---- CLAP Plugin ----
 set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
@@ -179,11 +176,10 @@ set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
     ${PUGL_SOURCES}
 )
@@ -197,11 +193,10 @@ endif()
 poryaaaa_enable_project_source_warnings(
     plugin/m4a_plugin.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
 )
 
 target_include_directories(poryaaaa PRIVATE
@@ -291,7 +286,6 @@ endif()
 # ---- WAV Export Test ----
 add_executable(poryaaaa_test
     test/test_wav_export.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_test)
 poryaaaa_enable_project_warnings(poryaaaa_test)
@@ -308,7 +302,6 @@ endif()
 # ---- CLI Renderer ----
 add_executable(poryaaaa_render
     cmd/poryaaaa_render.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_render)
 poryaaaa_enable_project_warnings(poryaaaa_render)
@@ -329,67 +322,45 @@ if(WIN32)
     endif()
 endif()
 
-# ---- Cycle-domain native audio trace recorder ----
-add_executable(poryaaaa_audio_trace
-    cmd/poryaaaa_audio_trace.c
-)
-poryaaaa_enable_project_warnings(poryaaaa_audio_trace)
-target_include_directories(poryaaaa_audio_trace PRIVATE plugin)
-target_link_libraries(poryaaaa_audio_trace PRIVATE hw_audio)
-if(NOT MSVC)
-    target_link_libraries(poryaaaa_audio_trace PRIVATE m)
-endif()
+if(PORYAAAA_BUILD_TRACE_TOOLS)
+    # ---- Cycle-domain native audio trace recorder ----
+    add_executable(poryaaaa_audio_trace
+        cmd/poryaaaa_audio_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_audio_trace)
+    target_include_directories(poryaaaa_audio_trace PRIVATE plugin)
+    target_link_libraries(poryaaaa_audio_trace PRIVATE poryaaaa_hw_audio_trace_tool)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_audio_trace PRIVATE m)
+    endif()
 
-# ---- Driver lifecycle candidate trace ----
-# Loads one supported voicegroup slot, derives its hardware family from
-# ToneData, drives one fixed lifecycle, and serializes its pending bus events.
-add_executable(poryaaaa_driver_trace
-    cmd/poryaaaa_driver_trace.c
-)
-poryaaaa_enable_project_warnings(poryaaaa_driver_trace)
-target_include_directories(poryaaaa_driver_trace PRIVATE plugin)
-target_link_libraries(poryaaaa_driver_trace PRIVATE m4a_driver voicegroup_loader)
-if(NOT MSVC)
-    target_link_libraries(poryaaaa_driver_trace PRIVATE m)
-endif()
+    # ---- Driver lifecycle candidate trace ----
+    # Loads one supported voicegroup slot, derives its hardware family from
+    # ToneData, drives one fixed lifecycle, and serializes its pending bus events.
+    add_executable(poryaaaa_driver_trace
+        cmd/poryaaaa_driver_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_driver_trace)
+    target_include_directories(poryaaaa_driver_trace PRIVATE plugin)
+    target_link_libraries(poryaaaa_driver_trace PRIVATE m4a_driver poryaaaa_m4a_trace_writer voicegroup_loader)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_driver_trace PRIVATE m)
+    endif()
 
-# ---- Driver lifecycle candidate controls and manifest identity ----
-add_executable(poryaaaa_driver_scenario_controls_tests
-    test/test_driver_scenario_controls.c
-)
-poryaaaa_enable_project_warnings(poryaaaa_driver_scenario_controls_tests)
-target_include_directories(poryaaaa_driver_scenario_controls_tests PRIVATE plugin test)
-target_link_libraries(poryaaaa_driver_scenario_controls_tests PRIVATE m4a_driver voicegroup_loader)
-if(NOT MSVC)
-    target_link_libraries(poryaaaa_driver_scenario_controls_tests PRIVATE m)
-endif()
 
-# ---- Focused native audio trace tests ----
-add_executable(poryaaaa_hw_audio_trace_tests
-    test/test_hw_audio_trace.c
-)
-poryaaaa_enable_project_warnings(poryaaaa_hw_audio_trace_tests)
-target_compile_definitions(poryaaaa_hw_audio_trace_tests PRIVATE
-    PORYAAAA_HW_AUDIO_TRACE_TEST_MAIN=1
-)
-target_include_directories(poryaaaa_hw_audio_trace_tests PRIVATE plugin test)
-target_link_libraries(poryaaaa_hw_audio_trace_tests PRIVATE hw_audio)
-if(NOT MSVC)
-    target_link_libraries(poryaaaa_hw_audio_trace_tests PRIVATE m)
-endif()
-
-# ---- Focused native audio trace contract tests ----
-add_executable(poryaaaa_hw_audio_trace_contract_tests
-    test/test_hw_audio_trace_contracts.c
-)
-poryaaaa_enable_project_warnings(poryaaaa_hw_audio_trace_contract_tests)
-target_compile_definitions(poryaaaa_hw_audio_trace_contract_tests PRIVATE
-    PORYAAAA_HW_AUDIO_TRACE_CONTRACTS_TEST_MAIN=1
-)
-target_include_directories(poryaaaa_hw_audio_trace_contract_tests PRIVATE plugin test)
-target_link_libraries(poryaaaa_hw_audio_trace_contract_tests PRIVATE hw_audio)
-if(NOT MSVC)
-    target_link_libraries(poryaaaa_hw_audio_trace_contract_tests PRIVATE m)
+    # ---- Retained trace-tool smoke ----
+    add_executable(poryaaaa_audio_trace_tool_tests
+        test/test_hw_audio_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_audio_trace_tool_tests)
+    target_compile_definitions(poryaaaa_audio_trace_tool_tests PRIVATE
+        PORYAAAA_HW_AUDIO_TRACE_TEST_MAIN=1
+    )
+    target_include_directories(poryaaaa_audio_trace_tool_tests PRIVATE plugin test)
+    target_link_libraries(poryaaaa_audio_trace_tool_tests PRIVATE poryaaaa_hw_audio_trace_tool)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_audio_trace_tool_tests PRIVATE m)
+    endif()
 endif()
 
 # ---- Full mGBA MP2K reference recorder ----
@@ -407,6 +378,7 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
     )
     set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD 11)
     set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD_REQUIRED ON)
+    target_include_directories(mgba_mp2k_reference PRIVATE plugin)
     poryaaaa_enable_project_warnings(mgba_mp2k_reference)
     get_target_property(_mgba_recorder_compile_options mgba_mp2k_reference COMPILE_OPTIONS)
     if(_mgba_recorder_compile_options STREQUAL "_mgba_recorder_compile_options-NOTFOUND")
@@ -501,35 +473,38 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
         if(NOT TARGET mgba)
             message(FATAL_ERROR "Pinned mGBA source did not define the mgba library target")
         endif()
-        add_executable(mgba_audio_trace_replay
-            tools/mgba-reference/mgba_audio_trace_replay.c
-        )
-        set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD 11)
-        set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD_REQUIRED ON)
-        poryaaaa_enable_project_warnings(mgba_audio_trace_replay)
-        get_target_property(_mgba_replay_compile_options mgba_audio_trace_replay COMPILE_OPTIONS)
-        if(_mgba_replay_compile_options STREQUAL "_mgba_replay_compile_options-NOTFOUND")
-            set(_mgba_replay_compile_options)
-        endif()
-        string(JOIN " " _mgba_replay_compiler_flags
-            "${CMAKE_C_FLAGS}" ${_mgba_replay_compile_options})
-        string(REPLACE ";" " " _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
-        string(REPLACE "\"" "\\\"" _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
-        target_compile_definitions(mgba_audio_trace_replay PRIVATE ENABLE_VFS=1)
-        target_link_libraries(mgba_audio_trace_replay PRIVATE mgba)
-        # The replay adapter reads internal mGBA state, so its feature layout
-        # must match the linked mGBA target exactly.
-        target_compile_definitions(mgba_audio_trace_replay PRIVATE
-            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>"
-            "PORYAAAA_MGBA_REPLAY_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
-            "PORYAAAA_MGBA_REPLAY_COMPILE_FLAGS=\"${_mgba_replay_compiler_flags}\""
-            PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
-            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
-            PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
-            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
-            PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
-        if(NOT MSVC)
-            target_link_libraries(mgba_audio_trace_replay PRIVATE m)
+        if(PORYAAAA_BUILD_TRACE_TOOLS)
+            add_executable(mgba_audio_trace_replay
+                tools/mgba-reference/mgba_audio_trace_replay.c
+            )
+            set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD 11)
+            set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD_REQUIRED ON)
+            poryaaaa_enable_project_warnings(mgba_audio_trace_replay)
+            target_include_directories(mgba_audio_trace_replay PRIVATE plugin)
+            get_target_property(_mgba_replay_compile_options mgba_audio_trace_replay COMPILE_OPTIONS)
+            if(_mgba_replay_compile_options STREQUAL "_mgba_replay_compile_options-NOTFOUND")
+                set(_mgba_replay_compile_options)
+            endif()
+            string(JOIN " " _mgba_replay_compiler_flags
+                "${CMAKE_C_FLAGS}" ${_mgba_replay_compile_options})
+            string(REPLACE ";" " " _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
+            string(REPLACE "\"" "\\\"" _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
+            target_compile_definitions(mgba_audio_trace_replay PRIVATE ENABLE_VFS=1)
+            target_link_libraries(mgba_audio_trace_replay PRIVATE mgba)
+            # The replay adapter reads internal mGBA state, so its feature layout
+            # must match the linked mGBA target exactly.
+            target_compile_definitions(mgba_audio_trace_replay PRIVATE
+                "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>"
+                "PORYAAAA_MGBA_REPLAY_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
+                "PORYAAAA_MGBA_REPLAY_COMPILE_FLAGS=\"${_mgba_replay_compiler_flags}\""
+                PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
+                PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
+                PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
+                PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
+                PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
+            if(NOT MSVC)
+                target_link_libraries(mgba_audio_trace_replay PRIVATE m)
+            endif()
         endif()
 
         # ---- Direct pinned mGBA frontend parity harness ----
@@ -668,14 +643,12 @@ add_executable(poryaaaa_unit_tests
     test/test_m4a_v2.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
-    test/test_hw_audio_trace.c
-    test/test_hw_audio_trace_contracts.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
+    test/test_hw_audio_contracts.c
     ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
-    ${ENGINE_SOURCES}
 )
 target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
@@ -701,8 +674,7 @@ endif()
 # ---- Engine lifecycle/leak harness ----
 add_executable(poryaaaa_engine_lifecycle
     test/test_engine_lifecycle.c
-    plugin/m4a_engine_recorder.cpp
-    ${ENGINE_SOURCES}
+    plugin/m4a_recorder.cpp
 )
 target_compile_features(poryaaaa_engine_lifecycle PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_engine_lifecycle)
@@ -717,10 +689,69 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_engine_lifecycle PRIVATE m)
 endif()
 
-# ---- v2 link wiring ----
+# ---- Direct runtime link wiring: M4ADriver + HwAudio ----
 set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
                          poryaaaa_unit_tests poryaaaa_engine_lifecycle)
 
 foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
     target_link_libraries(${_tgt} PRIVATE m4a_driver hw_audio)
 endforeach()
+# These product and test runtimes link the direct driver/chip pair, never a
+# public engine wrapper. Its canonical render sequence is documented in
+# plugin/hw_audio/hw_audio.h.
+
+# Link-graph gates keep shipping targets free of trace parser, scheduler,
+# replay, writer, and trace-runtime objects. They inspect CMake's resolved
+# target properties rather than requiring a built artifact.
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_default_trace_link_graph.cmake"
+    CONTENT [=[
+set(_default_links
+    "$<TARGET_PROPERTY:poryaaaa,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:poryaaaa_render,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:poryaaaa_unit_tests,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:hw_audio,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:m4a_driver,LINK_LIBRARIES>")
+set(_default_sources
+    "$<TARGET_PROPERTY:poryaaaa,SOURCES>"
+    "$<TARGET_PROPERTY:poryaaaa_render,SOURCES>"
+    "$<TARGET_PROPERTY:poryaaaa_unit_tests,SOURCES>"
+    "$<TARGET_PROPERTY:hw_audio,SOURCES>"
+    "$<TARGET_PROPERTY:m4a_driver,SOURCES>")
+foreach(_surface IN LISTS _default_links _default_sources)
+    if(_surface MATCHES "poryaaaa_hw_audio_trace_tool|poryaaaa_m4a_trace_writer|hw_audio_trace_(text|schedule)\\.c|m4a_driver_trace\\.c|poryaaaa_audio_trace|poryaaaa_driver_trace|mgba_audio_trace_replay|atomic_publish|driver_compare|native_compare|waveform_compare")
+        message(FATAL_ERROR "Default target graph contains trace tooling: ${_surface}")
+    endif()
+endforeach()
+]=])
+add_test(NAME poryaaaa_default_trace_link_graph
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_default_trace_link_graph.cmake")
+
+if(PORYAAAA_BUILD_TRACE_TOOLS)
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_opt_in_trace_link_graph.cmake"
+        CONTENT [=[
+set(_audio_trace_links "$<TARGET_PROPERTY:poryaaaa_audio_trace,LINK_LIBRARIES>")
+set(_driver_trace_links "$<TARGET_PROPERTY:poryaaaa_driver_trace,LINK_LIBRARIES>")
+set(_trace_test_links "$<TARGET_PROPERTY:poryaaaa_audio_trace_tool_tests,LINK_LIBRARIES>")
+if(NOT _audio_trace_links MATCHES "(^|;)poryaaaa_hw_audio_trace_tool($|;)" OR
+   _audio_trace_links MATCHES "(^|;)hw_audio($|;)")
+    message(FATAL_ERROR "poryaaaa_audio_trace must link only the trace-enabled HwAudio variant")
+endif()
+if(NOT _driver_trace_links MATCHES "(^|;)poryaaaa_m4a_trace_writer($|;)")
+    message(FATAL_ERROR "poryaaaa_driver_trace must link poryaaaa_m4a_trace_writer")
+endif()
+if(NOT _trace_test_links MATCHES "(^|;)poryaaaa_hw_audio_trace_tool($|;)" OR
+   _trace_test_links MATCHES "(^|;)hw_audio($|;)")
+    message(FATAL_ERROR "poryaaaa_audio_trace_tool_tests must link only the trace-enabled HwAudio variant")
+endif()
+foreach(_target_links IN ITEMS _audio_trace_links _driver_trace_links _trace_test_links)
+    if("${${_target_links}}" MATCHES "(^|;)hw_audio(;|$)" AND
+       "${${_target_links}}" MATCHES "(^|;)poryaaaa_hw_audio_trace_tool(;|$)")
+        message(FATAL_ERROR "A trace tool links both HwAudio variants: ${${_target_links}}")
+    endif()
+endforeach()
+]=])
+    add_test(NAME poryaaaa_opt_in_trace_link_graph
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_opt_in_trace_link_graph.cmake")
+endif()

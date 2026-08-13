@@ -298,6 +298,14 @@ def validate_scenario(
         "high_level_action": contract["high_level_action"],
     }
 
+def validate_action_tick_schedule(document: dict[str, Any], scenario: str, label: str) -> list[bool]:
+    schedule = field(document, "action_tick_schedule", label)
+    if not isinstance(schedule, list) or any(type(value) is not bool for value in schedule):
+        raise InfrastructureFailure(f"{label}.action_tick_schedule must be a Boolean array")
+    logical_vblanks = SCENARIO_CONTRACTS[scenario]["logical_vblanks"]
+    require_equal(schedule, [True] * logical_vblanks + [False], f"{label}.action_tick_schedule")
+    return schedule
+
 
 def validate_native_artifacts(prefix: Path, document: dict[str, Any], label: str, solo_mask: int) -> dict[str, Path]:
     require_equal(require_string(field(document, "format", label), f"{label}.format"), "poryaaaa-native-capture", f"{label}.format")
@@ -379,7 +387,7 @@ def validate_candidate_manifest(
     voice: int,
     scenario: str,
     controls: dict[str, int],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[bool]]:
     label = "candidate trace manifest"
     document = load_json(path, label)
     require_equal(require_string(field(document, "format", label), f"{label}.format"), "poryaaaa-driver-candidate-trace", f"{label}.format")
@@ -398,6 +406,7 @@ def validate_candidate_manifest(
         capture_frames_field="capture_frames",
         span_cycles_field="capture_span_cycles",
     )
+    action_tick_schedule = validate_action_tick_schedule(document, scenario, label)
     require_equal(trace_end - trace_begin, timing["span_cycles"], f"{label}.trace cycle span")
     require_file_hash(candidate_trace, field(document, "trace_sha256", label), f"{label}.trace_sha256")
     require_file_hash(rom, field(document, "rom_sha256", label), f"{label}.rom_sha256")
@@ -408,7 +417,7 @@ def validate_candidate_manifest(
         DRIVER_ORIGIN_CYCLES[fixture["family"]],
         f"{label}.driver_origin_cycle",
     )
-    return document, fixture, timing
+    return document, fixture, timing, action_tick_schedule
 
 
 def validate_replay_manifest(
@@ -747,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
         require_success(run_command(candidate_argv, "candidate capture"), "candidate capture")
         require_regular_file(candidate_trace, "candidate trace")
         require_regular_file(candidate_manifest, "candidate trace manifest")
-        candidate_document, candidate_fixture, candidate_timing = validate_candidate_manifest(
+        candidate_document, candidate_fixture, candidate_timing, action_tick_schedule = validate_candidate_manifest(
             candidate_manifest, candidate_trace, rom, elf, args.voicegroup, args.voice, args.scenario, controls
         )
         for name in ("family", "resolved_type", "tone_data_sha256", "family_payload_sha256"):
@@ -817,7 +826,8 @@ def main(argv: list[str] | None = None) -> int:
             },
         }
         manifest = validation_manifest(
-            stage, decomp, rom, elf, executables, controls, args.scenario, reference_fixture, reference_timing,
+            stage, decomp, rom, elf, executables, controls, args.scenario, reference_fixture,
+            {**reference_timing, "action_tick_schedule": action_tick_schedule},
             reference_document, commands, diagnostics, gates,
         )
         write_manifest(stage / "manifest.json", manifest)

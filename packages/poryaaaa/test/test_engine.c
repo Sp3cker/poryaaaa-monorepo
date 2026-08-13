@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "m4a_engine.h"
+#include "m4a/m4a_freq.h"
 #include "m4a_tables.h"
 #include "test_assert.h"
 
@@ -23,8 +23,6 @@ extern void m4a_cgb_sound(M4ADriver* drv);
 
 extern void m4a_trk_vol_pit_set(M4ADriverTrack* track);
 void test_hw_mix_run_all(void);
-void test_hw_audio_trace_run_all(void);
-void test_hw_audio_trace_contracts_run_all(void);
 void test_voicegroup_loader_run_all(void);
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY
 void test_voicegroup_core_parity_run_all(void);
@@ -32,6 +30,7 @@ void test_voicegroup_core_parity_run_all(void);
 void test_recorder_core_run_all(void);
 void test_m4a_v2_run_all(void);
 void test_gui_assets_run_all(void);
+void test_hw_audio_contracts_run_all(void);
 
 /* Test helper: advance the driver in chunks no larger than the bounded
  * event queue can hold, consuming between chunks.  Required for tests
@@ -51,6 +50,17 @@ static void v2_advance_chunked(M4ADriver* drv, int frames)
         m4a_consume_writes(drv);
         frames -= chunk;
     }
+}
+
+/* Drive exactly one SoundMain boundary through the public clock.  Rebasing
+ * the untouched event stream one cycle before VBlank retains the real
+ * VBlank cadence while starting its PCM scheduler after this transaction. */
+static void v2_advance_one_vblank(M4ADriver* drv)
+{
+    m4a_driver_set_host_rate(drv, (float)M4A_GBA_CYCLES_PER_SECOND);
+    const bool rebased = m4a_driver_set_initial_cycle(drv, M4A_VBLANK_CYCLES - 1u);
+    ASSERT(rebased, "empty VBlank transaction stream rebases before SoundMain");
+    m4a_advance(drv, 1);
 }
 
 static M4ADriverPcmChan* first_active_pcm_channel(M4ADriver* drv)
@@ -85,15 +95,15 @@ static void v2_render_chunked(M4ADriver* drv, HwAudio* hw, float* outL, float* o
 int tests_run = 0;
 int tests_passed = 0;
 
-static void send_xcmd_select(M4AEngine* engine, int trackIndex, uint8_t selector)
+static void send_xcmd_select(M4ADriver* drv, int trackIndex, uint8_t selector)
 {
-    m4a_engine_cc(engine, trackIndex, 0x1E, selector);
+    m4a_cc(drv, trackIndex, 0x1E, selector);
 }
 
-static void send_xcmd_bytes(M4AEngine* engine, int trackIndex, const uint8_t* bytes, size_t count)
+static void send_xcmd_bytes(M4ADriver* drv, int trackIndex, const uint8_t* bytes, size_t count)
 {
     for (size_t i = 0; i < count; i++)
-        m4a_engine_cc(engine, trackIndex, 0x1D, bytes[i]);
+        m4a_cc(drv, trackIndex, 0x1D, bytes[i]);
 }
 
 typedef struct
@@ -114,16 +124,15 @@ static void capture_xcmd(void* ctx, int trackIndex, uint8_t selector, uint32_t v
     cap->called++;
 }
 
-/* Test umul3232H32 */
-static void test_umul3232H32(void)
+/* Test the direct frequency path's fixed-point precision. */
+static void test_frequency_word_precision(void)
 {
-    printf("Testing umul3232H32...\n");
+    printf("Testing frequency word precision...\n");
 
-    /* Simple cases */
-    ASSERT_EQ(umul3232H32(0, 0), 0, "0 * 0");
-    ASSERT_EQ(umul3232H32(0xFFFFFFFF, 1), 0, "FFFFFFFF * 1 high word");
-    ASSERT_EQ(umul3232H32(0x80000000, 2), 1, "0x80000000 * 2");
-    ASSERT_EQ(umul3232H32(0x80000000, 0x80000000), 0x40000000, "0.5 * 0.5 in fixed point");
+    WaveData wd = {0};
+    wd.freq = 0x80000000;
+
+    ASSERT_EQ(m4a_midi_key_to_freq(&wd, 60, 0), 0x00200000, "middle C preserves the 32.32 high-word product");
 }
 
 /* Test scale/freq table lookups */
@@ -245,40 +254,45 @@ static void test_trk_vol_pit_set(void)
     ASSERT_EQ(track.keyM, 2, "bend +64 range 2 = keyM 2");
 }
 
-/* Test engine initialization */
-static void test_engine_init(void)
+/* Test direct driver and hardware initialization. */
+static void test_driver_hw_init(void)
 {
-    printf("Testing engine init...\n");
+    printf("Testing driver and hardware init...\n");
 
-    M4AEngine engine;
-    ASSERT(m4a_engine_init(&engine, 44100.0f), "engine init succeeds");
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    HwAudio* hw = hw_audio_create(44100.0f);
 
-    ASSERT_NEAR(engine.sampleRate, 44100.0f, 0.1f, "sample rate");
-    ASSERT_EQ(engine.volume, MAX_SONG_VOLUME, "song volume default");
-    ASSERT_EQ(engine.reverbAmount, 0, "reverb default");
-    ASSERT(engine.voiceGroup == NULL, "voicegroup starts NULL");
-    ASSERT(m4a_engine_driver(&engine) != NULL, "driver accessor returns non-null");
-    ASSERT(m4a_engine_hw_audio(&engine) != NULL, "hw accessor returns non-null");
-    ASSERT_EQ(m4a_get_register_file(m4a_engine_driver(&engine))->bias_sampling_cycle,
-              1,
-              "driver defaults to the ROM's 65536 Hz SOUNDBIAS resolution");
-    ASSERT_EQ(engine.c15, 0, "engine starts at the SoundInit CGB envelope phase");
-    ASSERT_EQ(m4a_engine_driver(&engine)->c15, 0, "driver starts at the SoundInit CGB envelope phase");
+    ASSERT(drv != NULL, "driver creation succeeds");
+    ASSERT(hw != NULL, "hardware creation succeeds");
+    if (drv)
+    {
+        ASSERT_NEAR(drv->host_rate, 44100.0f, 0.1f, "host sample rate");
+        ASSERT_EQ(drv->song_volume, 127, "song volume default");
+        ASSERT_EQ(drv->reverb_amount, 0, "reverb default");
+        ASSERT(drv->voicegroup == NULL, "voicegroup starts NULL");
+        ASSERT_EQ(m4a_get_register_file(drv)->bias_sampling_cycle,
+                  1,
+                  "driver defaults to the ROM's 65536 Hz SOUNDBIAS resolution");
+        ASSERT_EQ(drv->c15, 0, "driver starts at the SoundInit CGB envelope phase");
+    }
 
-    m4a_engine_destroy(&engine);
+    if (hw)
+        hw_audio_destroy(hw);
+    if (drv)
+        m4a_driver_destroy(drv);
 }
 
 static void test_xcmd_subcommands(void)
 {
     printf("Testing XCMD subcommands...\n");
 
-    M4AEngine engine;
-    ASSERT(m4a_engine_init(&engine, 44100.0f), "xcmd test engine init succeeds");
-    M4ADriver* drv = m4a_engine_driver(&engine);
-    ASSERT(drv != NULL, "xcmd test driver accessor returns non-null");
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "xcmd test driver creation succeeds");
+    if (!drv)
+        return;
 
     XcmdCapture xcmd_cap = {0};
-    m4a_engine_set_xcmd_callback(&engine, capture_xcmd, &xcmd_cap);
+    m4a_driver_set_xcmd_callback(drv, capture_xcmd, &xcmd_cap);
 
     int dataSize = 4;
     WaveData* wd = calloc(1, sizeof(WaveData) + dataSize + 1);
@@ -301,11 +315,11 @@ static void test_xcmd_subcommands(void)
     voices[0].length = 0x50;
     voices[0].panSweep = 0x60;
 
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 0, 0);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
 
-    send_xcmd_select(&engine, 0, 0x04);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x7A}, 1);
+    send_xcmd_select(drv, 0, 0x04);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x7A}, 1);
     ASSERT_EQ(xcmd_cap.called, 1, "xcmd callback fires on successful apply");
     ASSERT_EQ(xcmd_cap.trackIndex, 0, "xcmd callback reports track index");
     ASSERT_EQ(xcmd_cap.selector, 0x04, "xcmd callback reports selector");
@@ -313,20 +327,20 @@ static void test_xcmd_subcommands(void)
 
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x7A, "xatta updates attack");
 
-    send_xcmd_select(&engine, 0, 0x05);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x55}, 1);
-    send_xcmd_select(&engine, 0, 0x06);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x44}, 1);
-    send_xcmd_select(&engine, 0, 0x07);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x33}, 1);
-    send_xcmd_select(&engine, 0, 0x08);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x22}, 1);
-    send_xcmd_select(&engine, 0, 0x09);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x11}, 1);
-    send_xcmd_select(&engine, 0, 0x0A);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x66}, 1);
-    send_xcmd_select(&engine, 0, 0x0B);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x77}, 1);
+    send_xcmd_select(drv, 0, 0x05);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x55}, 1);
+    send_xcmd_select(drv, 0, 0x06);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x44}, 1);
+    send_xcmd_select(drv, 0, 0x07);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x33}, 1);
+    send_xcmd_select(drv, 0, 0x08);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x22}, 1);
+    send_xcmd_select(drv, 0, 0x09);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x11}, 1);
+    send_xcmd_select(drv, 0, 0x0A);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x66}, 1);
+    send_xcmd_select(drv, 0, 0x0B);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x77}, 1);
 
     ASSERT_EQ(drv->tracks[0].currentVoice.decay, 0x55, "xdeca updates decay");
     ASSERT_EQ(drv->tracks[0].currentVoice.sustain, 0x44, "xsust updates sustain");
@@ -336,7 +350,7 @@ static void test_xcmd_subcommands(void)
     ASSERT_EQ(drv->tracks[0].currentVoice.length, 0x66, "xleng updates length");
     ASSERT_EQ(drv->tracks[0].currentVoice.panSweep, 0x77, "xswee updates pan sweep");
 
-    m4a_engine_note_on(&engine, 0, 60, 100);
+    m4a_note_on(drv, 0, 60, 100);
     {
         int found = -1;
         for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
@@ -345,7 +359,7 @@ static void test_xcmd_subcommands(void)
                 found = i;
                 break;
             }
-        ASSERT(found >= 0, "XCMD wrapper path allocates a PCM note");
+        ASSERT(found >= 0, "direct XCMD ingress allocates a PCM note");
         if (found >= 0)
         {
             M4ADriverPcmChan* pcm = &drv->pcmChans[found];
@@ -358,24 +372,24 @@ static void test_xcmd_subcommands(void)
         }
     }
 
-    send_xcmd_select(&engine, 0, 0x02);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){VOICE_SQUARE_1}, 1);
+    send_xcmd_select(drv, 0, 0x02);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){VOICE_SQUARE_1}, 1);
     ASSERT_EQ(drv->tracks[0].currentVoice.type, VOICE_SQUARE_1, "xtype updates voice type");
 
-    send_xcmd_select(&engine, 0, 0x0D);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x78, 0x56, 0x34}, 3);
+    send_xcmd_select(drv, 0, 0x0D);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x78, 0x56, 0x34}, 3);
     ASSERT_EQ(drv->tracks[0].extendedValue, 0, "xcmd 0D waits for all four bytes");
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x12}, 1);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x12}, 1);
     ASSERT_EQ(drv->tracks[0].extendedValue, 0x12345678, "xcmd 0D stores little-endian value");
 
     WaveData* wavBefore = drv->tracks[0].currentVoice.wav;
     memset(&xcmd_cap, 0, sizeof(xcmd_cap));
 
-    send_xcmd_select(&engine, 0, 0x01);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0xBE, 0xBA, 0xFE}, 3);
+    send_xcmd_select(drv, 0, 0x01);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0xBE, 0xBA, 0xFE}, 3);
     ASSERT(drv->tracks[0].currentVoice.wav == wavBefore, "xwave partial payload does not mutate currentVoice.wav");
     ASSERT_EQ(xcmd_cap.called, 0, "xwave partial payload does not notify");
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0xCA}, 1);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0xCA}, 1);
     /* v2 xWAVE is notify-only: the raw payload is a ROM address, not a host WaveData*. */
     ASSERT(drv->tracks[0].currentVoice.wav == wavBefore, "xwave complete payload remains notify-only in v2");
     ASSERT_EQ(xcmd_cap.called, 1, "xwave complete payload fires callback");
@@ -384,11 +398,11 @@ static void test_xcmd_subcommands(void)
 
     memset(&xcmd_cap, 0, sizeof(xcmd_cap));
 
-    send_xcmd_select(&engine, 0, 0x0C);
-    send_xcmd_bytes(&engine, 0, (uint8_t[]){0x02, 0x00}, 2);
+    send_xcmd_select(drv, 0, 0x0C);
+    send_xcmd_bytes(drv, 0, (uint8_t[]){0x02, 0x00}, 2);
     ASSERT_EQ(xcmd_cap.called, 0, "xcmd 0C is unimplemented in v2 MIDI ingress and does not notify");
 
-    m4a_engine_destroy(&engine);
+    m4a_driver_destroy(drv);
     free(wd);
 }
 
@@ -396,9 +410,6 @@ static void test_xcmd_subcommands(void)
 static void test_basic_audio(void)
 {
     printf("Testing basic audio generation...\n");
-
-    M4AEngine engine;
-    m4a_engine_init(&engine, 44100.0f);
 
     /* Create a simple WaveData (sine-ish) */
     int dataSize = 64;
@@ -427,36 +438,46 @@ static void test_basic_audio(void)
 
     M4ADriver* drv = m4a_driver_create(44100.0f);
     HwAudio* hw = hw_audio_create(44100.0f);
+    ASSERT(drv != NULL, "basic audio driver creation succeeds");
+    ASSERT(hw != NULL, "basic audio hardware creation succeeds");
+    if (!drv || !hw)
+    {
+        if (hw)
+            hw_audio_destroy(hw);
+        if (drv)
+            m4a_driver_destroy(drv);
+        free(wd);
+        return;
+    }
+    /* Match the former engine runtime configuration for this end-to-end
+     * DirectSound smoke. */
+    m4a_set_master_volume(drv, 15);
+    m4a_set_max_pcm_channels(drv, 5);
 
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 0, 0);
-    m4a_engine_cc(&engine, 0, 7, 127);
     m4a_driver_set_voicegroup(drv, voices);
     m4a_program_change(drv, 0, 0);
     m4a_cc(drv, 0, 7, 127);
 
-    /* Play a note */
-    m4a_engine_note_on(&engine, 0, 60, 100);
+    /* Play a note. */
     m4a_note_on(drv, 0, 60, 100);
 
-    /* Generate some audio */
-    float outL[1024], outR[1024];
-    m4a_advance(drv, 1024);
-    hw_audio_render_events(hw, m4a_get_pending_writes(drv), outL, outR, 1024);
-    m4a_consume_writes(drv);
-    /* v2 audible end-to-end via the event-stream API (PSG square+wave+
-     * noise + PCM); however this top-level test exercises driver
-     * lifecycle rather than synth output, so the v1 non-zero assertion
-     * isn't mirrored here.  Chip-only audibility is asserted by the
-     * test_chip_canned_* suite. */
+    /* Render through the initial DMA source epoch.  The real driver fills the
+     * first ring segment at VBlank, then the FIFO consumes it next block. */
+    float outL[2048], outR[2048];
+    v2_render_chunked(drv, hw, outL, outR, 2048);
+    float peak = 0.0f;
+    for (int i = 0; i < 2048; i++)
+    {
+        float sample_peak = fmaxf(fabsf(outL[i]), fabsf(outR[i]));
+        if (sample_peak > peak)
+            peak = sample_peak;
+    }
+    ASSERT(peak > 0.0001f, "direct driver write batch renders audible PCM");
 
-    /* Note off */
-    m4a_engine_note_off(&engine, 0, 60);
     m4a_note_off(drv, 0, 60);
-    m4a_driver_destroy(drv);
     hw_audio_destroy(hw);
+    m4a_driver_destroy(drv);
 
-    m4a_engine_destroy(&engine);
     free(wd);
 }
 
@@ -1094,11 +1115,10 @@ static void test_v2_pcm_ring_fills(void)
     free(wd);
 }
 
-/* PCM frequency parity (response to v3 follow-up #1).  V1 multiplies
- * MidiKeyToFreq by divFreq before storing.  Verify v2's fw advances at
- * the same rate as v1 by comparing the resulting per-vblank wave-sample
- * step against the canonical formula.  The first PCM tick advances fw
- * by `frequency`; integer-sample step = frequency >> 23. */
+/* PCM frequency scaling multiplies MidiKeyToFreq by divFreq before storing.
+ * Verify fw advances at the rate required by the canonical formula.  The
+ * first PCM tick advances fw by `frequency`; integer-sample step =
+ * frequency >> 23. */
 static void test_v2_pcm_frequency_scale(void)
 {
     printf("Testing v2 PCM frequency divFreq scaling...\n");
@@ -1135,17 +1155,15 @@ static void test_v2_pcm_frequency_scale(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_note_on(drv, 0, 60, 127);
 
-    /* The v2 driver doesn't expose ch->frequency publicly, but we can
-     * observe its effect: after one vblank, ring_a[0..N] should be
-     * non-trivially varying because the wave is read at a non-zero
-     * step rate.  An unscaled (1/divFreq) frequency would advance by
-     * essentially zero samples and produce a constant ring value. */
+    /* Rebase immediately before the first public VBlank.  The driver starts
+     * the fresh PCM scheduler after that SoundMain transaction, so slot zero
+     * is the first FIFO segment without a manual tick ingress. */
     fakeData[0] = 100;
     for (int i = 1; i < 1024; i++)
         fakeData[i] = (int8_t)((-100) + (i & 1) * 200);
     fakeData[1024] = fakeData[1023];
 
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
 
     const M4APcmRing* ring = m4a_get_pcm_ring(drv);
     int firstNonZero = -1;
@@ -1825,7 +1843,8 @@ static void test_v2_pcm_cc7_refresh(void)
     m4a_cc(drv, 0, 7, 127); /* loud */
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    for (int i = 0; i < 7; i++)
+        v2_advance_one_vblank(drv);
 
     const M4APcmRing* ring = m4a_get_pcm_ring(drv);
     int loudSampleSum = 0;
@@ -1837,19 +1856,17 @@ static void test_v2_pcm_cc7_refresh(void)
         loudSampleSum += v;
     }
 
-    /* Drop CC7 to a much lower value; without refresh_pcm_volumes the
-     * next vblank's mix would still be loud.  With it, peak amplitude
-     * should drop noticeably. */
+    /* Drop CC7, then advance one whole DMA epoch to compare the same public
+     * FIFO segment.  This isolates the active-channel volume refresh from
+     * the hardware source rotation. */
     m4a_cc(drv, 0, 7, 16);
-    m4a_internal_compat_tick(drv);
+    for (int i = 0; i < 7; i++)
+        v2_advance_one_vblank(drv);
 
     int quietSampleSum = 0;
-    /* Read from the latest segment of the ring. */
-    uint64_t cursor = ring->write_cursor;
-    for (int i = 1; i <= M4A_PCM_SAMPLES_PER_VBLANK; i++)
+    for (int i = 0; i < M4A_PCM_SAMPLES_PER_VBLANK; i++)
     {
-        size_t idx = (size_t)((cursor - i) % M4A_PCM_DMA_BUF_SIZE);
-        int v = ring->ring_a[idx];
+        int v = ring->ring_a[i];
         if (v < 0)
             v = -v;
         quietSampleSum += v;
@@ -1866,9 +1883,9 @@ static void test_v2_pcm_cc7_refresh(void)
  *
  * The reverb stage runs in-place on the int16 pcmMix buffer (4-tap
  * sum scaled by amount>>9, added to current mix) and writes the
- * INT8-clamped wet output back into the delay buffer (matches v1
- * m4a_reverb.c: real m4a's delay buffer IS the int8 FIFO, so future
- * tap reads see byte-clamped values).  An int16 delay buffer would
+ * INT8-clamped wet output back into the delay buffer.  Real m4a's delay
+ * buffer is the int8 FIFO, so future tap reads see byte-clamped values.
+ * An int16 delay buffer would
  * silently feed back values outside the FIFO range on heavy mixes.
  *
  * This test exercises the pipeline end-to-end:
@@ -2392,7 +2409,7 @@ static void test_v2_wave_rom_start_events(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
 
     const M4ARegWrite expected[] = {
         {0, M4A_REG_NR30, 0x40u, 0},
@@ -2413,7 +2430,7 @@ static void test_v2_wave_rom_start_events(void)
     ASSERT_EQ(b->count, sizeof(expected) / sizeof(expected[0]), "wave start event count");
     for (size_t i = 0; i < b->count && i < sizeof(expected) / sizeof(expected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, expected[i].cycle, "wave start cycle");
+        ASSERT_EQ(b->events[i].cycle, m4a_driver_current_cycle(drv), "wave start occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, expected[i].reg, "wave start register order");
         ASSERT_EQ(b->events[i].value, expected[i].value, "wave start payload");
         ASSERT_EQ(b->events[i].order, expected[i].order, "wave start same-cycle order");
@@ -2472,10 +2489,10 @@ static void test_v2_wave_pitch_only_events(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
     m4a_pitch_bend(drv, 0, 8192);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
 
     const M4ARegWrite expected[] = {
         {0, M4A_REG_NR33, 0x41u, 0},
@@ -2485,7 +2502,8 @@ static void test_v2_wave_pitch_only_events(void)
     ASSERT_EQ(b->count, sizeof(expected) / sizeof(expected[0]), "wave pitch-only event count");
     for (size_t i = 0; i < b->count && i < sizeof(expected) / sizeof(expected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, expected[i].cycle, "wave pitch-only cycle");
+        ASSERT_EQ(
+            b->events[i].cycle, m4a_driver_current_cycle(drv), "wave pitch-only occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, expected[i].reg, "wave pitch-only register order");
         ASSERT_EQ(b->events[i].value, expected[i].value, "wave pitch-only payload");
         ASSERT_EQ(b->events[i].order, expected[i].order, "wave pitch-only same-cycle order");
@@ -2519,10 +2537,10 @@ static void test_v2_wave_envelope_volume_routing_events(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
 
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite firstExpected[] = {
         {0, M4A_REG_NR51, 0x44u, 0},
         {0, M4A_REG_NR32, 0x00u, 1},
@@ -2531,14 +2549,16 @@ static void test_v2_wave_envelope_volume_routing_events(void)
     ASSERT_EQ(b->count, sizeof(firstExpected) / sizeof(firstExpected[0]), "first wave envelope event count");
     for (size_t i = 0; i < b->count && i < sizeof(firstExpected) / sizeof(firstExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, firstExpected[i].cycle, "first wave envelope cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "first wave envelope occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, firstExpected[i].reg, "first wave envelope register order");
         ASSERT_EQ(b->events[i].value, firstExpected[i].value, "first wave envelope payload");
         ASSERT_EQ(b->events[i].order, firstExpected[i].order, "first wave envelope same-cycle order");
     }
     m4a_consume_writes(drv);
 
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite secondExpected[] = {
         {0, M4A_REG_NR51, 0x44u, 0},
         {0, M4A_REG_NR32, 0x60u, 1},
@@ -2547,7 +2567,9 @@ static void test_v2_wave_envelope_volume_routing_events(void)
     ASSERT_EQ(b->count, sizeof(secondExpected) / sizeof(secondExpected[0]), "second wave envelope event count");
     for (size_t i = 0; i < b->count && i < sizeof(secondExpected) / sizeof(secondExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, secondExpected[i].cycle, "second wave envelope cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "second wave envelope occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, secondExpected[i].reg, "second wave envelope register order");
         ASSERT_EQ(b->events[i].value, secondExpected[i].value, "second wave envelope payload");
         ASSERT_EQ(b->events[i].order, secondExpected[i].order, "second wave envelope same-cycle order");
@@ -2584,7 +2606,7 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
     m4a_cc(drv, 0, 7, 17);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
 
     M4ADriverCgbChan* ch = &drv->cgb[2];
@@ -2596,7 +2618,7 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
 
     /* A VOLCHG refresh re-emits MO_VOL even when the computed bytes match. */
     m4a_cc(drv, 0, 7, 17);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite preBoundaryExpected[] = {
         {0, M4A_REG_NR51, 0x44u, 0},
         {0, M4A_REG_NR32, 0x00u, 1},
@@ -2606,7 +2628,9 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
         b->count, sizeof(preBoundaryExpected) / sizeof(preBoundaryExpected[0]), "unchanged volume refresh event count");
     for (size_t i = 0; i < b->count && i < sizeof(preBoundaryExpected) / sizeof(preBoundaryExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, preBoundaryExpected[i].cycle, "unchanged volume refresh cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "unchanged volume refresh occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, preBoundaryExpected[i].reg, "unchanged volume refresh register order");
         ASSERT_EQ(b->events[i].value, preBoundaryExpected[i].value, "unchanged volume refresh payload");
         ASSERT_EQ(b->events[i].order, preBoundaryExpected[i].order, "unchanged volume refresh same-cycle order");
@@ -2619,13 +2643,15 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
     ASSERT_EQ(ch->pan, 0x44, "hard-left control leaves the old pan until the envelope boundary");
     ASSERT_EQ(ch->envelopeGoal, 1, "hard-left control leaves the old envelope goal until the boundary");
 
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     b = m4a_get_pending_writes(drv);
     ASSERT_EQ(
         b->count, sizeof(preBoundaryExpected) / sizeof(preBoundaryExpected[0]), "pre-boundary pan refresh event count");
     for (size_t i = 0; i < b->count && i < sizeof(preBoundaryExpected) / sizeof(preBoundaryExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, preBoundaryExpected[i].cycle, "pre-boundary pan refresh cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "pre-boundary pan refresh occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, preBoundaryExpected[i].reg, "pre-boundary pan refresh register order");
         ASSERT_EQ(b->events[i].value, preBoundaryExpected[i].value, "pre-boundary pan refresh payload");
         ASSERT_EQ(b->events[i].order, preBoundaryExpected[i].order, "pre-boundary pan refresh same-cycle order");
@@ -2634,12 +2660,12 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
 
     for (int i = 0; i < 5; i++)
     {
-        m4a_internal_compat_tick(drv);
+        v2_advance_one_vblank(drv);
         ASSERT_EQ(
             m4a_get_pending_writes(drv)->count, 0, "slow wave attack emits no volume refresh before its boundary");
     }
 
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite boundaryExpected[] = {
         {0, M4A_REG_NR51, 0x40u, 0},
         {0, M4A_REG_NR32, 0x00u, 1},
@@ -2651,7 +2677,9 @@ static void test_v2_wave_volume_pan_refresh_defers_cgb_goals(void)
     ASSERT_EQ(b->count, sizeof(boundaryExpected) / sizeof(boundaryExpected[0]), "boundary pan refresh event count");
     for (size_t i = 0; i < b->count && i < sizeof(boundaryExpected) / sizeof(boundaryExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, boundaryExpected[i].cycle, "boundary pan refresh cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "boundary pan refresh occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, boundaryExpected[i].reg, "boundary pan refresh register order");
         ASSERT_EQ(b->events[i].value, boundaryExpected[i].value, "boundary pan refresh payload");
         ASSERT_EQ(b->events[i].order, boundaryExpected[i].order, "boundary pan refresh same-cycle order");
@@ -2686,11 +2714,11 @@ static void test_v2_wave_same_pointer_retrigger_events(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
 
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite expected[] = {
         {0, M4A_REG_NR30, 0x00u, 0},
         {0, M4A_REG_NR31, 0x20u, 1},
@@ -2705,7 +2733,9 @@ static void test_v2_wave_same_pointer_retrigger_events(void)
     ASSERT_EQ(b->count, sizeof(expected) / sizeof(expected[0]), "same-pointer retrigger event count");
     for (size_t i = 0; i < b->count && i < sizeof(expected) / sizeof(expected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, expected[i].cycle, "same-pointer retrigger cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "same-pointer retrigger occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, expected[i].reg, "same-pointer retrigger register order");
         ASSERT_EQ(b->events[i].value, expected[i].value, "same-pointer retrigger payload");
         ASSERT_EQ(b->events[i].order, expected[i].order, "same-pointer retrigger same-cycle order");
@@ -2713,15 +2743,17 @@ static void test_v2_wave_same_pointer_retrigger_events(void)
     m4a_consume_writes(drv);
 
     m4a_note_off(drv, 0, 60);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     b = m4a_get_pending_writes(drv);
     ASSERT_EQ(b->count, sizeof(expected) / sizeof(expected[0]), "post-disable retrigger event count");
     for (size_t i = 0; i < b->count && i < sizeof(expected) / sizeof(expected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, expected[i].cycle, "post-disable retrigger cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "post-disable retrigger occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, expected[i].reg, "post-disable retrigger register order");
         ASSERT_EQ(b->events[i].value, expected[i].value, "post-disable retrigger payload");
         ASSERT_EQ(b->events[i].order, expected[i].order, "post-disable retrigger same-cycle order");
@@ -2731,7 +2763,7 @@ static void test_v2_wave_same_pointer_retrigger_events(void)
     voices[0].wavePointer = alternateWaveRam;
     m4a_driver_refresh_voices(drv);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     const M4ARegWrite alternateExpected[] = {
         {0, M4A_REG_NR30, 0x40u, 0},
         {0, M4A_REG_WAVE_RAM_WORD_0, 0xA3A2A1A0u, 1},
@@ -2752,7 +2784,9 @@ static void test_v2_wave_same_pointer_retrigger_events(void)
         b->count, sizeof(alternateExpected) / sizeof(alternateExpected[0]), "changed-pointer alternate event count");
     for (size_t i = 0; i < b->count && i < sizeof(alternateExpected) / sizeof(alternateExpected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, alternateExpected[i].cycle, "changed-pointer alternate cycle");
+        ASSERT_EQ(b->events[i].cycle,
+                  m4a_driver_current_cycle(drv),
+                  "changed-pointer retrigger occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, alternateExpected[i].reg, "changed-pointer alternate register order");
         ASSERT_EQ(b->events[i].value, alternateExpected[i].value, "changed-pointer alternate payload");
         ASSERT_EQ(b->events[i].order, alternateExpected[i].order, "changed-pointer alternate same-cycle order");
@@ -2786,10 +2820,10 @@ static void test_v2_wave_disable_events(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
     m4a_consume_writes(drv);
     m4a_note_off(drv, 0, 60);
-    m4a_internal_compat_tick(drv);
+    v2_advance_one_vblank(drv);
 
     const M4ARegWrite expected[] = {
         {0, M4A_REG_NR30, 0x00u, 0},
@@ -2798,7 +2832,7 @@ static void test_v2_wave_disable_events(void)
     ASSERT_EQ(b->count, sizeof(expected) / sizeof(expected[0]), "wave disable event count");
     for (size_t i = 0; i < b->count && i < sizeof(expected) / sizeof(expected[0]); i++)
     {
-        ASSERT_EQ(b->events[i].cycle, expected[i].cycle, "wave disable cycle");
+        ASSERT_EQ(b->events[i].cycle, m4a_driver_current_cycle(drv), "wave disable occurs at the current VBlank cycle");
         ASSERT_EQ(b->events[i].reg, expected[i].reg, "wave disable register order");
         ASSERT_EQ(b->events[i].value, expected[i].value, "wave disable payload");
         ASSERT_EQ(b->events[i].order, expected[i].order, "wave disable same-cycle order");
@@ -2811,7 +2845,7 @@ static void test_v2_wave_disable_events(void)
  * autopan).  When modM is non-zero (LFO running), switching modT must
  * recompute volMR/volML/keyM/pitM via m4a_trk_vol_pit_set BEFORE
  * pushing into channels — otherwise channels see stale derived values.
- * This is what v1 refresh_volumes does implicitly. */
+ * m4a_trk_vol_pit_set provides that required refresh. */
 static void test_v2_modt_recomputes_track_state(void)
 {
     printf("Testing v2 MODT recomputes derived track state...\n");
@@ -2930,11 +2964,11 @@ capture_sq2_freq_under_lfo(uint8_t mod_cc, uint8_t lfos_cc, uint8_t lfodl_cc, ui
     m4a_driver_destroy(drv);
 }
 
-/* ---- v2 XCMD-via-MIDI-CC tests ----------------------------------------
+/* ---- XCMD-via-MIDI-CC tests ------------------------------------------
  *
- * The v2 driver implements the same two-CC XCMD protocol the v1 engine
- * has (CC 0x1E selector, then 0x1D/0x1F payload bytes), but mutates v2's
- * own M4ADriverTrack / M4ADriverPcmChan / M4ADriverCgbChan fields.  These
+ * The driver implements the two-CC XCMD protocol (CC 0x1E selector, then
+ * 0x1D/0x1F payload bytes) and mutates M4ADriverTrack, M4ADriverPcmChan,
+ * and M4ADriverCgbChan fields.  These
  * tests prove field mutation, propagation into newly-started notes,
  * little-endian multi-byte assembly, partial/invalid safety, and sticky-
  * selector behaviour.  See xcmd.md.
@@ -3193,7 +3227,7 @@ static void test_v2_xcmd_protocol_safety(void)
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x10, "v2 0x1D with no selector does not mutate state");
     ASSERT_EQ(cap.called, 0, "v2 0x1D with no selector does not notify");
 
-    /* Unknown selector (e.g. 0x03 — gap in v1's table) → dataLength==0,
+    /* Unknown selector (for example, the 0x03 table gap) has no payload,
      * so any subsequent payload is discarded silently. */
     v2_send_xcmd_select(drv, 0, 0x03);
     m4a_cc(drv, 0, 0x1D, 0xAA);
@@ -3215,8 +3249,8 @@ static void test_v2_xcmd_protocol_safety(void)
     ASSERT_EQ(drv->tracks[0].extendedCommandBytes[0], 0, "v2 0x1E zeroes the payload buffer");
 
     /* Sticky selector: after a complete xATTA dispatch, another payload
-     * byte without a fresh 0x1E must apply to xATTA again.  This matches
-     * v1 + real m4a (the selector is sticky until the next CMD_XCMD). */
+     * byte without a fresh 0x1E must apply to xATTA again, matching real
+     * m4a: the selector is sticky until the next CMD_XCMD. */
     v2_send_xcmd_bytes(drv, 0, (uint8_t[]){0x70}, 1); /* completes xATTA */
     ASSERT_EQ(drv->tracks[0].currentVoice.attack, 0x70, "v2 sticky-selector dispatch 1: xATTA(0x70) applies");
     ASSERT_EQ(cap.called, 1, "v2 sticky-selector dispatch 1: callback fired once");
@@ -3939,7 +3973,11 @@ static void test_v2_pcm_fifo_timer_events(void)
     m4a_driver_set_voicegroup(drv, voices);
     m4a_program_change(drv, 0, 0);
     m4a_note_on(drv, 0, 60, 127);
-    m4a_advance(drv, 1024);
+    /* Start SoundMain before the fresh FIFO's first overflow.  Advancing from
+     * creation would capture the initial all-zero DMA refill instead. */
+    v2_advance_one_vblank(drv);
+    m4a_driver_set_host_rate(drv, 44100.0f);
+    m4a_advance(drv, 10);
 
     const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
     const M4APcmRing* ring = m4a_get_pcm_ring(drv);
@@ -5552,9 +5590,8 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * current mGBA sinc frontend to host. Per-cadence tests live in the §12.10a
  * block below (cadence sweep + direct internal_rate switching assertion).
  *
- * They do NOT prove parity against mGBA / real-hardware captures —
- * that's §12.10b, still open.  See HW_AUDIO_SCAFFOLD_PLAN.md §12
- * "Blocking gates before parity claims" for the full open-gate list. */
+ * They do NOT prove parity against mGBA or real-hardware captures. See
+ * docs/arch-parity-fix-plan.md for the authoritative parity gates. */
 
 static void test_chip_canned_soundbias_dc_offset(void)
 {
@@ -6511,11 +6548,11 @@ int main(void)
 {
     printf("=== M4A Engine Unit Tests ===\n\n");
 
-    test_umul3232H32();
+    test_frequency_word_precision();
     test_scale_table();
     test_midi_key_to_freq();
     test_midi_key_to_cgb_freq();
-    test_engine_init();
+    test_driver_hw_init();
     test_basic_audio();
     test_trk_vol_pit_set();
     test_xcmd_subcommands();
@@ -6612,8 +6649,6 @@ int main(void)
     test_chip_canned_soundbias_dc_offset();
     test_chip_canned_soundbias_clip_asymmetric();
     test_hw_mix_run_all();
-    test_hw_audio_trace_run_all();
-    test_hw_audio_trace_contracts_run_all();
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();
@@ -6626,6 +6661,7 @@ int main(void)
     test_chip_canned_solo_mask_isolates_channels();
     test_chip_canned_solo_mask_empty_falls_back_to_full();
     test_chip_canned_soundbias_cycle_0_vs_3_levels();
+    test_hw_audio_contracts_run_all();
     test_m4a_v2_run_all();
     test_voicegroup_loader_run_all();
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY

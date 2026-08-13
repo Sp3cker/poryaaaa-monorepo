@@ -4,8 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <clap/clap.h>
-#include "m4a_engine.h"
-#include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/voicegroup_types.h"
 #include "voicegroup/project_asset_index.h"
 
 #ifdef __cplusplus
@@ -131,7 +130,7 @@ extern "C"
 
     /*
      * Returns true (and clears) if any voice was edited since the last poll.
-     * The plugin should call m4a_engine_refresh_voices() to propagate changes.
+     * The plugin should refresh voices through its active direct driver.
      */
     bool m4a_gui_poll_voices_dirty(M4AGuiState* gui);
 

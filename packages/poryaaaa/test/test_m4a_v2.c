@@ -7,9 +7,14 @@
 #include "test_assert.h"
 
 /* Assert the literal driver-to-chip transaction captured for one logical
- * SoundMain action.  Keeping this table-driven prevents tests from deriving
- * an expected value from the encoder under test. */
-static void assert_transaction(const M4ARegWriteBatch* batch, const M4ARegWrite* expected, size_t expected_count)
+ * SoundMain action.  Expected cycles remain transaction-relative so the same
+ * table verifies the public clock's absolute event stream.  Keeping this
+ * table-driven prevents tests from deriving an expected value from the
+ * encoder under test. */
+static void assert_transaction_from_cycle(const M4ARegWriteBatch* batch,
+                                          const M4ARegWrite* expected,
+                                          size_t expected_count,
+                                          uint64_t cycle_origin)
 {
     ASSERT(batch != NULL, "lifecycle transaction batch is available");
     if (!batch)
@@ -18,13 +23,40 @@ static void assert_transaction(const M4ARegWriteBatch* batch, const M4ARegWrite*
     ASSERT_EQ(batch->count, expected_count, "lifecycle transaction count");
     for (size_t i = 0; i < batch->count && i < expected_count; i++)
     {
-        ASSERT_EQ(batch->events[i].cycle, expected[i].cycle, "lifecycle transaction cycle");
-        ASSERT_EQ(batch->events[i].order, expected[i].order, "lifecycle transaction order");
-        ASSERT_EQ(batch->events[i].reg, expected[i].reg, "lifecycle transaction register");
-        ASSERT_EQ(batch->events[i].value, expected[i].value, "lifecycle transaction value");
+        const M4ARegWrite* observed = &batch->events[i];
+        ASSERT_EQ(observed->cycle, cycle_origin + expected[i].cycle, "lifecycle transaction cycle");
+        ASSERT_EQ(observed->order, expected[i].order, "lifecycle transaction order");
+        ASSERT_EQ(observed->reg, expected[i].reg, "lifecycle transaction register");
+        ASSERT_EQ(observed->value, expected[i].value, "lifecycle transaction value");
     }
 }
 
+static void assert_transaction(const M4ARegWriteBatch* batch, const M4ARegWrite* expected, size_t expected_count)
+{
+    assert_transaction_from_cycle(batch, expected, expected_count, batch ? batch->end_cycle : 0);
+}
+
+/* Drive exactly one SoundMain boundary with public clock APIs.  The rebase
+ * leaves the fresh PCM timer after this VBlank, so the retained batch is only
+ * the lifecycle transaction under test. */
+static void advance_one_vblank(M4ADriver* driver)
+{
+    m4a_driver_set_host_rate(driver, (float)M4A_GBA_CYCLES_PER_SECOND);
+    const bool rebased = m4a_driver_set_initial_cycle(driver, M4A_VBLANK_CYCLES - 1u);
+    ASSERT(rebased, "empty lifecycle transaction stream rebases before SoundMain");
+    m4a_advance(driver, 1);
+}
+
+/* The public clock may emit DirectSound timer writes while a PSG envelope is
+ * stable; this assertion isolates the chip-register contract. */
+static void assert_no_psg_writes(const M4ARegWriteBatch* batch, const char* message)
+{
+    ASSERT(batch != NULL, message);
+    if (!batch)
+        return;
+    for (size_t i = 0; i < batch->count; i++)
+        ASSERT(batch->events[i].reg > M4A_REG_WAVE_RAM_WORD_3, message);
+}
 /* Start one voice through the public MIDI ingress; individual scenarios own
  * the subsequent lifecycle action and observed bus transaction. */
 static M4ADriver* start_voice(ToneData* voices)
@@ -71,12 +103,12 @@ static void test_m4a_v2_sq1_lifecycle_transactions(void)
         {0, M4A_REG_NR12, 0xF8u, 5},
         {0, M4A_REG_NR14, 0x86u, 6},
     };
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), start_expected, sizeof(start_expected) / sizeof(start_expected[0]));
     m4a_consume_writes(driver);
-    m4a_internal_compat_tick(driver);
-    ASSERT_EQ(m4a_get_pending_writes(driver)->count, 0, "Sq1 steady envelope emits no transaction");
+    advance_one_vblank(driver);
+    assert_no_psg_writes(m4a_get_pending_writes(driver), "Sq1 steady envelope emits no PSG transaction");
     m4a_consume_writes(driver);
 
     const M4ARegWrite pitch_expected[] = {
@@ -84,7 +116,7 @@ static void test_m4a_v2_sq1_lifecycle_transactions(void)
         {0, M4A_REG_NR14, 0x06u, 1},
     };
     m4a_pitch_bend(driver, 0, 8192);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), pitch_expected, sizeof(pitch_expected) / sizeof(pitch_expected[0]));
     m4a_consume_writes(driver);
@@ -95,7 +127,7 @@ static void test_m4a_v2_sq1_lifecycle_transactions(void)
         {0, M4A_REG_NR14, 0x86u, 2},
     };
     m4a_cc(driver, 0, 10, 0);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(m4a_get_pending_writes(driver),
                        volume_pan_expected,
                        sizeof(volume_pan_expected) / sizeof(volume_pan_expected[0]));
@@ -111,7 +143,7 @@ static void test_m4a_v2_sq1_lifecycle_transactions(void)
         {0, M4A_REG_NR14, 0x86u, 6},
     };
     m4a_note_on(driver, 0, 60, 127);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), retrigger_expected, sizeof(retrigger_expected) / sizeof(retrigger_expected[0]));
     m4a_consume_writes(driver);
@@ -121,7 +153,7 @@ static void test_m4a_v2_sq1_lifecycle_transactions(void)
         {0, M4A_REG_NR14, 0x80u, 1},
     };
     m4a_note_off(driver, 0, 60);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), release_expected, sizeof(release_expected) / sizeof(release_expected[0]));
 
@@ -156,7 +188,7 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
         {0, M4A_REG_NR22, 0xF1u, 4},
         {0, M4A_REG_NR24, 0x86u, 5},
     };
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), start_expected, sizeof(start_expected) / sizeof(start_expected[0]));
     m4a_consume_writes(driver);
@@ -166,7 +198,7 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
         {0, M4A_REG_NR24, 0x06u, 1},
     };
     m4a_pitch_bend(driver, 0, 8192);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), pitch_expected, sizeof(pitch_expected) / sizeof(pitch_expected[0]));
     m4a_driver_destroy(driver);
@@ -174,12 +206,13 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
     driver = start_voice(voices);
     if (!driver)
         return;
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     m4a_consume_writes(driver);
     for (int i = 0; i < 13; i++)
     {
-        m4a_internal_compat_tick(driver);
-        ASSERT_EQ(m4a_get_pending_writes(driver)->count, 0, "Sq2 decay emits nothing before sustain transition");
+        advance_one_vblank(driver);
+        assert_no_psg_writes(m4a_get_pending_writes(driver),
+                             "Sq2 decay emits no PSG transaction before sustain transition");
         m4a_consume_writes(driver);
     }
     const M4ARegWrite envelope_expected[] = {
@@ -187,7 +220,7 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
         {0, M4A_REG_NR22, 0x18u, 1},
         {0, M4A_REG_NR24, 0x86u, 2},
     };
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), envelope_expected, sizeof(envelope_expected) / sizeof(envelope_expected[0]));
     m4a_driver_destroy(driver);
@@ -195,7 +228,7 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
     driver = start_voice(voices);
     if (!driver)
         return;
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     m4a_consume_writes(driver);
     const M4ARegWrite volume_pan_expected[] = {
         {0, M4A_REG_NR51, 0x20u, 0},
@@ -203,7 +236,7 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
         {0, M4A_REG_NR24, 0x86u, 2},
     };
     m4a_cc(driver, 0, 10, 0);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(m4a_get_pending_writes(driver),
                        volume_pan_expected,
                        sizeof(volume_pan_expected) / sizeof(volume_pan_expected[0]));
@@ -212,10 +245,10 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
     driver = start_voice(voices);
     if (!driver)
         return;
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     m4a_consume_writes(driver);
     m4a_note_on(driver, 0, 60, 127);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), start_expected, sizeof(start_expected) / sizeof(start_expected[0]));
     m4a_consume_writes(driver);
@@ -226,21 +259,21 @@ static void test_m4a_v2_sq2_lifecycle_transactions(void)
         {0, M4A_REG_NR24, 0x86u, 2},
     };
     m4a_note_off(driver, 0, 60);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), release_expected, sizeof(release_expected) / sizeof(release_expected[0]));
     m4a_consume_writes(driver);
     for (int i = 0; i < 14; i++)
     {
-        m4a_internal_compat_tick(driver);
-        ASSERT_EQ(m4a_get_pending_writes(driver)->count, 0, "Sq2 release emits nothing before disable");
+        advance_one_vblank(driver);
+        assert_no_psg_writes(m4a_get_pending_writes(driver), "Sq2 release emits no PSG transaction before disable");
         m4a_consume_writes(driver);
     }
     const M4ARegWrite disable_expected[] = {
         {0, M4A_REG_NR22, 0x08u, 0},
         {0, M4A_REG_NR24, 0x80u, 1},
     };
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_transaction(
         m4a_get_pending_writes(driver), disable_expected, sizeof(disable_expected) / sizeof(disable_expected[0]));
 
@@ -268,16 +301,26 @@ static void assert_first_directsound_refill(M4ADriver* driver, const DirectSound
         {1254, M4A_REG_FIFO_B, expected->fifo_b[3], 7},
     };
 
+    /* The VBlank helper starts the fresh FIFO timer one cycle before the
+     * observed boundary.  Keep the literal timer offsets while comparing
+     * them against the driver's absolute event stream. */
+    const uint64_t timer_origin = m4a_driver_current_cycle(driver) - 1u;
+    m4a_driver_set_host_rate(driver, 44100.0f);
     m4a_advance(driver, 4);
-    assert_transaction(m4a_get_pending_writes(driver), refill_expected, sizeof(refill_expected) / sizeof(refill_expected[0]));
+    assert_transaction_from_cycle(m4a_get_pending_writes(driver),
+                                  refill_expected,
+                                  sizeof(refill_expected) / sizeof(refill_expected[0]),
+                                  timer_origin);
     m4a_consume_writes(driver);
 
     const M4ARegWrite consume_expected[] = {
         {2508, M4A_REG_TIMER_0, 0, 0},
     };
     m4a_advance(driver, 4);
-    assert_transaction(
-        m4a_get_pending_writes(driver), consume_expected, sizeof(consume_expected) / sizeof(consume_expected[0]));
+    assert_transaction_from_cycle(m4a_get_pending_writes(driver),
+                                  consume_expected,
+                                  sizeof(consume_expected) / sizeof(consume_expected[0]),
+                                  timer_origin);
 }
 
 /* DirectSound has no PSG configuration writes: its observable lifecycle is
@@ -319,7 +362,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
     M4ADriver* driver = start_voice(voices);
     if (!driver)
         return;
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     /* All 16 FIFO bytes lock the ROM mixer's interpolation and discarded-bit
      * carry, rather than assuming one startup word repeats across the burst. */
     assert_first_directsound_refill(driver, &start_expected);
@@ -329,7 +372,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
     if (!driver)
         return;
     m4a_pitch_bend(driver, 0, 8192);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     /* Pitch changes the second interpolated source byte without changing
      * FIFO width, order, timer identity, or stereo routing. */
     assert_first_directsound_refill(driver, &pitch_expected);
@@ -339,7 +382,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
     driver = start_voice(voices);
     if (!driver)
         return;
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_first_directsound_refill(driver, &attack_expected);
     m4a_driver_destroy(driver);
 
@@ -348,7 +391,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
     if (!driver)
         return;
     m4a_cc(driver, 0, 10, 0);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_first_directsound_refill(driver, &pan_expected);
     m4a_driver_destroy(driver);
 
@@ -357,7 +400,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
         return;
     m4a_note_off(driver, 0, 60);
     m4a_note_on(driver, 0, 60, 127);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_first_directsound_refill(driver, &start_expected);
     m4a_driver_destroy(driver);
 
@@ -365,7 +408,7 @@ static void test_m4a_v2_directsound_lifecycle_transactions(void)
     if (!driver)
         return;
     m4a_note_off(driver, 0, 60);
-    m4a_internal_compat_tick(driver);
+    advance_one_vblank(driver);
     assert_first_directsound_refill(driver, &release_expected);
     m4a_driver_destroy(driver);
 }

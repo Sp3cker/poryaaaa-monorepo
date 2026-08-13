@@ -257,7 +257,7 @@ Diagnostic if you see this again: swap the `outlet=0`/`outlet=1` wires to the tw
 
 ## Engine-side gotcha: silent note drops
 
-Distinct from Max issues but worth recording: `m4a_engine_note_on` will silently no-op if `resolve_voice` returns NULL. The most common cause is a `voice_keysplit_all` (drumset) program where the played key isn't in the drum-key-map. Symptoms: dispatcher logs the note, but no audible sound.
+Distinct from Max issues but worth recording: direct `m4a_note_on` calls silently no-op if `resolve_voice` returns NULL. The most common cause is a `voice_keysplit_all` (drumset) program where the played key isn't in the drum-key-map. Symptoms: dispatcher logs the note, but no audible sound.
 
 **Diagnostic:** if test-note works on key 60 but melodic clip notes on B4/A4/E5 don't, check the voicegroup's program 0 — it's likely a `keysplit_all` drumset. Send a Program Change to a melodic program (`voice_keysplit`, `voice_square_*`, `voice_directsound`) before playing.
 

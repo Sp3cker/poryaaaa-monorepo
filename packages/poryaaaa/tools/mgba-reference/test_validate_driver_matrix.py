@@ -34,11 +34,18 @@ def write_trace(output, family):
             "WRITE 0 0 2 0x04000082 0x0000b600",
             "WRITE 0 1 2 0x04000088 0x00000200",
         ]
-        body = [
-            "WRITE 1 0 4 0x040000a0 0x76543210",
-            "TIMER 2 0 0",
-            "SAMPLE 3 0",
-        ]
+        if option("--scenario") in {"start", "pitch", "retrigger"}:
+            body = [
+                "WRITE 1 0 4 0x040000a0 0x76543210",
+                "TIMER 2 0 0",
+                "SAMPLE 3 0",
+            ]
+        else:
+            body = [
+                "WRITE 1 0 4 0x040000a4 0x76543210",
+                "TIMER 2 0 1",
+                "SAMPLE 3 0",
+            ]
     elif family == "sq1":
         body = [
             "WRITE 1 0 2 0x04000060 0x0000",
@@ -69,8 +76,17 @@ def write_trace(output, family):
             "WRITE 9 0 4 0x04000098 0x67452301",
             "WRITE 10 0 4 0x0400009c 0xefcdab89",
         ]
-    if os.environ.get("MATRIX_DROP_EVENT") == f"{family}:timer_overflow":
+    dropped_event = os.environ.get("MATRIX_DROP_EVENT")
+    if dropped_event == f"{family}:timer_overflow":
         body = [line for line in body if not line.startswith("TIMER ")]
+    elif dropped_event == "directsound:fifo_a_word":
+        body = [line for line in body if "0x040000a0" not in line]
+    elif dropped_event == "directsound:fifo_b_word":
+        body = [line for line in body if "0x040000a4" not in line]
+    elif dropped_event == "directsound:timer_0":
+        body = [line for line in body if line != "TIMER 2 0 0"]
+    elif dropped_event == "directsound:timer_1":
+        body = [line for line in body if line != "TIMER 2 0 1"]
     return "\n".join(["PORYAAAA_AUDIO_TRACE 1", "CLOCK 16777216", *setup, "BEGIN 0 2", *body, "END 11 0", ""])
 
 
@@ -224,6 +240,10 @@ class ValidateDriverMatrixTest(unittest.TestCase):
         self.assertEqual(fixture["sq1"]["voice_index"], 1)
         self.assertEqual(fixture["sq2"]["voicegroup_symbol"], "voicegroup_vs_wild")
         self.assertEqual(fixture["sq2"]["voice_index"], 4)
+        self.assertEqual(
+            {(case["fixture"]["family"], case["fixture"]["resolved_type"]) for case in report["cases"]},
+            {("directsound", 0x00), ("sq1", 0x01), ("sq2", 0x02), ("psw", 0x03), ("psw", 0x0B)},
+        )
         self.assertEqual({case["controls"]["note"] for case in report["cases"]}, {36, 60, 84})
         self.assertEqual({case["controls"]["pan"] for case in report["cases"]}, {0, 64, 127})
         for source in ("reference", "candidate"):
@@ -237,21 +257,38 @@ class ValidateDriverMatrixTest(unittest.TestCase):
                         self.assertTrue(event["exercised"])
                         self.assertTrue(any(case_run.endswith("/first") for case_run in event["case_runs"]))
                         self.assertTrue(any(case_run.endswith("/repeat") for case_run in event["case_runs"]))
+            directsound = coverage["families"]["directsound"]
+            aggregate_names = ["fifo_a_word", "fifo_b_word", "timer_0", "timer_1"]
+            self.assertEqual(directsound["aggregate_required_event_classes"], aggregate_names)
+            self.assertEqual(directsound["unexercised_aggregate_event_classes"], [])
+            aggregate_events = {
+                event["name"]: event for event in directsound["required_event_coverage"]
+            }
+            for name in aggregate_names:
+                self.assertTrue(aggregate_events[name]["exercised"])
+                self.assertFalse(aggregate_events[name]["required"])
+                self.assertLess(len(aggregate_events[name]["cases"]), len(by_family["directsound"]))
         self.assertTrue(report["coverage"]["complete"])
         self.assertEqual(len(self.calls()), 60)
 
-    def test_unexercised_required_directsound_event_class_fails_coverage(self):
-        output = self.outputs / "missing-directsound-event"
-        completed = self.run_matrix(output, MATRIX_DROP_EVENT="directsound:timer_overflow")
+    def test_unexercised_aggregate_directsound_event_classes_fail_coverage(self):
+        for event in ("fifo_a_word", "fifo_b_word", "timer_0", "timer_1"):
+            with self.subTest(event=event):
+                self.log.write_text("", encoding="utf-8")
+                output = self.outputs / f"missing-directsound-{event}"
+                completed = self.run_matrix(output, MATRIX_DROP_EVENT=f"directsound:{event}")
 
-        self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
-        report = json.loads((output.with_name(output.name + ".failed") / "matrix_report.json").read_text(encoding="utf-8"))
-        self.assertFalse(report["matrix_exact"])
-        for source in ("reference", "candidate"):
-            directsound = report["coverage"]["sources"][source]["families"]["directsound"]
-            self.assertFalse(directsound["complete"])
-            self.assertEqual(directsound["unexercised_required_event_classes"], ["timer_overflow"])
-        self.assertEqual(len(self.calls()), 60)
+                self.assertEqual(completed.returncode, 1, completed.stderr or completed.stdout)
+                report = json.loads(
+                    (output.with_name(output.name + ".failed") / "matrix_report.json").read_text(encoding="utf-8")
+                )
+                self.assertFalse(report["matrix_exact"])
+                for source in ("reference", "candidate"):
+                    directsound = report["coverage"]["sources"][source]["families"]["directsound"]
+                    self.assertFalse(directsound["complete"])
+                    self.assertEqual(directsound["unexercised_required_event_classes"], [])
+                    self.assertEqual(directsound["unexercised_aggregate_event_classes"], [event])
+                self.assertEqual(len(self.calls()), 60)
 
     def test_failed_case_preserves_first_transaction_and_native_sample_divergence(self):
         output = self.outputs / "failed"

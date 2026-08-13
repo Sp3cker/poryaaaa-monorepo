@@ -45,7 +45,7 @@
   - Change the existing `test_chip_canned_soundbias_internal_rate_switches` expectation.
   - Add a one-call-vs-split-call regression for a mid-call `SOUNDBIAS` switch.
   - Add focused DirectSound FIFO reset and PSG length-counter regressions.
-- Modify: `packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md`
+- Modify: `packages/poryaaaa/docs/arch-parity-fix-plan.md`
   - Remove stale "boot-time-only SOUNDBIAS target restriction" wording after tests pass.
   - Record the DirectSound reset and PSG length-counter gaps as closed when their tests pass.
   - Record the local source/reference evidence used for each closed chip-behavior fix.
@@ -365,7 +365,7 @@ Expected: all unit tests pass, including the new split-call equivalence test.
 **Files:**
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_audio.h`
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_audio.c`
-- Modify: `packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md`
+- Modify: `packages/poryaaaa/docs/arch-parity-fix-plan.md`
 
 - [ ] **Step 1: Update `hw_audio.h` comments**
 
@@ -389,7 +389,7 @@ Replace the long "Boot-time-only target restriction" block with a shorter commen
 hw_audio_sync_rates_from_mix(hw);
 ```
 
-- [ ] **Step 3: Update `HW_AUDIO_SCAFFOLD_PLAN.md`**
+- [ ] **Step 3: Update `docs/arch-parity-fix-plan.md`**
 
 Change the sections that describe mid-call `SOUNDBIAS` handling as out of scope. Record it as closed by the new test:
 
@@ -406,7 +406,7 @@ the resampler epoch before rendering the next host span. Regression:
 Run:
 
 ```bash
-rg -n "boot-time-only|mid-call SOUNDBIAS|next render boundary|snapshot-at-start|test_chip_canned_soundbias_internal_rate_switches" packages/poryaaaa/plugin/hw_audio packages/poryaaaa/test packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md
+rg -n "boot-time-only|mid-call SOUNDBIAS|next render boundary|snapshot-at-start|test_chip_canned_soundbias_internal_rate_switches" packages/poryaaaa/plugin/hw_audio packages/poryaaaa/test packages/poryaaaa/docs/arch-parity-fix-plan.md
 ```
 
 Expected: no remaining comments say that mid-call `SOUNDBIAS` rate changes are intentionally deferred. Mentions in old historical context are acceptable only if they explicitly say the limitation has been removed.
@@ -420,7 +420,7 @@ Expected: no remaining comments say that mid-call `SOUNDBIAS` rate changes are i
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_pcm.c`
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_mix.h`
 - Modify: `packages/poryaaaa/test/test_engine.c`
-- Modify: `packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md`
+- Modify: `packages/poryaaaa/docs/arch-parity-fix-plan.md`
 
 - [ ] **Step 1: Name the `SOUNDCNT_H` reset bits in `hw_pcm.c`**
 
@@ -516,7 +516,7 @@ Use a direct `HwPcm` test for this regression. Do not route this test through `H
 
 - [ ] **Step 6: Update stale DirectSound docs/comments**
 
-Update the `hw_pcm_apply_event` comment that currently says PCM needs no event subscriptions. Update `HW_AUDIO_SCAFFOLD_PLAN.md` to record FIFO reset bits as implemented.
+Update the `hw_pcm_apply_event` comment that currently says PCM needs no event subscriptions. Update `docs/arch-parity-fix-plan.md` to record FIFO reset bits as implemented.
 
 In `hw_mix.h`, correct only stale `SOUNDCNT_H` bit comments. Do not refactor `HwMixBus`.
 
@@ -539,7 +539,7 @@ Expected: the new FIFO reset regression passes and existing PCM timing tests sti
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_psg.h`
 - Modify: `packages/poryaaaa/plugin/hw_audio/hw_psg.c`
 - Modify: `packages/poryaaaa/test/test_engine.c`
-- Modify: `packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md`
+- Modify: `packages/poryaaaa/docs/arch-parity-fix-plan.md`
 
 - [ ] **Step 1: Add per-channel length state**
 
@@ -626,7 +626,7 @@ Add a regression proving the normal m4a path emits `length_en=false` for regular
 
 - [ ] **Step 7: Update docs**
 
-Remove the deferred-subsystem comments for `NR31` and `NR41`. Update `HW_AUDIO_SCAFFOLD_PLAN.md` to record PSG length counters as implemented. Do not implement hardware envelope progression in this plan.
+Remove the deferred-subsystem comments for `NR31` and `NR41`. Update `docs/arch-parity-fix-plan.md` to record PSG length counters as implemented. Do not implement hardware envelope progression in this plan.
 
 - [ ] **Step 8: Run the focused suite**
 
@@ -644,11 +644,11 @@ Expected: new length-counter regressions pass; existing frame-sequencer, sweep, 
 ### Task 8: Check Reference Behavior
 
 **Files:**
-- Modify: `packages/poryaaaa/HW_AUDIO_SCAFFOLD_PLAN.md`
+- Modify: `packages/poryaaaa/docs/arch-parity-fix-plan.md`
 
 - [ ] **Step 1: Record the local reference sources used**
 
-Record these source checks in `HW_AUDIO_SCAFFOLD_PLAN.md`:
+Record these source checks in `docs/arch-parity-fix-plan.md`:
 
 - `SOUNDBIAS`: local mGBA `src/gba/audio.c`, `GBAAudioWriteSOUNDBIAS`, samples before applying the write, updates `sampleInterval`, and emits `audioRateChanged` when the rate changes.
 - DirectSound FIFO reset: local mGBA `src/gba/audio.c`, `GBAAudioWriteSOUNDCNT_HI`, resets FIFO A/B read/write pointers when the reset bits are set.
@@ -665,9 +665,9 @@ rg -n "SOUNDBIAS|FIFO reset|fifo-a|fifo-b|length counter|NR11|NR21|NR31|NR41" \
   packages/poryaaaa
 ```
 
-If a matching README/script/test exists, run its documented command and record the exact command/output in `HW_AUDIO_SCAFFOLD_PLAN.md`.
+If a matching README/script/test exists, run its documented command and record the exact command/output in `docs/arch-parity-fix-plan.md`.
 
-If no existing reference comparison covers a fix, record the search command and result in `HW_AUDIO_SCAFFOLD_PLAN.md`. Do not create a new capture framework, test ROM, or savestate in this plan.
+If no existing reference comparison covers a fix, record the search command and result in `docs/arch-parity-fix-plan.md`. Do not create a new capture framework, test ROM, or savestate in this plan.
 
 ---
 
@@ -730,7 +730,7 @@ Expected: no whitespace errors.
 - `M4A_REG_SOUNDCNT_H` FIFO reset bit `0x8000` clears modeled DirectSound FIFO B state without disturbing FIFO A.
 - PSG square, wave, and noise length counters load from their NR length registers, decrement on the existing length frame-sequencer ticks, and disable their channels at zero only when length-enable bit 6 is set.
 - Normal m4a/NP2K sustained notes keep playing because the emitted register stream keeps length-enable bit 6 clear.
-- `HW_AUDIO_SCAFFOLD_PLAN.md` records the local mGBA/source evidence used for each closed chip-behavior fix, plus any missing capture/trace comparison as an open validation gate.
+- `docs/arch-parity-fix-plan.md` records the local mGBA/source evidence used for each closed chip-behavior fix, plus any missing capture/trace comparison as an open validation gate.
 - No new public chip-audio interface is added.
 - Stale comments no longer describe same-call `SOUNDBIAS`, DirectSound FIFO reset, or PSG length counters as deliberately unsupported.
 - The render-cadence strategy and analog output filter remain explicitly out of scope.

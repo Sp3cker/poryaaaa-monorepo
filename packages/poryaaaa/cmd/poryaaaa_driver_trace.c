@@ -5,6 +5,7 @@
  *            --scenario NAME --trace-output FILE
  *            [--note N] [--velocity N] [--volume N] [--pan N]
  *
+ * Trace SAMPLE observations are canonical 65,536 Hz (one per 256 GBA cycles).
  * Loads one supported voice slot through voicegroup_loader and derives its
  * family from ToneData. It drives M4ADriver directly (no MIDI parser,
  * renderer, or chip), then serializes only that family's unmodified pending
@@ -95,9 +96,9 @@ typedef struct
 } DriverFamily;
 
 static const DriverFamily DRIVER_FAMILIES[] = {
-    {DRIVER_FAMILY_PSW, "psw", {VOICE_PROGRAMMABLE_WAVE, VOICE_PROGRAMMABLE_WAVE_ALT}, 2u, 512u, 0u},
-    {DRIVER_FAMILY_SQ1, "sq1", {VOICE_SQUARE_1}, 1u, 512u, 0u},
-    {DRIVER_FAMILY_SQ2, "sq2", {VOICE_SQUARE_2}, 1u, 512u, 0u},
+    {DRIVER_FAMILY_PSW, "psw", {VOICE_PROGRAMMABLE_WAVE, VOICE_PROGRAMMABLE_WAVE_ALT}, 2u, 256u, 0u},
+    {DRIVER_FAMILY_SQ1, "sq1", {VOICE_SQUARE_1}, 1u, 256u, 0u},
+    {DRIVER_FAMILY_SQ2, "sq2", {VOICE_SQUARE_2}, 1u, 256u, 0u},
     {DRIVER_FAMILY_DIRECTSOUND, "directsound", {VOICE_DIRECTSOUND}, 1u, 256u, DRIVER_DIRECTSOUND_ORIGIN_CYCLES},
 };
 
@@ -433,8 +434,8 @@ static void print_usage(const char* program)
             "Usage: %s PROJECT_ROOT VOICEGROUP VOICE_INDEX\n"
             "       --scenario NAME --trace-output FILE\n"
             "       [--note N] [--velocity N] [--volume N] [--pan N]\n"
-            "VOICE_INDEX and every control are strict decimal 0..127 "
-            "(defaults note 60, velocity 127, volume 127, pan 64).\n",
+            "Trace SAMPLE observations are fixed at 65536 Hz.\n"
+            "VOICE_INDEX and every control are strict decimal 0..127.\n",
             program);
 }
 
@@ -1415,6 +1416,20 @@ static bool write_json_hex(FILE* output, const uint8_t* data, size_t size)
     }
     return fputc('"', output) != EOF;
 }
+/* Publish the scenario's final rejected tick so external validators can
+ * distinguish the last action tick from the settled observation tick. */
+static bool write_scenario_action_schedule(FILE* output, const DriverScenario* scenario)
+{
+    bool ok = fputs("  \"action_tick_schedule\": [", output) >= 0;
+    for (unsigned tick = 0u; ok && tick <= scenario->logical_vblanks; ++tick)
+    {
+        if (tick != 0u && fputs(", ", output) < 0)
+            ok = false;
+        if (ok && fputs(driver_is_scenario_action_tick(scenario, tick) ? "true" : "false", output) < 0)
+            ok = false;
+    }
+    return ok && fputs("],\n", output) >= 0;
+}
 
 /* Deterministic companion manifest: fixed field order, no paths, timestamps,
  * pointers, or self-hash. The trace hash commits the sibling's bytes. */
@@ -1442,6 +1457,7 @@ static bool write_manifest(FILE* output,
               fprintf(output, "  \"trace_end_cycle\": %" PRIu64 ",\n", trace_end_cycle) > 0 &&
               fprintf(output, "  \"driver_origin_cycle\": %" PRIu64 ",\n", identity->family->driver_origin_cycle) > 0 &&
               fprintf(output, "  \"logical_vblanks\": %u,\n", scenario->logical_vblanks) > 0 &&
+              write_scenario_action_schedule(output, scenario) &&
               fprintf(output, "  \"capture_frames\": %u,\n", scenario->capture_frames) > 0 &&
               fprintf(output, "  \"capture_span_cycles\": %" PRIu64 ",\n", trace_end_cycle - trace_begin_cycle) > 0 &&
               fputs("  \"voicegroup_symbol\": ", output) >= 0 && write_json_string(output, voicegroup_symbol) &&

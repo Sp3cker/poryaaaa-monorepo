@@ -1,27 +1,19 @@
 #include "hw_audio_trace.h"
+#include "hw_pcm.h"
 
 #include <stdbool.h>
 #include <string.h>
 
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_DELAY_MASK 0xFFFFu
-
 enum
 {
-    TRACE_FIFO_WORD_CAPACITY = 8,
     TRACE_SAMPLE_BLOCK_CYCLES = 1024,
     TRACE_MAX_BLOCK_SAMPLES = 16,
 };
 
 typedef struct
 {
-    uint32_t words[TRACE_FIFO_WORD_CAPACITY];
-    uint32_t internal_sample;
     int8_t samples[TRACE_MAX_BLOCK_SAMPLES];
-    uint8_t read_index;
-    uint8_t write_index;
-    uint8_t internal_remaining;
-} ScheduledFifo;
+} ScheduledFifoSamples;
 
 typedef struct
 {
@@ -31,8 +23,9 @@ typedef struct
 
 typedef struct
 {
-    ScheduledFifo fifo_a;
-    ScheduledFifo fifo_b;
+    HwPcm pcm;
+    ScheduledFifoSamples fifo_a;
+    ScheduledFifoSamples fifo_b;
     HwAudioTraceFifoSample* output;
     size_t output_capacity;
     size_t output_count;
@@ -44,11 +37,6 @@ typedef struct
     uint64_t prior_cycle;
     uint32_t prior_order;
     uint8_t resolution;
-    uint8_t timer_a;
-    uint8_t timer_b;
-    bool enabled;
-    bool route_a;
-    bool route_b;
     bool position_valid;
     bool sample_position_valid;
 } FifoSchedule;
@@ -105,27 +93,16 @@ static bool rebase_sample_block(FifoSchedule* schedule, uint64_t cycle)
     return true;
 }
 
-/* mGBA advances this modulo-8 write pointer even when it meets the read pointer. */
-static bool push_fifo_word(ScheduledFifo* fifo, uint32_t value)
+/* Fill the native-sample suffix affected by a shared PCM timer clock. */
+static void schedule_fifo_clock(FifoSchedule* schedule,
+                                ScheduledFifoSamples* samples,
+                                const HwPcmFifo* fifo,
+                                const HwAudioTraceEvent* event)
 {
-    fifo->words[fifo->write_index] = value;
-    fifo->write_index = (uint8_t)((fifo->write_index + 1u) % TRACE_FIFO_WORD_CAPACITY);
-    return true;
-}
-
-/* Fill the mGBA native-sample suffix affected by one selected timer clock. */
-static void clock_fifo(FifoSchedule* schedule, ScheduledFifo* fifo, const HwAudioTraceEvent* event)
-{
-    if (!fifo->internal_remaining && fifo->read_index != fifo->write_index)
-    {
-        fifo->internal_sample = fifo->words[fifo->read_index];
-        fifo->read_index = (uint8_t)((fifo->read_index + 1u) % TRACE_FIFO_WORD_CAPACITY);
-        fifo->internal_remaining = 4;
-    }
-
     unsigned sample_count = 2u << schedule->resolution;
     unsigned interval_shift = 9u - schedule->resolution;
-    uint32_t cycles_late = (event->order & TRACE_ORDER_EXTENDED) ? event->order & TRACE_ORDER_DELAY_MASK : 0u;
+    uint32_t cycles_late =
+        (event->order & PORYAAAA_TRACE_ORDER_EXTENDED) ? event->order & PORYAAAA_TRACE_ORDER_DELAY_MASK : 0u;
     int64_t sample_event_until = (int64_t)schedule->block_end - (int64_t)event->cycle - cycles_late;
     int64_t remaining_slots = sample_event_until - 1 + (1u << interval_shift);
     remaining_slots >>= interval_shift;
@@ -134,12 +111,7 @@ static void clock_fifo(FifoSchedule* schedule, ScheduledFifo* fifo, const HwAudi
     if (remaining_slots > 0)
     {
         unsigned first_slot = sample_count - (unsigned)remaining_slots;
-        memset(&fifo->samples[first_slot], (int8_t)fifo->internal_sample, sample_count - first_slot);
-    }
-    if (fifo->internal_remaining)
-    {
-        fifo->internal_sample >>= 8u;
-        fifo->internal_remaining--;
+        memset(&samples->samples[first_slot], fifo->held_sample, sample_count - first_slot);
     }
 }
 
@@ -149,43 +121,41 @@ bool hw_audio_trace_event_is_cgb_batch_write(const HwAudioTraceEvent* event)
 {
     if (!event || event->kind != HW_AUDIO_TRACE_WRITE)
         return false;
-    const uint32_t offset = event->address - HW_AUDIO_GBA_IO_BASE;
+    const uint32_t offset = event->address - PORYAAAA_GBA_IO_BASE;
     return (offset >= 0x60u && offset <= 0x65u) || (offset >= 0x68u && offset <= 0x6Du) ||
            (offset >= 0x70u && offset <= 0x75u) || (offset >= 0x78u && offset <= 0x7Du) ||
            (offset >= 0x80u && offset <= 0x81u) || (offset >= 0x90u && offset <= 0x9Fu);
 }
 
-/* Apply writes that determine FIFO scheduling without duplicating the audio mixer. */
+/* Apply only PCM-relevant writes through the shared DirectSound state. */
 static bool apply_schedule_write(FifoSchedule* schedule, const HwAudioTraceEvent* event)
 {
+    M4ARegWrite pcm_event = {.value = event->value};
     switch (event->address)
     {
-    case HW_AUDIO_GBA_IO_BASE + 0x82:
-        schedule->timer_a = (uint8_t)((event->value >> 10u) & 1u);
-        schedule->timer_b = (uint8_t)((event->value >> 14u) & 1u);
-        schedule->route_a = (event->value & 0x0300u) != 0;
-        schedule->route_b = (event->value & 0x3000u) != 0;
-        if (event->value & 0x0800u)
-        {
-            schedule->fifo_a.read_index = 0;
-            schedule->fifo_a.write_index = 0;
-        }
-        if (event->value & 0x8000u)
-        {
-            schedule->fifo_b.read_index = 0;
-            schedule->fifo_b.write_index = 0;
-        }
+    case PORYAAAA_GBA_IO_BASE + 0x82:
+        pcm_event.reg = M4A_REG_SOUNDCNT_H;
+        hw_pcm_apply_event(&schedule->pcm, &pcm_event);
         return true;
-    case HW_AUDIO_GBA_IO_BASE + 0x84:
-        schedule->enabled = (event->value & 0x80u) != 0;
+    case PORYAAAA_GBA_IO_BASE + 0x84:
+        pcm_event.reg = M4A_REG_NR52;
+        hw_pcm_apply_event(&schedule->pcm, &pcm_event);
         return true;
-    case HW_AUDIO_GBA_IO_BASE + 0x88:
+    case PORYAAAA_GBA_IO_BASE + 0x88:
         schedule->resolution = (uint8_t)((event->value >> 14u) & 3u);
         return true;
-    case HW_AUDIO_GBA_IO_BASE + 0xA0:
-        return event->width == 4 && push_fifo_word(&schedule->fifo_a, event->value);
-    case HW_AUDIO_GBA_IO_BASE + 0xA4:
-        return event->width == 4 && push_fifo_word(&schedule->fifo_b, event->value);
+    case PORYAAAA_GBA_IO_BASE + 0xA0:
+        if (event->width != 4)
+            return false;
+        pcm_event.reg = M4A_REG_FIFO_A;
+        hw_pcm_apply_event(&schedule->pcm, &pcm_event);
+        return true;
+    case PORYAAAA_GBA_IO_BASE + 0xA4:
+        if (event->width != 4)
+            return false;
+        pcm_event.reg = M4A_REG_FIFO_B;
+        hw_pcm_apply_event(&schedule->pcm, &pcm_event);
+        return true;
     default:
         return true;
     }
@@ -247,18 +217,26 @@ HwAudioTraceStatus hw_audio_trace_schedule_fifo_samples(const HwAudioTraceEvent*
             ok = apply_schedule_write(&schedule, event);
         else if (event->kind == HW_AUDIO_TRACE_TIMER)
         {
-            if (schedule.enabled && schedule.route_a && schedule.timer_a == event->value)
-                clock_fifo(&schedule, &schedule.fifo_a, event);
-            if (schedule.enabled && schedule.route_b && schedule.timer_b == event->value)
-                clock_fifo(&schedule, &schedule.fifo_b, event);
+            if (event->value <= 1u)
+            {
+                const bool clock_a =
+                    schedule.pcm.master_enabled && schedule.pcm.route_a && schedule.pcm.timer_a == event->value;
+                const bool clock_b =
+                    schedule.pcm.master_enabled && schedule.pcm.route_b && schedule.pcm.timer_b == event->value;
+                hw_pcm_clock_timer(&schedule.pcm, (uint8_t)event->value);
+                if (clock_a)
+                    schedule_fifo_clock(&schedule, &schedule.fifo_a, &schedule.pcm.fifo_a, event);
+                if (clock_b)
+                    schedule_fifo_clock(&schedule, &schedule.fifo_b, &schedule.pcm.fifo_b, event);
+            }
         }
         else if (event->kind == HW_AUDIO_TRACE_SAMPLE)
             ok = schedule_sample(&schedule, event);
         else
             ok = false;
         if (!ok)
-            return event->kind == HW_AUDIO_TRACE_WRITE && (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0 ||
-                                                           event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
+            return event->kind == HW_AUDIO_TRACE_WRITE && (event->address == PORYAAAA_GBA_IO_BASE + 0xA0 ||
+                                                           event->address == PORYAAAA_GBA_IO_BASE + 0xA4)
                        ? HW_AUDIO_TRACE_UNSUPPORTED_WIDTH
                        : HW_AUDIO_TRACE_INVALID_ARGUMENT;
         if (event->kind == HW_AUDIO_TRACE_WRITE && hw_audio_trace_event_is_cgb_batch_write(event))

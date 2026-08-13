@@ -1,5 +1,8 @@
 #include "hw_audio.h"
-#include "hw_audio_trace.h"
+#include "audio_trace_format.h"
+#if PORYAAAA_HW_AUDIO_TRACE
+#    include "hw_audio_trace.h"
+#endif
 #include "hw_psg.h"
 #include "hw_pcm.h"
 #include "hw_mix.h"
@@ -16,8 +19,6 @@
  * HwAudio struct — at HW_AUDIO_INTERNAL_CHUNK=1024 the six per-channel
  * scratch buffers add up to 24 KB. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
-#define TRACE_ORDER_EXTENDED 0x80000000u
-#define TRACE_ORDER_DELAY_MASK 0xFFFFu
 
 struct HwAudio
 {
@@ -43,6 +44,7 @@ struct HwAudio
      * sides). */
     uint32_t solo_mask;
 
+#if PORYAAAA_HW_AUDIO_TRACE
     /* Absolute trace position is independent of the production host-frame
      * renderer. It rejects reordered captures before they reach chip state. */
     uint64_t trace_cycle;
@@ -50,6 +52,7 @@ struct HwAudio
     bool trace_position_valid;
     HwPcm trace_pcm;
     bool trace_reset_frame_pending;
+#endif
 
     /* Native channel values stay integral through the GBA DAC. Only the
      * final PCM16 stereo pair is converted for the host resampler. */
@@ -78,12 +81,12 @@ static void reset_frontend(HwAudio* hw)
  * allowing a large cycle count to overflow the fixed-rate multiplication. */
 static int host_frames_through_cycle(uint64_t cycles, uint32_t host_rate)
 {
-    uint64_t whole_seconds = cycles / HW_AUDIO_GBA_CLOCK_HZ;
-    uint64_t remainder = cycles % HW_AUDIO_GBA_CLOCK_HZ;
+    uint64_t whole_seconds = cycles / PORYAAAA_GBA_CLOCK_HZ;
+    uint64_t remainder = cycles % PORYAAAA_GBA_CLOCK_HZ;
     if (host_rate == 0 || whole_seconds > (uint64_t)INT_MAX / host_rate)
         return INT_MAX;
     uint64_t frames = whole_seconds * host_rate;
-    frames += (remainder * host_rate + HW_AUDIO_GBA_CLOCK_HZ - 1u) / HW_AUDIO_GBA_CLOCK_HZ;
+    frames += (remainder * host_rate + PORYAAAA_GBA_CLOCK_HZ - 1u) / PORYAAAA_GBA_CLOCK_HZ;
     return frames > INT_MAX ? INT_MAX : (int)frames;
 }
 static int chip_quirk_rate(uint8_t sampling_cycle)
@@ -144,10 +147,12 @@ void hw_audio_reset(HwAudio* hw)
     hw->live_cycle = 0;
     hw->dac_cycle_remainder = 0;
     hw->live_sample_pending = true;
+#if PORYAAAA_HW_AUDIO_TRACE
     hw->trace_cycle = 0;
     hw->trace_order = 0;
     hw->trace_position_valid = false;
     hw->trace_reset_frame_pending = false;
+#endif
 }
 
 void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
@@ -364,7 +369,7 @@ static bool render_to_cycle(HwAudio* hw,
         hw->live_sample_pending = false;
     }
 
-    const uint32_t cycles_per_dac_sample = HW_AUDIO_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate;
+    const uint32_t cycles_per_dac_sample = PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate;
     while (hw->live_cycle < target_cycle)
     {
         const uint32_t until_dac = cycles_per_dac_sample - hw->dac_cycle_remainder;
@@ -527,6 +532,7 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
     }
 }
 
+#if PORYAAAA_HW_AUDIO_TRACE
 /* Apply one existing poryaaaa register event to every owning chip module. */
 static void apply_chip_event(HwAudio* hw, M4ARegId reg, uint32_t value)
 {
@@ -550,52 +556,52 @@ static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t addre
     {
         switch (address)
         {
-        case HW_AUDIO_GBA_IO_BASE + 0x62:
+        case PORYAAAA_GBA_IO_BASE + 0x62:
             apply_chip_event(hw, M4A_REG_NR11, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x63:
+        case PORYAAAA_GBA_IO_BASE + 0x63:
             apply_chip_event(hw, M4A_REG_NR12, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x64:
+        case PORYAAAA_GBA_IO_BASE + 0x64:
             apply_chip_event(hw, M4A_REG_NR13, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x65:
+        case PORYAAAA_GBA_IO_BASE + 0x65:
             apply_chip_event(hw, M4A_REG_NR14, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x68:
+        case PORYAAAA_GBA_IO_BASE + 0x68:
             apply_chip_event(hw, M4A_REG_NR21, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x69:
+        case PORYAAAA_GBA_IO_BASE + 0x69:
             apply_chip_event(hw, M4A_REG_NR22, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x6C:
+        case PORYAAAA_GBA_IO_BASE + 0x6C:
             apply_chip_event(hw, M4A_REG_NR23, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x6D:
+        case PORYAAAA_GBA_IO_BASE + 0x6D:
             apply_chip_event(hw, M4A_REG_NR24, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x72:
+        case PORYAAAA_GBA_IO_BASE + 0x72:
             apply_chip_event(hw, M4A_REG_NR31, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x73:
+        case PORYAAAA_GBA_IO_BASE + 0x73:
             apply_chip_event(hw, M4A_REG_NR32, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x74:
+        case PORYAAAA_GBA_IO_BASE + 0x74:
             apply_chip_event(hw, M4A_REG_NR33, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x75:
+        case PORYAAAA_GBA_IO_BASE + 0x75:
             apply_chip_event(hw, M4A_REG_NR34, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x78:
+        case PORYAAAA_GBA_IO_BASE + 0x78:
             apply_chip_event(hw, M4A_REG_NR41, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x79:
+        case PORYAAAA_GBA_IO_BASE + 0x79:
             apply_chip_event(hw, M4A_REG_NR42, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x7C:
+        case PORYAAAA_GBA_IO_BASE + 0x7C:
             apply_chip_event(hw, M4A_REG_NR43, value & 0xFFu);
             break;
-        case HW_AUDIO_GBA_IO_BASE + 0x7D:
+        case PORYAAAA_GBA_IO_BASE + 0x7D:
             apply_chip_event(hw, M4A_REG_NR44, value & 0xFFu);
             break;
         default:
@@ -608,57 +614,57 @@ static HwAudioTraceStatus apply_trace_register_write(HwAudio* hw, uint32_t addre
         return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
     switch (address)
     {
-    case HW_AUDIO_GBA_IO_BASE + 0x60:
+    case PORYAAAA_GBA_IO_BASE + 0x60:
         apply_chip_event(hw, M4A_REG_NR10, value & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x62:
+    case PORYAAAA_GBA_IO_BASE + 0x62:
         apply_chip_event(hw, M4A_REG_NR11, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR12, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x64:
+    case PORYAAAA_GBA_IO_BASE + 0x64:
         apply_chip_event(hw, M4A_REG_NR13, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR14, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x68:
+    case PORYAAAA_GBA_IO_BASE + 0x68:
         apply_chip_event(hw, M4A_REG_NR21, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR22, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x6C:
+    case PORYAAAA_GBA_IO_BASE + 0x6C:
         apply_chip_event(hw, M4A_REG_NR23, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR24, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x70:
+    case PORYAAAA_GBA_IO_BASE + 0x70:
         apply_chip_event(hw, M4A_REG_NR30, value & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x72:
+    case PORYAAAA_GBA_IO_BASE + 0x72:
         apply_chip_event(hw, M4A_REG_NR31, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR32, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x74:
+    case PORYAAAA_GBA_IO_BASE + 0x74:
         apply_chip_event(hw, M4A_REG_NR33, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR34, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x78:
+    case PORYAAAA_GBA_IO_BASE + 0x78:
         apply_chip_event(hw, M4A_REG_NR41, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR42, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x7C:
+    case PORYAAAA_GBA_IO_BASE + 0x7C:
         apply_chip_event(hw, M4A_REG_NR43, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR44, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x80:
+    case PORYAAAA_GBA_IO_BASE + 0x80:
         apply_chip_event(hw, M4A_REG_NR50, value & 0xFFu);
         apply_chip_event(hw, M4A_REG_NR51, (value >> 8) & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x82:
+    case PORYAAAA_GBA_IO_BASE + 0x82:
         apply_chip_event(hw, M4A_REG_SOUNDCNT_H, value & 0xFFFFu);
         apply_trace_pcm_event(hw, M4A_REG_SOUNDCNT_H, value & 0xFFFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x84:
+    case PORYAAAA_GBA_IO_BASE + 0x84:
         apply_chip_event(hw, M4A_REG_NR52, value & 0xFFu);
         apply_trace_pcm_event(hw, M4A_REG_NR52, value & 0xFFu);
         break;
-    case HW_AUDIO_GBA_IO_BASE + 0x88:
+    case PORYAAAA_GBA_IO_BASE + 0x88:
         apply_chip_event(hw, M4A_REG_SOUNDBIAS, value & 0xFFFFu);
         break;
     default:
@@ -672,12 +678,12 @@ static HwAudioTraceStatus apply_trace_wave_write(HwAudio* hw, uint32_t address, 
 {
     if (width != 1 && width != 2 && width != 4)
         return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
-    if (address < HW_AUDIO_GBA_IO_BASE + 0x90 || address + width > HW_AUDIO_GBA_IO_BASE + 0xA0)
+    if (address < PORYAAAA_GBA_IO_BASE + 0x90 || address + width > PORYAAAA_GBA_IO_BASE + 0xA0)
         return HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
 
     for (uint8_t byte_index = 0; byte_index < width; byte_index++)
     {
-        uint32_t wave_offset = address - (HW_AUDIO_GBA_IO_BASE + 0x90) + byte_index;
+        uint32_t wave_offset = address - (PORYAAAA_GBA_IO_BASE + 0x90) + byte_index;
         uint32_t byte = (value >> (byte_index * 8u)) & 0xFFu;
         apply_chip_event(hw, M4A_REG_WAVE_RAM_BYTE, (wave_offset << 8) | byte);
     }
@@ -741,22 +747,22 @@ static bool trace_supports_byte_register(uint32_t address)
 {
     switch (address)
     {
-    case HW_AUDIO_GBA_IO_BASE + 0x62:
-    case HW_AUDIO_GBA_IO_BASE + 0x63:
-    case HW_AUDIO_GBA_IO_BASE + 0x64:
-    case HW_AUDIO_GBA_IO_BASE + 0x65:
-    case HW_AUDIO_GBA_IO_BASE + 0x68:
-    case HW_AUDIO_GBA_IO_BASE + 0x69:
-    case HW_AUDIO_GBA_IO_BASE + 0x6C:
-    case HW_AUDIO_GBA_IO_BASE + 0x6D:
-    case HW_AUDIO_GBA_IO_BASE + 0x72:
-    case HW_AUDIO_GBA_IO_BASE + 0x73:
-    case HW_AUDIO_GBA_IO_BASE + 0x74:
-    case HW_AUDIO_GBA_IO_BASE + 0x75:
-    case HW_AUDIO_GBA_IO_BASE + 0x78:
-    case HW_AUDIO_GBA_IO_BASE + 0x79:
-    case HW_AUDIO_GBA_IO_BASE + 0x7C:
-    case HW_AUDIO_GBA_IO_BASE + 0x7D:
+    case PORYAAAA_GBA_IO_BASE + 0x62:
+    case PORYAAAA_GBA_IO_BASE + 0x63:
+    case PORYAAAA_GBA_IO_BASE + 0x64:
+    case PORYAAAA_GBA_IO_BASE + 0x65:
+    case PORYAAAA_GBA_IO_BASE + 0x68:
+    case PORYAAAA_GBA_IO_BASE + 0x69:
+    case PORYAAAA_GBA_IO_BASE + 0x6C:
+    case PORYAAAA_GBA_IO_BASE + 0x6D:
+    case PORYAAAA_GBA_IO_BASE + 0x72:
+    case PORYAAAA_GBA_IO_BASE + 0x73:
+    case PORYAAAA_GBA_IO_BASE + 0x74:
+    case PORYAAAA_GBA_IO_BASE + 0x75:
+    case PORYAAAA_GBA_IO_BASE + 0x78:
+    case PORYAAAA_GBA_IO_BASE + 0x79:
+    case PORYAAAA_GBA_IO_BASE + 0x7C:
+    case PORYAAAA_GBA_IO_BASE + 0x7D:
         return true;
     default:
         return false;
@@ -767,20 +773,20 @@ static bool trace_supports_halfword_register(uint32_t address)
 {
     switch (address)
     {
-    case HW_AUDIO_GBA_IO_BASE + 0x60:
-    case HW_AUDIO_GBA_IO_BASE + 0x62:
-    case HW_AUDIO_GBA_IO_BASE + 0x64:
-    case HW_AUDIO_GBA_IO_BASE + 0x68:
-    case HW_AUDIO_GBA_IO_BASE + 0x6C:
-    case HW_AUDIO_GBA_IO_BASE + 0x70:
-    case HW_AUDIO_GBA_IO_BASE + 0x72:
-    case HW_AUDIO_GBA_IO_BASE + 0x74:
-    case HW_AUDIO_GBA_IO_BASE + 0x78:
-    case HW_AUDIO_GBA_IO_BASE + 0x7C:
-    case HW_AUDIO_GBA_IO_BASE + 0x80:
-    case HW_AUDIO_GBA_IO_BASE + 0x82:
-    case HW_AUDIO_GBA_IO_BASE + 0x84:
-    case HW_AUDIO_GBA_IO_BASE + 0x88:
+    case PORYAAAA_GBA_IO_BASE + 0x60:
+    case PORYAAAA_GBA_IO_BASE + 0x62:
+    case PORYAAAA_GBA_IO_BASE + 0x64:
+    case PORYAAAA_GBA_IO_BASE + 0x68:
+    case PORYAAAA_GBA_IO_BASE + 0x6C:
+    case PORYAAAA_GBA_IO_BASE + 0x70:
+    case PORYAAAA_GBA_IO_BASE + 0x72:
+    case PORYAAAA_GBA_IO_BASE + 0x74:
+    case PORYAAAA_GBA_IO_BASE + 0x78:
+    case PORYAAAA_GBA_IO_BASE + 0x7C:
+    case PORYAAAA_GBA_IO_BASE + 0x80:
+    case PORYAAAA_GBA_IO_BASE + 0x82:
+    case PORYAAAA_GBA_IO_BASE + 0x84:
+    case PORYAAAA_GBA_IO_BASE + 0x88:
         return true;
     default:
         return false;
@@ -791,14 +797,14 @@ static HwAudioTraceStatus validate_trace_write(const HwAudioTraceEvent* event)
 {
     if ((event->width == 1 && event->value > UINT8_MAX) || (event->width == 2 && event->value > UINT16_MAX))
         return HW_AUDIO_TRACE_INVALID_ARGUMENT;
-    if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)
+    if (event->address >= PORYAAAA_GBA_IO_BASE + 0x90 && event->address < PORYAAAA_GBA_IO_BASE + 0xA0)
     {
         if (event->width != 1 && event->width != 2 && event->width != 4)
             return HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
-        return event->address + event->width <= HW_AUDIO_GBA_IO_BASE + 0xA0 ? HW_AUDIO_TRACE_OK
+        return event->address + event->width <= PORYAAAA_GBA_IO_BASE + 0xA0 ? HW_AUDIO_TRACE_OK
                                                                             : HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
     }
-    if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0 || event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
+    if (event->address == PORYAAAA_GBA_IO_BASE + 0xA0 || event->address == PORYAAAA_GBA_IO_BASE + 0xA4)
         return event->width == 4 ? HW_AUDIO_TRACE_OK : HW_AUDIO_TRACE_UNSUPPORTED_WIDTH;
     if (event->width == 1)
         return trace_supports_byte_register(event->address) ? HW_AUDIO_TRACE_OK : HW_AUDIO_TRACE_UNSUPPORTED_ADDRESS;
@@ -865,27 +871,27 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
     }
     else if (event->kind == HW_AUDIO_TRACE_WRITE)
     {
-        if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x60 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x65)
+        if (event->address >= PORYAAAA_GBA_IO_BASE + 0x60 && event->address <= PORYAAAA_GBA_IO_BASE + 0x65)
             clock_sq1 = true;
-        else if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x68 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x6D)
+        else if (event->address >= PORYAAAA_GBA_IO_BASE + 0x68 && event->address <= PORYAAAA_GBA_IO_BASE + 0x6D)
             clock_sq2 = true;
-        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0x80)
+        else if (event->address == PORYAAAA_GBA_IO_BASE + 0x80)
         {
             clock_sq1 = stale_sq1 || (hw->psg.sq1_enabled && hw->psg.sq1_envelope.dead != 2);
             clock_sq2 = stale_sq2 || (hw->psg.sq2_enabled && hw->psg.sq2_envelope.dead != 2);
         }
-        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x72 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x75) ||
-            event->address == HW_AUDIO_GBA_IO_BASE + 0x80 ||
-            (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0))
+        if ((event->address >= PORYAAAA_GBA_IO_BASE + 0x72 && event->address <= PORYAAAA_GBA_IO_BASE + 0x75) ||
+            event->address == PORYAAAA_GBA_IO_BASE + 0x80 ||
+            (event->address >= PORYAAAA_GBA_IO_BASE + 0x90 && event->address < PORYAAAA_GBA_IO_BASE + 0xA0))
             clock_wave = true;
-        preapply_wave_bank = event->address == HW_AUDIO_GBA_IO_BASE + 0x70;
-        if ((event->address >= HW_AUDIO_GBA_IO_BASE + 0x78 && event->address <= HW_AUDIO_GBA_IO_BASE + 0x7D) ||
-            event->address == HW_AUDIO_GBA_IO_BASE + 0x80)
+        preapply_wave_bank = event->address == PORYAAAA_GBA_IO_BASE + 0x70;
+        if ((event->address >= PORYAAAA_GBA_IO_BASE + 0x78 && event->address <= PORYAAAA_GBA_IO_BASE + 0x7D) ||
+            event->address == PORYAAAA_GBA_IO_BASE + 0x80)
             clock_noise = true;
     }
     bool defer_terminal_frame = event->kind == HW_AUDIO_TRACE_SAMPLE && !observe_sample &&
-                                (event->order & TRACE_ORDER_EXTENDED) != 0u &&
-                                (event->order & TRACE_ORDER_DELAY_MASK) != 0u;
+                                (event->order & PORYAAAA_TRACE_ORDER_EXTENDED) != 0u &&
+                                (event->order & PORYAAAA_TRACE_ORDER_DELAY_MASK) != 0u;
     if (defer_terminal_frame)
         hw_psg_advance_staged_sample_cycles(&hw->psg, cycle_delta, clock_sq1, clock_sq2, clock_wave, clock_noise);
     else
@@ -900,15 +906,15 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
     }
     if (event->kind == HW_AUDIO_TRACE_WRITE)
     {
-        if (event->address >= HW_AUDIO_GBA_IO_BASE + 0x90 && event->address < HW_AUDIO_GBA_IO_BASE + 0xA0)
+        if (event->address >= PORYAAAA_GBA_IO_BASE + 0x90 && event->address < PORYAAAA_GBA_IO_BASE + 0xA0)
         {
             status = apply_trace_wave_write(hw, event->address, event->width, event->value);
         }
-        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA0)
+        else if (event->address == PORYAAAA_GBA_IO_BASE + 0xA0)
         {
             status = apply_trace_fifo_write(&hw->trace_pcm.fifo_a, event->width, event->value);
         }
-        else if (event->address == HW_AUDIO_GBA_IO_BASE + 0xA4)
+        else if (event->address == PORYAAAA_GBA_IO_BASE + 0xA4)
         {
             status = apply_trace_fifo_write(&hw->trace_pcm.fifo_b, event->width, event->value);
         }
@@ -917,7 +923,7 @@ static HwAudioTraceStatus apply_trace_event(HwAudio* hw,
             status = apply_trace_register_write(hw, event->address, event->width, event->value);
         }
         if (status == HW_AUDIO_TRACE_OK && hw->trace_reset_frame_pending && event->cycle == 0 &&
-            event->address == HW_AUDIO_GBA_IO_BASE + 0x84 && hw->psg.master_enabled)
+            event->address == PORYAAAA_GBA_IO_BASE + 0x84 && hw->psg.master_enabled)
             consume_trace_reset_frame_event(hw);
     }
     else if (event->kind == HW_AUDIO_TRACE_SAMPLE)
@@ -1012,3 +1018,4 @@ const char* hw_audio_trace_status_string(HwAudioTraceStatus status)
     }
     return "unknown trace status";
 }
+#endif

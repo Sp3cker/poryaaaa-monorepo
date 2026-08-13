@@ -21,8 +21,8 @@ static void m4a_sound_main(M4ADriver* drv)
         drv->c15 = 14;
 
     /* Tempo accumulator: tempoC += tempoI per vblank; one LFO tick
-     * fires per 150 accumulated units (matches v1's tempoI/150
-     * ticks-per-vblank rate, mirrors pokeemerald m4a.c). */
+     * fires per 150 accumulated units, matching the ROM driver's
+     * ticks-per-vblank rate. */
     drv->tempoC += drv->tempoI;
     while (drv->tempoC >= 150)
     {
@@ -30,7 +30,7 @@ static void m4a_sound_main(M4ADriver* drv)
         m4a_internal_lfo_tick(drv);
     }
 
-    m4a_internal_compat_effects_tick(drv);
+    m4a_internal_effects_tick(drv);
 
     m4a_cgb_sound(drv);
     m4a_sound_main_ram(drv);
@@ -57,11 +57,8 @@ static uint32_t pack_fifo_word(const int8_t* ring, uint64_t cursor, uint32_t siz
 }
 
 /* Emit one four-word DMA transfer and advance the modulo-eight FIFO model. */
-static void write_fifo_burst(M4ADriver* drv,
-                             M4ARegId fifo_reg,
-                             const int8_t* ring,
-                             uint64_t* source_cursor,
-                             uint8_t* write_index)
+static void
+write_fifo_burst(M4ADriver* drv, M4ARegId fifo_reg, const int8_t* ring, uint64_t* source_cursor, uint8_t* write_index)
 {
     const uint32_t size = drv->pcm_dma_buf_size;
     if (size == 0u)
@@ -121,10 +118,8 @@ static void m4a_pcm_timer_overflow(M4ADriver* drv)
                 &drv->pcm_fifo_b_source_cursor,
                 drv->pcm_fifo_b_read,
                 &drv->pcm_fifo_b_write);
-    const bool consumed_a =
-        consume_fifo(&drv->pcm_fifo_a_read, &drv->pcm_fifo_a_internal_remaining, fifo_a_had_word);
-    const bool consumed_b =
-        consume_fifo(&drv->pcm_fifo_b_read, &drv->pcm_fifo_b_internal_remaining, fifo_b_had_word);
+    const bool consumed_a = consume_fifo(&drv->pcm_fifo_a_read, &drv->pcm_fifo_a_internal_remaining, fifo_a_had_word);
+    const bool consumed_b = consume_fifo(&drv->pcm_fifo_b_read, &drv->pcm_fifo_b_internal_remaining, fifo_b_had_word);
     if (consumed_a || consumed_b)
         m4a_internal_emit_event(drv, M4A_REG_TIMER_0, 0);
 }
@@ -153,17 +148,6 @@ static bool advance_pcm_timer(M4ADriver* drv)
         return false;
     drv->next_pcm_timer_cycle += timer_period;
     return true;
-}
-
-/* Run one explicit compatibility tick at the driver's current hardware time. */
-void m4a_internal_compat_tick(M4ADriver* drv)
-{
-    if (!drv)
-        return;
-
-    drv->event_cycle = drv->current_cycle;
-    drv->event_next_order = 0;
-    m4a_sound_main(drv);
 }
 
 /* Advance host frames through the canonical GBA-cycle clock.  VBlank mixer

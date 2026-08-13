@@ -90,10 +90,10 @@ static bool pcm_can_pseudo_echo(const M4ADriverPcmChan* ch)
     return ch->pseudoEchoVolume != 0 && ch->pseudoEchoLength != 0;
 }
 
-/* Per-vblank envelope tick for a PCM channel.  Mirrors v1
- * m4a_pcm_channel_tick / pokeemerald SoundMainRAM envelope state machine.
- * Updates envelopeVolume + envelopeVolumeLeft/Right; the mixer reads the
- * derived L/R values per output sample. */
+/* Per-vblank envelope tick for a PCM channel.  Matches the ROM SoundMainRAM
+ * envelope state machine.  Updates envelopeVolume +
+ * envelopeVolumeLeft/Right; the mixer reads the derived L/R values per
+ * output sample. */
 static void pcm_channel_tick(M4ADriverPcmChan* ch, uint8_t masterVolume)
 {
     if (!(ch->status & M4A_CHN_ON))
@@ -248,7 +248,7 @@ static void sound_main_ram_reverb(M4ADriver* drv, int frameSize)
          * headroom available if downstream code ever wants to
          * accumulate more.  Today this is a near-no-op since per-
          * channel contributions are already int8-range, but the
-         * type stays int16 to stay consistent with v1's int32 mix. */
+         * type stays int16 for the intermediate mix. */
         if (outL > 32767)
             outL = 32767;
         else if (outL < -32768)
@@ -260,10 +260,9 @@ static void sound_main_ram_reverb(M4ADriver* drv, int frameSize)
         drv->pcmMixL[i] = (int16_t)outL;
         drv->pcmMixR[i] = (int16_t)outR;
 
-        /* Delay line: clamp to int8 RANGE before writeback (v1
-         * parity).  Real m4a's reverb buffer IS the int8 FIFO buffer,
-         * so future tap reads see the same int8-clamped values that
-         * would have been DMA'd to the chip.  Storing int16 here
+        /* Delay line: clamp to int8 range before writeback.  The ROM reverb
+         * buffer is the int8 FIFO buffer, so future tap reads see the same
+         * int8-clamped values that would have been DMA'd.  Storing int16 here
          * would diverge on heavy mixes where pcmMix briefly exceeds
          * [-128, 127] before the final clamp-to-int8 stage. */
         int32_t delayL = outL;
@@ -491,8 +490,8 @@ static void render_channel(M4ADriverPcmChan* ch, uint32_t* mix, int frameSize)
     }
     if (!ch->wav || !ch->currentPointer || ch->count <= 0)
         return;
-    /* Preserve the compatibility engine's packed-volume gate: an inaudible
-     * attack does not consume source data before its envelope opens. */
+    /* Preserve the packed-volume gate: an inaudible attack does not consume
+     * source data before its envelope opens. */
     if (ch->envelopeVolumeRight == 0 && ch->envelopeVolumeLeft == 0)
         return;
 

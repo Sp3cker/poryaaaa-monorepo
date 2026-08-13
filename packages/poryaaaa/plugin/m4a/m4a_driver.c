@@ -166,9 +166,12 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->master_volume = 12;
     drv->tempo_bpm = 120.0;
     drv->c15 = 0;
-    /* Raw v2 callers have the complete PCM pool unless they explicitly
-     * configure a narrower one.  The legacy facade applies its own default. */
+    /* Raw drivers retain the complete DirectSound pool.  Product runtimes
+     * configure their former facade limits explicitly; zero remains an
+     * explicit no-PCM configuration. */
     drv->max_pcm_channels = M4A_MAX_PCM_CHANNELS;
+    drv->portamento_enabled = false;
+    drv->pwm_enabled = false;
 
     /* Register-file defaults match what real m4a writes during init —
      * NR50/NR51/SOUNDCNT_H/SOUNDBIAS  See
@@ -222,6 +225,11 @@ void m4a_driver_destroy(M4ADriver* drv)
     free(drv);
 }
 
+int m4a_driver_recommended_max_advance_frames(void)
+{
+    return M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
+}
+
 void m4a_driver_set_host_rate(M4ADriver* drv, float hz)
 {
     if (!drv)
@@ -263,7 +271,25 @@ void m4a_driver_refresh_voices(M4ADriver* drv)
      * tweaks for already-programmed tracks.  No channel state changes —
      * the next note_on uses the refreshed voice. */
     for (int i = 0; i < M4A_MAX_TRACKS; i++)
+
         drv->tracks[i].currentVoice = drv->voicegroup[drv->tracks[i].currentProgram];
+}
+void m4a_driver_set_portamento_enabled(M4ADriver* drv, bool enabled)
+{
+    if (!drv)
+        return;
+    drv->portamento_enabled = enabled;
+    if (!enabled)
+        m4a_internal_reset_portamento(drv);
+}
+
+void m4a_driver_set_pwm_enabled(M4ADriver* drv, bool enabled)
+{
+    if (!drv)
+        return;
+    drv->pwm_enabled = enabled;
+    if (!enabled)
+        m4a_internal_disable_pwm(drv);
 }
 
 /* m4a_set_song_volume lives in m4a_track.c: it has to recompute every
@@ -391,7 +417,8 @@ uint64_t m4a_driver_current_cycle(const M4ADriver* drv)
     return drv ? drv->current_cycle : 0;
 }
 
-/* Rebase only an untouched queue so the first VBlank remains one full period away. */
+/* Rebase a driver with no pending writes to an absolute GBA cycle.  VBlank
+ * keeps its hardware cadence, while the fresh PCM scheduler starts here. */
 bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle)
 {
     if (!drv || drv->event_count != 0 || cycle > UINT64_MAX - M4A_VBLANK_CYCLES)
@@ -401,9 +428,18 @@ bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle)
     if (cycle > UINT64_MAX - pcm_period)
         return false;
 
+    uint64_t next_vblank_cycle = (cycle / M4A_VBLANK_CYCLES + 1u) * M4A_VBLANK_CYCLES;
+    uint64_t next_vcount_cycle = next_vblank_cycle - M4A_VCOUNT_TO_VBLANK_CYCLES;
+    if (next_vcount_cycle <= cycle)
+    {
+        if (next_vcount_cycle > UINT64_MAX - M4A_VBLANK_CYCLES)
+            return false;
+        next_vcount_cycle += M4A_VBLANK_CYCLES;
+    }
+
     drv->current_cycle = cycle;
-    drv->next_vblank_cycle = cycle + M4A_VBLANK_CYCLES;
-    drv->next_vcount_cycle = cycle + M4A_VBLANK_CYCLES - M4A_VCOUNT_TO_VBLANK_CYCLES;
+    drv->next_vblank_cycle = next_vblank_cycle;
+    drv->next_vcount_cycle = next_vcount_cycle;
     m4a_reset_pcm_fifo_scheduler(drv);
     drv->event_range_begin_cycle = cycle;
     drv->event_cycle = cycle;

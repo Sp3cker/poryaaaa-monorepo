@@ -2,11 +2,11 @@
 
 ## Context
 
-`poryaaaa` is a C/C++ CLAP plugin at `/Users/sallegrezza/dev/cProjects/poryaaaa` that emulates the GameBoy Advance `m4a` sound engine (reimplemented from pokeemerald, **not** linked to mGBA). It generates audio from MIDI input and is currently built into `poryaaaa.clap`.
+`poryaaaa` is a C/C++ plugin library that emulates the GameBoy Advance `m4a` sound driver (reimplemented from pokeemerald, **not** linked to mGBA). It generates audio from MIDI input and is built into `poryaaaa.clap`.
 
-You want to consume the same engine from inside Ableton Live as a Max for Live device. The work is feasible because the DSP engine is already cleanly separated from the CLAP plumbing — the CLAP integration sits in one ~2000-line file (`plugin/m4a_plugin.c`) and the engine API (`plugin/m4a_engine.h`) takes a plain `float* outL, float* outR, int numSamples` buffer and a small set of MIDI handlers. We will replace just the CLAP layer with a Max MSP external (`poryaaaa~.mxo`), wrap it in an `.amxd` device patch, and drop the ImGui GUI in favour of Max patcher widgets.
+You want to consume the same driver inside Ableton Live as a Max for Live device. The work is feasible because the DSP engine is cleanly separated into `M4ADriver` (`plugin/m4a/m4a_driver.h`) and `HwAudio` (`plugin/hw_audio/hw_audio.h`), taking MIDI driver inputs and producing stereo audio blocks via hardware emulation. We will replace the CLAP layer with a Max MSP external (`poryaaaa~.mxo`), wrap it in an `.amxd` device patch, and drop the ImGui GUI in favour of Max patcher widgets.
 
-Scope decisions you made: **drop ImGui** (use live.dial / live.menu in the patch instead), **macOS only** (universal .mxo).
+Scope decisions: **drop ImGui** (use live.dial / live.menu in the patch instead), **macOS only** (universal .mxo).
 
 ## Target layout
 
@@ -14,19 +14,18 @@ New external lives at:
 ```
 /Users/sallegrezza/dev/cProjects/max-sdk/source/audio/poryaaaa~/
 ├── poryaaaa~.c           # the only new source file — MSP wrapper
-├── CMakeLists.txt        # pulls engine sources by relative path; no copying
-└── poryaaaa~.maxhelp     # optional, can wait
+├── CMakeLists.txt        # pulls driver/hw_audio sources by relative path; no copying
+└── poryaaaa~.maxhelp     # optional
 ```
 
-Engine sources are referenced in-place from `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/`. Nothing in the poryaaaa repo needs to change for v1 (one engine patch may be needed — see Risks).
+Driver sources are referenced in-place from `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/`.
 
 ## Critical files
 
 **Reference (read-only, do not edit):**
-- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/m4a_engine.h:236-263` — engine public API surface
-- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/m4a_engine.c:228` — `m4a_engine_init`
-- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/m4a_engine.c:987` — `m4a_engine_process` (DSP entry point)
-- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/voicegroup/voicegroup_loader.h:72-78` — `voicegroup_load` / `voicegroup_free`
+- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/m4a/m4a_driver.h` — driver public API surface
+- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/hw_audio/hw_audio.h` — hardware audio synthesis & rendering surface
+- `/Users/sallegrezza/dev/cProjects/poryaaaa/plugin/voicegroup/voicegroup_loader.h` — `voicegroup_load` / `voicegroup_free`
 - `/Users/sallegrezza/dev/cProjects/max-sdk/source/audio/simplemsp~/simplemsp~.c` — canonical MSP external skeleton
 - `/Users/sallegrezza/dev/cProjects/max-sdk/source/audio/simplemsp~/CMakeLists.txt` — canonical CMake pattern
 
@@ -36,14 +35,14 @@ Engine sources are referenced in-place from `/Users/sallegrezza/dev/cProjects/po
 
 ## Step 1 — Initialise the Max SDK base submodule [done]
 
-The directory `/Users/sallegrezza/dev/cProjects/max-sdk/source/max-sdk-base/` is currently empty. Without it, the `max-pretarget.cmake` / `max-posttarget.cmake` scripts every external relies on do not exist. Run:
-```
+The directory `/Users/sallegrezza/dev/cProjects/max-sdk/source/max-sdk-base/` is set up. Run:
+```bash
 git -C /Users/sallegrezza/dev/cProjects/max-sdk submodule update --init --recursive
 ```
 
 ## Step 2 — `CMakeLists.txt` for `poryaaaa~` [done]
 
-Pulls engine + voicegroup sources from the poryaaaa tree without copying. **Excludes** `m4a_plugin.c`, `m4a_params.c`, `m4a_gui.cpp`, `imgui_impl_pugl.cpp`, `standalone_main_*.cpp` — those drag in CLAP, ImGui, pugl.
+Pulls driver, hw_audio, and voicegroup sources from the poryaaaa tree without copying. **Excludes** CLAP integration (`m4a_plugin.c`, `m4a_params.c`, `m4a_gui.cpp`).
 
 ```cmake
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-pretarget.cmake)
@@ -54,24 +53,23 @@ include_directories(
     "${MAX_SDK_INCLUDES}"
     "${MAX_SDK_MSP_INCLUDES}"
     "${PORYA_ROOT}/plugin"
+    "${PORYA_ROOT}/plugin/m4a"
+    "${PORYA_ROOT}/plugin/hw_audio"
     "${PORYA_ROOT}/plugin/voicegroup"
 )
 
 file(GLOB LOCAL_SRC "*.c" "*.h")
-set(ENGINE_SRC
-    ${PORYA_ROOT}/plugin/m4a_engine.c
-    ${PORYA_ROOT}/plugin/m4a_channel.c
-    ${PORYA_ROOT}/plugin/m4a_tables.c
-    ${PORYA_ROOT}/plugin/m4a_reverb.c)
+file(GLOB M4A_SRC "${PORYA_ROOT}/plugin/m4a/*.c")
+file(GLOB HW_SRC "${PORYA_ROOT}/plugin/hw_audio/*.c")
 file(GLOB VG_SRC "${PORYA_ROOT}/plugin/voicegroup/*.c")
 
-add_library(${PROJECT_NAME} MODULE ${LOCAL_SRC} ${ENGINE_SRC} ${VG_SRC})
+add_library(${PROJECT_NAME} MODULE ${LOCAL_SRC} ${M4A_SRC} ${HW_SRC} ${VG_SRC})
 set_target_properties(${PROJECT_NAME} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-posttarget.cmake)
 ```
 
-C11 is safer than C99 — the engine and voicegroup loader use modern C features.
+C11 is safer than C99 — the driver and voicegroup loader use modern C features.
 
 ## Step 3 — `poryaaaa~.c` skeleton [done]
 
@@ -79,12 +77,14 @@ C11 is safer than C99 — the engine and voicegroup loader use modern C features
 #include "ext.h"
 #include "ext_obex.h"
 #include "z_dsp.h"
-#include "m4a_engine.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
 #include "voicegroup/voicegroup_loader.h"
 
 typedef struct _porya {
     t_pxobject ob;             // MUST be first
-    M4AEngine engine;
+    M4ADriver *driver;
+    HwAudio *hwAudio;
     LoadedVoiceGroup *loadedVg;
     float *scratchL, *scratchR;
     long scratchFrames;
@@ -95,7 +95,6 @@ typedef struct _porya {
     long progSlot[16];
     long songVolume;
     long reverbAmount;
-    long analogFilter;
     long maxPcmChannels;
 } t_porya;
 ```
@@ -113,15 +112,16 @@ class_addmethod(c, (method)porya_tempo,     "tempo",      A_FLOAT, 0);
 class_addmethod(c, (method)porya_panic,     "panic",      0);
 ```
 
-**MIDI ingress is raw bytes only.** `[midiin]` emits one int per MIDI byte; `porya_int` runs a small running-status state machine and assembles channel-voice events, which a shared `porya_dispatch_event(status, d1, d2)` helper routes into the engine (note on/off, CC incl. XCMD on 29/30/31, program change, pitch bend). No `[midiparse]` in the chain — keeps XCMD bytes intact and removes Max-side parsing as a failure surface. SysEx and system-realtime are swallowed. Channel comes from the status nibble, so multiple ccomidi tracks routed into one `poryaaaa~` address its 16 m4a tracks naturally. The `midievent` selector is kept only for sending pre-assembled events from a message box during testing.
+**MIDI ingress is raw bytes only.** `[midiin]` emits one int per MIDI byte; `porya_int` runs a small running-status state machine and assembles channel-voice events, which a shared `porya_dispatch_event(status, d1, d2)` helper routes into the driver (`m4a_driver_note_on`, `m4a_driver_note_off`, `m4a_driver_cc` including XCMD on 29/30/31, `m4a_driver_program_change`, `m4a_driver_pitch_bend`). No `[midiparse]` in the chain — keeps XCMD bytes intact and removes Max-side parsing as a failure surface. SysEx and system-realtime are swallowed. Channel comes from the status nibble, so multiple ccomidi tracks routed into one `poryaaaa~` address its 16 m4a tracks naturally.
 
 Lifecycle:
-- `porya_new(s, argc, argv)` — `dsp_setup(x, 0)` (synth: zero audio inlets); `outlet_new(x,"signal")` ×2 stereo; `m4a_engine_init(&x->engine, sys_getsr())`.
-- `porya_free(x)` — `m4a_engine_destroy`, `voicegroup_free(loadedVg)`, `sysmem_freeptr` scratch buffers, `dsp_free`.
-- `porya_dsp64(x, dsp64, count, sr, maxvec, flags)` — reallocate scratch when `maxvec`/`sr` change; if `sr` differs, re-init engine (see Risks #1); `object_method(dsp64, gensym("dsp_add64"), x, porya_perform64, 0, NULL)`.
+- `porya_new(s, argc, argv)` — `dsp_setup(x, 0)` (synth: zero audio inlets); `outlet_new(x,"signal")` ×2 stereo; `x->driver = m4a_driver_create()`; `x->hwAudio = hw_audio_create(sys_getsr())`.
+- `porya_free(x)` — `m4a_driver_destroy(x->driver)`, `hw_audio_destroy(x->hwAudio)`, `voicegroup_free(loadedVg)`, `sysmem_freeptr` scratch buffers, `dsp_free`.
+- `porya_dsp64(x, dsp64, count, sr, maxvec, flags)` — reallocate scratch when `maxvec`/`sr` change; update hardware sample rate if needed; `object_method(dsp64, gensym("dsp_add64"), x, porya_perform64, 0, NULL)`.
 - `porya_perform64(...)` — hot path:
   ```c
-  m4a_engine_process(&x->engine, x->scratchL, x->scratchR, sampleframes);
+  m4a_driver_advance(x->driver, sampleframes);
+  hw_audio_render(x->hwAudio, x->driver, x->scratchL, x->scratchR, sampleframes);
   double *outL = outs[0]; double *outR = outs[1];
   for (long i = 0; i < sampleframes; i++) { outL[i] = x->scratchL[i]; outR[i] = x->scratchR[i]; }
   ```
@@ -129,11 +129,10 @@ Lifecycle:
 ## Step 4 — Attributes (persisted with patch)
 
 All marked `ATTR_SAVE`:
-- `prog0` … `prog15` — long, 0..127. Each setter calls `m4a_engine_program_change(&engine, i, val)`. Generate the 16 with a macro; share one accessor that branches on the attribute name.
-- `songvol` 0..127 → `m4a_engine_set_song_volume`
-- `reverb` 0..127 → `m4a_engine_cc(eng, ch, 91, val)` broadcast to all 16 channels
-- `analogfilter` 0/1 → toggles `engine.analogFilter`
-- `maxpcm` 1..12 → writes `engine.maxPcmChannels` (verified field name at `m4a_engine.h:181`)
+- `prog0` … `prog15` — long, 0..127. Each setter calls `m4a_driver_program_change(x->driver, trackIndex, val)`.
+- `songvol` 0..127 → `m4a_driver_set_song_volume`
+- `reverb` 0..127 → `m4a_driver_cc(x->driver, ch, 91, val)` broadcast to all 16 channels
+- `maxpcm` 1..12 → updates max PCM channel allocation on driver
 - Voicegroup root/name are not saved as external attrs. Node owns restore and
   sends `voicegroup <root> <bank>` only after syntax validation.
 
@@ -151,8 +150,8 @@ static void porya_voicegroup_do(t_porya *x, t_symbol *s, short ac, t_atom *av) {
                                            atom_getsym(av+1)->s_name, NULL);
     if (!vg) { object_error((t_object*)x, "voicegroup load failed"); return; }
     LoadedVoiceGroup *old = x->loadedVg;
-    m4a_engine_all_sound_off(&x->engine);          // silence before pointer swap
-    m4a_engine_set_voicegroup(&x->engine, vg->voices);
+    m4a_driver_all_sound_off(x->driver);          // silence before pointer swap
+    m4a_driver_set_voicegroup(x->driver, vg->voices);
     x->loadedVg = vg;
     if (old) voicegroup_free(old);
     x->vgRoot = atom_getsym(av+0); x->vgName = atom_getsym(av+1);
@@ -166,7 +165,7 @@ static void porya_voicegroup_do(t_porya *x, t_symbol *s, short ac, t_atom *av) {
 The external's contract:
 - **Inlet 0:** raw MIDI bytes (ints from `[midiin]`) and control messages (`midievent`, `program`, `voicegroup`, `tempo`, `panic`)
 - **Outlets:** 0 = signal L, 1 = signal R
-- **Attributes (automatable):** `prog0`..`prog15`, `songvol`, `reverb`, `analogfilter`, `maxpcm`
+- **Attributes (automatable):** `prog0`..`prog15`, `songvol`, `reverb`, `maxpcm`
 
 Suggested patch wiring inside the `.amxd`:
 ```
@@ -175,12 +174,12 @@ Suggested patch wiring inside the `.amxd`:
 [midiin] → [poryaaaa~]
 [poryaaaa~] → [live.gain~] → [plugout~ 1 2]
 ```
-The raw `[midiin] → [poryaaaa~]` wire carries every MIDI byte (status + data, including XCMD CCs) straight into the engine — no `[midiparse]` step to drop or reshape anything. `live.dial`s in the device UI bind to the attributes for Live automation.
+The raw `[midiin] → [poryaaaa~]` wire carries every MIDI byte (status + data, including XCMD CCs) straight into the driver — no `[midiparse]` step to drop or reshape anything. `live.dial`s in the device UI bind to the attributes for Live automation.
 
 ## Step 7 — Build & install [done]
 
 From `/Users/sallegrezza/dev/cProjects/max-sdk`:
-```
+```bash
 cmake -B build -G Xcode
 cmake --build build --target poryaaaa_tilde --config Release
 codesign --force --deep -s - build/.../poryaaaa~.mxo   # required on Apple Silicon
@@ -201,8 +200,7 @@ End-to-end test in a blank Max patcher (before wrapping as `.amxd`):
 
 ## Risks & open items
 
-1. **`m4a_engine_init` idempotency on samplerate change.** Max can call `dsp64` repeatedly with new sample rates. Need to verify whether calling `m4a_engine_init` a second time leaks/corrupts state, or add a `m4a_engine_set_samplerate(engine, sr)` helper upstream in poryaaaa. This is the only foreseeable upstream patch. Mitigation for v1: re-init only when sr actually changes.
-2. **Voicegroup pointer swap race.** The deferred handler swaps `engine.voiceGroup` while the audio thread reads it. The `all_sound_off` call before the swap silences active voices, making any partially-read pointer benign for one tick. For click-free swaps later, change `voiceGroup` to `_Atomic` in `M4AEngine` (small upstream patch).
+1. **Samplerate change.** Max can call `dsp64` repeatedly with new sample rates. Ensure `hw_audio` sample rate is updated dynamically or reset cleanly when sr changes.
+2. **Voicegroup pointer swap race.** The deferred handler swaps `driver->voiceGroup` while the audio thread reads it. The `all_sound_off` call before the swap silences active voices, making any partially-read pointer benign for one tick.
 3. **CLAP-saved patch state is not loadable** in the M4L device (different stream format). Document as a known incompatibility — users rebuild patches in Live.
-4. **Denormal flushing.** Engine doesn't set FZ/DAZ. On Apple Silicon, set FPCR FZ bit at `dsp64` entry only if profiling shows denormal stalls.
-5. **Engine vector-size assumption.** `m4a_engine_process` should handle any sampleframes count, but verify no internal buffer is sized to a fixed CLAP block. Quick check during implementation.
+4. **Denormal flushing.** Driver doesn't set FZ/DAZ. On Apple Silicon, set FPCR FZ bit at `dsp64` entry only if profiling shows denormal stalls.

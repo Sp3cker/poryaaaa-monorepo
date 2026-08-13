@@ -116,9 +116,8 @@ static void gui_log(const char* fmt, ...)
 
 /* Our C interface */
 #include "m4a_gui.h"
-#include "m4a_engine.h"
 #include "m4a_plugin.h"
-#include "m4a_engine_recorder.h"
+#include "m4a_recorder.h"
 #include "m4a_gui_font_assets.h"
 
 /* CLAP GUI extension (for notifying host when floating window closes) */

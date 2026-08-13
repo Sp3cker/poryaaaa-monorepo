@@ -83,7 +83,7 @@ mid2agb grid.
 
 - `packages/poryaaaa/plugin/recorder/recorder_core.{h,cpp}`: host-neutral beat-stamped capture buffer and snapshot shape.
 - `packages/poryaaaa/plugin/recorder/smf_writer.{h,cpp}`: SMF tick conversion, per-channel ordering, state coalescing, held-note flush, and future export metadata.
-- `packages/poryaaaa/plugin/m4a_engine_recorder.{h,cpp}`: C bridge from plugin/GUI code into the C++ recorder and writer.
+- `packages/poryaaaa/plugin/m4a_recorder.{h,c}`: C bridge from plugin/GUI code into the C++ recorder and writer.
 - `packages/poryaaaa/plugin/m4a_plugin.c`: CLAP timing adapter, recorder gating, MIDI/CLAP event conversion, and host tempo handling.
 - `packages/poryaaaa/plugin/m4a_gui.cpp`: recorder tab UI and save call.
 - `packages/poryaaaa/test/test_recorder_core.cpp`: current focused recorder and SMF writer tests.
@@ -208,8 +208,8 @@ mid2agb grid.
 **Files:**
 - Modify: `packages/poryaaaa/plugin/recorder/smf_writer.h`
 - Modify: `packages/poryaaaa/plugin/recorder/smf_writer.cpp`
-- Modify: `packages/poryaaaa/plugin/m4a_engine_recorder.h`
-- Modify: `packages/poryaaaa/plugin/m4a_engine_recorder.cpp`
+- Modify: `packages/poryaaaa/plugin/m4a_recorder.h`
+- Modify: `packages/poryaaaa/plugin/m4a_recorder.c`
 - Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/CMakeLists.txt`
 - Modify: `packages/poryaaaa-m4l/source/audio/poryaaaa~/poryaaaa~.cpp`
 

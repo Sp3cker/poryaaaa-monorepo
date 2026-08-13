@@ -171,21 +171,26 @@ Create `test/test_lifecycle.c`:
 #include <string.h>
 #include <unistd.h>
 
-#include "m4a_engine.h"
-#include "m4a_engine_recorder.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
+#include "m4a_recorder.h"
 
 static int run_one_iteration(void)
 {
-	M4AEngine engine;
-	if (!m4a_engine_init(&engine, 44100.0f)) {
-		fprintf(stderr, "m4a_engine_init failed\n");
+	M4ADriver *driver = m4a_driver_create();
+	HwAudio *hwAudio = hw_audio_create(44100.0f);
+	if (!driver || !hwAudio) {
+		fprintf(stderr, "driver/hw_audio create failed\n");
+		if (driver) m4a_driver_destroy(driver);
+		if (hwAudio) hw_audio_destroy(hwAudio);
 		return 1;
 	}
 
 	M4ARecorder *recorder = m4a_recorder_create();
 	if (!recorder) {
 		fprintf(stderr, "m4a_recorder_create failed\n");
-		m4a_engine_destroy(&engine);
+		hw_audio_destroy(hwAudio);
+		m4a_driver_destroy(driver);
 		return 1;
 	}
 
@@ -193,7 +198,8 @@ static int run_one_iteration(void)
 	m4a_recorder_push(recorder, 0, 0x90, 60, 100);
 	m4a_recorder_advance(recorder, 512);
 	m4a_recorder_destroy(recorder);
-	m4a_engine_destroy(&engine);
+	hw_audio_destroy(hwAudio);
+	m4a_driver_destroy(driver);
 	return 0;
 }
 
@@ -233,8 +239,9 @@ Add this target in `CMakeLists.txt` near the other tests:
 ```cmake
 add_executable(poryaaaa_lifecycle_tests
     test/test_lifecycle.c
-    plugin/m4a_engine_recorder.cpp
-    ${ENGINE_SOURCES}
+    plugin/recorder/recorder_core.cpp
+    plugin/m4a/m4a_driver.c
+    plugin/hw_audio/hw_audio.c
 )
 
 target_compile_features(poryaaaa_lifecycle_tests PRIVATE cxx_std_23)
@@ -423,7 +430,7 @@ Expected: documentation only.
 
 - [ ] **Step 1: Re-check before any audio-engine conversion**
 
-Before converting any file under `plugin/m4a_engine.c`, `plugin/m4a/`, or `plugin/hw_audio/`, update this roadmap with:
+Before converting any file under `plugin/m4a/` or `plugin/hw_audio/`, update this roadmap with:
 
 ```markdown
 ## Audio Engine Conversion Pre-Conditions

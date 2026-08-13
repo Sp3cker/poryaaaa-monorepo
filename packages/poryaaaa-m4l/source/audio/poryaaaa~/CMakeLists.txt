@@ -7,7 +7,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk-base/script/max-pretarget.cmak
 #############################################################
 
 set(PORYA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../packages/poryaaaa"
-    CACHE PATH "Path to poryaaaa engine repo root (the dir containing plugin/m4a_engine.c)")
+    CACHE PATH "Path to the poryaaaa package root (direct M4ADriver and HwAudio sources)")
 
 get_filename_component(PORYAAAA_M4L_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(PORYAAAA_VOICEGROUP_CORE_DIR "${PORYAAAA_M4L_ROOT}/../voicegroup-core"
@@ -52,8 +52,8 @@ include_directories(
 add_subdirectory("${PORYA_ROOT}/plugin/m4a" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_m4a_driver")
 add_subdirectory("${PORYA_ROOT}/plugin/hw_audio" "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_hw_audio")
 
-# Only pick up the wrapper sources here; shared driver/chip sources come from
-# the explicit m4a_driver and hw_audio targets below.
+# This external directly owns M4ADriver and HwAudio; shared driver/chip
+# sources enter through the explicit targets below rather than a wrapper.
 file(GLOB LOCAL_SRC "*.h" "*.c" "*.cpp")
 
 file(GLOB VG_SRC "${PORYA_ROOT}/plugin/voicegroup/*.c")
@@ -84,6 +84,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE m4a_driver hw_audio voicegroup_core_static)
+# poryaaaa~ follows the canonical direct-render sequence documented in
+# poryaaaa's plugin/hw_audio/hw_audio.h.
 if(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreServices")
 endif()

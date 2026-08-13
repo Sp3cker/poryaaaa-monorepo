@@ -12,7 +12,7 @@ extern "C"
 {
 #endif
 
-#define HW_AUDIO_TRACE_TEXT_LINE_CAPACITY 512
+#define HW_AUDIO_TRACE_TEXT_LINE_CAPACITY PORYAAAA_AUDIO_TRACE_LINE_CAPACITY
 
     typedef enum
     {

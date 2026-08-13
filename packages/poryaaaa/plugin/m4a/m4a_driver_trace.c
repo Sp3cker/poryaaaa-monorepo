@@ -4,7 +4,7 @@
 #include <limits.h>
 #include <string.h>
 
-#include "hw_audio/hw_audio_trace.h"
+#include "audio_trace_format.h"
 
 /* Accept the driver's absolute position without synthesising a replacement
  * order: trace replay must observe the same same-cycle sequence. */
@@ -33,99 +33,99 @@ static bool map_register_write(
     {
     case M4A_REG_NR10:
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x60u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x60u;
         return true;
     case M4A_REG_NR11:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x62u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x62u;
         return true;
     case M4A_REG_NR12:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x63u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x63u;
         return true;
     case M4A_REG_NR13:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x64u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x64u;
         return true;
     case M4A_REG_NR14:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x65u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x65u;
         return true;
     case M4A_REG_NR21:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x68u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x68u;
         return true;
     case M4A_REG_NR22:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x69u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x69u;
         return true;
     case M4A_REG_NR23:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x6Cu;
+        *address = PORYAAAA_GBA_IO_BASE + 0x6Cu;
         return true;
     case M4A_REG_NR24:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x6Du;
+        *address = PORYAAAA_GBA_IO_BASE + 0x6Du;
         return true;
     case M4A_REG_NR30:
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x70u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x70u;
         return true;
     case M4A_REG_NR31:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x72u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x72u;
         return true;
     case M4A_REG_NR32:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x73u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x73u;
         return true;
     case M4A_REG_NR33:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x74u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x74u;
         return true;
     case M4A_REG_NR34:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x75u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x75u;
         return true;
     case M4A_REG_NR41:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x78u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x78u;
         return true;
     case M4A_REG_NR42:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x79u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x79u;
         return true;
     case M4A_REG_NR43:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x7Cu;
+        *address = PORYAAAA_GBA_IO_BASE + 0x7Cu;
         return true;
     case M4A_REG_NR44:
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x7Du;
+        *address = PORYAAAA_GBA_IO_BASE + 0x7Du;
         return true;
     case M4A_REG_NR50:
         writer->soundcnt_l = (uint16_t)((writer->soundcnt_l & 0xFF00u) | (source->value & 0xFFu));
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x80u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x80u;
         *value = writer->soundcnt_l;
         return true;
     case M4A_REG_NR51:
         writer->soundcnt_l = (uint16_t)((writer->soundcnt_l & 0x00FFu) | ((source->value & 0xFFu) << 8u));
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x80u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x80u;
         *value = writer->soundcnt_l;
         return true;
     case M4A_REG_NR52:
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x84u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x84u;
         return true;
     case M4A_REG_SOUNDCNT_H:
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x82u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x82u;
         return true;
     case M4A_REG_SOUNDBIAS:
         *width = 2u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x88u;
+        *address = PORYAAAA_GBA_IO_BASE + 0x88u;
         return true;
     case M4A_REG_WAVE_RAM_BYTE:
     {
@@ -133,7 +133,7 @@ static bool map_register_write(
         if (offset >= 16u)
             return false;
         *width = 1u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x90u + offset;
+        *address = PORYAAAA_GBA_IO_BASE + 0x90u + offset;
         *value = source->value & 0xFFu;
         return true;
     }
@@ -142,15 +142,15 @@ static bool map_register_write(
     case M4A_REG_WAVE_RAM_WORD_2:
     case M4A_REG_WAVE_RAM_WORD_3:
         *width = 4u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0x90u + 4u * (source->reg - M4A_REG_WAVE_RAM_WORD_0);
+        *address = PORYAAAA_GBA_IO_BASE + 0x90u + 4u * (source->reg - M4A_REG_WAVE_RAM_WORD_0);
         return true;
     case M4A_REG_FIFO_A:
         *width = 4u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0xA0u;
+        *address = PORYAAAA_GBA_IO_BASE + 0xA0u;
         return true;
     case M4A_REG_FIFO_B:
         *width = 4u;
-        *address = HW_AUDIO_GBA_IO_BASE + 0xA4u;
+        *address = PORYAAAA_GBA_IO_BASE + 0xA4u;
         return true;
     case M4A_REG_TIMER_0:
     case M4A_REG_TIMER_1:
@@ -172,8 +172,7 @@ bool m4a_driver_trace_begin(
     uint32_t order = 0u;
     if (!accept_position(writer, begin_cycle, order) ||
         fprintf(output,
-                "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\nBEGIN %" PRIu64 " %" PRIu32 "\n",
-                HW_AUDIO_GBA_CLOCK_HZ,
+                PORYAAAA_AUDIO_TRACE_HEADER "\n" PORYAAAA_AUDIO_TRACE_CLOCK_LINE "\nBEGIN %" PRIu64 " %" PRIu32 "\n",
                 begin_cycle,
                 order) < 0)
     {
@@ -202,7 +201,7 @@ bool m4a_driver_trace_begin_with_setup(M4ADriverTraceWriter* writer,
     writer->begin_cycle = begin_cycle;
     writer->end_cycle = end_cycle;
     writer->soundcnt_l = soundcnt_l;
-    if (fprintf(output, "PORYAAAA_AUDIO_TRACE 1\nCLOCK %u\n", HW_AUDIO_GBA_CLOCK_HZ) < 0)
+    if (fprintf(output, PORYAAAA_AUDIO_TRACE_HEADER "\n" PORYAAAA_AUDIO_TRACE_CLOCK_LINE "\n") < 0)
         return false;
 
     for (size_t index = 0; index < setup_count; index++)

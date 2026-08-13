@@ -11,3 +11,4 @@ poryaaaa.cfg
 .cache
 .DS_Store
 poryaaaa.log
+__pycache__/
