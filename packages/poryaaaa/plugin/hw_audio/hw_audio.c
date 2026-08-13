@@ -28,6 +28,9 @@ struct HwAudio
     HwPcm pcm;           /* canonical FIFO A/B timer-held-byte model */
     HwMixBus mix;        /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
     HwResample resample; /* DAC cadence -> host rate through current mGBA's sinc frontend */
+    float last_host_l;
+    float last_host_r;
+    bool have_frontend_sample;
 
     /* Production renderer's absolute hardware position.  DAC samples occur
      * on integral SOUNDBIAS cadence boundaries; a partial interval is
@@ -71,6 +74,72 @@ struct HwAudio
 static void reset_frontend(HwAudio* hw)
 {
     hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    hw->last_host_l = 0.0f;
+    hw->last_host_r = 0.0f;
+    hw->have_frontend_sample = false;
+}
+
+/* Drain the frontend while retaining its final stereo frame. Most callers
+ * provide both output buffers, so that path remains one resampler call.
+ * A missing channel drains one frame at a time through a local sink. */
+static int
+drain_frontend(HwAudio* hw, const int16_t* in_l, const int16_t* in_r, int in_n, float* out_l, float* out_r, int max_out)
+{
+    if (max_out <= 0)
+    {
+        float sample_l;
+        float sample_r;
+        return hw_resample_process(&hw->resample, in_l, in_r, in_n, &sample_l, &sample_r, max_out);
+    }
+
+    if (out_l && out_r)
+    {
+        const int produced = hw_resample_process(&hw->resample, in_l, in_r, in_n, out_l, out_r, max_out);
+        if (produced > 0)
+        {
+            hw->last_host_l = out_l[produced - 1];
+            hw->last_host_r = out_r[produced - 1];
+            hw->have_frontend_sample = true;
+        }
+        return produced;
+    }
+
+    int produced = 0;
+    while (produced < max_out)
+    {
+        float sample_l;
+        float sample_r;
+        const int emitted = hw_resample_process(&hw->resample,
+                                                produced == 0 ? in_l : NULL,
+                                                produced == 0 ? in_r : NULL,
+                                                produced == 0 ? in_n : 0,
+                                                out_l ? out_l + produced : &sample_l,
+                                                out_r ? out_r + produced : &sample_r,
+                                                1);
+        if (emitted == 0)
+            break;
+        hw->last_host_l = out_l ? out_l[produced] : sample_l;
+        hw->last_host_r = out_r ? out_r[produced] : sample_r;
+        hw->have_frontend_sample = true;
+        produced++;
+    }
+    return produced;
+}
+
+/* A fixed host block cannot be short. Before sinc release it remains silent;
+ * afterward, a frontend shortfall repeats the last stereo frame. */
+static void fill_frontend_gap(HwAudio* hw, float* out_l, float* out_r, int* rendered_host, int target_host)
+{
+    const float fill_l = hw->have_frontend_sample ? hw->last_host_l : 0.0f;
+    const float fill_r = hw->have_frontend_sample ? hw->last_host_r : 0.0f;
+    while (*rendered_host < target_host)
+    {
+        if (out_l)
+            out_l[*rendered_host] = fill_l;
+        if (out_r)
+            out_r[*rendered_host] = fill_r;
+        (*rendered_host)++;
+    }
 }
 
 /* SOUNDBIAS-derived quirk rate.
@@ -311,17 +380,17 @@ static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* render
     int max_host = target_host - *rendered_host;
     if (max_host < 0)
         max_host = 0;
-    *rendered_host += hw_resample_process(&hw->resample,
-                                          hw->native_l,
-                                          hw->native_r,
-                                          1,
-                                          outL ? outL + *rendered_host : NULL,
-                                          outR ? outR + *rendered_host : NULL,
-                                          max_host);
+    *rendered_host += drain_frontend(hw,
+                                     hw->native_l,
+                                     hw->native_r,
+                                     1,
+                                     outL ? outL + *rendered_host : NULL,
+                                     outR ? outR + *rendered_host : NULL,
+                                     max_host);
 }
 
 /* Preserve real-time frontend latency independently of host block partitioning.
- * Drain any ready sinc output before zero-filling host deadlines that passed
+ * Drain any ready sinc output before filling host deadlines that passed
  * while mGBA's eight-frame source watermark was still stalled. */
 static void fill_host_through_cycle(
     HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host, uint64_t block_begin_cycle)
@@ -332,21 +401,14 @@ static void fill_host_through_cycle(
     if (due <= *rendered_host)
         return;
 
-    *rendered_host += hw_resample_process(&hw->resample,
-                                          NULL,
-                                          NULL,
-                                          0,
-                                          outL ? outL + *rendered_host : NULL,
-                                          outR ? outR + *rendered_host : NULL,
-                                          due - *rendered_host);
-    while (*rendered_host < due)
-    {
-        if (outL)
-            outL[*rendered_host] = 0.0f;
-        if (outR)
-            outR[*rendered_host] = 0.0f;
-        (*rendered_host)++;
-    }
+    *rendered_host += drain_frontend(hw,
+                                     NULL,
+                                     NULL,
+                                     0,
+                                     outL ? outL + *rendered_host : NULL,
+                                     outR ? outR + *rendered_host : NULL,
+                                     due - *rendered_host);
+    fill_frontend_gap(hw, outL, outR, rendered_host, due);
 }
 
 /* Advance the live chip to an absolute event boundary, producing only the
@@ -475,21 +537,14 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
 
         if (rate_change)
         {
-            rendered_host += hw_resample_process(&hw->resample,
-                                                 NULL,
-                                                 NULL,
-                                                 0,
-                                                 outL ? outL + rendered_host : NULL,
-                                                 outR ? outR + rendered_host : NULL,
-                                                 event_host_limit - rendered_host);
-            while (rendered_host < event_host_limit)
-            {
-                if (outL)
-                    outL[rendered_host] = 0.0f;
-                if (outR)
-                    outR[rendered_host] = 0.0f;
-                rendered_host++;
-            }
+            rendered_host += drain_frontend(hw,
+                                            NULL,
+                                            NULL,
+                                            0,
+                                            outL ? outL + rendered_host : NULL,
+                                            outR ? outR + rendered_host : NULL,
+                                            event_host_limit - rendered_host);
+            fill_frontend_gap(hw, outL, outR, &rendered_host, event_host_limit);
         }
 
         hw_psg_apply_event(&hw->psg, ev);
@@ -514,22 +569,15 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
 
     if (rendered_host < frames)
     {
-        rendered_host += hw_resample_process(&hw->resample,
-                                             NULL,
-                                             NULL,
-                                             0,
-                                             outL ? outL + rendered_host : NULL,
-                                             outR ? outR + rendered_host : NULL,
-                                             frames - rendered_host);
+        rendered_host += drain_frontend(hw,
+                                        NULL,
+                                        NULL,
+                                        0,
+                                        outL ? outL + rendered_host : NULL,
+                                        outR ? outR + rendered_host : NULL,
+                                        frames - rendered_host);
     }
-    while (rendered_host < frames)
-    {
-        if (outL)
-            outL[rendered_host] = 0.0f;
-        if (outR)
-            outR[rendered_host] = 0.0f;
-        rendered_host++;
-    }
+    fill_frontend_gap(hw, outL, outR, &rendered_host, frames);
 }
 
 #if PORYAAAA_HW_AUDIO_TRACE

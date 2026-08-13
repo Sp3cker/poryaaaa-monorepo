@@ -899,6 +899,54 @@ static void test_soundbias_all_dac_intervals_are_render_observable(void)
     }
 }
 
+/* The rate switch is at host frame 10. At cycle 2561, only the first
+ * 32768 Hz DAC observation exists; sinc releases real frames 10 and 11,
+ * then frame 12 is an intentional fixed-block shortfall. */
+static void test_frontend_startup_and_soundbias_shortfall_hold_last(void)
+{
+    printf("Testing frontend contracts: startup mute and SOUNDBIAS shortfall hold...\n");
+    enum
+    {
+        RELEASE_FRAME = 8,
+        LAST_REAL_FRAME = 11,
+        HELD_FRAME = 12,
+        FRAMES = 13,
+    };
+    const uint64_t rate_change_cycle = 10 * CONTRACT_CYCLES_PER_HOST_FRAME;
+    const uint64_t end_cycle = rate_change_cycle + 1;
+    float left[FRAMES] = {0};
+    float right[FRAMES] = {0};
+    M4ARegWrite events[] = {
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x0304, 0},
+        {0, M4A_REG_FIFO_A, 0x0000007F, 0},
+        {0, M4A_REG_TIMER_0, 0, 0},
+        {rate_change_cycle, M4A_REG_SOUNDBIAS, 0x0200, 0},
+    };
+    HwAudio* audio = hw_audio_create((float)CONTRACT_HOST_RATE);
+    ASSERT(audio != NULL, "HwAudio allocation succeeds");
+    if (audio)
+    {
+        render_interval(audio, events, sizeof(events) / sizeof(events[0]), 0, end_cycle, FRAMES, left, right);
+        ASSERT(is_silent(left, right, RELEASE_FRAME), "startup stays silent before the sinc releases");
+        ASSERT(peak_abs_range(left, RELEASE_FRAME, RELEASE_FRAME + 1) > 0.001f &&
+                   peak_abs_range(right, RELEASE_FRAME, RELEASE_FRAME + 1) > 0.001f,
+               "the first released sinc frame is a real stereo observation");
+        ASSERT(peak_abs_range(left, LAST_REAL_FRAME, LAST_REAL_FRAME + 1) > 0.001f &&
+                   peak_abs_range(right, LAST_REAL_FRAME, LAST_REAL_FRAME + 1) > 0.001f,
+               "the SOUNDBIAS cadence change has a real final frontend frame");
+        ASSERT_NEAR(left[HELD_FRAME],
+                    left[LAST_REAL_FRAME],
+                    0.0f,
+                    "post-SOUNDBIAS shortfall holds the last left frontend frame");
+        ASSERT_NEAR(right[HELD_FRAME],
+                    right[LAST_REAL_FRAME],
+                    0.0f,
+                    "post-SOUNDBIAS shortfall holds the last right frontend frame");
+    }
+    hw_audio_destroy(audio);
+}
+
 static void test_soundbias_clipping(void)
 {
     printf("Testing production chip contracts: SOUNDBIAS clipping...\n");
@@ -1057,6 +1105,7 @@ void test_hw_audio_contracts_run_all(void)
     test_fifo_reset_preserves_current_word();
     test_timer_selection_and_empty_fifo_silence();
     test_soundbias_all_dac_intervals_are_render_observable();
+    test_frontend_startup_and_soundbias_shortfall_hold_last();
     test_soundbias_clipping();
     test_noise_trigger_resets_rendered_clock();
     test_timer_does_not_partition_noise_clock();
