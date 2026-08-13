@@ -750,6 +750,121 @@ static void test_v2_trigger_semantics(void)
     m4a_driver_destroy(drv);
 }
 
+/* A=0, D=0, S=0 enters pseudo-echo during the same CgbSound call.  A
+ * zero pseudo-echo volume therefore emits CgbOscOff after the start write,
+ * rather than a RELEASE envelope transaction. */
+static void test_v2_cgb_triple_zero_echo_zero_disables(void)
+{
+    printf("Testing v2 CGB triple-zero envelope disables at zero pseudo-echo volume...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 0;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "triple-zero zero-echo driver allocates");
+    if (!drv)
+        return;
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    drv->tracks[0].pseudoEchoVolume = 0;
+    drv->tracks[0].pseudoEchoLength = 3;
+    m4a_note_on(drv, 0, 60, 127);
+    v2_advance_one_vblank(drv);
+
+    M4ADriverCgbChan* ch = &drv->cgb[1];
+    const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+    bool wroteStart = false;
+    bool wroteOscOffNr22 = false;
+    bool wroteOscOffNr24 = false;
+    bool wroteGoalNr22 = false;
+    for (size_t i = 0; i < batch->count; i++)
+    {
+        const M4ARegWrite* event = &batch->events[i];
+        if (event->reg == M4A_REG_NR21)
+            wroteStart = true;
+        if (event->reg == M4A_REG_NR22 && event->value == 0x08u)
+            wroteOscOffNr22 = true;
+        if (event->reg == M4A_REG_NR24 && event->value == 0x80u)
+            wroteOscOffNr24 = true;
+        if (event->reg == M4A_REG_NR22 && (event->value >> 4) == ch->envelopeGoal)
+            wroteGoalNr22 = true;
+    }
+
+    ASSERT(wroteStart, "triple-zero zero-echo first tick retains SQ2 start initialization");
+    ASSERT(wroteOscOffNr22, "triple-zero zero-echo first tick emits SQ2 CgbOscOff NR22");
+    ASSERT(wroteOscOffNr24, "triple-zero zero-echo first tick emits SQ2 CgbOscOff NR24");
+    ASSERT(!wroteGoalNr22, "triple-zero zero-echo first tick never writes full-goal NR22");
+    ASSERT_EQ(ch->status, 0, "triple-zero zero-echo first tick frees SQ2");
+
+    m4a_driver_destroy(drv);
+}
+
+/* The nonzero triple-zero path begins IEC immediately, with its first
+ * hardware-envelope transaction at the pseudo-echo volume. */
+static void test_v2_cgb_triple_zero_echo_starts_iec(void)
+{
+    printf("Testing v2 CGB triple-zero envelope starts pseudo-echo...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 0;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "triple-zero IEC driver allocates");
+    if (!drv)
+        return;
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    drv->tracks[0].pseudoEchoVolume = 0x80;
+    drv->tracks[0].pseudoEchoLength = 3;
+    m4a_note_on(drv, 0, 60, 127);
+    v2_advance_one_vblank(drv);
+
+    M4ADriverCgbChan* ch = &drv->cgb[1];
+    const uint8_t expectedVolume = (uint8_t)((ch->envelopeGoal * 0x80u + 0xFFu) >> 8);
+    const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+    bool wroteNr22 = false;
+    bool allNr22AtEchoVolume = true;
+    for (size_t i = 0; i < batch->count; i++)
+    {
+        const M4ARegWrite* event = &batch->events[i];
+        if (event->reg == M4A_REG_NR22)
+        {
+            wroteNr22 = true;
+            if ((event->value >> 4) != expectedVolume)
+                allNr22AtEchoVolume = false;
+        }
+    }
+
+    ASSERT_EQ(ch->status, M4A_CHN_ON | M4A_CHN_IEC, "triple-zero nonzero echo enters IEC on first tick");
+    ASSERT(expectedVolume != 0, "configured nonzero pseudo-echo produces a nonzero volume");
+    ASSERT_EQ(ch->envelopeVolume, expectedVolume, "triple-zero IEC uses ROM pseudo-echo volume");
+    ASSERT_EQ(ch->pseudoEchoLength, 3, "triple-zero IEC length is not decremented on start tick");
+    ASSERT(wroteNr22, "triple-zero IEC first tick writes SQ2 envelope");
+    ASSERT(allNr22AtEchoVolume, "triple-zero IEC first tick writes only echo-volume NR22 values");
+
+    m4a_driver_destroy(drv);
+}
+
 /* A square sustain rollover updates software volume without inventing a ROM
  * hardware transaction; only an existing modify flag may rewrite NRx2/NRx4. */
 static void test_v2_square_sustain_rollover_does_not_write(void)
@@ -3545,6 +3660,205 @@ static void test_v2_lfo_lfodl_resets_running_modulation(void)
     ASSERT(freq_after_lfodl == baseline, "LFODL reset modM → freq returns to baseline");
 
     m4a_driver_destroy(drv);
+}
+
+/* ROM MPlayMain: vibrato sets PITCHG only; tremolo/autopan set VOLCHG.
+ * VOLCHG → ChnVolSetAsm → CGB MO_VOL → NRx2 + NRx4 trigger.  A held
+ * square with default vibrato (LFOS=22) must not zipper via extra
+ * NR24 triggers. */
+static void test_v2_lfo_vibrato_does_not_retrigger_square(void)
+{
+    printf("Testing v2 LFO vibrato does not retrigger a held square...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "vibrato trigger driver allocates");
+    if (!drv)
+        return;
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x01, 64); /* MOD depth; LFOS stays 22, modT stays 0 */
+    m4a_note_on(drv, 0, 60, 100);
+    m4a_advance(drv, 1024);
+    m4a_consume_writes(drv);
+
+    int nr24_trig = 0;
+    int nr24_notrig = 0;
+    int nr22 = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        m4a_advance(drv, 1024);
+        const M4ARegWriteBatch* b = m4a_get_pending_writes(drv);
+        for (size_t e = 0; e < b->count; e++)
+        {
+            if (b->events[e].reg == M4A_REG_NR22)
+                nr22++;
+            if (b->events[e].reg == M4A_REG_NR24)
+            {
+                if (b->events[e].value & 0x80)
+                    nr24_trig++;
+                else
+                    nr24_notrig++;
+            }
+        }
+        m4a_consume_writes(drv);
+    }
+
+    ASSERT(drv->tracks[0].modM != 0, "vibrato advanced modM during the hold");
+    ASSERT_EQ(nr22, 0, "vibrato does not rewrite NR22 on a held square");
+    ASSERT_EQ(nr24_trig, 0, "vibrato does not retrigger NR24 on a held square");
+    ASSERT(nr24_notrig > 0, "vibrato still emits pitch-only NR24 writes");
+
+    m4a_driver_destroy(drv);
+}
+
+/* Converse of the vibrato hold: tremolo (modT=1) and autopan (modT=2)
+ * are VOLCHG, so a held square must keep emitting NR22 + NR24-trigger
+ * when modM moves, and must not emit pitch-only NR24. */
+static void test_v2_lfo_volume_modes_retrigger_square(void)
+{
+    printf("Testing v2 LFO tremolo/autopan retrigger a held square...\n");
+
+    const uint8_t modes[] = {1, 2};
+    for (size_t mode = 0; mode < sizeof(modes); mode++)
+    {
+        ToneData voices[128];
+        memset(voices, 0, sizeof(voices));
+        voices[0].type = VOICE_SQUARE_2;
+        voices[0].key = 60;
+        voices[0].attack = 0;
+        voices[0].decay = 0;
+        voices[0].sustain = 16;
+        voices[0].release = 16;
+        voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+        M4ADriver* drv = m4a_driver_create(44100.0f);
+        ASSERT(drv != NULL, "volume-mode LFO driver allocates");
+        if (!drv)
+            return;
+        m4a_driver_set_voicegroup(drv, voices);
+        m4a_program_change(drv, 0, 0);
+        m4a_cc(drv, 0, 7, 127);
+        m4a_cc(drv, 0, 10, 64);
+        m4a_cc(drv, 0, 0x01, 64);
+        m4a_cc(drv, 0, 0x16, modes[mode]);
+        m4a_note_on(drv, 0, 60, 100);
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+
+        int nr24_trig = 0;
+        int nr24_notrig = 0;
+        int nr22 = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            m4a_advance(drv, 1024);
+            const M4ARegWriteBatch* b = m4a_get_pending_writes(drv);
+            for (size_t e = 0; e < b->count; e++)
+            {
+                if (b->events[e].reg == M4A_REG_NR22)
+                    nr22++;
+                if (b->events[e].reg == M4A_REG_NR24)
+                {
+                    if (b->events[e].value & 0x80)
+                        nr24_trig++;
+                    else
+                        nr24_notrig++;
+                }
+            }
+            m4a_consume_writes(drv);
+        }
+
+        ASSERT(drv->tracks[0].modM != 0, "volume-mode LFO advanced modM");
+        ASSERT(nr22 > 0, "tremolo/autopan rewrite NR22 on a held square");
+        ASSERT(nr24_trig > 0, "tremolo/autopan retrigger NR24 on a held square");
+        ASSERT_EQ(nr24_notrig, 0, "volume-mode LFO does not emit pitch-only NR24");
+
+        m4a_driver_destroy(drv);
+    }
+}
+
+/* PCM VOLCHG updates mixer L/R volumes and must not retune the step. */
+static void test_v2_lfo_tremolo_updates_pcm_volume_not_pitch(void)
+{
+    printf("Testing v2 LFO tremolo updates PCM volume without retuning...\n");
+
+    int dataSize = 64;
+    WaveData* wd = calloc(1, sizeof(WaveData) + dataSize + 1);
+    wd->type = 0;
+    wd->status = 0xC000;
+    wd->freq = 22050u << 10;
+    wd->size = dataSize;
+    wd->loopStart = 0;
+    wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
+    for (int i = 0; i < dataSize; i++)
+        wd->data[i] = 100;
+    wd->data[dataSize] = wd->data[0];
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = wd;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "PCM tremolo driver allocates");
+    if (!drv)
+    {
+        free(wd);
+        return;
+    }
+    m4a_set_master_volume(drv, 15);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x01, 64);
+    m4a_cc(drv, 0, 0x16, 1);
+    m4a_note_on(drv, 0, 60, 127);
+    m4a_advance(drv, 1024);
+    m4a_consume_writes(drv);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "PCM tremolo starts a channel");
+    if (!ch)
+    {
+        m4a_driver_destroy(drv);
+        free(wd);
+        return;
+    }
+
+    const uint32_t startFreq = ch->frequency;
+    const uint8_t startL = ch->leftVolume;
+    const uint8_t startR = ch->rightVolume;
+    int volumeMoved = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+        ASSERT_EQ((int)ch->frequency, (int)startFreq, "tremolo does not retune PCM step");
+        if (ch->leftVolume != startL || ch->rightVolume != startR)
+            volumeMoved = 1;
+    }
+
+    ASSERT(drv->tracks[0].modM != 0, "PCM tremolo advanced modM");
+    ASSERT(volumeMoved, "PCM tremolo moves leftVolume/rightVolume");
+
+    m4a_driver_destroy(drv);
+    free(wd);
 }
 
 /* Step 4 acceptance: both live square paths produce equally loud output
@@ -6558,6 +6872,8 @@ int main(void)
     test_xcmd_subcommands();
     test_polyphony_stealing();
     test_v2_trigger_semantics();
+    test_v2_cgb_triple_zero_echo_zero_disables();
+    test_v2_cgb_triple_zero_echo_starts_iec();
     test_v2_square_sustain_rollover_does_not_write();
     test_v2_cgb_alt_voice_quantizes_pitch_writes();
     test_v2_default_midi_volume_matches_mp2k();
@@ -6602,6 +6918,9 @@ int main(void)
     test_v2_lfo_default_speed_modulates_freq();
     test_v2_lfo_delay_holds_off();
     test_v2_lfo_lfodl_resets_running_modulation();
+    test_v2_lfo_vibrato_does_not_retrigger_square();
+    test_v2_lfo_volume_modes_retrigger_square();
+    test_v2_lfo_tremolo_updates_pcm_volume_not_pitch();
     test_v2_cgb_volume_triggers_match_m4a();
     test_v2_pcm_fifo_timer_events();
     test_v2_psg_square_audible();

@@ -1028,11 +1028,12 @@ void m4a_all_notes_off(M4ADriver* drv, int track)
  *      pattern.
  *   4. Fold mod depth: newModM = (mod * lfoVal) >> 6.
  *   5. If newModM differs from current modM, store it, recompute
- *      track-derived state via m4a_trk_vol_pit_set, and refresh active
- *      CGB / PCM channels on this track.  Volume axis (volMR/volML) is
- *      always refreshed; pitch is refreshed only when modT == 0
- *      (vibrato).  modT == 1 (tremolo) and modT == 2 (autopan) only need
- *      volume refresh. */
+ *      track-derived state via m4a_trk_vol_pit_set, and refresh only
+ *      the ROM's changed axis.  modT == 0 (vibrato) is PITCHG: CGB
+ *      NRx3 + NRx4-no-trigger and the PCM step word.  Tremolo and
+ *      autopan are VOLCHG: CGB MO_VOL → NRx2 + NRx4 trigger, and PCM
+ *      leftVolume/rightVolume for SoundMainRAM.  Volume refresh
+ *      retriggers square/noise; pitch refresh does not. */
 void m4a_internal_lfo_tick(M4ADriver* drv)
 {
     if (!drv)
@@ -1066,13 +1067,15 @@ void m4a_internal_lfo_tick(M4ADriver* drv)
         {
             t->modM = newModM;
             m4a_trk_vol_pit_set(t);
-            refresh_cgb_volumes(drv, i);
-            refresh_pcm_volumes(drv, i);
             if (t->modT == 0)
             {
-                /* Vibrato: pitch axis follows modM. */
                 refresh_cgb_pitches(drv, i);
                 refresh_pcm_pitches(drv, i);
+            }
+            else
+            {
+                refresh_cgb_volumes(drv, i);
+                refresh_pcm_volumes(drv, i);
             }
         }
     }

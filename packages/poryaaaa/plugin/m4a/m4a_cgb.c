@@ -91,7 +91,17 @@ void m4a_drv_cgb_start(M4ADriverCgbChan* ch)
         {
             if (ch->sustain == 0)
             {
-                ch->status = M4A_CHN_ON | M4A_CHN_ENV_RELEASE;
+                ch->envelopeVolume = ((ch->envelopeGoal * ch->pseudoEchoVolume) + 0xFF) >> 8;
+                if (ch->envelopeVolume)
+                {
+                    ch->status = M4A_CHN_ON | M4A_CHN_IEC;
+                    if (ch->type != 3)
+                        ch->envelopeStepTimeAndDir = 0x08u;
+                }
+                else
+                {
+                    ch->status = M4A_CHN_ON;
+                }
             }
             else
             {
@@ -407,14 +417,25 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     if (ch->freshStart)
         emit_start_write(drv, ch);
 
+    if (ch->freshStart && ch->envelopeVolume == 0 && !(ch->status & M4A_CHN_IEC) &&
+        (ch->status & M4A_CHN_ENV_MASK) == 0)
+    {
+        ch->status = 0;
+        m4a_drv_cgb_disable(drv, ch, idx);
+        return;
+    }
+
     if (ch->status & M4A_CHN_IEC)
     {
-        ch->pseudoEchoLength--;
-        if ((int8_t)ch->pseudoEchoLength <= 0)
+        if (!ch->freshStart)
         {
-            ch->status = 0;
-            m4a_drv_cgb_disable(drv, ch, idx);
-            return;
+            ch->pseudoEchoLength--;
+            if ((int8_t)ch->pseudoEchoLength <= 0)
+            {
+                ch->status = 0;
+                m4a_drv_cgb_disable(drv, ch, idx);
+                return;
+            }
         }
         goto done;
     }

@@ -347,8 +347,8 @@ extern "C"
     /* Run one LFO tempo tick across all tracks.  Called from m4a_main.c's
      * tempoC-overflow loop: each track with mod != 0 and lfoSpeed != 0
      * advances lfoSpeedC, derives a triangle-wave sample, and folds it into
-     * modM.  When modM changes, the track's derived state is recomputed and
-     * active CGB / PCM channels on this track are refreshed. */
+     * modM.  When modM changes, derived track state is recomputed and only
+     * the ROM-changed axis is pushed into active CGB / PCM channels. */
     void m4a_internal_lfo_tick(M4ADriver* drv);
 
     /* Per-vblank driver effect scheduling and effect reset helpers. */
