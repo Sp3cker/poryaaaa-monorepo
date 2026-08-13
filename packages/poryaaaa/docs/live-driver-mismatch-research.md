@@ -134,8 +134,8 @@ CGB and PCM decrement it each SoundMain and OR STOP at 0. Test:
 CC `0x1B` writes `keyShift = value - 0x40` and refreshes CGB/PCM pitches.
 Test: `test_v2_keysh_cc_transposes_square`.
 
-`xWAIT` (0x0C) is an intentional no-op (`m4a_track.c:723-726`; README and
-`xcmd.md` already say so). A MIDI path has no script PC to stall.
+`xWAIT` (0x0C) is not accepted (`xcmd_data_length` returns 0;
+`m4a_track.c:739-761`). A MIDI path has no script PC to stall.
 
 ## ROM-correct on the inspected live paths
 
@@ -168,9 +168,9 @@ Test: `test_v2_keysh_cc_transposes_square`.
 - SMF BPM / PPQN versus ROM `TEMPO` + wait grid. Accumulator math matches;
   musical equivalence does not follow automatically.
 - XCMD 0x0D: ROM writes `unk_3C` (`m4a.c:1637-1651`); poryaaaa stores the
-  payload (`m4a_track.c:806-808`) and uses it as a PCM start offset
-  (`m4a_track.c:657-660`). No named ROM reader was found. Host mapping, not
-  a ROM-correct store.
+  payload (`m4a_track.c:822-824`) and uses it as a PCM start offset
+  (`m4a_track.c:663-665`). No named ROM reader of `unk_3C` as a start
+  offset was found. Host mapping, not a ROM-correct store.
 - Golden Sun triangle/saw / modulated-pulse long traces.
 - Portamento and PWM: present in poryaaaa, plugin-enabled, absent from the
   supplied ROM `m4a.c` / `m4a_1.s`. Non-ROM extensions, not source-provable

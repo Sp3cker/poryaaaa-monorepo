@@ -117,26 +117,31 @@ CC 30 = 0x08, CC 29 = 0x22   -> xiecv 0x22
 CC 30 = 0x09, CC 29 = 0x11   -> xiecl 0x11
 ```
 
-Supported XCMD subcommands:
+Supported XCMD subcommands (`gXcmdTable` `0x00`–`0x0D`):
 
-- `0x01` `xwave`: 4 payload bytes, little-endian 32-bit wave pointer
-- `0x02` `xtype`: 1 payload byte
-- `0x04` `xatta`: 1 payload byte
-- `0x05` `xdeca`: 1 payload byte
-- `0x06` `xsust`: 1 payload byte
-- `0x07` `xrele`: 1 payload byte
-- `0x08` `xiecv`: 1 payload byte
-- `0x09` `xiecl`: 1 payload byte
-- `0x0A` `xleng`: 1 payload byte
-- `0x0B` `xswee`: 1 payload byte
-- `0x0C`: 2 payload bytes, little-endian
-- `0x0D`: 4 payload bytes, little-endian
+- `0x00`, `0x03`: ROM `ply_xxx` nops. Not accepted (`dataLength == 0`).
+- `0x01` `xwave`: 4 LE bytes. Notify-only; `currentVoice.wav` is not written
+  (payload is a ROM address, not a host pointer).
+- `0x02` `xtype`: 1 byte → `currentVoice.type`
+- `0x04` `xatta`: 1 byte → `currentVoice.attack`
+- `0x05` `xdeca`: 1 byte → `currentVoice.decay`
+- `0x06` `xsust`: 1 byte → `currentVoice.sustain`
+- `0x07` `xrele`: 1 byte → `currentVoice.release`
+- `0x08` `xiecv`: 1 byte → `pseudoEchoVolume`
+- `0x09` `xiecl`: 1 byte → `pseudoEchoLength`
+- `0x0A` `xleng`: 1 byte → `currentVoice.length`
+- `0x0B` `xswee`: 1 byte → `currentVoice.panSweep`
+- `0x0C` `xwait`: ROM stalls the song PC. Not accepted here (`dataLength == 0`);
+  there is no bytecode walker on the MIDI path.
+- `0x0D`: 4 LE bytes → `extendedValue`. Next DirectSound note-on uses that
+  value as a sample start offset.
 
 Notes:
 
 - Multi-byte payloads are assembled from repeated `CC 29`/`CC 31` messages.
-- Audio-affecting XCMD changes apply to notes started after the command is received.
-- `0x0C` tracks the original engine's loop/wait state but does not alter playback flow in `poryaaaa`, because there is no song-script interpreter in the MIDI path.
+- Audio-affecting XCMD changes apply to notes started after the command.
+- Selector is sticky after apply; only the payload byte count resets.
+- Full CC state machine: `xcmd.md`.
 
 #### Plugin config reference
 

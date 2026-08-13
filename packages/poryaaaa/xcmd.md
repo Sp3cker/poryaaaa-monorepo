@@ -12,9 +12,14 @@ The driver handles extended command CCs (`0x1D`, `0x1E`, `0x1F`) emitted by `mid
 
 Three key design decisions define the driver implementation:
 
-1. **xWAVE (0x01) is notify-only.** The 32-bit LE payload is stored into `track->extendedValue` and forwarded via `drv->xcmd_fn`. `currentVoice.wav` pointer is untouched to prevent dangling host pointers.
-2. **xWAIT (0x0C) is intentionally dropped.** There is no song-script interpreter on MIDI CC ingress, so 0x0C payload bytes are swallowed without error or state mutation.
-3. **x0D stores into `extendedValue` and notifies.** The 4-byte LE payload is preserved on the track and forwarded via callback.
+1. **xWAVE (0x01) is notify-only.** The 32-bit LE payload is forwarded via
+   `drv->xcmd_fn`. `currentVoice.wav` is untouched. The payload is **not**
+   stored in `extendedValue`.
+2. **xWAIT (0x0C) is not accepted.** `xcmd_data_length(0x0C)` returns 0, so
+   payload bytes never accumulate or apply. There is no song-script PC to stall.
+3. **x0D stores into `extendedValue` and notifies.** The next PCM `m4a_note_on`
+   passes that value to `m4a_drv_pcm_start` as a sample start offset. ROM
+   `ply_xcmd_0D` writes `unk_3C`; `ply_note` copies it to `SoundChannel.count`.
 
 The two-CC protocol is order-dependent and the selector is sticky after apply (only the byte count resets).
 
@@ -26,8 +31,10 @@ The two-CC protocol is order-dependent and the selector is sticky after apply (o
 
 | Sel  | Name  | Bytes | hearth target          | M4ADriver Track Target (`plugin/m4a/m4a_track.c`) |
 |------|-------|-------|------------------------|--------------------------------------------------|
-| 0x01 | xWAVE | 4 LE  | `tone.wav`             | `track->extendedValue` (notify-only)             |
+| 0x00 | —     | 0     | `ply_xxx` nop          | not accepted (`dataLength == 0`)                 |
+| 0x01 | xWAVE | 4 LE  | `tone.wav`             | notify-only (`currentVoice.wav` unchanged)       |
 | 0x02 | xTYPE | 1     | `tone.type`            | `track->currentVoice.type`                       |
+| 0x03 | —     | 0     | `ply_xxx` nop          | not accepted (`dataLength == 0`)                 |
 | 0x04 | xATTA | 1     | `tone.attack`          | `track->currentVoice.attack`                     |
 | 0x05 | xDECA | 1     | `tone.decay`           | `track->currentVoice.decay`                      |
 | 0x06 | xSUST | 1     | `tone.sustain`         | `track->currentVoice.sustain`                    |
@@ -36,8 +43,8 @@ The two-CC protocol is order-dependent and the selector is sticky after apply (o
 | 0x09 | xIECL | 1     | `track->pseudoEchoLength` | `track->pseudoEchoLength`                     |
 | 0x0A | xLENG | 1     | `tone.length`          | `track->currentVoice.length`                     |
 | 0x0B | xSWEE | 1     | `tone.pan_sweep`       | `track->currentVoice.panSweep`                   |
-| 0x0C | xWAIT | 2 LE  | `track->extendedLoopCount`/`extendedWait` | (dropped, no-op)                     |
-| 0x0D | --    | 4 LE  | `track->unk_3C`        | `track->extendedValue` (notify-only)             |
+| 0x0C | xWAIT | 2 LE  | song `timer` / `wait`  | not accepted (`dataLength == 0`)                 |
+| 0x0D | —     | 4 LE  | `track->unk_3C`        | `track->extendedValue` + next PCM start offset   |
 
 ### CC-side State Machine (`plugin/m4a/m4a_track.c`)
 
@@ -56,7 +63,7 @@ CC 0x1D or 0x1F (value)     --> if (extendedCommand != 0):
 
 `xcmd_apply` dispatches on `extendedCommand`, mutates the per-track target, fires `drv->xcmd_fn(drv->xcmd_ctx, trackIndex, selector, value)`, and resets `extendedCommandCount = 0`.
 
-- `xcmd_data_length`: returns 4 for 0x01/0x0D, 2 for 0x0C, 1 for 0x02 and 0x04..0x0B, 0 otherwise.
+- `xcmd_data_length`: returns 4 for 0x01/0x0D, 1 for 0x02 and 0x04..0x0B, 0 otherwise (including 0x00, 0x03, and 0x0C).
 - `xcmd_read_le`: little-endian assembly across 1..4 bytes.
 
 ---
@@ -71,7 +78,7 @@ CC 0x1D or 0x1F (value)     --> if (extendedCommand != 0):
 uint8_t extendedCommand;        /* 1E selector, 0 = idle */
 uint8_t extendedCommandCount;   /* Bytes accumulated so far */
 uint8_t extendedCommandBytes[4];
-uint32_t extendedValue;         /* xCmd 0x01/0x0D payload */
+uint32_t extendedValue;         /* xCmd 0x0D payload; PCM start offset */
 uint8_t pseudoEchoVolume;       /* xIECV 0x08 */
 uint8_t pseudoEchoLength;       /* xIECL 0x09 */
 ```
@@ -111,9 +118,9 @@ When an XCMD completes apply, `xcmd_apply` calls `drv->xcmd_fn(drv->xcmd_ctx, tr
 
 ## Settled Design Rules
 
-1. **xWAVE (0x01) pointer semantics:** Notify-only. `currentVoice.wav` is left unmodified. The callback receives the u32 LE payload so host code can resolve sample pointers if desired.
-2. **xCmd 0x0C (xWAIT):** Dropped. 0x0C is omitted from `xcmd_data_length` dispatch, and payload bytes are ignored.
-3. **xCmd 0x0D:** Stored into `track->extendedValue` and forwarded via callback.
+1. **xWAVE (0x01) pointer semantics:** Notify-only. `currentVoice.wav` is left unmodified. The callback receives the u32 LE payload so host code can resolve sample pointers if desired. The payload is not written to `extendedValue`.
+2. **xCmd 0x0C (xWAIT):** Not accepted. `xcmd_data_length` returns 0; payload CCs are ignored. A MIDI path has no script PC to stall.
+3. **xCmd 0x0D:** Stored into `track->extendedValue` and forwarded via callback. The next DirectSound note-on uses it as the sample start offset (`m4a_track.c` → `m4a_drv_pcm_start`). ROM copies `unk_3C` onto `SoundChannel.count`.
 4. **Active-channel ADSR snapshot rules:** xATTA / xDECA / xSUST / xRELE / xLENG / xSWEE / xTYPE mutate `currentVoice.*` only. They affect future note-ons; already-sounding channels retain their per-note ADSR snapshot taken at note-on time (`m4a_driver_note_on()` copies voice params to channel params).
 5. **Voicegroup refresh:** Re-copying a voicegroup entry over `currentVoice` will reset xCmd voice mutations on future notes unless re-applied, matching standard GBA m4a behavior.
 6. **Selector persistence:** Sticky selector protocol. After a successful `xcmd_apply`, only `extendedCommandCount` resets; `extendedCommand` remains latched for subsequent single-byte sends until a new `0x1E` selector arrives.
