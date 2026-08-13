@@ -298,7 +298,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
         return false;
     m4a_driver_set_portamento_enabled(driver, true);
     m4a_driver_set_pwm_enabled(driver, true);
-    m4a_set_max_pcm_channels(driver, 5);
+    m4a_set_max_pcm_channels(driver, 12);
 
     HwAudio* hwAudio = hw_audio_create((float)sample_rate);
     if (!hwAudio)
@@ -418,7 +418,7 @@ static void plugin_reset(const clap_plugin_t* plugin)
         return;
     m4a_driver_set_portamento_enabled(replacement, true);
     m4a_driver_set_pwm_enabled(replacement, true);
-    m4a_set_max_pcm_channels(replacement, 5);
+    m4a_set_max_pcm_channels(replacement, 12);
 
     /* Replace the driver before resetting the chip, then replay host state. */
     m4a_driver_destroy(data->driver);

@@ -87,7 +87,7 @@ void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32
 
 static bool pcm_can_pseudo_echo(const M4ADriverPcmChan* ch)
 {
-    return ch->pseudoEchoVolume != 0 && ch->pseudoEchoLength != 0;
+    return ch->pseudoEchoVolume != 0;
 }
 
 /* Per-vblank envelope tick for a PCM channel.  Matches the ROM SoundMainRAM
@@ -118,11 +118,6 @@ static void pcm_channel_tick(M4ADriverPcmChan* ch, uint8_t masterVolume)
 
     if (ch->status & M4A_CHN_IEC)
     {
-        if (ch->pseudoEchoLength == 0)
-        {
-            ch->status = 0;
-            return;
-        }
         ch->pseudoEchoLength--;
         if (ch->pseudoEchoLength == 0)
         {

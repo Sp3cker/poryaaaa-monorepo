@@ -414,6 +414,13 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     if (!(ch->status & M4A_CHN_ON))
         return;
 
+    if (ch->freshStart && (ch->status & M4A_CHN_STOP))
+    {
+        ch->status = 0;
+        m4a_drv_cgb_disable(drv, ch, idx);
+        return;
+    }
+
     if (ch->freshStart)
         emit_start_write(drv, ch);
 
@@ -584,6 +591,13 @@ void m4a_cgb_sound(M4ADriver* drv)
         return;
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
-        tick_one(drv, &drv->cgb[i], i);
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        tick_one(drv, ch, i);
+        if (ch->gateTime > 0)
+        {
+            ch->gateTime--;
+            if (ch->gateTime == 0)
+                ch->status |= M4A_CHN_STOP;
+        }
     }
 }

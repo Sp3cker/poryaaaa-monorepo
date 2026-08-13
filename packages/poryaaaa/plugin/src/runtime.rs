@@ -15,7 +15,7 @@ impl DriverHandle {
         unsafe {
             ffi::m4a_driver_set_portamento_enabled(driver.as_mut_ptr(), 1);
             ffi::m4a_driver_set_pwm_enabled(driver.as_mut_ptr(), 1);
-            ffi::m4a_set_max_pcm_channels(driver.as_mut_ptr(), 5);
+            ffi::m4a_set_max_pcm_channels(driver.as_mut_ptr(), 12);
         }
         Ok(driver)
     }

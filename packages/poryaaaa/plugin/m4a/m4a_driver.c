@@ -166,10 +166,9 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->master_volume = 12;
     drv->tempo_bpm = 120.0;
     drv->c15 = 0;
-    /* Raw drivers retain the complete DirectSound pool.  Product runtimes
-     * configure their former facade limits explicitly; zero remains an
-     * explicit no-PCM configuration. */
-    drv->max_pcm_channels = M4A_MAX_PCM_CHANNELS;
+    /* Hearth SOUND_MODE_MAXCHN keeps three of the 15 PCM slots reserved. */
+    drv->max_pcm_channels = 12;
+    drv->player_priority = 0;
     drv->portamento_enabled = false;
     drv->pwm_enabled = false;
 
@@ -322,6 +321,13 @@ void m4a_set_max_pcm_channels(M4ADriver* drv, uint8_t maxChannels)
     if (!drv)
         return;
     drv->max_pcm_channels = maxChannels;
+}
+
+void m4a_set_player_priority(M4ADriver* drv, uint8_t priority)
+{
+    if (!drv)
+        return;
+    drv->player_priority = priority;
 }
 
 void m4a_set_tempo_bpm(M4ADriver* drv, double bpm)

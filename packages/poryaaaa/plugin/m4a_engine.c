@@ -8,12 +8,11 @@
 
 _Static_assert(M4A_ENGINE_MAX_PROCESS_FRAMES == M4A_RECOMMENDED_MAX_ADVANCE_FRAMES,
                "compatibility render chunk must match the driver queue limit");
-_Static_assert(MAX_PCM_CHANNELS == M4A_MAX_PCM_CHANNELS,
-               "legacy and current PCM pools must agree");
+_Static_assert(MAX_PCM_CHANNELS == M4A_MAX_PCM_CHANNELS, "legacy and current PCM pools must agree");
 
-extern void m4a_drv_cgb_disable(M4ADriver *drv, M4ADriverCgbChan *ch, int idx);
+extern void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx);
 
-static void copy_track_to_driver(const M4ATrack *source, M4ADriverTrack *destination)
+static void copy_track_to_driver(const M4ATrack* source, M4ADriverTrack* destination)
 {
     destination->flags = source->flags;
     destination->volume = source->volume;
@@ -54,7 +53,7 @@ static void copy_track_to_driver(const M4ATrack *source, M4ADriverTrack *destina
     destination->currentVoice = source->currentVoice;
 }
 
-static void copy_track_from_driver(M4ATrack *destination, const M4ADriverTrack *source)
+static void copy_track_from_driver(M4ATrack* destination, const M4ADriverTrack* source)
 {
     destination->flags = source->flags;
     destination->volume = source->volume;
@@ -100,7 +99,7 @@ static uint8_t clamp_pcm_channels(uint8_t count)
     return count > MAX_PCM_CHANNELS ? MAX_PCM_CHANNELS : count;
 }
 
-static void apply_driver_config(M4AEngine *engine, M4ADriver *driver, uint8_t maxPcmChannels)
+static void apply_driver_config(M4AEngine* engine, M4ADriver* driver, uint8_t maxPcmChannels)
 {
     if (!driver)
         return;
@@ -116,7 +115,7 @@ static void apply_driver_config(M4AEngine *engine, M4ADriver *driver, uint8_t ma
     m4a_driver_set_pwm_enabled(driver, engine->pwmEnabled);
 }
 
-static void apply_public_state(M4AEngine *engine)
+static void apply_public_state(M4AEngine* engine)
 {
     engine->maxPcmChannels = clamp_pcm_channels(engine->maxPcmChannels);
     engine->reverbAmount = engine->reverb.amount;
@@ -126,7 +125,7 @@ static void apply_public_state(M4AEngine *engine)
     apply_driver_config(engine, engine->auditionDriver, MAX_PCM_CHANNELS);
 }
 
-static void copy_pcm_channel(M4APCMChannel *destination, const M4ADriverPcmChan *source, bool audition)
+static void copy_pcm_channel(M4APCMChannel* destination, const M4ADriverPcmChan* source, bool audition)
 {
     const bool active = (source->status & M4A_CHN_ON) != 0;
     memset(destination, 0, sizeof(*destination));
@@ -165,7 +164,7 @@ static void copy_pcm_channel(M4APCMChannel *destination, const M4ADriverPcmChan 
     destination->synthPulseDuty = source->synthPulseDuty;
 }
 
-static void copy_cgb_channel(M4ACGBChannel *destination, const M4ADriverCgbChan *source, bool audition)
+static void copy_cgb_channel(M4ACGBChannel* destination, const M4ADriverCgbChan* source, bool audition)
 {
     const bool active = (source->status & M4A_CHN_ON) != 0;
     memset(destination, 0, sizeof(*destination));
@@ -202,45 +201,49 @@ static void copy_cgb_channel(M4ACGBChannel *destination, const M4ADriverCgbChan 
         destination->wavePointer = source->wavePointer;
 }
 
-static void sync_channels(M4AEngine *engine)
+static void sync_channels(M4AEngine* engine)
 {
-    if (engine->driver) {
-        for (int i = 0; i < MAX_PCM_CHANNELS; ++i) {
+    if (engine->driver)
+    {
+        for (int i = 0; i < MAX_PCM_CHANNELS; ++i)
+        {
             if (!(engine->driver->pcmChans[i].status & M4A_CHN_ON))
                 engine->primaryPcmAudition[i] = false;
-            copy_pcm_channel(&engine->pcmChannels[i], &engine->driver->pcmChans[i],
-                             engine->primaryPcmAudition[i]);
+            copy_pcm_channel(&engine->pcmChannels[i], &engine->driver->pcmChans[i], engine->primaryPcmAudition[i]);
         }
-        for (int i = 0; i < MAX_CGB_CHANNELS; ++i) {
+        for (int i = 0; i < MAX_CGB_CHANNELS; ++i)
+        {
             if (!(engine->driver->cgb[i].status & M4A_CHN_ON))
                 engine->primaryCgbAudition[i] = false;
-            copy_cgb_channel(&engine->cgbChannels[i], &engine->driver->cgb[i],
-                             engine->primaryCgbAudition[i]);
+            copy_cgb_channel(&engine->cgbChannels[i], &engine->driver->cgb[i], engine->primaryCgbAudition[i]);
         }
     }
-    if (engine->shadowDriver) {
-        for (int i = 0; i < MAX_PCM_CHANNELS; ++i) {
+    if (engine->shadowDriver)
+    {
+        for (int i = 0; i < MAX_PCM_CHANNELS; ++i)
+        {
             if (!(engine->shadowDriver->pcmChans[i].status & M4A_CHN_ON))
                 engine->shadowPcmAudition[i] = false;
             copy_pcm_channel(&engine->pcmChannels[MAX_PCM_CHANNELS + i],
-                             &engine->shadowDriver->pcmChans[i], engine->shadowPcmAudition[i]);
+                             &engine->shadowDriver->pcmChans[i],
+                             engine->shadowPcmAudition[i]);
         }
         for (int i = 0; i < MAX_CGB_CHANNELS; ++i)
             copy_cgb_channel(&engine->cgbChannels[MAX_CGB_CHANNELS + i],
-                             &engine->shadowDriver->cgb[i], engine->shadowCgbAudition[i]);
+                             &engine->shadowDriver->cgb[i],
+                             engine->shadowCgbAudition[i]);
     }
 }
 
-static void sync_public_state(M4AEngine *engine)
+static void sync_public_state(M4AEngine* engine)
 {
     if (!engine->driver)
         return;
-    const M4ADriver *driver = engine->driver;
+    const M4ADriver* driver = engine->driver;
     engine->sampleRate = driver->host_rate;
-    engine->samplesPerTick = (float)((double)driver->host_rate * M4A_VBLANK_CYCLES /
-                                     M4A_GBA_CYCLES_PER_SECOND);
-    engine->tickAccumulator = (float)((double)(driver->current_cycle % M4A_VBLANK_CYCLES) *
-                                      driver->host_rate / M4A_GBA_CYCLES_PER_SECOND);
+    engine->samplesPerTick = (float)((double)driver->host_rate * M4A_VBLANK_CYCLES / M4A_GBA_CYCLES_PER_SECOND);
+    engine->tickAccumulator =
+        (float)((double)(driver->current_cycle % M4A_VBLANK_CYCLES) * driver->host_rate / M4A_GBA_CYCLES_PER_SECOND);
     engine->masterVolume = driver->master_volume;
     engine->songMasterVolume = driver->song_volume;
     engine->volume = driver->song_volume;
@@ -259,11 +262,12 @@ static void sync_public_state(M4AEngine *engine)
     sync_channels(engine);
 }
 
-static void record_poly_event(M4AEngine *engine, uint8_t type, uint8_t track, uint8_t key, uint8_t byTrack)
+static void record_poly_event(M4AEngine* engine, uint8_t type, uint8_t track, uint8_t key, uint8_t byTrack)
 {
     const uint32_t index = engine->polyEventTotal % M4A_POLY_EVENT_CAPACITY;
-    M4APolyEvent *event = &engine->polyEvents[index];
-    if (track < MAX_TRACKS) {
+    M4APolyEvent* event = &engine->polyEvents[index];
+    if (track < MAX_TRACKS)
+    {
         if (type == M4A_POLY_DROPPED)
             ++engine->polyDropCount[track];
         else if (type == M4A_POLY_STOLEN)
@@ -271,7 +275,9 @@ static void record_poly_event(M4AEngine *engine, uint8_t type, uint8_t track, ui
         else
             ++engine->polyTailCutCount[track];
         event->program = engine->tracks[track].currentProgram;
-    } else {
+    }
+    else
+    {
         event->program = 0;
     }
     event->type = type;
@@ -282,17 +288,20 @@ static void record_poly_event(M4AEngine *engine, uint8_t type, uint8_t track, ui
     ++engine->polyEventTotal;
 }
 
-static ToneData *resolve_voice(ToneData *voice, uint8_t key)
+static ToneData* resolve_voice(ToneData* voice, uint8_t key)
 {
     if (!voice)
         return NULL;
-    if (voice->type & VOICE_KEYSPLIT_ALL) {
-        ToneData *group = (ToneData *)voice->subGroup;
+    if (voice->type & VOICE_KEYSPLIT_ALL)
+    {
+        ToneData* group = (ToneData*)voice->subGroup;
         if (!group)
             return NULL;
         voice = &group[key];
-    } else if (voice->type & VOICE_KEYSPLIT) {
-        ToneData *group = (ToneData *)voice->subGroup;
+    }
+    else if (voice->type & VOICE_KEYSPLIT)
+    {
+        ToneData* group = (ToneData*)voice->subGroup;
         if (!group || !voice->keySplitTable)
             return NULL;
         voice = &group[voice->keySplitTable[key]];
@@ -300,27 +309,31 @@ static ToneData *resolve_voice(ToneData *voice, uint8_t key)
     return (voice->type & (VOICE_KEYSPLIT | VOICE_KEYSPLIT_ALL)) ? NULL : voice;
 }
 
-static M4ADriverPcmChan *select_pcm_channel(M4ADriver *driver, uint8_t priority, int track)
+static M4ADriverPcmChan* select_pcm_channel(M4ADriver* driver, uint8_t priority, int track)
 {
-    M4ADriverPcmChan *best = NULL;
+    M4ADriverPcmChan* best = NULL;
     uint8_t bestPriority = priority;
     int bestTrack = track;
     bool bestStopping = false;
-    for (int i = 0; i < clamp_pcm_channels(driver->max_pcm_channels); ++i) {
-        M4ADriverPcmChan *channel = &driver->pcmChans[i];
+    for (int i = 0; i < clamp_pcm_channels(driver->max_pcm_channels); ++i)
+    {
+        M4ADriverPcmChan* channel = &driver->pcmChans[i];
         if (!(channel->status & M4A_CHN_ON))
             return channel;
-        if (channel->status & M4A_CHN_STOP) {
+        if (channel->status & M4A_CHN_STOP)
+        {
             if (!bestStopping || channel->priority < bestPriority ||
-                (channel->priority == bestPriority && channel->trackIndex >= bestTrack)) {
+                (channel->priority == bestPriority && channel->trackIndex >= bestTrack))
+            {
                 bestStopping = true;
                 bestPriority = channel->priority;
                 bestTrack = channel->trackIndex;
                 best = channel;
             }
-        } else if (!bestStopping &&
-                   (channel->priority < bestPriority ||
-                    (channel->priority == bestPriority && channel->trackIndex >= bestTrack))) {
+        }
+        else if (!bestStopping && (channel->priority < bestPriority ||
+                                   (channel->priority == bestPriority && channel->trackIndex >= bestTrack)))
+        {
             bestPriority = channel->priority;
             bestTrack = channel->trackIndex;
             best = channel;
@@ -329,7 +342,7 @@ static M4ADriverPcmChan *select_pcm_channel(M4ADriver *driver, uint8_t priority,
     return best && (bestStopping || priority >= bestPriority) ? best : NULL;
 }
 
-static void sync_driver_phase(M4ADriver *destination, const M4ADriver *source)
+static void sync_driver_phase(M4ADriver* destination, const M4ADriver* source)
 {
     destination->host_rate_hz = source->host_rate_hz;
     destination->host_cycle_remainder = source->host_cycle_remainder;
@@ -347,14 +360,14 @@ static void sync_driver_phase(M4ADriver *destination, const M4ADriver *source)
     destination->c15 = source->c15;
 }
 
-static void reset_sidecar(M4ADriver *driver, HwAudio *hw)
+static void reset_sidecar(M4ADriver* driver, HwAudio* hw)
 {
     m4a_all_sound_off(driver);
     m4a_consume_writes(driver);
     hw_audio_reset(hw);
 }
 
-static void clear_invert_sidecars(M4AEngine *engine)
+static void clear_invert_sidecars(M4AEngine* engine)
 {
     reset_sidecar(engine->shadowDriver, engine->shadowHw);
     reset_sidecar(engine->auditionDriver, engine->auditionHw);
@@ -364,7 +377,7 @@ static void clear_invert_sidecars(M4AEngine *engine)
     memset(engine->shadowCgbAudition, 0, sizeof(engine->shadowCgbAudition));
 }
 
-static void prepare_invert_sidecars(M4AEngine *engine)
+static void prepare_invert_sidecars(M4AEngine* engine)
 {
     clear_invert_sidecars(engine);
     sync_driver_phase(engine->shadowDriver, engine->driver);
@@ -373,21 +386,21 @@ static void prepare_invert_sidecars(M4AEngine *engine)
     hw_audio_sync_psg_timing(engine->auditionHw, engine->hw);
 }
 
-static void render_driver(M4ADriver *driver, HwAudio *hw, float *left, float *right, int frames)
+static void render_driver(M4ADriver* driver, HwAudio* hw, float* left, float* right, int frames)
 {
     m4a_advance(driver, frames);
     hw_audio_render_events(hw, m4a_get_pending_writes(driver), left, right, frames);
     m4a_consume_writes(driver);
 }
 
-static void xcmd_adapter(void *context, int track, uint8_t selector, uint32_t value)
+static void xcmd_adapter(void* context, int track, uint8_t selector, uint32_t value)
 {
-    M4AEngine *engine = context;
+    M4AEngine* engine = context;
     if (engine->xcmd_fn)
         engine->xcmd_fn(engine->xcmd_ctx, track, selector, value);
 }
 
-bool m4a_engine_init(M4AEngine *engine, float sampleRate)
+bool m4a_engine_init(M4AEngine* engine, float sampleRate)
 {
     if (!engine)
         return false;
@@ -398,9 +411,10 @@ bool m4a_engine_init(M4AEngine *engine, float sampleRate)
     engine->masterVolume = 12;
     engine->songMasterVolume = MAX_SONG_VOLUME;
     engine->volume = MAX_SONG_VOLUME;
-    engine->maxPcmChannels = 5;
+    engine->maxPcmChannels = 12;
     engine->polyEventClock = M4A_POLY_TICK_NONE;
-    for (int i = 0; i < MAX_TRACKS; ++i) {
+    for (int i = 0; i < MAX_TRACKS; ++i)
+    {
         engine->tracks[i].bendRange = 2;
         engine->tracks[i].volX = 64;
         engine->tracks[i].rawVolume = 127;
@@ -414,8 +428,9 @@ bool m4a_engine_init(M4AEngine *engine, float sampleRate)
     engine->shadowHw = hw_audio_create(sampleRate);
     engine->auditionDriver = m4a_driver_create(sampleRate);
     engine->auditionHw = hw_audio_create(sampleRate);
-    if (!engine->driver || !engine->hw || !engine->shadowDriver || !engine->shadowHw ||
-        !engine->auditionDriver || !engine->auditionHw) {
+    if (!engine->driver || !engine->hw || !engine->shadowDriver || !engine->shadowHw || !engine->auditionDriver ||
+        !engine->auditionHw)
+    {
         m4a_engine_destroy(engine);
         return false;
     }
@@ -424,19 +439,20 @@ bool m4a_engine_init(M4AEngine *engine, float sampleRate)
     return true;
 }
 
-M4AEngine *m4a_engine_create(float sampleRate)
+M4AEngine* m4a_engine_create(float sampleRate)
 {
-    M4AEngine *engine = malloc(sizeof(*engine));
+    M4AEngine* engine = malloc(sizeof(*engine));
     if (!engine)
         return NULL;
-    if (!m4a_engine_init(engine, sampleRate)) {
+    if (!m4a_engine_init(engine, sampleRate))
+    {
         free(engine);
         return NULL;
     }
     return engine;
 }
 
-void m4a_engine_destroy(M4AEngine *engine)
+void m4a_engine_destroy(M4AEngine* engine)
 {
     if (!engine)
         return;
@@ -450,7 +466,7 @@ void m4a_engine_destroy(M4AEngine *engine)
     memset(engine, 0, sizeof(*engine));
 }
 
-void m4a_engine_free(M4AEngine *engine)
+void m4a_engine_free(M4AEngine* engine)
 {
     if (!engine)
         return;
@@ -458,7 +474,7 @@ void m4a_engine_free(M4AEngine *engine)
     free(engine);
 }
 
-bool m4a_engine_reset(M4AEngine *engine)
+bool m4a_engine_reset(M4AEngine* engine)
 {
     if (!engine)
         return false;
@@ -467,7 +483,7 @@ bool m4a_engine_reset(M4AEngine *engine)
     return m4a_engine_init(engine, sampleRate);
 }
 
-void m4a_engine_set_xcmd_callback(M4AEngine *engine, M4AEngineXcmdFn callback, void *context)
+void m4a_engine_set_xcmd_callback(M4AEngine* engine, M4AEngineXcmdFn callback, void* context)
 {
     if (!engine || !engine->driver)
         return;
@@ -476,7 +492,7 @@ void m4a_engine_set_xcmd_callback(M4AEngine *engine, M4AEngineXcmdFn callback, v
     m4a_driver_set_xcmd_callback(engine->driver, xcmd_adapter, engine);
 }
 
-void m4a_engine_set_pcm_mix_rate(M4AEngine *engine, float rate)
+void m4a_engine_set_pcm_mix_rate(M4AEngine* engine, float rate)
 {
     if (!engine)
         return;
@@ -494,7 +510,7 @@ void m4a_engine_set_pcm_mix_rate(M4AEngine *engine, float rate)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_voicegroup(M4AEngine *engine, ToneData *voiceGroup)
+void m4a_engine_set_voicegroup(M4AEngine* engine, ToneData* voiceGroup)
 {
     if (!engine)
         return;
@@ -503,7 +519,7 @@ void m4a_engine_set_voicegroup(M4AEngine *engine, ToneData *voiceGroup)
     sync_public_state(engine);
 }
 
-void m4a_engine_refresh_voices(M4AEngine *engine)
+void m4a_engine_refresh_voices(M4AEngine* engine)
 {
     if (!engine)
         return;
@@ -514,36 +530,47 @@ void m4a_engine_refresh_voices(M4AEngine *engine)
     sync_public_state(engine);
 }
 
-void m4a_engine_note_on(M4AEngine *engine, int track, uint8_t key, uint8_t velocity)
+void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t velocity)
 {
     if (!engine || !engine->driver || track < 0 || track >= MAX_TRACKS || key > 127)
         return;
     apply_public_state(engine);
-    ToneData *voice = resolve_voice(&engine->tracks[track].currentVoice, key);
-    if (!voice) {
+    ToneData* voice = resolve_voice(&engine->tracks[track].currentVoice, key);
+    if (!voice)
+    {
         sync_public_state(engine);
         return;
     }
     const bool audition = engine->auditionNote;
     const uint8_t voiceType = voice->type & VOICE_TYPE_CGB_MASK;
-    if (voiceType >= 1 && voiceType <= MAX_CGB_CHANNELS) {
+    if (voiceType >= 1 && voiceType <= MAX_CGB_CHANNELS)
+    {
         const int index = voiceType - 1;
         M4ADriverCgbChan victim = engine->driver->cgb[index];
         const bool active = (victim.status & M4A_CHN_ON) != 0;
         const bool dropped = active && !(victim.status & M4A_CHN_STOP) &&
                              (victim.priority > engine->tracks[track].priority ||
                               (victim.priority == engine->tracks[track].priority && victim.trackIndex < track));
-        if (dropped) {
+        if (dropped)
+        {
             record_poly_event(engine, M4A_POLY_DROPPED, (uint8_t)track, key, (uint8_t)track);
-            if (engine->polyDebugInvert) {
+            if (engine->polyDebugInvert)
+            {
                 m4a_note_on(engine->shadowDriver, track, key, velocity);
                 engine->shadowCgbAudition[index] = audition;
             }
-        } else {
-            if (active && victim.trackIndex != track) {
-                record_poly_event(engine, (victim.status & M4A_CHN_STOP) ? M4A_POLY_TAIL_CUT : M4A_POLY_STOLEN,
-                                  (uint8_t)victim.trackIndex, victim.midiKey, (uint8_t)track);
-                if (engine->polyDebugInvert) {
+        }
+        else
+        {
+            if (active && victim.trackIndex != track)
+            {
+                record_poly_event(engine,
+                                  (victim.status & M4A_CHN_STOP) ? M4A_POLY_TAIL_CUT : M4A_POLY_STOLEN,
+                                  (uint8_t)victim.trackIndex,
+                                  victim.midiKey,
+                                  (uint8_t)track);
+                if (engine->polyDebugInvert)
+                {
                     engine->shadowDriver->cgb[index] = victim;
                     engine->shadowCgbAudition[index] = engine->primaryCgbAudition[index];
                     hw_audio_clone_psg_lane(engine->shadowHw, engine->hw, index);
@@ -554,29 +581,41 @@ void m4a_engine_note_on(M4AEngine *engine, int track, uint8_t key, uint8_t veloc
             if (engine->polyDebugInvert && audition)
                 m4a_note_on(engine->auditionDriver, track, key, velocity);
         }
-    } else {
-        if (!voice->wav) {
+    }
+    else
+    {
+        if (!voice->wav)
+        {
             sync_public_state(engine);
             return;
         }
-        M4ADriverPcmChan *channel = select_pcm_channel(engine->driver, engine->tracks[track].priority, track);
+        M4ADriverPcmChan* channel = select_pcm_channel(engine->driver, engine->tracks[track].priority, track);
         const bool dropped = channel == NULL;
         int index = -1;
         M4ADriverPcmChan victim;
-        if (dropped) {
+        if (dropped)
+        {
             record_poly_event(engine, M4A_POLY_DROPPED, (uint8_t)track, key, (uint8_t)track);
             if (engine->polyDebugInvert)
                 m4a_note_on(engine->shadowDriver, track, key, velocity);
-        } else {
+        }
+        else
+        {
             index = (int)(channel - engine->driver->pcmChans);
             victim = *channel;
-            if (victim.status & M4A_CHN_ON) {
-                record_poly_event(engine, (victim.status & M4A_CHN_STOP) ? M4A_POLY_TAIL_CUT : M4A_POLY_STOLEN,
-                                  (uint8_t)victim.trackIndex, victim.midiKey, (uint8_t)track);
-                if (engine->polyDebugInvert) {
-                    M4ADriverPcmChan *shadow = select_pcm_channel(engine->shadowDriver, victim.priority,
-                                                                    victim.trackIndex);
-                    if (shadow) {
+            if (victim.status & M4A_CHN_ON)
+            {
+                record_poly_event(engine,
+                                  (victim.status & M4A_CHN_STOP) ? M4A_POLY_TAIL_CUT : M4A_POLY_STOLEN,
+                                  (uint8_t)victim.trackIndex,
+                                  victim.midiKey,
+                                  (uint8_t)track);
+                if (engine->polyDebugInvert)
+                {
+                    M4ADriverPcmChan* shadow =
+                        select_pcm_channel(engine->shadowDriver, victim.priority, victim.trackIndex);
+                    if (shadow)
+                    {
                         const int shadowIndex = (int)(shadow - engine->shadowDriver->pcmChans);
                         *shadow = victim;
                         engine->shadowPcmAudition[shadowIndex] = engine->primaryPcmAudition[index];
@@ -592,7 +631,7 @@ void m4a_engine_note_on(M4AEngine *engine, int track, uint8_t key, uint8_t veloc
     sync_public_state(engine);
 }
 
-void m4a_engine_note_off(M4AEngine *engine, int track, uint8_t key)
+void m4a_engine_note_off(M4AEngine* engine, int track, uint8_t key)
 {
     if (!engine || track < 0 || track >= MAX_TRACKS)
         return;
@@ -603,7 +642,7 @@ void m4a_engine_note_off(M4AEngine *engine, int track, uint8_t key)
     sync_public_state(engine);
 }
 
-void m4a_engine_program_change(M4AEngine *engine, int track, uint8_t program)
+void m4a_engine_program_change(M4AEngine* engine, int track, uint8_t program)
 {
     if (!engine || !engine->voiceGroup || track < 0 || track >= MAX_TRACKS)
         return;
@@ -614,7 +653,7 @@ void m4a_engine_program_change(M4AEngine *engine, int track, uint8_t program)
     sync_public_state(engine);
 }
 
-void m4a_engine_cc(M4AEngine *engine, int track, uint8_t cc, uint8_t value)
+void m4a_engine_cc(M4AEngine* engine, int track, uint8_t cc, uint8_t value)
 {
     if (!engine || track < 0 || track >= MAX_TRACKS)
         return;
@@ -625,7 +664,7 @@ void m4a_engine_cc(M4AEngine *engine, int track, uint8_t cc, uint8_t value)
     sync_public_state(engine);
 }
 
-void m4a_engine_pitch_bend(M4AEngine *engine, int track, int16_t bend)
+void m4a_engine_pitch_bend(M4AEngine* engine, int track, int16_t bend)
 {
     if (!engine || track < 0 || track >= MAX_TRACKS)
         return;
@@ -636,7 +675,7 @@ void m4a_engine_pitch_bend(M4AEngine *engine, int track, int16_t bend)
     sync_public_state(engine);
 }
 
-void m4a_engine_all_notes_off(M4AEngine *engine, int track)
+void m4a_engine_all_notes_off(M4AEngine* engine, int track)
 {
     if (!engine || track < 0 || track >= MAX_TRACKS)
         return;
@@ -647,7 +686,7 @@ void m4a_engine_all_notes_off(M4AEngine *engine, int track)
     sync_public_state(engine);
 }
 
-void m4a_engine_all_sound_off(M4AEngine *engine)
+void m4a_engine_all_sound_off(M4AEngine* engine)
 {
     if (!engine)
         return;
@@ -663,11 +702,12 @@ void m4a_engine_all_sound_off(M4AEngine *engine)
     sync_public_state(engine);
 }
 
-void m4a_engine_reset_portamento(M4AEngine *engine)
+void m4a_engine_reset_portamento(M4AEngine* engine)
 {
     if (!engine)
         return;
-    for (int i = 0; i < MAX_TRACKS; ++i) {
+    for (int i = 0; i < MAX_TRACKS; ++i)
+    {
         engine->tracks[i].portamentoPrevKey = 0;
         engine->tracks[i].portamentoTargetKey = 0;
         engine->tracks[i].portamentoGliding = false;
@@ -678,7 +718,7 @@ void m4a_engine_reset_portamento(M4AEngine *engine)
     m4a_internal_reset_portamento(engine->auditionDriver);
 }
 
-void m4a_engine_set_portamento_enabled(M4AEngine *engine, bool enabled)
+void m4a_engine_set_portamento_enabled(M4AEngine* engine, bool enabled)
 {
     if (!engine)
         return;
@@ -689,13 +729,15 @@ void m4a_engine_set_portamento_enabled(M4AEngine *engine, bool enabled)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_pwm_enabled(M4AEngine *engine, bool enabled)
+void m4a_engine_set_pwm_enabled(M4AEngine* engine, bool enabled)
 {
     if (!engine)
         return;
     engine->pwmEnabled = enabled;
-    if (!enabled) {
-        for (int i = 0; i < MAX_TRACKS; ++i) {
+    if (!enabled)
+    {
+        for (int i = 0; i < MAX_TRACKS; ++i)
+        {
             engine->tracks[i].pwmPattern = 0;
             engine->tracks[i].pwmSpeed = 0;
             engine->tracks[i].pwmSpeedCounter = 0;
@@ -706,7 +748,7 @@ void m4a_engine_set_pwm_enabled(M4AEngine *engine, bool enabled)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_poly_debug_invert(M4AEngine *engine, bool enabled)
+void m4a_engine_set_poly_debug_invert(M4AEngine* engine, bool enabled)
 {
     if (!engine)
         return;
@@ -719,7 +761,7 @@ void m4a_engine_set_poly_debug_invert(M4AEngine *engine, bool enabled)
     sync_public_state(engine);
 }
 
-void m4a_engine_reset_poly_stats(M4AEngine *engine)
+void m4a_engine_reset_poly_stats(M4AEngine* engine)
 {
     if (!engine)
         return;
@@ -730,7 +772,7 @@ void m4a_engine_reset_poly_stats(M4AEngine *engine)
     engine->polyEventTotal = 0;
 }
 
-void m4a_engine_set_volume(M4AEngine *engine, uint8_t volume)
+void m4a_engine_set_volume(M4AEngine* engine, uint8_t volume)
 {
     if (!engine)
         return;
@@ -740,12 +782,12 @@ void m4a_engine_set_volume(M4AEngine *engine, uint8_t volume)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_song_volume(M4AEngine *engine, uint8_t volume)
+void m4a_engine_set_song_volume(M4AEngine* engine, uint8_t volume)
 {
     m4a_engine_set_volume(engine, volume);
 }
 
-void m4a_engine_set_reverb_amount(M4AEngine *engine, uint8_t amount)
+void m4a_engine_set_reverb_amount(M4AEngine* engine, uint8_t amount)
 {
     if (!engine)
         return;
@@ -754,7 +796,7 @@ void m4a_engine_set_reverb_amount(M4AEngine *engine, uint8_t amount)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_max_pcm_channels(M4AEngine *engine, uint8_t maxChannels)
+void m4a_engine_set_max_pcm_channels(M4AEngine* engine, uint8_t maxChannels)
 {
     if (!engine)
         return;
@@ -763,7 +805,7 @@ void m4a_engine_set_max_pcm_channels(M4AEngine *engine, uint8_t maxChannels)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_analog_filter(M4AEngine *engine, bool enabled)
+void m4a_engine_set_analog_filter(M4AEngine* engine, bool enabled)
 {
     if (!engine)
         return;
@@ -772,7 +814,7 @@ void m4a_engine_set_analog_filter(M4AEngine *engine, bool enabled)
     sync_public_state(engine);
 }
 
-void m4a_engine_set_tempo_bpm(M4AEngine *engine, double bpm)
+void m4a_engine_set_tempo_bpm(M4AEngine* engine, double bpm)
 {
     if (!engine)
         return;
@@ -783,27 +825,31 @@ void m4a_engine_set_tempo_bpm(M4AEngine *engine, double bpm)
     sync_public_state(engine);
 }
 
-void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int samples)
+void m4a_engine_process(M4AEngine* engine, float* outL, float* outR, int samples)
 {
     if (!engine || !engine->driver || !engine->hw || !outL || !outR || samples <= 0)
         return;
     apply_public_state(engine);
-    for (int offset = 0; offset < samples;) {
-        const int frames = samples - offset > M4A_ENGINE_MAX_PROCESS_FRAMES
-                               ? M4A_ENGINE_MAX_PROCESS_FRAMES
-                               : samples - offset;
-        float *left = outL + offset;
-        float *right = outR + offset;
-        if (engine->polyDebugInvert) {
+    for (int offset = 0; offset < samples;)
+    {
+        const int frames =
+            samples - offset > M4A_ENGINE_MAX_PROCESS_FRAMES ? M4A_ENGINE_MAX_PROCESS_FRAMES : samples - offset;
+        float* left = outL + offset;
+        float* right = outR + offset;
+        if (engine->polyDebugInvert)
+        {
             render_driver(engine->driver, engine->hw, engine->invertScratchL, engine->invertScratchR, frames);
             render_driver(engine->shadowDriver, engine->shadowHw, left, right, frames);
-            render_driver(engine->auditionDriver, engine->auditionHw, engine->invertScratchL,
-                          engine->invertScratchR, frames);
-            for (int i = 0; i < frames; ++i) {
+            render_driver(
+                engine->auditionDriver, engine->auditionHw, engine->invertScratchL, engine->invertScratchR, frames);
+            for (int i = 0; i < frames; ++i)
+            {
                 left[i] += engine->invertScratchL[i];
                 right[i] += engine->invertScratchR[i];
             }
-        } else {
+        }
+        else
+        {
             render_driver(engine->driver, engine->hw, left, right, frames);
         }
         offset += frames;
@@ -811,13 +857,13 @@ void m4a_engine_process(M4AEngine *engine, float *outL, float *outR, int samples
     sync_public_state(engine);
 }
 
-void m4a_engine_tick(M4AEngine *engine)
+void m4a_engine_tick(M4AEngine* engine)
 {
     if (engine)
         sync_public_state(engine);
 }
 
-void m4a_track_vol_pit_set(M4ATrack *track)
+void m4a_track_vol_pit_set(M4ATrack* track)
 {
     if (!track)
         return;
@@ -833,21 +879,21 @@ void m4a_track_vol_pit_set(M4ATrack *track)
         pan = 127;
     track->volMR = (uint8_t)(((uint32_t)((pan + 128) * volume)) >> 8);
     track->volML = (uint8_t)(((uint32_t)((127 - pan) * volume)) >> 8);
-    int32_t pitch = (track->tune + (int32_t)track->bend * track->bendRange) * 4
-                    + ((int32_t)track->keyShift << 8) + ((int32_t)track->keyShiftX << 8)
-                    + track->pitX;
+    int32_t pitch = (track->tune + (int32_t)track->bend * track->bendRange) * 4 + ((int32_t)track->keyShift << 8) +
+                    ((int32_t)track->keyShiftX << 8) + track->pitX;
     if (track->modT == 0)
         pitch += 16 * track->modM;
     track->keyM = (int8_t)(pitch >> 8);
     track->pitM = (uint8_t)pitch;
 }
 
-uint32_t m4a_midi_key_to_freq(WaveData *wav, uint8_t key, uint8_t fineAdjust)
+uint32_t m4a_midi_key_to_freq(WaveData* wav, uint8_t key, uint8_t fineAdjust)
 {
     if (!wav)
         return 0;
     uint32_t shifted = (uint32_t)fineAdjust << 24;
-    if (key > 178) {
+    if (key > 178)
+    {
         key = 178;
         shifted = 255u << 24;
     }
@@ -860,17 +906,21 @@ uint32_t m4a_midi_key_to_freq(WaveData *wav, uint8_t key, uint8_t fineAdjust)
 
 uint32_t m4a_midi_key_to_cgb_freq(uint8_t channel, uint8_t key, uint8_t fineAdjust)
 {
-    if (channel == 4) {
+    if (channel == 4)
+    {
         if (key <= 20)
             key = 0;
         else if ((key -= 21) > 59)
             key = 59;
         return gNoiseTable[key];
     }
-    if (key <= 35) {
+    if (key <= 35)
+    {
         fineAdjust = 0;
         key = 0;
-    } else if ((key -= 36) > 130) {
+    }
+    else if ((key -= 36) > 130)
+    {
         key = 130;
         fineAdjust = 255;
     }
@@ -881,22 +931,22 @@ uint32_t m4a_midi_key_to_cgb_freq(uint8_t channel, uint8_t key, uint8_t fineAdju
     return (uint32_t)(first + ((fineAdjust * (second - first)) >> 8) + 2048);
 }
 
-M4ADriver *m4a_engine_driver(M4AEngine *engine)
+M4ADriver* m4a_engine_driver(M4AEngine* engine)
 {
     return engine ? engine->driver : NULL;
 }
 
-const M4ADriver *m4a_engine_driver_const(const M4AEngine *engine)
+const M4ADriver* m4a_engine_driver_const(const M4AEngine* engine)
 {
     return engine ? engine->driver : NULL;
 }
 
-HwAudio *m4a_engine_hw_audio(M4AEngine *engine)
+HwAudio* m4a_engine_hw_audio(M4AEngine* engine)
 {
     return engine ? engine->hw : NULL;
 }
 
-const HwAudio *m4a_engine_hw_audio_const(const M4AEngine *engine)
+const HwAudio* m4a_engine_hw_audio_const(const M4AEngine* engine)
 {
     return engine ? engine->hw : NULL;
 }

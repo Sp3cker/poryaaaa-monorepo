@@ -240,6 +240,7 @@ extern "C"
         uint8_t reverb_amount;
         bool analog_filter;
         uint8_t max_pcm_channels;
+        uint8_t player_priority;
         double tempo_bpm;
         bool portamento_enabled;
         bool pwm_enabled;

@@ -652,6 +652,112 @@ static void test_polyphony_stealing(void)
     free(wd);
 }
 
+static void test_v2_note_off_stops_first_same_key_only(void)
+{
+    printf("Testing v2 note-off stops first same-key voice only...\n");
+
+    WaveData* wd = calloc(1, sizeof(WaveData) + 5);
+    ASSERT(wd != NULL, "note-off test wave allocation succeeds");
+    if (!wd)
+        return;
+    wd->freq = 0x01000000;
+    wd->size = 4;
+    wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = wd;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = create_polyphony_test_driver(voices);
+    if (drv)
+    {
+        m4a_program_change(drv, 0, 0);
+        m4a_program_change(drv, 1, 0);
+        m4a_note_on(drv, 0, 60, 100);
+        m4a_note_on(drv, 1, 60, 100);
+
+        ASSERT(drv->pcmChans[0].status & M4A_CHN_ON, "track 0 PCM voice is live");
+        ASSERT(drv->pcmChans[1].status & M4A_CHN_ON, "track 1 PCM voice is live");
+        m4a_note_off(drv, 0, 60);
+        ASSERT(drv->pcmChans[0].status & M4A_CHN_STOP, "note-off stops the matching track voice");
+        ASSERT(!(drv->pcmChans[1].status & M4A_CHN_STOP), "note-off leaves the other track voice live");
+        m4a_driver_destroy(drv);
+    }
+
+    free(wd);
+}
+
+static void test_v2_prio_cc_and_player_priority_steal(void)
+{
+    printf("Testing v2 PRIO CC and player priority stealing...\n");
+
+    WaveData* wd = calloc(1, sizeof(WaveData) + 5);
+    ASSERT(wd != NULL, "PRIO test wave allocation succeeds");
+    if (!wd)
+        return;
+    wd->freq = 0x01000000;
+    wd->size = 4;
+    wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = wd;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = create_polyphony_test_driver(voices);
+    if (drv)
+    {
+        const uint8_t active = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        m4a_program_change(drv, 1, 0);
+        ASSERT_EQ(drv->player_priority, 0, "player priority defaults to zero");
+
+        m4a_cc(drv, 1, 0x1C, 7);
+        ASSERT_EQ(drv->tracks[1].priority, 7, "PRIO CC updates track priority");
+        m4a_set_player_priority(drv, 2);
+        ASSERT_EQ(drv->player_priority, 2, "player priority setter updates driver");
+        fill_polyphony_slots(drv, active, 8, 0, 5);
+        m4a_note_on(drv, 1, 60, 100);
+
+        int stolen = 0;
+        for (int i = 0; i < 5; i++)
+        {
+            if (drv->pcmChans[i].trackIndex == 1)
+            {
+                stolen = 1;
+                ASSERT_EQ(drv->pcmChans[i].priority, 9, "allocation receives player plus track priority");
+                break;
+            }
+        }
+        ASSERT(stolen, "higher player plus track priority steals a PCM channel");
+
+        m4a_cc(drv, 1, 0x1C, 250);
+        m4a_set_player_priority(drv, 10);
+        fill_polyphony_slots(drv, active, UINT8_MAX, 2, 5);
+        m4a_note_on(drv, 1, 60, 100);
+        stolen = 0;
+        for (int i = 0; i < 5; i++)
+        {
+            if (drv->pcmChans[i].trackIndex == 1)
+            {
+                stolen = 1;
+                ASSERT_EQ(drv->pcmChans[i].priority, UINT8_MAX, "combined priority saturates at 255");
+                break;
+            }
+        }
+        ASSERT(stolen, "saturated priority retains normal equal-priority steal ordering");
+        m4a_driver_destroy(drv);
+    }
+
+    free(wd);
+}
+
 /* Layer 1 step 1 acceptance: CgbSound writes M4ARegisterFile correctly,
  * and trigger_* flags fire only on MO_VOL → NRx4 rewrite (note start /
  * envelope phase transitions), not on every snapshot. */
@@ -865,6 +971,63 @@ static void test_v2_cgb_triple_zero_echo_starts_iec(void)
     m4a_driver_destroy(drv);
 }
 
+/* START and STOP before the first CgbSound call go straight to CgbOscOff,
+ * without emitting the new note's initialization writes. */
+static void test_v2_cgb_start_stop_same_vblank_osc_off(void)
+{
+    printf("Testing v2 CGB same-vblank start-stop disables oscillator...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 127;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "same-vblank start-stop driver allocates");
+    if (!drv)
+        return;
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+    m4a_note_off(drv, 0, 60);
+    v2_advance_one_vblank(drv);
+
+    M4ADriverCgbChan* ch = &drv->cgb[1];
+    const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+    bool wroteStart = false;
+    bool wroteOscOffNr22 = false;
+    bool wroteOscOffNr24 = false;
+    bool wroteUnexpectedNr22 = false;
+    for (size_t i = 0; i < batch->count; i++)
+    {
+        const M4ARegWrite* event = &batch->events[i];
+        if (event->reg == M4A_REG_NR21)
+            wroteStart = true;
+        if (event->reg == M4A_REG_NR22 && event->value == 0x08u)
+            wroteOscOffNr22 = true;
+        if (event->reg == M4A_REG_NR24 && event->value == 0x80u)
+            wroteOscOffNr24 = true;
+        if (event->reg == M4A_REG_NR22 && event->value != 0x08u)
+            wroteUnexpectedNr22 = true;
+    }
+
+    ASSERT(wroteOscOffNr22, "same-vblank start-stop emits SQ2 CgbOscOff NR22");
+    ASSERT(wroteOscOffNr24, "same-vblank start-stop emits SQ2 CgbOscOff NR24");
+    ASSERT(!wroteStart, "same-vblank start-stop never emits SQ2 start write");
+    ASSERT(!wroteUnexpectedNr22, "same-vblank start-stop never writes SQ2 envelope goal");
+    ASSERT_EQ(ch->status, 0, "same-vblank start-stop frees SQ2");
+
+    m4a_driver_destroy(drv);
+}
+
 /* A square sustain rollover updates software volume without inventing a ROM
  * hardware transaction; only an existing modify flag may rewrite NRx2/NRx4. */
 static void test_v2_square_sustain_rollover_does_not_write(void)
@@ -963,6 +1126,48 @@ static void test_v2_cgb_alt_voice_quantizes_pitch_writes(void)
     m4a_driver_destroy(drv);
 }
 
+static void test_v2_keysh_cc_transposes_square(void)
+{
+    printf("Testing v2 KEYSH transposes held square pitch...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 0;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "KEYSH driver allocates");
+    if (!drv)
+        return;
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x1B, 0x40);
+    ASSERT_EQ(drv->tracks[0].keyShift, 0, "KEYSH center value clears key shift");
+
+    m4a_note_on(drv, 0, 60, 100);
+    v2_advance_one_vblank(drv);
+    m4a_consume_writes(drv);
+    uint16_t baseFrequency = drv->cgb[1].frequency;
+
+    m4a_cc(drv, 0, 0x1B, 0x42);
+    ASSERT_EQ(drv->tracks[0].keyShift, 2, "KEYSH 0x42 stores +2 semitones");
+    ASSERT_EQ(drv->cgb[1].frequency, m4a_midi_key_to_cgb_freq(2, 62, 0), "KEYSH updates held square logical frequency");
+    ASSERT(drv->cgb[1].frequency != baseFrequency, "KEYSH moves held square frequency");
+
+    v2_advance_one_vblank(drv);
+    ASSERT_EQ(drv->regs.sq2_freq, drv->cgb[1].frequency, "KEYSH emits held square pitch write");
+
+    m4a_driver_destroy(drv);
+}
+
 /* Missing MIDI CC7 means full track volume before midi.cfg song scaling. */
 static void test_v2_default_midi_volume_matches_mp2k(void)
 {
@@ -989,6 +1194,19 @@ static void test_v2_default_midi_volume_matches_mp2k(void)
     m4a_note_on(drv, 0, 83, 64);
     ASSERT_EQ(drv->cgb[1].envelopeGoal, 5, "mus_rg_heal square-2 note reaches MP2K envelope goal 5");
 
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_default_pcm_pool_is_hearth_12(void)
+{
+    printf("Testing v2 default PCM pool is Hearth 12...\n");
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "default PCM-pool driver creation succeeds");
+    if (!drv)
+        return;
+
+    ASSERT_EQ(drv->max_pcm_channels, 12, "raw driver PCM pool defaults to Hearth SOUND_MODE_MAXCHN");
     m4a_driver_destroy(drv);
 }
 
@@ -1958,8 +2176,7 @@ static void test_v2_pcm_cc7_refresh(void)
     m4a_cc(drv, 0, 7, 127); /* loud */
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
-    for (int i = 0; i < 7; i++)
-        v2_advance_one_vblank(drv);
+    v2_advance_one_vblank(drv);
 
     const M4APcmRing* ring = m4a_get_pcm_ring(drv);
     int loudSampleSum = 0;
@@ -1971,12 +2188,10 @@ static void test_v2_pcm_cc7_refresh(void)
         loudSampleSum += v;
     }
 
-    /* Drop CC7, then advance one whole DMA epoch to compare the same public
-     * FIFO segment.  This isolates the active-channel volume refresh from
-     * the hardware source rotation. */
+    /* The next public SoundMain boundary reads the refreshed active-channel
+     * volumes and overwrites the same slot-zero source segment. */
     m4a_cc(drv, 0, 7, 16);
-    for (int i = 0; i < 7; i++)
-        v2_advance_one_vblank(drv);
+    v2_advance_one_vblank(drv);
 
     int quietSampleSum = 0;
     for (int i = 0; i < M4A_PCM_SAMPLES_PER_VBLANK; i++)
@@ -2147,6 +2362,44 @@ static void test_v2_pcm_gate_time_completes_decay_before_release(void)
     m4a_driver_destroy(drv);
 }
 
+static void test_v2_note_on_timed_cgb_gate_expires(void)
+{
+    printf("Testing v2 timed CGB note gate expiry...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 0;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "timed CGB gate driver allocates");
+    if (!drv)
+        return;
+
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on_timed(drv, 0, 60, 100, 1);
+
+    M4ADriverCgbChan* ch = &drv->cgb[1];
+    ASSERT_EQ(ch->gateTime, 1, "timed CGB note copies gate time");
+    v2_advance_one_vblank(drv);
+    ASSERT((ch->status & M4A_CHN_ON) != 0, "timed CGB note remains allocated on gate tick");
+    ASSERT((ch->status & M4A_CHN_STOP) != 0, "timed CGB gate expiry schedules release after its tick");
+    m4a_consume_writes(drv);
+
+    v2_advance_one_vblank(drv);
+    ASSERT_EQ(ch->status, 0, "timed CGB note releases on the tick after gate expiry");
+
+    m4a_driver_destroy(drv);
+}
+
 static WaveData* make_v2_pcm_echo_test_wave(void)
 {
     int dataSize = 64;
@@ -2188,7 +2441,7 @@ static void init_pcm_echo_test_voice(ToneData* voices, WaveData* wd)
 
 static void test_v2_pcm_pseudo_echo_zero_length_stops(void)
 {
-    printf("Testing v2 PCM pseudo-echo length 0 stops immediately...\n");
+    printf("Testing v2 PCM pseudo-echo length 0 wraps...\n");
 
     WaveData* wd = make_v2_pcm_echo_test_wave();
     ASSERT(wd != NULL, "PCM pseudo-echo test wave allocated");
@@ -2221,8 +2474,12 @@ static void test_v2_pcm_pseudo_echo_zero_length_stops(void)
     {
         m4a_note_off(drv, 0, 60);
         m4a_sound_main_ram(drv);
-        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0, "PCM pseudo-echo length 0 stops on release tick");
-        ASSERT_EQ(pcm->pseudoEchoLength, 0, "PCM pseudo-echo length 0 does not wrap to 255");
+        ASSERT(pcm->status & M4A_CHN_IEC, "PCM pseudo-echo length 0 enters IEC on release tick");
+        ASSERT_EQ(pcm->pseudoEchoLength, 0, "PCM pseudo-echo length 0 is not decremented on IEC entry");
+
+        m4a_sound_main_ram(drv);
+        ASSERT(pcm->status & M4A_CHN_ON, "PCM pseudo-echo length 0 remains active after wrapping");
+        ASSERT_EQ(pcm->pseudoEchoLength, 255, "PCM pseudo-echo length 0 wraps to 255 in IEC");
     }
 
     m4a_driver_destroy(drv);
@@ -3608,12 +3865,8 @@ static void test_v2_lfo_delay_holds_off(void)
 
 static void test_v2_lfo_lfodl_resets_running_modulation(void)
 {
-    printf("Testing v2 LFODL after modulation running → resets modM and refreshes...\n");
+    printf("Testing v2 LFODL preserves running modulation until the next note...\n");
 
-    /* This test exercises the m4a_track.c CC 0x1A handler's
-     * "modM != 0 → reset and refresh" branch.  Run vibrato for a
-     * while so modM goes nonzero; then write LFODL and verify the
-     * next snapshot's freq is back at baseline (modM = 0). */
     ToneData voices[128];
     memset(voices, 0, sizeof(voices));
     voices[0].type = VOICE_SQUARE_2;
@@ -3629,35 +3882,73 @@ static void test_v2_lfo_lfodl_resets_running_modulation(void)
     m4a_program_change(drv, 0, 0);
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
-    /* Capture baseline freq with NO modulation: trigger the note,
-     * fire the first vblank, snapshot.  modM=0 (no LFO armed yet), so
-     * keyM/pitM reflect the un-modulated note. */
+    m4a_cc(drv, 0, 0x01, 64);
+    m4a_cc(drv, 0, 0x15, 32);
     m4a_note_on(drv, 0, 60, 100);
-    m4a_advance(drv, 1024);
-    m4a_consume_writes(drv);
-    uint16_t baseline = m4a_get_register_file(drv)->sq2_freq;
-
-    /* Now arm LFO and run several vblanks so modM oscillates and
-     * freq drifts away from baseline. */
-    m4a_cc(drv, 0, 0x01, 64); /* mod = 64 */
-    m4a_cc(drv, 0, 0x15, 32); /* LFOS = 32 */
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 16 && drv->tracks[0].modM == 0; i++)
     {
         m4a_advance(drv, 1024);
         m4a_consume_writes(drv);
     }
-    uint16_t freq_during_lfo = m4a_get_register_file(drv)->sq2_freq;
 
-    /* Apply LFODL.  The CC 0x1A handler resets lfoSpeedC, lfoDelayC,
-     * and (since modM != 0) modM itself + refreshes active channels.
-     * Next snapshot must reflect freq back at baseline. */
+    int8_t runningModM = drv->tracks[0].modM;
+    uint16_t runningFreq = m4a_get_register_file(drv)->sq2_freq;
+    ASSERT(runningModM != 0, "LFO modulation is running before mid-note LFODL");
+
     m4a_cc(drv, 0, 0x1A, 4);
-    m4a_advance(drv, 1024);
-    m4a_consume_writes(drv);
-    uint16_t freq_after_lfodl = m4a_get_register_file(drv)->sq2_freq;
 
-    ASSERT(freq_during_lfo != baseline, "LFO running drove freq away from baseline");
-    ASSERT(freq_after_lfodl == baseline, "LFODL reset modM → freq returns to baseline");
+    ASSERT_EQ(drv->tracks[0].lfoDelay, 4, "LFODL stores the configured delay");
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, 0, "mid-note LFODL does not re-arm the delay");
+    ASSERT_EQ(drv->tracks[0].modM, runningModM, "mid-note LFODL preserves running modM");
+    ASSERT_EQ(m4a_get_register_file(drv)->sq2_freq, runningFreq, "mid-note LFODL preserves the running frequency");
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_lfos_nonzero_preserves_running_mod(void)
+{
+    printf("Testing v2 nonzero LFOS preserves running modulation...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x01, 64);
+    m4a_cc(drv, 0, 0x15, 32);
+    m4a_note_on(drv, 0, 60, 100);
+    for (int i = 0; i < 16 && drv->tracks[0].modM == 0; i++)
+    {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+    }
+
+    int8_t runningModM = drv->tracks[0].modM;
+    uint8_t runningSpeedC = drv->tracks[0].lfoSpeedC;
+    uint16_t runningFreq = m4a_get_register_file(drv)->sq2_freq;
+    ASSERT(runningModM != 0, "LFO modulation is running before LFOS update");
+
+    m4a_cc(drv, 0, 0x15, 12);
+
+    ASSERT_EQ(drv->tracks[0].lfoSpeed, 12, "LFOS stores the new speed");
+    ASSERT_EQ(drv->tracks[0].lfoSpeedC, runningSpeedC, "nonzero LFOS preserves LFO phase");
+    ASSERT_EQ(drv->tracks[0].modM, runningModM, "nonzero LFOS preserves running modM");
+    ASSERT_EQ(m4a_get_register_file(drv)->sq2_freq, runningFreq, "nonzero LFOS preserves running frequency");
+
+    m4a_cc(drv, 0, 0x15, 0);
+
+    ASSERT_EQ(drv->tracks[0].lfoSpeedC, 0, "LFOS zero clears LFO phase via clear_modM");
+    ASSERT_EQ(drv->tracks[0].modM, 0, "LFOS zero clears running modM");
 
     m4a_driver_destroy(drv);
 }
@@ -3719,6 +4010,68 @@ static void test_v2_lfo_vibrato_does_not_retrigger_square(void)
     ASSERT_EQ(nr22, 0, "vibrato does not rewrite NR22 on a held square");
     ASSERT_EQ(nr24_trig, 0, "vibrato does not retrigger NR24 on a held square");
     ASSERT(nr24_notrig > 0, "vibrato still emits pitch-only NR24 writes");
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_note_on_rearms_lfo_delay(void)
+{
+    printf("Testing v2 note-on re-arms LFO delay...\n");
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_SQUARE_2;
+    voices[0].key = 60;
+    voices[0].attack = 0;
+    voices[0].decay = 0;
+    voices[0].sustain = 16;
+    voices[0].release = 16;
+    voices[0].wavePointer = (uint32_t*)(uintptr_t)2;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x01, 64);
+    m4a_cc(drv, 0, 0x15, 32);
+    m4a_note_on(drv, 0, 60, 100);
+    for (int i = 0; i < 16 && drv->tracks[0].modM == 0; i++)
+    {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+    }
+    ASSERT(drv->tracks[0].modM != 0, "LFO modulation is running before delayed retrigger");
+
+    m4a_cc(drv, 0, 0x1A, 4);
+    m4a_note_on(drv, 0, 60, 100);
+
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, 4, "successful note-on copies LFODL into LFODLC");
+    ASSERT_EQ(drv->tracks[0].modM, 0, "delayed note-on clears running modM");
+
+    m4a_driver_destroy(drv);
+
+    drv = m4a_driver_create(44100.0f);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_cc(drv, 0, 0x01, 64);
+    m4a_cc(drv, 0, 0x15, 32);
+    m4a_note_on(drv, 0, 60, 100);
+    for (int i = 0; i < 16 && drv->tracks[0].modM == 0; i++)
+    {
+        m4a_advance(drv, 1024);
+        m4a_consume_writes(drv);
+    }
+    int8_t runningModM = drv->tracks[0].modM;
+    ASSERT(runningModM != 0, "LFO modulation is running before immediate retrigger");
+
+    m4a_cc(drv, 0, 0x1A, 0);
+    m4a_note_on(drv, 0, 60, 100);
+
+    ASSERT_EQ(drv->tracks[0].lfoDelayC, 0, "immediate note-on copies zero LFODL");
+    ASSERT_EQ(drv->tracks[0].modM, runningModM, "zero-delay note-on preserves running modM");
 
     m4a_driver_destroy(drv);
 }
@@ -6871,12 +7224,17 @@ int main(void)
     test_trk_vol_pit_set();
     test_xcmd_subcommands();
     test_polyphony_stealing();
+    test_v2_note_off_stops_first_same_key_only();
+    test_v2_prio_cc_and_player_priority_steal();
     test_v2_trigger_semantics();
     test_v2_cgb_triple_zero_echo_zero_disables();
     test_v2_cgb_triple_zero_echo_starts_iec();
+    test_v2_cgb_start_stop_same_vblank_osc_off();
     test_v2_square_sustain_rollover_does_not_write();
     test_v2_cgb_alt_voice_quantizes_pitch_writes();
+    test_v2_keysh_cc_transposes_square();
     test_v2_default_midi_volume_matches_mp2k();
+    test_v2_default_pcm_pool_is_hearth_12();
     test_v2_song_volume_rescales();
     test_v2_pcm_default_master_volume_matches_rom();
     test_v2_pcm_first_tick_applies_one_attack_step();
@@ -6897,6 +7255,7 @@ int main(void)
     test_v2_pcm_cc7_refresh();
     test_v2_pcm_reverb_pipeline();
     test_v2_pcm_gate_time_completes_decay_before_release();
+    test_v2_note_on_timed_cgb_gate_expires();
     test_v2_pcm_pseudo_echo_zero_length_stops();
     test_v2_pcm_pseudo_echo_nonzero_length_counts_down();
     test_v2_event_stream();
@@ -6918,7 +7277,9 @@ int main(void)
     test_v2_lfo_default_speed_modulates_freq();
     test_v2_lfo_delay_holds_off();
     test_v2_lfo_lfodl_resets_running_modulation();
+    test_v2_lfos_nonzero_preserves_running_mod();
     test_v2_lfo_vibrato_does_not_retrigger_square();
+    test_v2_note_on_rearms_lfo_delay();
     test_v2_lfo_volume_modes_retrigger_square();
     test_v2_lfo_tremolo_updates_pcm_volume_not_pitch();
     test_v2_cgb_volume_triggers_match_m4a();

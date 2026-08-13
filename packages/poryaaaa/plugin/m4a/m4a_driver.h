@@ -109,6 +109,7 @@ extern "C"
     void m4a_driver_set_portamento_enabled(M4ADriver* drv, bool enabled);
     void m4a_driver_set_pwm_enabled(M4ADriver* drv, bool enabled);
     /* MIDI ingress. */
+    void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime);
     void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity);
     void m4a_note_off(M4ADriver* drv, int track, uint8_t key);
     void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value);
@@ -125,6 +126,7 @@ extern "C"
     /* Zero deliberately disables DirectSound allocation; positive values are
      * clamped to M4A_MAX_PCM_CHANNELS. */
     void m4a_set_max_pcm_channels(M4ADriver* drv, uint8_t maxChannels);
+    void m4a_set_player_priority(M4ADriver* drv, uint8_t priority);
     void m4a_set_tempo_bpm(M4ADriver* drv, double bpm);
 
     /* Advance the driver by `host_frames` while converting the host duration

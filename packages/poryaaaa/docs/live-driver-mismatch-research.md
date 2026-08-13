@@ -31,53 +31,41 @@ absences are real, but they are not “wrong CgbSound.”
 
 | Pri | Finding | Live trigger | Confidence |
 |---|---|---|---|
-| P0 | LFOS/LFODL reset running LFO phase | CC 0x15 / 0x1A mid-note | high |
-| P0 | Note-on does not re-arm LFODL / `clear_modM` | next note on a MOD track | high |
-| P0 | Same-vblank CGB STOP still emits start | note on+off before VBlank | high |
+| — | LFOS/LFODL field-only | fixed 2026-08-13 | high |
+| — | Note-on re-arms LFODL / `clear_modM` | fixed 2026-08-13 | high |
+| — | Same-vblank CGB STOP is osc-off | fixed 2026-08-13 | high |
 | — | CGB A=D=S=0 same-tick echo/off | fixed 2026-08-13 | high |
-| P0 | Note-off stops every same-key voice | overlapping same-key ties only | high |
-| P1 | PCM IEC length 0 stops instead of wrapping | `xIECL=0` with nonzero volume | high |
-| P1 | Default PCM pool is not hearth's 12 | raw driver 15 / CLAP 5 | high |
-| P1 | No `PRIO` ingress; no player priority | contended steal | high |
-| P2 | No song walker / waits / FINE / patterns | ROM blob playback | high |
-| P2 | No `gateTime` on `m4a_note_on` | ROM note duration byte | high |
-| P2 | No `KEYSH` ingress | mid-song transpose opcode | high |
+| — | Note-off is `ply_endtie` first match | fixed 2026-08-13 | high |
+| — | PCM IEC length 0 wraps | fixed 2026-08-13 | high |
+| — | Default PCM pool is hearth 12 | fixed 2026-08-13 | high |
+| — | `PRIO` CC + player priority | fixed 2026-08-13 | high |
+| P2 | No song walker / waits / FINE / patterns | ROM blob playback — not implemented | high |
+| — | `m4a_note_on_timed` gate duration | fixed 2026-08-13 | high |
+| — | `KEYSH` CC `0x1B` | fixed 2026-08-13 | high |
 
 ## P0 — wrong live semantics
 
-### 1. LFOS and LFODL restart in-flight modulation
+### 1. LFOS and LFODL restart in-flight modulation — **fixed**
 
 - ROM: `ply_lfos` stores `lfoSpeed` and calls `clear_modM` only when the new
   speed is 0 (`m4a_1.s:2392-2402`). `ply_lfodl` stores only `lfoDelay`
   (`m4a_1.s:1524-1530`).
-- Poryaaaa: CC `0x15` always zeroes `lfoSpeedC` and `modM`
-  (`m4a_track.c:857-863`). CC `0x1A` writes `lfoDelayC`, zeroes `lfoSpeedC`,
-  and if `modM != 0` clears it and refreshes both CGB/PCM axes
-  (`m4a_track.c:938-954`).
-- Effect: a live LFOS/LFODL edit restarts and recentres vibrato/tremolo.
-  ROM leaves the running triangle and current `modM` alone.
-- Not the already-fixed `modT` axis gate.
+- Now: CC `0x15` stores `lfoSpeed` and `clear_mod_m` only at 0. CC `0x1A`
+  stores `lfoDelay` only. Tests: `test_v2_lfo_lfodl_resets_running_modulation`,
+  `test_v2_lfos_nonzero_preserves_running_mod`.
 
-### 2. Note-on does not re-arm LFO delay
+### 2. Note-on does not re-arm LFO delay — **fixed**
 
 - ROM: after allocation, `ply_note` copies `lfoDelay` → `lfoDelayC`; if the
-  delay is nonzero it calls `clear_modM` (`m4a_1.s:2227-2242`; `r1` is 0
-  from the preceding `ClearChain` setup).
-- Poryaaaa: `m4a_note_on` never writes `lfoDelayC`, `lfoSpeedC`, or `modM`
-  (`m4a_track.c:419-475`). LFO state only changes in CC handlers and
-  `m4a_internal_lfo_tick`.
-- Effect: later notes on a MOD track start at the leftover `modM` instead of
-  dry, then waiting `lfoDelay` ticks.
+  delay is nonzero it calls `clear_modM` (`m4a_1.s:2237-2242`).
+- Now: successful CGB/PCM allocate copies `lfoDelayC` and `clear_mod_m` when
+  delay != 0. Test: `test_v2_note_on_rearms_lfo_delay`.
 
-### 3. STOP before the first CgbSound tick still starts the oscillator
+### 3. STOP before the first CgbSound tick still starts the oscillator — **fixed**
 
-- ROM: `START && STOP` branches to `oscillator_off` and never takes the
-  start/write path (`m4a.c:986-1044`, `CgbOscOff` at `m4a.c:855-875`).
-- Poryaaaa: `m4a_drv_cgb_start` always sets `freshStart`
-  (`m4a_cgb.c:78-83`). `tick_one` emits start writes before it honors STOP
-  (`m4a_cgb.c:407-432`). There is no `freshStart && STOP` off path.
-- Effect: a note released before the next VBlank can load wave RAM, enable
-  DAC, and trigger, then release. ROM only writes oscillator-off.
+- ROM: `START && STOP` branches to `oscillator_off` (`m4a.c:986-1044`).
+- Now: `tick_one` disables before `emit_start_write` when `freshStart && STOP`.
+  Test: `test_v2_cgb_start_stop_same_vblank_osc_off`.
 
 ### 4. CGB attack=0, decay=0, sustain=0 is deferred through RELEASE — **fixed**
 
@@ -92,79 +80,59 @@ absences are real, but they are not “wrong CgbSound.”
   `test_v2_cgb_triple_zero_echo_zero_disables`,
   `test_v2_cgb_triple_zero_echo_starts_iec`.
 
-### 5. MIDI Note Off is not `ply_endtie` for duplicated same-key voices
+### 5. MIDI Note Off is not `ply_endtie` for duplicated same-key voices — **fixed**
 
 - ROM: `ply_endtie` marks STOP on the first eligible matching `midiKey` and
   exits (`m4a_1.s:2342-2354`).
-- Poryaaaa: `m4a_note_off` marks STOP on every matching CGB and PCM channel
-  (`m4a_track.c:693-708`).
-- Effect: overlapping tied same-key voices all enter release. Ordinary
-  non-overlapping MIDI is fine; MP2K multiplicity is not.
+- Now: `m4a_note_off` stops the first matching CGB then PCM voice. Test:
+  `test_v2_note_off_stops_first_same_key_only`.
 
 ## P1 — wrong under specific live config
 
-### 6. PCM pseudo-echo length 0 is suppressed
+### 6. PCM pseudo-echo length 0 is suppressed — **fixed**
 
-- ROM: after release, nonzero `pseudoEchoVolume` sets IEC regardless of
-  length (`m4a_1.s:296-304`). IEC does `length--` then `bhi` continue
-  (`m4a_1.s:270-273`), so start length 0 wraps through 255.
-- Poryaaaa: `pcm_can_pseudo_echo` requires both volume and length nonzero
-  (`m4a_pcm.c:88-90`). IEC with length 0 stops immediately
-  (`m4a_pcm.c:119-130`). CGB IEC already uses the signed wrap
-  (`m4a_cgb.c:412-413` vs `m4a.c:1048-1049`).
-- Effect: `xIECV != 0` and `xIECL == 0` loses the ROM wraparound tail.
+- ROM: IEC if volume != 0; `length--` then `bhi` (`m4a_1.s:296-304`, `270-273`).
+- Now: `pcm_can_pseudo_echo` is volume-only; length 0 wraps to 255. Test:
+  `test_v2_pcm_pseudo_echo_zero_length_stops`.
 
-### 7. Default DirectSound pool is not this ROM's 12
+### 7. Default DirectSound pool is not this ROM's 12 — **fixed**
 
-- ROM: `SoundInit` writes `maxChans = 8` (`m4a.c:381`), then
-  `m4aSoundInit` immediately applies `SOUND_MODE_MAXCHN = 12`
-  (`m4a.c:76-79`, `m4a.c:445-451`). Hearth runtime is 12.
-- Poryaaaa: raw `m4a_driver_create` uses `M4A_MAX_PCM_CHANNELS` (15)
-  (`m4a_driver.h:29`, `m4a_driver.c:169-172`). The CLAP plugin and several
-  product paths then force 5 (`m4a_plugin.c:301`).
-- Effect: dense PCM either keeps extra voices (raw 15) or steals early
-  (CLAP 5) versus hearth's 12. This is a default/host-config mismatch, not
-  a mixer-arithmetic bug. Hosts that call `m4a_set_max_pcm_channels(12)`
-  match this ROM.
+- ROM hearth runtime is 12 (`m4a.c:76-79`, `445-451`).
+- Now: `m4a_driver_create`, CLAP, engine, and Rust runtime default to 12.
+  `M4A_MAX_PCM_CHANNELS` remains the 15-slot pool cap. Test:
+  `test_v2_default_pcm_pool_is_hearth_12`.
 
-### 8. Track `PRIO` cannot be expressed; player priority is omitted
+### 8. Track `PRIO` cannot be expressed; player priority is omitted — **fixed**
 
-- ROM: `ply_prio` stores track priority (`m4a_1.s:1417-1423`). `ply_note`
-  adds `MusicPlayerInfo.priority + track.priority`, saturating at 255
-  (`m4a_1.s:2132-2140`), and allocation uses that sum.
-- Poryaaaa: `t->priority` exists and is used (`m4a_track.c:440-454`), but
-  no CC/API writes it (`m4a_driver.h:111-128`, `m4a_track.c:819-960`).
-  `M4ADriver` has no player-priority field (`m4a_internal.h:223-246`).
-- Effect: song-authored `PRIO` and multi-player steal order cannot reach
-  live allocation. Single-player DAW use with default 0 is unaffected.
+- ROM: `ply_prio` + player priority, saturate at 255 (`m4a_1.s:1417-1423`,
+  `2132-2140`).
+- Now: CC `0x1C` writes track `priority`; `m4a_set_player_priority` stores
+  `player_priority`; allocate uses the saturated sum. Test:
+  `test_v2_prio_cc_and_player_priority_steal`.
 
 ## P2 — missing sequencer surface (not a live CgbSound bug)
 
 These are real losses of ROM song meaning. They are expected of a DAW
 player unless the host reconstructs them.
 
-### 9. No song walker
+### 9. No song walker — **intentionally not implemented**
 
 `MPlayMain` consumes waits, `GOTO`/`PATT`/`PEND`/`REPT`, and `FINE`
 (`m4a_1.s:1255-1282`, `1336-1423`, `1839-1937`). Poryaaaa's main only advances `tempoC`
-and the LFO (`m4a_main.c:16-31`). An MP2K song blob cannot play without an
-external scheduler.
+and the LFO (`m4a_main.c:16-31`). A DAW/MIDI host owns sequencing. Do not
+build a ROM song walker unless the product goal changes.
 
-### 10. No bytecode gate duration
+### 10. No bytecode gate duration — **fixed**
 
-`ply_note` derives `gateTime` from `gClockTable` plus an optional duration
-byte (`m4a_1.s:2043-2078`) and copies it onto the channel (`2247-2248`).
-The channel loop stops on expiry (`m4a_1.s:1701-1709`). `m4a_note_on` has
-no duration argument (`m4a_driver.h:112-113`) and writes `gateTime = 0`
-(`m4a_track.c:475`, `625`; fields at `m4a_internal.h:156`, `200`). A host
-Note Off at the gate boundary is equivalent; otherwise the note sustains.
+`m4a_note_on` still has no duration (MIDI Note Off remains the DAW path).
+`m4a_note_on_timed` copies `gateTime` onto the allocated CGB/PCM channel.
+CGB and PCM decrement it each SoundMain and OR STOP at 0. Test:
+`test_v2_note_on_timed_cgb_gate_expires`.
 
-### 11. No `KEYSH` ingress
+### 11. No `KEYSH` ingress — **fixed**
 
-`ply_keysh` writes signed key shift and ORs `MPT_FLG_PITCHG`
-(`m4a_1.s:1438-1448`). Poryaaaa applies `keyShift` in `m4a_trk_vol_pit_set`
-(`m4a_track.c:52-60`) but exposes no API/CC that sets it. Mid-song
-transposition must be done by transposing MIDI notes.
+CC `0x1B` writes `keyShift = value - 0x40` and refreshes CGB/PCM pitches.
+Test: `test_v2_keysh_cc_transposes_square`.
 
 `xWAIT` (0x0C) is an intentional no-op (`m4a_track.c:723-726`; README and
 `xcmd.md` already say so). A MIDI path has no script PC to stall.
@@ -218,12 +186,9 @@ transposition must be done by transposing MIDI notes.
 
 ## Suggested next implementation order
 
-1. LFOS/LFODL field-only updates, plus `ply_note` LFO re-arm on note-on.
-2. CgbSound start: `START+STOP` → osc-off; A=D=S=0 → same-tick
-   pseudo-echo/off.
-3. `m4a_note_off` stops one eligible voice, matching `ply_endtie`.
-4. PCM IEC length-0 wrap; default `maxChans` 12 on product paths.
-5. Optional: `PRIO` / `KEYSH` CC if song conversion needs them.
+Live-driver findings 1–8, 10, and 11 are implemented. Finding 9 stays a
+documented DAW absence. Remaining research is the Unknown list and the
+hardware/cycle items under “What not to chase next.”
 
 ## Sources
 

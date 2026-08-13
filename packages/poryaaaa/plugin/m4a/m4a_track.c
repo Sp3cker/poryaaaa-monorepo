@@ -400,7 +400,7 @@ void m4a_program_change(M4ADriver* drv, int track, uint8_t program)
         memset(&t->currentVoice, 0, sizeof(t->currentVoice));
 }
 
-void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
+void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime)
 {
     if (!drv)
         return;
@@ -437,7 +437,8 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
     if (pcmFinalKey > 127)
         pcmFinalKey = 127;
 
-    uint8_t combinedPriority = t->priority;
+    uint16_t prioritySum = (uint16_t)drv->player_priority + t->priority;
+    uint8_t combinedPriority = prioritySum > UINT8_MAX ? UINT8_MAX : (uint8_t)prioritySum;
 
     if (voiceType >= 1 && voiceType <= 4)
     {
@@ -472,7 +473,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         ch->pseudoEchoVolume = t->pseudoEchoVolume;
         ch->pseudoEchoLength = t->pseudoEchoLength;
         ch->length = voice->length;
-        ch->gateTime = 0;
+        ch->gateTime = gateTime;
 
         /* L/R software volumes from velocity × track vol × pan. */
         uint32_t velo = ch->velocity;
@@ -534,6 +535,10 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         {
             m4a_drv_cgb_start(ch);
         }
+
+        t->lfoDelayC = t->lfoDelay;
+        if (t->lfoDelay != 0)
+            clear_mod_m(drv, track);
 
         portamento_note_started(drv, t, track, ch->key);
     }
@@ -622,7 +627,7 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
         ch->release = voice->release;
         ch->pseudoEchoVolume = t->pseudoEchoVolume;
         ch->pseudoEchoLength = t->pseudoEchoLength;
-        ch->gateTime = 0;
+        ch->gateTime = gateTime;
 
         /* ChnVolSetDirect: per-channel L/R from velocity × pan × track vol. */
         uint32_t velo = ch->velocity;
@@ -659,6 +664,10 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
          * DirectSound playback from an offset inside the source sample. */
         m4a_drv_pcm_start(ch, voice->wav, voice->type, t->extendedValue);
 
+        t->lfoDelayC = t->lfoDelay;
+        if (t->lfoDelay != 0)
+            clear_mod_m(drv, track);
+
         if (drv->portamento_enabled && t->portamentoDuration != 0)
         {
             for (int i = 0; i < maxPcm; i++)
@@ -683,6 +692,11 @@ void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
     }
 }
 
+void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
+{
+    m4a_note_on_timed(drv, track, key, velocity, 0);
+}
+
 void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
 {
     if (!drv)
@@ -696,6 +710,7 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
         if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
         {
             ch->status |= M4A_CHN_STOP;
+            return;
         }
     }
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
@@ -704,6 +719,7 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
         if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
         {
             ch->status |= M4A_CHN_STOP;
+            return;
         }
     }
 }
@@ -856,8 +872,6 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
         break;
     case 0x15: /* LFOS */
         t->lfoSpeed = value;
-        t->lfoSpeedC = 0;
-        t->modM = 0;
         if (value == 0)
             clear_mod_m(drv, track);
         break;
@@ -935,22 +949,20 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
             refresh_pcm_pitches(drv, track);
         }
         break;
-    case 0x1A: /* LFODL */
-        if (t->lfoDelay != value || t->lfoDelayC != value || t->lfoSpeedC != 0 || t->modM != 0)
+    case 0x1B: /* KEYSH */
+        if (t->keyShift != (int8_t)(value - 0x40))
         {
-            t->lfoDelay = value;
-            t->lfoDelayC = value;
-            t->lfoSpeedC = 0;
-            if (t->modM != 0)
-            {
-                t->modM = 0;
-                m4a_trk_vol_pit_set(t);
-                refresh_cgb_volumes(drv, track);
-                refresh_cgb_pitches(drv, track);
-                refresh_pcm_volumes(drv, track);
-                refresh_pcm_pitches(drv, track);
-            }
+            t->keyShift = (int8_t)(value - 0x40);
+            m4a_trk_vol_pit_set(t);
+            refresh_cgb_pitches(drv, track);
+            refresh_pcm_pitches(drv, track);
         }
+        break;
+    case 0x1A: /* LFODL */
+        t->lfoDelay = value;
+        break;
+    case 0x1C: /* PRIO */
+        t->priority = value;
         break;
     case 0x1D: /* XCMD payload byte (part 1) */
     case 0x1F:
