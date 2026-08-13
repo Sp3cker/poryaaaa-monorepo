@@ -169,6 +169,9 @@ enable_testing()
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
+# ---- Porydaw-compatible static engine core ----
+add_subdirectory(plugin/porydaw)
+
 
 # ---- CLAP Plugin ----
 set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
