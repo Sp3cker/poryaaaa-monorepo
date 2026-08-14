@@ -1,10 +1,12 @@
 #include "hw_audio/hw_audio.h"
+#include "hw_audio/hw_resample.h"
 #include "test_assert.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum
@@ -70,6 +72,16 @@ static float peak_abs_range(const float* samples, int begin, int end)
             peak = value;
     }
     return peak;
+}
+
+static bool is_exactly_silent_range(const float* left, const float* right, int begin, int end)
+{
+    for (int index = begin; index < end; ++index)
+    {
+        if (left[index] != 0.0f || right[index] != 0.0f)
+            return false;
+    }
+    return true;
 }
 
 static float largest_difference(const float* left, const float* right, int frames)
@@ -576,10 +588,16 @@ static void test_wave_nr52_disable_preserves_residual_ram_phase(void)
 static void test_wave_length_expiry_gates_sparse_delta(void)
 {
     printf("Testing production chip contracts: Wave length expiry across sparse delta...\n");
+    /* At 65,536 Hz, 1,024 host frames cover only 262,144 cycles: less than
+     * one exact mGBA blip publication frame (280,896 cycles).  That older
+     * window observes only startup mute, not either Wave channel.  Keep this
+     * a single sparse interval, but leave the finite blip/feedback tail
+     * behind before observing the final exact PCM16-derived host frames. */
     enum
     {
-        FRAMES = 1024,
-        TAIL_BEGIN = 896,
+        FRAMES = 8192,
+        TAIL_FRAMES = 512,
+        TAIL_BEGIN = FRAMES - TAIL_FRAMES,
     };
     float gated_left[FRAMES] = {0};
     float gated_right[FRAMES] = {0};
@@ -601,9 +619,10 @@ static void test_wave_length_expiry_gates_sparse_delta(void)
         render_interval(length_gated, gated, gated_count, 0, end_cycle, FRAMES, gated_left, gated_right);
         render_interval(
             no_length_gate, sustained, sustained_count, 0, end_cycle, FRAMES, sustained_left, sustained_right);
-        ASSERT(peak_abs_range(gated_left, TAIL_BEGIN, FRAMES) < 1e-4f,
-               "Wave length expiry silences the tail of one sparse render interval");
-        ASSERT(peak_abs_range(sustained_left, TAIL_BEGIN, FRAMES) > 0.001f,
+        ASSERT(is_exactly_silent_range(gated_left, gated_right, TAIL_BEGIN, FRAMES),
+               "Wave length expiry reaches exact silence after the finite frontend tail");
+        ASSERT(peak_abs_range(sustained_left, TAIL_BEGIN, FRAMES) > 0.001f &&
+                   peak_abs_range(sustained_right, TAIL_BEGIN, FRAMES) > 0.001f,
                "without NR34 length enable the same sparse render remains audible");
     }
     hw_audio_destroy(length_gated);
@@ -899,20 +918,39 @@ static void test_soundbias_all_dac_intervals_are_render_observable(void)
     }
 }
 
-/* The rate switch is at host frame 10. At cycle 2561, only the first
- * 32768 Hz DAC observation exists; sinc releases real frames 10 and 11,
- * then frame 12 is an intentional fixed-block shortfall. */
+/* At 65536 Hz, the exact mGBA 0.10.5 frontend ends each 0x800-cycle
+ * blip frame after eight 256-cycle DAC observations. The eighth observation
+ * is at cycle 1792, after seven host deadlines have been filled with startup
+ * mute. It releases eight PCM16 frames: the first has the canonical zero
+ * integrator value and the second is the first audible frame.
+ *
+ * The rate switch is at host frame 10 (cycle 2560). Ten old-cadence
+ * observations leave 512 frontend clocks after the release; the pending
+ * same-cycle 32768 Hz observation adds 512 more. That leaves 1024 < 0x800,
+ * so it cannot release another frontend frame. The final three host frames
+ * must therefore hold the final actually delivered PCM16 frame. */
 static void test_frontend_startup_and_soundbias_shortfall_hold_last(void)
 {
     printf("Testing frontend contracts: startup mute and SOUNDBIAS shortfall hold...\n");
     enum
     {
-        RELEASE_FRAME = 8,
-        LAST_REAL_FRAME = 11,
-        HELD_FRAME = 12,
-        FRAMES = 13,
+        DEFAULT_DAC_PERIOD = PORYAAAA_GBA_CLOCK_HZ / CONTRACT_HOST_RATE,
+        POST_CHANGE_DAC_PERIOD = PORYAAAA_GBA_CLOCK_HZ / 32768,
+        DAC_OBSERVATIONS_PER_BLIP_FRAME = HW_RESAMPLE_FRAME_CLOCKS / DEFAULT_DAC_PERIOD,
+        FRONTEND_FRAMES_PER_BLIP_FRAME = CONTRACT_HOST_RATE * HW_RESAMPLE_FRAME_CLOCKS / PORYAAAA_GBA_CLOCK_HZ,
+        RATE_CHANGE_HOST_FRAME = 10,
+        RATE_CHANGE_CYCLE = RATE_CHANGE_HOST_FRAME * CONTRACT_CYCLES_PER_HOST_FRAME,
+        PRE_CHANGE_DAC_OBSERVATIONS = RATE_CHANGE_CYCLE / DEFAULT_DAC_PERIOD,
+        POST_CHANGE_FRONTEND_CLOCKS =
+            (PRE_CHANGE_DAC_OBSERVATIONS * DEFAULT_DAC_PERIOD) % HW_RESAMPLE_FRAME_CLOCKS + POST_CHANGE_DAC_PERIOD,
+        FIRST_DELIVERED_FRAME = DAC_OBSERVATIONS_PER_BLIP_FRAME - 1,
+        FIRST_AUDIBLE_FRAME = FIRST_DELIVERED_FRAME + 1,
+        LAST_DELIVERED_FRAME = FIRST_DELIVERED_FRAME + FRONTEND_FRAMES_PER_BLIP_FRAME - 1,
+        FIRST_HELD_FRAME = LAST_DELIVERED_FRAME + 1,
+        HELD_FRAME_COUNT = 3,
+        FRAMES = FIRST_HELD_FRAME + HELD_FRAME_COUNT,
     };
-    const uint64_t rate_change_cycle = 10 * CONTRACT_CYCLES_PER_HOST_FRAME;
+    const uint64_t rate_change_cycle = RATE_CHANGE_CYCLE;
     const uint64_t end_cycle = rate_change_cycle + 1;
     float left[FRAMES] = {0};
     float right[FRAMES] = {0};
@@ -928,23 +966,103 @@ static void test_frontend_startup_and_soundbias_shortfall_hold_last(void)
     if (audio)
     {
         render_interval(audio, events, sizeof(events) / sizeof(events[0]), 0, end_cycle, FRAMES, left, right);
-        ASSERT(is_silent(left, right, RELEASE_FRAME), "startup stays silent before the sinc releases");
-        ASSERT(peak_abs_range(left, RELEASE_FRAME, RELEASE_FRAME + 1) > 0.001f &&
-                   peak_abs_range(right, RELEASE_FRAME, RELEASE_FRAME + 1) > 0.001f,
-               "the first released sinc frame is a real stereo observation");
-        ASSERT(peak_abs_range(left, LAST_REAL_FRAME, LAST_REAL_FRAME + 1) > 0.001f &&
-                   peak_abs_range(right, LAST_REAL_FRAME, LAST_REAL_FRAME + 1) > 0.001f,
-               "the SOUNDBIAS cadence change has a real final frontend frame");
-        ASSERT_NEAR(left[HELD_FRAME],
-                    left[LAST_REAL_FRAME],
-                    0.0f,
-                    "post-SOUNDBIAS shortfall holds the last left frontend frame");
-        ASSERT_NEAR(right[HELD_FRAME],
-                    right[LAST_REAL_FRAME],
-                    0.0f,
-                    "post-SOUNDBIAS shortfall holds the last right frontend frame");
+        ASSERT(POST_CHANGE_FRONTEND_CLOCKS < HW_RESAMPLE_FRAME_CLOCKS,
+               "SOUNDBIAS change leaves no complete frontend frame to drain");
+        ASSERT(is_exactly_silent_range(left, right, 0, FIRST_DELIVERED_FRAME),
+               "startup gap before the first frontend drain is exact mute");
+        ASSERT(left[FIRST_DELIVERED_FRAME] == 0.0f && right[FIRST_DELIVERED_FRAME] == 0.0f,
+               "first drained frontend frame retains the canonical zero integrator value");
+        ASSERT(left[FIRST_AUDIBLE_FRAME] != 0.0f && right[FIRST_AUDIBLE_FRAME] != 0.0f,
+               "second drained frontend frame is the first audible stereo frame");
+        ASSERT(left[LAST_DELIVERED_FRAME] != 0.0f && right[LAST_DELIVERED_FRAME] != 0.0f,
+               "last released frontend frame is a real stereo observation");
+        for (int frame = FIRST_HELD_FRAME; frame < FRAMES; ++frame)
+        {
+            ASSERT(left[frame] == left[LAST_DELIVERED_FRAME],
+                   "post-SOUNDBIAS shortfall holds the final delivered left frontend frame");
+            ASSERT(right[frame] == right[LAST_DELIVERED_FRAME],
+                   "post-SOUNDBIAS shortfall holds the final delivered right frontend frame");
+        }
     }
     hw_audio_destroy(audio);
+}
+
+/* A frontend must preserve every native DAC observation when a host callback
+ * is larger than its fixed PCM16 queue.  The continuation exposes losses that
+ * would otherwise remain buffered at the end of the large callback. */
+static void render_square2_frontend_timeline(
+    HwAudio* audio, float* left, float* right, int first_host_frame, int frame_count, int partition_frames)
+{
+    enum
+    {
+        HOST_RATE = 48000,
+    };
+    int rendered = 0;
+    while (rendered < frame_count)
+    {
+        const int frames = frame_count - rendered > partition_frames ? partition_frames : frame_count - rendered;
+        const int absolute_frame = first_host_frame + rendered;
+        const uint64_t begin_cycle = (uint64_t)absolute_frame * PORYAAAA_GBA_CLOCK_HZ / HOST_RATE;
+        const uint64_t end_cycle = (uint64_t)(absolute_frame + frames) * PORYAAAA_GBA_CLOCK_HZ / HOST_RATE;
+        M4ARegWrite setup[8];
+        const size_t setup_count = absolute_frame == 0 ? append_square2_setup(setup, 0, 0xF8, 0x80) : 0;
+        render_interval(audio,
+                        setup_count != 0 ? setup : NULL,
+                        setup_count,
+                        begin_cycle,
+                        end_cycle,
+                        frames,
+                        left + rendered,
+                        right + rendered);
+        rendered += frames;
+    }
+}
+
+static void test_frontend_queue_saturation_preserves_large_block_partition_invariance(void)
+{
+    printf("Testing frontend contracts: large callback queue saturation stays partition-invariant...\n");
+    enum
+    {
+        LARGE_BLOCK_FRAMES = 8192,
+        CONTINUATION_FRAMES = 2048,
+        TOTAL_FRAMES = LARGE_BLOCK_FRAMES + CONTINUATION_FRAMES,
+        BOUNDED_PARTITION_FRAMES = 64,
+    };
+    float* large_left = calloc(TOTAL_FRAMES, sizeof(*large_left));
+    float* large_right = calloc(TOTAL_FRAMES, sizeof(*large_right));
+    float* partitioned_left = calloc(TOTAL_FRAMES, sizeof(*partitioned_left));
+    float* partitioned_right = calloc(TOTAL_FRAMES, sizeof(*partitioned_right));
+    HwAudio* large_block = hw_audio_create(48000.0f);
+    HwAudio* partitioned = hw_audio_create(48000.0f);
+
+    ASSERT(large_left && large_right && partitioned_left && partitioned_right && large_block && partitioned,
+           "large frontend queue fixtures allocate");
+    if (large_left && large_right && partitioned_left && partitioned_right && large_block && partitioned)
+    {
+        render_square2_frontend_timeline(
+            large_block, large_left, large_right, 0, LARGE_BLOCK_FRAMES, LARGE_BLOCK_FRAMES);
+        render_square2_frontend_timeline(large_block,
+                                         large_left + LARGE_BLOCK_FRAMES,
+                                         large_right + LARGE_BLOCK_FRAMES,
+                                         LARGE_BLOCK_FRAMES,
+                                         CONTINUATION_FRAMES,
+                                         CONTINUATION_FRAMES);
+        render_square2_frontend_timeline(
+            partitioned, partitioned_left, partitioned_right, 0, TOTAL_FRAMES, BOUNDED_PARTITION_FRAMES);
+
+        ASSERT(!is_silent(partitioned_left, partitioned_right, TOTAL_FRAMES),
+               "large frontend queue fixture remains audibly non-silent");
+        ASSERT(memcmp(large_left, partitioned_left, (size_t)TOTAL_FRAMES * sizeof(*large_left)) == 0,
+               "large callback preserves every chronological left PCM16 frontend observation");
+        ASSERT(memcmp(large_right, partitioned_right, (size_t)TOTAL_FRAMES * sizeof(*large_right)) == 0,
+               "large callback preserves every chronological right PCM16 frontend observation");
+    }
+    hw_audio_destroy(partitioned);
+    hw_audio_destroy(large_block);
+    free(partitioned_right);
+    free(partitioned_left);
+    free(large_right);
+    free(large_left);
 }
 
 static void test_soundbias_clipping(void)
@@ -1106,6 +1224,7 @@ void test_hw_audio_contracts_run_all(void)
     test_timer_selection_and_empty_fifo_silence();
     test_soundbias_all_dac_intervals_are_render_observable();
     test_frontend_startup_and_soundbias_shortfall_hold_last();
+    test_frontend_queue_saturation_preserves_large_block_partition_invariance();
     test_soundbias_clipping();
     test_noise_trigger_resets_rendered_clock();
     test_timer_does_not_partition_noise_clock();

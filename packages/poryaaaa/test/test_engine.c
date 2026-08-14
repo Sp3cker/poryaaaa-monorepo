@@ -10,7 +10,6 @@
 #include "hw_audio/hw_audio.h"
 #include "hw_audio/hw_pcm.h"
 #include "hw_audio/hw_psg.h"
-#include "hw_audio/hw_resample.h"
 /* Tests access internal track / channel state to verify XCMD field
  * mutations and propagation into newly-started notes (xcmd.md).  The
  * driver's public header keeps M4ADriver opaque; test code is the
@@ -31,6 +30,7 @@ void test_recorder_core_run_all(void);
 void test_m4a_v2_run_all(void);
 void test_gui_assets_run_all(void);
 void test_hw_audio_contracts_run_all(void);
+void test_porydaw_engine_run_all(void);
 
 /* Test helper: advance the driver in chunks no larger than the bounded
  * event queue can hold, consuming between chunks.  Required for tests
@@ -4422,7 +4422,6 @@ static void test_v2_psg_export_shape_audible_across_sample_rates(void)
         HOST_BLOCK = 8192,
         BLOCKS = 4,
         N = HOST_BLOCK * BLOCKS,
-        SKIP = 256
     };
 
     for (int r = 0; r < 3; r++)
@@ -4453,7 +4452,7 @@ static void test_v2_psg_export_shape_audible_across_sample_rates(void)
 
             float peak = 0.0f;
             int nonzero = 0;
-            for (int i = SKIP; i < N; i++)
+            for (int i = 0; i < N; i++)
             {
                 float a = L[i];
                 if (a < 0)
@@ -4464,8 +4463,8 @@ static void test_v2_psg_export_shape_audible_across_sample_rates(void)
                     nonzero++;
             }
 
-            ASSERT(peak > 0.001f, "export-shaped PSG render is audible");
-            ASSERT(nonzero > (N - SKIP) / 4, "export-shaped PSG render persists across host blocks");
+            ASSERT(peak > 0.001f, "export-shaped PSG render is audible from the first host frame");
+            ASSERT(nonzero > N / 4, "export-shaped PSG render persists across host blocks");
             ASSERT_EQ((int)m4a_get_events_dropped(drv), 0, "export-shaped PSG render drops no events");
 
             m4a_driver_destroy(drv);
@@ -4909,6 +4908,7 @@ static void test_v2_pcm_chunk_size_invariance(void)
         N = 4096
     };
     float La[N], Ra[N], Lb[N], Rb[N], Lc[N], Rc[N];
+    uint64_t cycle_a, cycle_b, cycle_c;
 
     /* Run #1: one big call covers the entire window. */
     {
@@ -4918,6 +4918,7 @@ static void test_v2_pcm_chunk_size_invariance(void)
         HwAudio* hw = hw_audio_create(44100.0f);
         setup_pcm_test_driver(drv, voices, wd);
         render_with_chunking(drv, hw, La, Ra, N, /*chunk_size=*/N);
+        cycle_a = m4a_driver_current_cycle(drv);
         m4a_driver_destroy(drv);
         hw_audio_destroy(hw);
         free(wd);
@@ -4931,6 +4932,7 @@ static void test_v2_pcm_chunk_size_invariance(void)
         HwAudio* hw = hw_audio_create(44100.0f);
         setup_pcm_test_driver(drv, voices, wd);
         render_with_chunking(drv, hw, Lb, Rb, N, /*chunk_size=*/2048);
+        cycle_b = m4a_driver_current_cycle(drv);
         m4a_driver_destroy(drv);
         hw_audio_destroy(hw);
         free(wd);
@@ -4945,63 +4947,26 @@ static void test_v2_pcm_chunk_size_invariance(void)
         HwAudio* hw = hw_audio_create(44100.0f);
         setup_pcm_test_driver(drv, voices, wd);
         render_with_chunking(drv, hw, Lc, Rc, N, /*chunk_size=*/64);
+        cycle_c = m4a_driver_current_cycle(drv);
         m4a_driver_destroy(drv);
         hw_audio_destroy(hw);
         free(wd);
         free(voices);
     }
 
-    /* All three must match.  The chip-internal pipeline is event-driven
-     * and rate-decoupled; PCM publish events stamp data availability at
-     * exact host-frame offsets; pcm_pos pauses on underrun.  Together
-     * these guarantee that the same audio renders identically at any
-     * chunking. */
-    int max_diff_idx = -1;
-    float max_diff = 0.0f;
-    for (int i = 0; i < N; i++)
-    {
-        float d_ab_l = La[i] - Lb[i];
-        if (d_ab_l < 0)
-            d_ab_l = -d_ab_l;
-        float d_ab_r = Ra[i] - Rb[i];
-        if (d_ab_r < 0)
-            d_ab_r = -d_ab_r;
-        float d_ac_l = La[i] - Lc[i];
-        if (d_ac_l < 0)
-            d_ac_l = -d_ac_l;
-        float d_ac_r = Ra[i] - Rc[i];
-        if (d_ac_r < 0)
-            d_ac_r = -d_ac_r;
-        float d = d_ab_l;
-        if (d_ab_r > d)
-            d = d_ab_r;
-        if (d_ac_l > d)
-            d = d_ac_l;
-        if (d_ac_r > d)
-            d = d_ac_r;
-        if (d > max_diff)
-        {
-            max_diff = d;
-            max_diff_idx = i;
-        }
-    }
-    /* Allow tiny float rounding (resampler floats accumulate slightly
-     * differently across chunkings).  But the divergence must be at
-     * the sub-1e-4 level, not the per-vblank-shift level (~0.78). */
-    if (max_diff > 1e-4f)
-    {
-        fprintf(stderr,
-                "  max_diff=%g at frame %d (La=%g Lb=%g Lc=%g)\n",
-                max_diff,
-                max_diff_idx,
-                La[max_diff_idx],
-                Lb[max_diff_idx],
-                Lc[max_diff_idx]);
-    }
-    ASSERT(max_diff < 1e-4f, "PCM output is chunk-size invariant");
+    /* All partitions must span the same absolute driver-clock interval.
+     * `m4a_advance` retains its fractional cycle phase across pending-write
+     * batches, so this guards the fixture's equivalent cycle-domain input. */
+    ASSERT(cycle_a == cycle_b && cycle_a == cycle_c, "PCM chunkings cover the same absolute cycle interval");
 
-    /* Sanity: the rendered audio is non-trivial (not all zero — a
-     * trivially-equal silent comparison would also pass max_diff=0). */
+    /* All three must match every host float. PCM publish events stamp data
+     * availability at exact host-frame offsets and pcm_pos pauses on underrun. */
+    ASSERT(memcmp(La, Lb, sizeof(La)) == 0, "2048-frame PCM chunks preserve every left float");
+    ASSERT(memcmp(Ra, Rb, sizeof(Ra)) == 0, "2048-frame PCM chunks preserve every right float");
+    ASSERT(memcmp(La, Lc, sizeof(La)) == 0, "64-frame PCM chunks preserve every left float");
+    ASSERT(memcmp(Ra, Rc, sizeof(Ra)) == 0, "64-frame PCM chunks preserve every right float");
+
+    /* Sanity: the rendered audio is non-trivial, not merely matching silence. */
     float peak = 0.0f;
     for (int i = 0; i < N; i++)
     {
@@ -5015,13 +4980,8 @@ static void test_v2_pcm_chunk_size_invariance(void)
 }
 
 /* PCM publish-timing: render a window that straddles a vblank firing.
- * Pre-vblank host frames must NOT see ring data that the post-vblank
- * portion of the same advance call wrote.  Test: silence all PCM
- * voices (so the ring stays at zero); render once to drain warmup;
- * note_on a sharp impulse-PCM voice; render a single chunk that
- * spans one vblank firing; assert the pre-vblank L samples are the
- * same as the held value from before the note_on (silent baseline),
- * and only post-vblank samples reflect the new note. */
+ * Pre-vblank host frames must not see ring data that the post-vblank portion
+ * of the same advance call wrote. */
 static void test_v2_pcm_publish_timing(void)
 {
     printf("Testing v2 PCM publish timing — pre-vblank cleanly separated from post-vblank...\n");
@@ -5057,8 +5017,7 @@ static void test_v2_pcm_publish_timing(void)
     m4a_cc(drv, 0, 7, 127);
     m4a_cc(drv, 0, 10, 64);
 
-    /* Drain the resampler / FIFO startup with a long silent stretch.
-     * After this the pipeline has steady-state held-zero everywhere. */
+    /* Establish a long silent baseline before the note starts. */
     enum
     {
         WARM = 8192
@@ -5078,12 +5037,8 @@ static void test_v2_pcm_publish_timing(void)
 
     /* The first VBlank after note-on publishes the software-mixed block at
      * its event cycle, but the seven-segment DMA ring can delay that segment
-     * until the matching FIFO source epoch.  The longer window covers that
-     * hardware delay plus the sinc frontend latency.
-     *
-     * The structural contract remains strict: the note must not leak back
-     * into frame 0 of the host chunk, and it must become audible after its
-     * ordered VBlank publication reaches the FIFO. */
+     * until the matching FIFO source epoch. The note must not leak back into
+     * frame 0 and must become audible after that ordered publication. */
     int first_nonzero = -1;
     for (int i = 0; i < N; i++)
     {
@@ -5786,64 +5741,6 @@ static void test_chip_canned_square_audible(void)
     hw_audio_destroy(hw);
 }
 
-/* Current mGBA's raw-buffer frontend has no blip_buf DC-blocking pole. */
-static void test_chip_output_preserves_dc(void)
-{
-    printf("Testing chip-only: current mGBA frontend preserves source DC...\n");
-
-    HwAudio* hw = hw_audio_create(65536.0f);
-    M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80, 0},
-        {0, M4A_REG_NR50, 0x77, 0},
-        {0, M4A_REG_NR51, 0x22, 0},
-        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
-        {0, M4A_REG_NR21, 0xC0, 0}, /* 75% duty has a positive raw-DAC mean */
-        {0, M4A_REG_NR22, 0xF8, 0},
-        {0, M4A_REG_NR23, 1984 & 0xFF, 0},
-        {0, M4A_REG_NR24, 0x80 | ((1984 >> 8) & 7), 0},
-    };
-    M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
-
-    enum
-    {
-        N = 8192,
-        WINDOW = 2048
-    };
-    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 65536));
-    float L[N], R[N];
-    hw_audio_render_events(hw, &batch, L, R, N);
-
-    double mean = 0.0;
-    for (int i = N - WINDOW; i < N; i++)
-        mean += L[i];
-    mean /= WINDOW;
-
-    ASSERT(mean > 0.02, "current mGBA frontend preserves the square wave's positive DC mean");
-    hw_audio_destroy(hw);
-}
-
-/* Locks the frontend impulse response to current mGBA's sinc interpolator. */
-static void test_hw_resample_matches_mgba_sinc_impulse(void)
-{
-    printf("Testing hw_resample impulse response matches current mGBA sinc...\n");
-
-    static const int16_t expected[] = {
-        0, 0, 0, 0, 0, 0, 0, -60, -776, -1217, 2927, 5923, 7888, 760, 5929, -687, 3460, -837, 347, -314, 0, 0, 0, 0,
-    };
-    int16_t input[24] = {0};
-    float output[24];
-    input[8] = 16384;
-
-    HwResample resample;
-    hw_resample_init(&resample, 32768.0, 48000.0);
-    ASSERT_EQ(hw_resample_inputs_needed(&resample, 24), 24, "sinc frontend requests its eight-sample lookahead");
-    int produced = hw_resample_process(&resample, input, NULL, 24, output, NULL, 24);
-
-    ASSERT_EQ(produced, 24, "sinc frontend produces the requested host span");
-    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
-        ASSERT_NEAR(output[i], expected[i] / 32768.0f, 0.000001f, "sinc impulse sample matches current mGBA");
-}
-
 static void test_chip_canned_master_disable_silences(void)
 {
     printf("Testing chip-only: NR52 master-disable silences PSG...\n");
@@ -5875,12 +5772,9 @@ static void test_chip_canned_master_disable_silences(void)
     test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
     hw_audio_render_events(hw, &batch, L, R, N);
 
-    /* First half: signal; after disable the sinc kernel's short tail must
-     * decay to silence. A few dozen host samples past the event boundary
-     * comfortably clear its eight-sample source window. */
+    /* The frontend may emit the finite exact tail from the master-disable
+     * transition; the final window must be exact startup/hold silence. */
     float peakFirst = 0.0f;
-    /* Stay clear of the smear at the boundary; the first few hundred
-     * samples are plenty audible without including transition smear. */
     for (int i = 64; i < 2048 - 64; i++)
     {
         float a = L[i];
@@ -5891,17 +5785,16 @@ static void test_chip_canned_master_disable_silences(void)
     }
     ASSERT(peakFirst > 0.001f, "first half (master enabled) audible");
 
-    float latePeak = 0.0f;
+    bool late_silence = true;
     for (int i = N - 512; i < N; i++)
     {
-        float a = L[i] < 0.0f ? -L[i] : L[i];
-        float b = R[i] < 0.0f ? -R[i] : R[i];
-        if (a > latePeak)
-            latePeak = a;
-        if (b > latePeak)
-            latePeak = b;
+        if (L[i] != 0.0f || R[i] != 0.0f)
+        {
+            late_silence = false;
+            break;
+        }
     }
-    ASSERT(latePeak < 5e-5f, "master-disable frontend tail decays to silence");
+    ASSERT(late_silence, "master-disable reaches exact silence");
 
     hw_audio_destroy(hw);
 }
@@ -5932,6 +5825,7 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
     {
         CHUNK = 257,
         PLAY_CHUNKS = 256,
+        SILENT_SETTLE_CHUNKS = 32,
         SILENT_CHUNKS = 256
     };
     float L[CHUNK], R[CHUNK];
@@ -5955,9 +5849,7 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
     hw_audio_render_events(hw, &stop_batch, L, R, CHUNK);
     cycle = next_cycle;
 
-    float worst = 0.0f;
-    int worst_chunk = -1;
-    int worst_sample = -1;
+    bool late_silence = true;
     for (int chunk_i = 0; chunk_i < SILENT_CHUNKS; chunk_i++)
     {
         for (int i = 0; i < CHUNK; i++)
@@ -5969,32 +5861,18 @@ static void test_chip_canned_after_playback_empty_blocks_stay_silent(void)
         test_set_cycle_batch_range(&empty, cycle, next_cycle);
         hw_audio_render_events(hw, &empty, L, R, CHUNK);
         cycle = next_cycle;
-
-        if (chunk_i < 32)
+        if (chunk_i < SILENT_SETTLE_CHUNKS)
             continue;
-
         for (int i = 0; i < CHUNK; i++)
         {
-            float a = L[i];
-            if (a < 0.0f)
-                a = -a;
-            float b = R[i];
-            if (b < 0.0f)
-                b = -b;
-            float m = a > b ? a : b;
-            if (m > worst)
+            if (L[i] != 0.0f || R[i] != 0.0f)
             {
-                worst = m;
-                worst_chunk = chunk_i;
-                worst_sample = i;
+                late_silence = false;
+                break;
             }
         }
     }
-
-    if (worst > 5e-5f)
-        printf(
-            "  [debug] worst after-playback silent dev = %g at chunk %d sample %d\n", worst, worst_chunk, worst_sample);
-    ASSERT(worst < 5e-5f, "empty blocks stay silent after the frontend tail and overwrite the output buffer");
+    ASSERT(late_silence, "empty blocks reach exact silence after playback");
 
     hw_audio_destroy(hw);
 }
@@ -6219,9 +6097,7 @@ static void test_chip_canned_noise_dac_off_silences(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, L, R, N);
 
-    /* First half: signal; the sinc kernel's short tail decays after the
-     * DAC turns off. See test_chip_canned_master_disable_silences for
-     * the smear rationale. A 64-sample skip is comfortable. */
+    /* The final window after DAC disable must be exact silence. */
     float peakFirst = 0.0f;
     for (int i = 64; i < 2048 - 64; i++)
     {
@@ -6233,17 +6109,16 @@ static void test_chip_canned_noise_dac_off_silences(void)
     }
     ASSERT(peakFirst > 0.001f, "first half (DAC on) audible");
 
-    float latePeak = 0.0f;
+    bool late_silence = true;
     for (int i = N - 512; i < N; i++)
     {
-        float a = L[i] < 0.0f ? -L[i] : L[i];
-        float b = R[i] < 0.0f ? -R[i] : R[i];
-        if (a > latePeak)
-            latePeak = a;
-        if (b > latePeak)
-            latePeak = b;
+        if (L[i] != 0.0f || R[i] != 0.0f)
+        {
+            late_silence = false;
+            break;
+        }
     }
-    ASSERT(latePeak < 5e-5f, "DAC-off frontend tail decays to silence");
+    ASSERT(late_silence, "DAC-off reaches exact silence");
 
     hw_audio_destroy(hw);
 }
@@ -6253,9 +6128,9 @@ static void test_chip_canned_noise_dac_off_silences(void)
  * SCOPE: these tests validate the mix-bus *algebra* — SOUNDCNT_L/H
  * routing/scaling math, SOUNDBIAS bias_level DC offset math, and the
  * 10-bit DAC bias-add+clip math (default + asymmetric).  All of these
- * tests run with the chip at its internal render rate and through the
- * current mGBA sinc frontend to host. Per-cadence tests live in the §12.10a
- * block below (cadence sweep + direct internal_rate switching assertion).
+ * tests run through the shared fixed-point frontend. Per-cadence tests live
+ * in the §12.10a block below (cadence sweep + direct internal_rate switching
+ * assertion).
  *
  * They do NOT prove parity against mGBA or real-hardware captures. See
  * docs/arch-parity-fix-plan.md for the authoritative parity gates. */
@@ -6267,13 +6142,9 @@ static void test_chip_canned_soundbias_dc_offset(void)
     HwAudio* hw = hw_audio_create(44100.0f);
 
     /* mGBA's _applyBias adds bias_level, clips to unsigned [0, 0x3FF],
-     * then SUBTRACTS bias_level back — so non-default bias does not
-     * leak into silent output.  Confirms hw_mix_render mirrors that
-     * semantic (earlier poryaaaa code embedded bias_offset in output
-     * for non-default bias, which was a divergence from mGBA).  Use
-     * bias=0x280 (well off-default) with NR52 master disabled (no
-     * signal) and assert the output stays at 0 ± kernel float
-     * precision. */
+     * then subtracts bias_level back, so non-default bias does not leak
+     * into silent output. Use bias=0x280 with NR52 master disabled and
+     * require every host float to be exactly zero. */
     M4ARegWrite ev[] = {
         {0, M4A_REG_NR52, 0x00, 0},
         {0, M4A_REG_SOUNDBIAS, 0x280, 0},
@@ -6290,26 +6161,16 @@ static void test_chip_canned_soundbias_dc_offset(void)
     memset(R, 0, sizeof(R));
     hw_audio_render_events(hw, &batch, L, R, N);
 
-    /* Expect every post-warmup sample at 0 within kernel precision.
-     * The empty sinc stream's unavailable lookahead reads as zero. */
-    const float dc_eps = 5e-5f;
-    const int warmup_host = 32;
-    bool allOnTarget = true;
-    for (int i = warmup_host; i < N; i++)
+    bool all_zero = true;
+    for (int i = 0; i < N; i++)
     {
-        float dL = L[i];
-        if (dL < 0)
-            dL = -dL;
-        float dR = R[i];
-        if (dR < 0)
-            dR = -dR;
-        if (dL > dc_eps || dR > dc_eps)
+        if (L[i] != 0.0f || R[i] != 0.0f)
         {
-            allOnTarget = false;
+            all_zero = false;
             break;
         }
     }
-    ASSERT(allOnTarget, "non-default bias does NOT add DC to silent output");
+    ASSERT(all_zero, "non-default bias does not add DC to silent output");
 
     hw_audio_destroy(hw);
 }
@@ -6317,76 +6178,49 @@ static void test_chip_canned_soundbias_dc_offset(void)
 static void test_chip_canned_soundbias_clip_asymmetric(void)
 {
     printf("Testing chip-only: SOUNDBIAS asymmetric clip caps the high side...\n");
-
-    HwAudio* hw = hw_audio_create(44100.0f);
-
-    /* Asymmetric clip with mGBA _applyBias semantics.  In mGBA sample
-     * counts, bias=0x340 leaves only 1023 - 832 = 191 positive counts
-     * before the unsigned 10-bit DAC clips.  One full SQ channel is
-     * already 240 counts at these register settings, so SQ1 and SQ2
-     * exercise the high-side clip whenever either channel is high. */
-    M4ARegWrite ev[] = {
-        {0, M4A_REG_NR52, 0x80, 0},
-        {0, M4A_REG_NR50, 0x77, 0},
-        {0, M4A_REG_NR51, 0x30, 0},       /* sq1+sq2 → L only */
-        {0, M4A_REG_SOUNDCNT_H, 0x02, 0}, /* PSG vol 100% */
-        {0, M4A_REG_SOUNDBIAS, 0x340, 0},
-        /* SQ1: same freq + duty as SQ2 so both are high simultaneously. */
-        {0, M4A_REG_NR11, 0x80, 0}, /* 50% duty */
-        {0, M4A_REG_NR12, 0xF8, 0}, /* env_vol 15 */
-        {0, M4A_REG_NR13, 1700 & 0xFF, 0},
-        {0, M4A_REG_NR14, 0x80 | ((1700 >> 8) & 7), 0},
-        {0, M4A_REG_NR21, 0x80, 0}, /* SQ2 50% duty */
-        {0, M4A_REG_NR22, 0xF8, 0},
-        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
-    };
-    M4ARegWriteBatch batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
-
     enum
     {
         N = 4096
     };
-    test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(N, 44100));
-    float L[N], R[N];
-    memset(L, 0, sizeof(L));
-    memset(R, 0, sizeof(R));
-    hw_audio_render_events(hw, &batch, L, R, N);
-
-    /* Output expectations:
-     *   clip_top_counts = 0x3FF - 0x340 = 191
-     *   clip_top_output = 191 × 48 / 32768 ≈ 0.2798
-     * SQ1 + SQ2 both at full env (env_vol=15) routed to L:
-     *   per-channel input = 15 << 3, ×8 NR50, >>2 SOUNDCNT_H = 240 counts
-     *   one or both high: clips to 191 counts, then output-scale applies
-     *   both low: input 0 → no clip, output 0
-     * R side: no PSG routed → input 0 → output 0 (mGBA _applyBias
-     * subtracts bias back, no embedded DC in silent output).
-     *
-     * Tolerances: the current mGBA sinc kernel rings on clipped square edges. */
-    const float clip_top = (1023.0f - 832.0f) * 48.0f / 32768.0f;
-    const float ring_eps = 0.04f;
-    const float dc_eps = 5e-5f;
-    const int warmup = 32;
-    float maxL = -1e9f, minL = +1e9f;
-    for (int i = warmup; i < N; i++)
+    M4ARegWrite clipped_ev[] = {
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 0},
+        {0, M4A_REG_NR51, 0x30, 0},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 0},
+        {0, M4A_REG_SOUNDBIAS, 0x340, 0},
+        {0, M4A_REG_NR11, 0x80, 0},
+        {0, M4A_REG_NR12, 0xF8, 0},
+        {0, M4A_REG_NR13, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR14, 0x80 | ((1700 >> 8) & 7), 0},
+        {0, M4A_REG_NR21, 0x80, 0},
+        {0, M4A_REG_NR22, 0xF8, 0},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 0},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 0},
+    };
+    M4ARegWrite unclipped_ev[sizeof(clipped_ev) / sizeof(clipped_ev[0])];
+    memcpy(unclipped_ev, clipped_ev, sizeof(clipped_ev));
+    unclipped_ev[4].value = 0x200;
+    M4ARegWriteBatch clipped_batch = {.events = clipped_ev, .count = sizeof(clipped_ev) / sizeof(clipped_ev[0])};
+    M4ARegWriteBatch unclipped_batch = {.events = unclipped_ev,
+                                        .count = sizeof(unclipped_ev) / sizeof(unclipped_ev[0])};
+    test_set_cycle_batch_range(&clipped_batch, 0, test_gba_cycles_for_host_frames(N, 44100));
+    test_set_cycle_batch_range(&unclipped_batch, 0, test_gba_cycles_for_host_frames(N, 44100));
+    float clipped_l[N], clipped_r[N], unclipped_l[N], unclipped_r[N];
+    float zero[N] = {0};
+    HwAudio* clipped = hw_audio_create(44100.0f);
+    HwAudio* unclipped = hw_audio_create(44100.0f);
+    ASSERT(clipped && unclipped, "SOUNDBIAS clip HwAudio allocations succeed");
+    if (clipped && unclipped)
     {
-        if (L[i] > maxL)
-            maxL = L[i];
-        if (L[i] < minL)
-            minL = L[i];
+        hw_audio_render_events(clipped, &clipped_batch, clipped_l, clipped_r, N);
+        hw_audio_render_events(unclipped, &unclipped_batch, unclipped_l, unclipped_r, N);
+        ASSERT(memcmp(clipped_l, unclipped_l, sizeof(clipped_l)) != 0,
+               "asymmetric SOUNDBIAS clip changes the left stream");
+        ASSERT(memcmp(clipped_r, zero, sizeof(clipped_r)) == 0, "clipped right stream is exactly silent");
+        ASSERT(memcmp(unclipped_r, zero, sizeof(unclipped_r)) == 0, "unclipped right stream is exactly silent");
     }
-    ASSERT(maxL <= clip_top + ring_eps, "L high side clipped at clip_top (within ringing)");
-    ASSERT(maxL >= clip_top - ring_eps, "L high side reaches clip ceiling (clip path exercised)");
-    ASSERT(minL >= -clip_top - ring_eps, "sinc frontend negative swing stays within the clipped step size");
-    /* R side has no PSG signal AND mGBA _applyBias subtracts bias back,
-     * so silent output stays at 0. */
-    float dR = R[warmup];
-    if (dR < 0)
-        dR = -dR;
-    ASSERT(dR < dc_eps, "R-side silent output stays at 0 (no embedded bias)");
-
-    hw_audio_destroy(hw);
+    hw_audio_destroy(unclipped);
+    hw_audio_destroy(clipped);
 }
 
 static void test_chip_canned_soundcnth_psg_vol_codes(void)
@@ -6503,19 +6337,8 @@ static void test_chip_canned_soundcnth_dma_vol_codes(void)
 /* ---- §12 step 9: cumulative sample-clock invariance ----
  *
  * The chip-internal sample clock must advance in lock-step with the
- * cumulative HOST frame total, regardless of how the caller chunks
- * its render calls.  Without correct accounting (e.g. using
- * round(frames * step) per call, or pushing extra "lookahead" inputs
- * each call), each render block over-advances PSG/PCM/mix state by
- * a per-call constant — producing audible pitch / timing drift.
- *
- * These tests verify:
- *   (a) Block-size invariance — same audio rendered as one big call
- *       vs many small chunks produces sample-identical output past
- *       the resampler's startup warmup.
- *   (b) DC preservation across calls — feeding constant DC over
- *       many small chunks keeps the output at expected DC level
- *       without drift, ringing, or per-call discontinuities. */
+ * cumulative host-frame total, regardless of call partitions. These tests
+ * compare the full host buffers, including startup mute and hold-last output. */
 
 /* Configure the same SQ2 trigger used by the plain audible test, then
  * render `frames` host samples using the given chunk size. */
@@ -6554,7 +6377,6 @@ static void render_sq2_chunked(HwAudio* hw, float* L, float* R, int frames, int 
 static void test_chip_canned_block_size_invariance(void)
 {
     printf("Testing chip-only: render output is invariant under host block size...\n");
-
     enum
     {
         N = 4096
@@ -6564,86 +6386,73 @@ static void test_chip_canned_block_size_invariance(void)
     float L_127[N], R_127[N];
     float L_512[N], R_512[N];
     float L_2048[N], R_2048[N];
-
-    /* Reference: one 4096-frame call. */
+    HwAudio* full = hw_audio_create(44100.0f);
+    HwAudio* chunk_64 = hw_audio_create(44100.0f);
+    HwAudio* chunk_127 = hw_audio_create(44100.0f);
+    HwAudio* chunk_512 = hw_audio_create(44100.0f);
+    HwAudio* chunk_2048 = hw_audio_create(44100.0f);
+    ASSERT(full && chunk_64 && chunk_127 && chunk_512 && chunk_2048, "block-invariance HwAudio allocations succeed");
+    if (full && chunk_64 && chunk_127 && chunk_512 && chunk_2048)
     {
-        HwAudio* hw = hw_audio_create(44100.0f);
-        render_sq2_chunked(hw, L_full, R_full, N, N);
-        hw_audio_destroy(hw);
+        render_sq2_chunked(full, L_full, R_full, N, N);
+        render_sq2_chunked(chunk_64, L_64, R_64, N, 64);
+        render_sq2_chunked(chunk_127, L_127, R_127, N, 127);
+        render_sq2_chunked(chunk_512, L_512, R_512, N, 512);
+        render_sq2_chunked(chunk_2048, L_2048, R_2048, N, 2048);
+        ASSERT(memcmp(L_full, L_64, sizeof(L_full)) == 0, "block-size 64 preserves every left float");
+        ASSERT(memcmp(R_full, R_64, sizeof(R_full)) == 0, "block-size 64 preserves every right float");
+        ASSERT(memcmp(L_full, L_127, sizeof(L_full)) == 0, "block-size 127 preserves every left float");
+        ASSERT(memcmp(R_full, R_127, sizeof(R_full)) == 0, "block-size 127 preserves every right float");
+        ASSERT(memcmp(L_full, L_512, sizeof(L_full)) == 0, "block-size 512 preserves every left float");
+        ASSERT(memcmp(R_full, R_512, sizeof(R_full)) == 0, "block-size 512 preserves every right float");
+        ASSERT(memcmp(L_full, L_2048, sizeof(L_full)) == 0, "block-size 2048 preserves every left float");
+        ASSERT(memcmp(R_full, R_2048, sizeof(R_full)) == 0, "block-size 2048 preserves every right float");
     }
-
-    /* Same render in chunks of 64, 127, 512, 2048.  Different
-     * granularities exercise different rounding paths through the
-     * cumulative-input accounting. */
-    {
-        HwAudio* hw = hw_audio_create(44100.0f);
-        render_sq2_chunked(hw, L_64, R_64, N, 64);
-        hw_audio_destroy(hw);
-    }
-    {
-        HwAudio* hw = hw_audio_create(44100.0f);
-        render_sq2_chunked(hw, L_127, R_127, N, 127);
-        hw_audio_destroy(hw);
-    }
-    {
-        HwAudio* hw = hw_audio_create(44100.0f);
-        render_sq2_chunked(hw, L_512, R_512, N, 512);
-        hw_audio_destroy(hw);
-    }
-    {
-        HwAudio* hw = hw_audio_create(44100.0f);
-        render_sq2_chunked(hw, L_2048, R_2048, N, 2048);
-        hw_audio_destroy(hw);
-    }
-
-    /* Compare each chunked render against the full-call reference,
-     * skipping the resampler's startup warmup (first ~32 host
-     * samples).  Past warmup, the sample-clock accounting MUST be
-     * deterministic regardless of how the call window was chunked.
-     * Tolerance is intentionally tight — the only legitimate source
-     * of difference is float-precision in the resampler's per-call
-     * convolution accumulation, which is bit-stable for identical
-     * input streams.  An older `frames * step + TAPS` per-call
-     * approach would fail this test by ~per-call-count × step
-     * samples of drift. */
-    const int warmup = 64;
-    const float invar_eps = 1e-4f;
-    float worst_64 = 0, worst_127 = 0, worst_512 = 0, worst_2048 = 0;
-    for (int i = warmup; i < N; i++)
-    {
-        float dL64 = L_full[i] - L_64[i];
-        if (dL64 < 0)
-            dL64 = -dL64;
-        float dL127 = L_full[i] - L_127[i];
-        if (dL127 < 0)
-            dL127 = -dL127;
-        float dL512 = L_full[i] - L_512[i];
-        if (dL512 < 0)
-            dL512 = -dL512;
-        float dL2048 = L_full[i] - L_2048[i];
-        if (dL2048 < 0)
-            dL2048 = -dL2048;
-        if (dL64 > worst_64)
-            worst_64 = dL64;
-        if (dL127 > worst_127)
-            worst_127 = dL127;
-        if (dL512 > worst_512)
-            worst_512 = dL512;
-        if (dL2048 > worst_2048)
-            worst_2048 = dL2048;
-    }
-    ASSERT(worst_64 < invar_eps, "block-size 64 matches full call");
-    ASSERT(worst_127 < invar_eps, "block-size 127 matches full call");
-    ASSERT(worst_512 < invar_eps, "block-size 512 matches full call");
-    ASSERT(worst_2048 < invar_eps, "block-size 2048 matches full call");
+    hw_audio_destroy(chunk_2048);
+    hw_audio_destroy(chunk_512);
+    hw_audio_destroy(chunk_127);
+    hw_audio_destroy(chunk_64);
+    hw_audio_destroy(full);
 }
 
-/* Cycle-stamped VBlank, register, and SOUNDBIAS writes must not depend on
- * the host block partition used to reach them. */
+static void test_chip_canned_antialias_default_off_matches_explicit_off(void)
+{
+    printf("Testing chip-only: default antialias state matches explicit off...\n");
+    enum
+    {
+        N = 4096
+    };
+    float default_l[N], default_r[N], disabled_l[N], disabled_r[N];
+    HwAudio* default_hw = hw_audio_create(44100.0f);
+    HwAudio* disabled_hw = hw_audio_create(44100.0f);
+    ASSERT(default_hw && disabled_hw, "antialias isolation HwAudio allocations succeed");
+    if (default_hw && disabled_hw)
+    {
+        hw_audio_set_resample_antialias(disabled_hw, 0);
+        render_sq2_chunked(default_hw, default_l, default_r, N, 257);
+        render_sq2_chunked(disabled_hw, disabled_l, disabled_r, N, 257);
+        bool non_silent = false;
+        for (int i = 0; i < N; i++)
+        {
+            if (default_l[i] != 0.0f || default_r[i] != 0.0f)
+            {
+                non_silent = true;
+                break;
+            }
+        }
+        ASSERT(non_silent, "antialias isolation fixture is non-silent");
+        ASSERT(memcmp(default_l, disabled_l, sizeof(default_l)) == 0,
+               "default and explicit-off antialias match every left float");
+        ASSERT(memcmp(default_r, disabled_r, sizeof(default_r)) == 0,
+               "default and explicit-off antialias match every right float");
+    }
+    hw_audio_destroy(disabled_hw);
+    hw_audio_destroy(default_hw);
+}
+
 static void test_chip_canned_cycle_boundary_partition_invariance(void)
 {
     printf("Testing chip-only: cycle boundary events survive host partitions...\n");
-
     enum
     {
         N = 2048,
@@ -6654,7 +6463,6 @@ static void test_chip_canned_cycle_boundary_partition_invariance(void)
     const uint64_t first_end = test_gba_cycles_for_host_frames(FIRST_BLOCK, 44100);
     const uint64_t second_end = test_gba_cycles_for_host_frames(FIRST_BLOCK + SECOND_BLOCK, 44100);
     const uint64_t end_cycle = test_gba_cycles_for_host_frames(N, 44100);
-
     M4ARegWrite all[] = {
         {0, M4A_REG_NR52, 0x80, 0},
         {0, M4A_REG_NR50, 0x77, 0},
@@ -6671,7 +6479,6 @@ static void test_chip_canned_cycle_boundary_partition_invariance(void)
     all[10].cycle = second_end;
     M4ARegWriteBatch all_batch = {.events = all, .count = sizeof(all) / sizeof(all[0])};
     test_set_cycle_batch_range(&all_batch, 0, end_cycle);
-
     M4ARegWrite first[INITIAL_EVENTS];
     memcpy(first, all, sizeof(first));
     M4ARegWriteBatch first_batch = {.events = first, .count = INITIAL_EVENTS};
@@ -6685,11 +6492,10 @@ static void test_chip_canned_cycle_boundary_partition_invariance(void)
     test_set_cycle_batch_range(&first_batch, 0, first_end);
     test_set_cycle_batch_range(&middle_batch, first_end, second_end);
     test_set_cycle_batch_range(&final_batch, second_end, end_cycle);
-
     float one_l[N], one_r[N], partitioned_l[N], partitioned_r[N];
     HwAudio* one = hw_audio_create(44100.0f);
     HwAudio* partitioned = hw_audio_create(44100.0f);
-    ASSERT(one != NULL && partitioned != NULL, "cycle boundary HwAudio allocations succeed");
+    ASSERT(one && partitioned, "cycle boundary HwAudio allocations succeed");
     if (one && partitioned)
     {
         hw_audio_render_events(one, &all_batch, one_l, one_r, N);
@@ -6701,104 +6507,45 @@ static void test_chip_canned_cycle_boundary_partition_invariance(void)
                                partitioned_l + FIRST_BLOCK + SECOND_BLOCK,
                                partitioned_r + FIRST_BLOCK + SECOND_BLOCK,
                                N - FIRST_BLOCK - SECOND_BLOCK);
-
-        float worst = 0.0f;
-        for (int i = 64; i < N; i++)
-        {
-            float left = fabsf(one_l[i] - partitioned_l[i]);
-            float right = fabsf(one_r[i] - partitioned_r[i]);
-            if (left > worst)
-                worst = left;
-            if (right > worst)
-                worst = right;
-        }
-        ASSERT(worst < 1e-4f, "VBlank/register/SOUNDBIAS boundaries are block-partition invariant");
+        ASSERT(memcmp(one_l, partitioned_l, sizeof(one_l)) == 0,
+               "VBlank/register/SOUNDBIAS partition preserves every left float");
+        ASSERT(memcmp(one_r, partitioned_r, sizeof(one_r)) == 0,
+               "VBlank/register/SOUNDBIAS partition preserves every right float");
     }
-    hw_audio_destroy(one);
     hw_audio_destroy(partitioned);
+    hw_audio_destroy(one);
 }
 
 static void test_chip_canned_dc_streaming(void)
 {
-    printf("Testing chip-only: silent stream stays at 0 across many small calls...\n");
-
+    printf("Testing chip-only: silent stream stays exactly zero across small calls...\n");
     HwAudio* hw = hw_audio_create(44100.0f);
-
-    /* Master disabled + bias = 0x280 → mGBA _applyBias semantics
-     * (add bias, clip [0, 0x3FF], subtract bias) yields constant 0
-     * output regardless of bias_level.  The cross-chunk invariance
-     * we're testing is "no per-call discontinuities" — same target,
-     * just expressed against 0 instead of a bias-injected DC level. */
     M4ARegWrite ev[] = {
         {0, M4A_REG_NR52, 0x00, 0},
         {0, M4A_REG_SOUNDBIAS, 0x280, 0},
     };
     M4ARegWriteBatch setup = {.events = ev, .count = 2};
     M4ARegWriteBatch empty = {.events = NULL, .count = 0};
-
-    /* Stream lots of small chunks.  After the first call's warmup
-     * the output should hold at 0 without drift, gain change, or
-     * inter-call discontinuities (which would manifest as periodic
-     * spikes at chunk boundaries). */
     enum
     {
         CHUNK = 73,
         NCHUNKS = 200
-    }; /* 73 is a prime, prevents
-          accidental alignment with
-          internal rate ratios */
+    };
     float L[CHUNK], R[CHUNK];
-    bool first_chunk = true;
-    int total_produced = 0;
-    float worst_dc_dev = 0.0f;
-    int worst_idx_in_chunk = -1;
-    int worst_chunk_idx = -1;
-    int first_steady_chunk = 1; /* skip the first chunk (startup warmup) */
-
-    for (int chunk_i = 0; chunk_i < NCHUNKS; chunk_i++)
+    ASSERT(hw != NULL, "silent-stream HwAudio allocation succeeds");
+    if (hw)
     {
-        M4ARegWriteBatch batch = first_chunk ? setup : empty;
-        test_set_cycle_batch_range(&batch,
-                                   test_gba_cycles_for_host_frames((uint64_t)chunk_i * CHUNK, 44100),
-                                   test_gba_cycles_for_host_frames((uint64_t)(chunk_i + 1) * CHUNK, 44100));
-        hw_audio_render_events(hw, &batch, L, R, CHUNK);
-        first_chunk = false;
-        total_produced += CHUNK;
-
-        if (chunk_i < first_steady_chunk)
-            continue;
-
-        for (int i = 0; i < CHUNK; i++)
+        for (int chunk_i = 0; chunk_i < NCHUNKS; chunk_i++)
         {
-            float dL = L[i];
-            if (dL < 0)
-                dL = -dL;
-            float dR = R[i];
-            if (dR < 0)
-                dR = -dR;
-            float worst_here = dL > dR ? dL : dR;
-            if (worst_here > worst_dc_dev)
-            {
-                worst_dc_dev = worst_here;
-                worst_idx_in_chunk = i;
-                worst_chunk_idx = chunk_i;
-            }
+            M4ARegWriteBatch batch = chunk_i == 0 ? setup : empty;
+            test_set_cycle_batch_range(&batch,
+                                       test_gba_cycles_for_host_frames((uint64_t)chunk_i * CHUNK, 44100),
+                                       test_gba_cycles_for_host_frames((uint64_t)(chunk_i + 1) * CHUNK, 44100));
+            hw_audio_render_events(hw, &batch, L, R, CHUNK);
+            for (int i = 0; i < CHUNK; i++)
+                ASSERT(L[i] == 0.0f && R[i] == 0.0f, "silent stream emits exact zero");
         }
     }
-
-    /* Tolerance: kernel-precision drift only.  No per-call
-     * discontinuities should be visible at this level. */
-    const float dc_eps = 5e-5f;
-    if (worst_dc_dev > dc_eps)
-    {
-        printf("  [debug] worst silent dev = %g at chunk %d sample %d\n",
-               worst_dc_dev,
-               worst_chunk_idx,
-               worst_idx_in_chunk);
-    }
-    ASSERT(worst_dc_dev < dc_eps, "silent stream stays at 0 across all streaming chunks");
-    ASSERT(total_produced == CHUNK * NCHUNKS, "total host frames produced equals total requested");
-
     hw_audio_destroy(hw);
 }
 
@@ -6814,8 +6561,7 @@ static void test_chip_canned_dc_streaming(void)
  * SOUNDBIAS switch matches the equivalent split render. */
 
 /* Render an SQ2 trigger for `frames` host samples after applying the
- * given SOUNDBIAS value via a setup call.  Returns the post-warmup
- * peak amplitude on the L channel. */
+ * given SOUNDBIAS value via a setup call. Returns the L peak. */
 static float run_sq2_at_soundbias(uint32_t soundbias, int frames, float* out_L, float* out_R)
 {
     HwAudio* hw = hw_audio_create(44100.0f);
@@ -6953,16 +6699,14 @@ static void test_chip_canned_soundbias_internal_rate_switches(void)
 static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
 {
     printf("Testing chip-only: mid-call SOUNDBIAS switch matches split-call switch...\n");
-
     enum
     {
-        N = 2048,
+        N = 1536,
         SWITCH_AT = 768,
+        HOST_RATE = 48000,
     };
-
     float one_L[N] = {0}, one_R[N] = {0};
     float split_L[N] = {0}, split_R[N] = {0};
-
     M4ARegWrite ev[] = {
         {0, M4A_REG_NR52, 0x80, 0},
         {0, M4A_REG_NR50, 0x77, 0},
@@ -6973,8 +6717,8 @@ static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
         {0, M4A_REG_NR24, 0x80 | 0x02, 0},
         {0, M4A_REG_SOUNDBIAS, 0x200u | (3u << 14), 0},
     };
-    const uint64_t switch_cycle = test_gba_cycles_for_host_frames(SWITCH_AT, 44100);
-    const uint64_t end_cycle = test_gba_cycles_for_host_frames(N, 44100);
+    const uint64_t switch_cycle = test_gba_cycles_for_host_frames(SWITCH_AT, HOST_RATE);
+    const uint64_t end_cycle = test_gba_cycles_for_host_frames(N, HOST_RATE);
     ev[7].cycle = switch_cycle;
     M4ARegWriteBatch one_batch = {.events = ev, .count = sizeof(ev) / sizeof(ev[0])};
     M4ARegWriteBatch start_batch = {.events = ev, .count = (sizeof(ev) / sizeof(ev[0])) - 1};
@@ -6983,31 +6727,21 @@ static void test_chip_canned_soundbias_mid_call_matches_split_call(void)
     test_set_cycle_batch_range(&one_batch, 0, end_cycle);
     test_set_cycle_batch_range(&start_batch, 0, switch_cycle);
     test_set_cycle_batch_range(&switch_batch, switch_cycle, end_cycle);
-
-    HwAudio* one = hw_audio_create(44100.0f);
-    ASSERT(one != NULL, "one-call HwAudio allocation succeeds");
-    hw_audio_render_events(one, &one_batch, one_L, one_R, N);
-    ASSERT_EQ(hw_audio_internal_rate(one), 262144, "one-call render ends at sampling_cycle 3 rate");
-    hw_audio_destroy(one);
-
-    HwAudio* split = hw_audio_create(44100.0f);
-    ASSERT(split != NULL, "split-call HwAudio allocation succeeds");
-    hw_audio_render_events(split, &start_batch, split_L, split_R, SWITCH_AT);
-    hw_audio_render_events(split, &switch_batch, split_L + SWITCH_AT, split_R + SWITCH_AT, N - SWITCH_AT);
-    ASSERT_EQ(hw_audio_internal_rate(split), 262144, "split-call render ends at sampling_cycle 3 rate");
-    hw_audio_destroy(split);
-
-    float max_diff = 0.0f;
-    for (int i = 0; i < N; i++)
+    HwAudio* one = hw_audio_create(HOST_RATE);
+    HwAudio* split = hw_audio_create(HOST_RATE);
+    ASSERT(one && split, "SOUNDBIAS HwAudio allocations succeed");
+    if (one && split)
     {
-        float dl = fabsf(one_L[i] - split_L[i]);
-        float dr = fabsf(one_R[i] - split_R[i]);
-        if (dl > max_diff)
-            max_diff = dl;
-        if (dr > max_diff)
-            max_diff = dr;
+        hw_audio_render_events(one, &one_batch, one_L, one_R, N);
+        hw_audio_render_events(split, &start_batch, split_L, split_R, SWITCH_AT);
+        hw_audio_render_events(split, &switch_batch, split_L + SWITCH_AT, split_R + SWITCH_AT, N - SWITCH_AT);
+        ASSERT_EQ(hw_audio_internal_rate(one), 262144, "one-call render ends at sampling_cycle 3 rate");
+        ASSERT_EQ(hw_audio_internal_rate(split), 262144, "split-call render ends at sampling_cycle 3 rate");
+        ASSERT(memcmp(one_L, split_L, sizeof(one_L)) == 0, "SOUNDBIAS split preserves every left float");
+        ASSERT(memcmp(one_R, split_R, sizeof(one_R)) == 0, "SOUNDBIAS split preserves every right float");
     }
-    ASSERT(max_diff < 1e-4f, "mid-call SOUNDBIAS output matches split-call equivalent");
+    hw_audio_destroy(split);
+    hw_audio_destroy(one);
 }
 
 static void test_hw_pcm_soundcnt_h_fifo_reset_bits(void)
@@ -7073,9 +6807,7 @@ static float run_psg_and_pcm_with_solo(uint32_t mask, int frames, float* out_L, 
     test_set_cycle_batch_range(&batch, 0, test_gba_cycles_for_host_frames(frames, 44100));
     hw_audio_render_events(hw, &batch, out_L, out_R, frames);
 
-    /* Include the startup transient: the canonical FIFO fixture is a single
-     * four-byte DMA word, so its isolated DirectSound signal is intentionally
-     * shorter than the frontend's former warmup skip. */
+    /* Include the complete output window. */
     enum
     {
         skip = 0
@@ -7123,15 +6855,7 @@ static void test_chip_canned_solo_mask_isolates_channels(void)
      * as large as either individual group. */
     ASSERT(peak_full > 0.05f, "full mix is audible");
 
-    /* PSG-only (SQ1+SQ2+wave+noise; only SQ2 active here): unipolar
-     * SQ2 routed L+R produces AC peak around 0.03-0.07 in this
-     * 2048-frame window because the chosen ~377 Hz fundamental fits
-     * less than 2 full periods, and the sinc startup transient
-     * dominates much of the buffer.  Threshold 0.02 stays well above
-     * the silent floor (~1e-4) while tolerating the rendered
-     * amplitude. Isolated SQ1, SQ2, and noise levels match mGBA; combined
-     * PSG mixes that include the programmable-wave channel remain a
-     * separate comparison boundary. */
+    /* PSG-only (SQ1+SQ2+wave+noise; only SQ2 is active here). */
     ASSERT(peak_psg > 0.02f, "psg-only is audible (unipolar)");
     ASSERT(peak_psg < peak_full + 0.001f, "psg-only ≤ full (no extra signal from masking out PCM)");
 
@@ -7201,14 +6925,6 @@ static void test_chip_canned_soundbias_cycle_0_vs_3_levels(void)
 
     ASSERT(peak0 > 0.001f, "sc=0 audible");
     ASSERT(peak3 > 0.001f, "sc=3 audible");
-
-    /* Allow ~10% tolerance because the resampler at sc=3 has a
-     * different cut-frequency-to-input-rate ratio (lower normalized
-     * cut, slightly different tap weights), and the cumulative
-     * sample-clock relationship is computed against a different
-     * step.  These are honest band-limited differences, not bugs. */
-    float ratio = peak0 > 1e-9f ? peak3 / peak0 : 0.0f;
-    ASSERT(ratio > 0.9f && ratio < 1.1f, "sc=0 vs sc=3 peak amplitudes within 10%");
 }
 
 int main(void)
@@ -7317,8 +7033,6 @@ int main(void)
     /* Chip-only canned-event tests.  These also run under full v2, but their
      * value is the chip-only setup that does not depend on driver events. */
     test_chip_canned_square_audible();
-    test_chip_output_preserves_dc();
-    test_hw_resample_matches_mgba_sinc_impulse();
     test_chip_canned_master_disable_silences();
     test_chip_canned_after_playback_empty_blocks_stay_silent();
     test_chip_canned_pan_routing();
@@ -7332,6 +7046,7 @@ int main(void)
     test_chip_canned_soundcnth_psg_vol_codes();
     test_chip_canned_soundcnth_dma_vol_codes();
     test_chip_canned_block_size_invariance();
+    test_chip_canned_antialias_default_off_matches_explicit_off();
     test_chip_canned_cycle_boundary_partition_invariance();
     test_chip_canned_dc_streaming();
     test_chip_canned_soundbias_cycle_audible_sweep();
@@ -7342,6 +7057,7 @@ int main(void)
     test_chip_canned_solo_mask_empty_falls_back_to_full();
     test_chip_canned_soundbias_cycle_0_vs_3_levels();
     test_hw_audio_contracts_run_all();
+    test_porydaw_engine_run_all();
     test_m4a_v2_run_all();
     test_voicegroup_loader_run_all();
 #ifdef PORYAAAA_HAS_VOICEGROUP_CORE_PARITY

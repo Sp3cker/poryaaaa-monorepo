@@ -725,6 +725,8 @@ endif()
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
     test/test_m4a_v2.c
+    test/test_porydaw_engine.c
+    plugin/m4a_engine.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_recorder_core.cpp
