@@ -9,25 +9,28 @@
 #include "hw_resample.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Inner chunk size for the internal-rate render loop.  Each segment of
- * the host-rate render is broken into chunks of this many internal
- * samples; PSG/PCM/mix produce into the per-channel scratch buffers,
- * the resampler then drains to host.  Bounded to avoid bloating the
- * HwAudio struct — at HW_AUDIO_INTERNAL_CHUNK=1024 the six per-channel
- * scratch buffers add up to 24 KB. */
+/* Inner chunk size for the native render and fixed PCM16 frontend drain.
+ * It bounds HwAudio's preallocated scratch storage; no render path allocates. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
+#define HW_AUDIO_DEFAULT_FPS_TARGET 59.72750056960583f
+#define HW_AUDIO_DEFAULT_BUFFERS 1536u
 
 struct HwAudio
 {
-    float host_rate;
+    uint32_t host_rate_hz;
+    /* SOUNDBIAS-derived native DAC rate, retained across timing updates. */
     int internal_rate;
+    /* Mirrors M4ADriver's numerator remainder so host deadlines retain
+     * their absolute cycle phase across render-call partitions. */
+    uint32_t host_cycle_remainder;
     HwPsgSynth psg;      /* sq1, sq2, wave, noise — render-rate synth */
     HwPcm pcm;           /* canonical FIFO A/B timer-held-byte model */
     HwMixBus mix;        /* SOUNDCNT_L/H + SOUNDBIAS bias/clip stage */
-    HwResample resample; /* DAC cadence -> host rate through current mGBA's sinc frontend */
+    HwResample resample; /* exact mGBA 0.10.5 native PCM16 frontend */
     float last_host_l;
     float last_host_r;
     bool have_frontend_sample;
@@ -57,8 +60,8 @@ struct HwAudio
     bool trace_reset_frame_pending;
 #endif
 
-    /* Native channel values stay integral through the GBA DAC. Only the
-     * final PCM16 stereo pair is converted for the host resampler. */
+    /* Native channel values stay integral through the GBA DAC.  Ready
+     * frontend pairs wait in a fixed FIFO until their host deadline. */
     uint8_t scratch_sq1[HW_AUDIO_INTERNAL_CHUNK];
     uint8_t scratch_sq2[HW_AUDIO_INTERNAL_CHUNK];
     uint8_t scratch_wave[HW_AUDIO_INTERNAL_CHUNK];
@@ -67,67 +70,122 @@ struct HwAudio
     int8_t scratch_dma_b[HW_AUDIO_INTERNAL_CHUNK];
     int16_t native_l[HW_AUDIO_INTERNAL_CHUNK];
     int16_t native_r[HW_AUDIO_INTERNAL_CHUNK];
+    int16_t frontend_queue_l[HW_AUDIO_DEFAULT_BUFFERS];
+    int16_t frontend_queue_r[HW_AUDIO_DEFAULT_BUFFERS];
+    uint32_t frontend_queue_head;
+    uint32_t frontend_queue_count;
 };
 
-/* mGBA starts empty: the sinc's negative source indices are lookup-zero,
- * while its eight-frame high-water mark stalls output until frame nine. */
-static void reset_frontend(HwAudio* hw)
+static bool host_rate_hz_from_float(float hz, uint32_t* rate_hz)
 {
-    hw_resample_init(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    if (!rate_hz || !(hz > 0.0f) || hz >= (float)UINT32_MAX)
+        return false;
+    const uint32_t exact_rate = (uint32_t)hz;
+    if (exact_rate == 0 || hz != (float)exact_rate)
+        return false;
+    *rate_hz = exact_rate;
+    return true;
+}
+
+static void clear_host_adaptation(HwAudio* hw)
+{
     hw->last_host_l = 0.0f;
     hw->last_host_r = 0.0f;
     hw->have_frontend_sample = false;
+    hw->frontend_queue_head = 0;
+    hw->frontend_queue_count = 0;
 }
 
-/* Drain the frontend while retaining its final stereo frame. Most callers
- * provide both output buffers, so that path remains one resampler call.
- * A missing channel drains one frame at a time through a local sink. */
-static int
-drain_frontend(HwAudio* hw, const int16_t* in_l, const int16_t* in_r, int in_n, float* out_l, float* out_r, int max_out)
+static bool init_frontend(HwAudio* hw)
 {
-    if (max_out <= 0)
-    {
-        float sample_l;
-        float sample_r;
-        return hw_resample_process(&hw->resample, in_l, in_r, in_n, &sample_l, &sample_r, max_out);
-    }
+    hw_resample_init(&hw->resample, hw->host_rate_hz, HW_AUDIO_DEFAULT_FPS_TARGET, HW_AUDIO_DEFAULT_BUFFERS);
+    if (hw->resample.host_rate_hz != hw->host_rate_hz || hw->resample.left.factor == 0 ||
+        hw->resample.right.factor == 0)
+        return false;
+    hw_resample_set_antialias(&hw->resample, false);
+    clear_host_adaptation(hw);
+    return true;
+}
 
-    if (out_l && out_r)
+static void reset_frontend(HwAudio* hw)
+{
+    hw_resample_reset(&hw->resample);
+    if (hw->resample.aa.enabled)
+        hw_resample_set_antialias_input_rate(&hw->resample, (uint32_t)hw->internal_rate);
+    clear_host_adaptation(hw);
+}
+
+/* Transfer every ready exact PCM16 pair after each native submission. The
+ * frontend FIFO is bounded, so interleave presentation whenever it fills
+ * instead of leaving HwResample to reach its submission backpressure limit. */
+static int drain_frontend(HwAudio* hw, float* out_l, float* out_r, int max_out);
+
+static void capture_frontend(HwAudio* hw, float* out_l, float* out_r, int* rendered_host, int target_host)
+{
+    for (;;)
     {
-        const int produced = hw_resample_process(&hw->resample, in_l, in_r, in_n, out_l, out_r, max_out);
-        if (produced > 0)
+        if (hw->frontend_queue_count == HW_AUDIO_DEFAULT_BUFFERS)
         {
-            hw->last_host_l = out_l[produced - 1];
-            hw->last_host_r = out_r[produced - 1];
+            const int remaining_host = target_host - *rendered_host;
+            if (remaining_host <= 0)
+                return;
+            *rendered_host += drain_frontend(
+                hw, out_l ? out_l + *rendered_host : NULL, out_r ? out_r + *rendered_host : NULL, remaining_host);
+            if (hw->frontend_queue_count == HW_AUDIO_DEFAULT_BUFFERS)
+                return;
+        }
+
+        const uint32_t tail = (hw->frontend_queue_head + hw->frontend_queue_count) % HW_AUDIO_DEFAULT_BUFFERS;
+        const uint32_t free_count = HW_AUDIO_DEFAULT_BUFFERS - hw->frontend_queue_count;
+        uint32_t request = HW_AUDIO_DEFAULT_BUFFERS - tail;
+        if (request > free_count)
+            request = free_count;
+
+        const uint32_t read =
+            hw_resample_read_pcm16(&hw->resample, &hw->frontend_queue_l[tail], &hw->frontend_queue_r[tail], request);
+        if (read == 0)
+            return;
+        hw->frontend_queue_count += read;
+        if (read < request)
+            return;
+    }
+}
+
+/* Present queued PCM16 at host deadlines. Capturing is deliberately separate
+ * so a short host call cannot change HwResample's read timing. */
+static int drain_frontend(HwAudio* hw, float* out_l, float* out_r, int max_out)
+{
+    int produced = 0;
+    while (produced < max_out && hw->frontend_queue_count != 0)
+    {
+        uint32_t read = (uint32_t)(max_out - produced);
+        if (read > hw->frontend_queue_count)
+            read = hw->frontend_queue_count;
+        const uint32_t contiguous = HW_AUDIO_DEFAULT_BUFFERS - hw->frontend_queue_head;
+        if (read > contiguous)
+            read = contiguous;
+
+        for (uint32_t i = 0; i < read; i++)
+        {
+            const float left = (float)hw->frontend_queue_l[hw->frontend_queue_head + i] * (1.0f / 32768.0f);
+            const float right = (float)hw->frontend_queue_r[hw->frontend_queue_head + i] * (1.0f / 32768.0f);
+            if (out_l)
+                out_l[produced + (int)i] = left;
+            if (out_r)
+                out_r[produced + (int)i] = right;
+            hw->last_host_l = left;
+            hw->last_host_r = right;
             hw->have_frontend_sample = true;
         }
-        return produced;
-    }
-
-    int produced = 0;
-    while (produced < max_out)
-    {
-        float sample_l;
-        float sample_r;
-        const int emitted = hw_resample_process(&hw->resample,
-                                                produced == 0 ? in_l : NULL,
-                                                produced == 0 ? in_r : NULL,
-                                                produced == 0 ? in_n : 0,
-                                                out_l ? out_l + produced : &sample_l,
-                                                out_r ? out_r + produced : &sample_r,
-                                                1);
-        if (emitted == 0)
-            break;
-        hw->last_host_l = out_l ? out_l[produced] : sample_l;
-        hw->last_host_r = out_r ? out_r[produced] : sample_r;
-        hw->have_frontend_sample = true;
-        produced++;
+        hw->frontend_queue_head = (hw->frontend_queue_head + read) % HW_AUDIO_DEFAULT_BUFFERS;
+        hw->frontend_queue_count -= read;
+        produced += (int)read;
     }
     return produced;
 }
 
-/* A fixed host block cannot be short. Before sinc release it remains silent;
- * afterward, a frontend shortfall repeats the last stereo frame. */
+/* A fixed host block cannot be short. Before the first frontend frame it is
+ * silent; afterward, a frontend shortfall repeats the last stereo frame. */
 static void fill_frontend_gap(HwAudio* hw, float* out_l, float* out_r, int* rendered_host, int target_host)
 {
     const float fill_l = hw->have_frontend_sample ? hw->last_host_l : 0.0f;
@@ -146,17 +204,35 @@ static void fill_frontend_gap(HwAudio* hw, float* out_l, float* out_r, int* rend
  * 32768 / 65536 / 131072 / 262144 Hz for sampling_cycle 0 / 1 / 2 / 3.
  * Used by HwFifoDrain to sample the PCM FIFO head. */
 
-/* Map an absolute cycle span to the first host frame at or after it without
- * allowing a large cycle count to overflow the fixed-rate multiplication. */
-static int host_frames_through_cycle(uint64_t cycles, uint32_t host_rate)
+/* Map a batch-relative GBA cycle to the first host frame at or after it.
+ * The source driver's pre-batch numerator remainder is part of that mapping:
+ * discarding it makes some otherwise equivalent host partitions gain a frame. */
+static int host_frames_through_cycle(uint64_t cycles, uint32_t host_rate, uint32_t start_cycle_remainder)
 {
-    uint64_t whole_seconds = cycles / PORYAAAA_GBA_CLOCK_HZ;
-    uint64_t remainder = cycles % PORYAAAA_GBA_CLOCK_HZ;
+    const uint64_t whole_seconds = cycles / PORYAAAA_GBA_CLOCK_HZ;
+    const uint64_t remainder = cycles % PORYAAAA_GBA_CLOCK_HZ;
     if (host_rate == 0 || whole_seconds > (uint64_t)INT_MAX / host_rate)
         return INT_MAX;
+
     uint64_t frames = whole_seconds * host_rate;
-    frames += (remainder * host_rate + PORYAAAA_GBA_CLOCK_HZ - 1u) / PORYAAAA_GBA_CLOCK_HZ;
-    return frames > INT_MAX ? INT_MAX : (int)frames;
+    const int64_t fractional_cycles = (int64_t)(remainder * host_rate) - (int64_t)start_cycle_remainder;
+    const int64_t fractional_frames = fractional_cycles >= 0
+                                          ? (fractional_cycles + PORYAAAA_GBA_CLOCK_HZ - 1u) / PORYAAAA_GBA_CLOCK_HZ
+                                          : fractional_cycles / PORYAAAA_GBA_CLOCK_HZ;
+    if (fractional_frames < 0)
+    {
+        const uint64_t reduction = (uint64_t)-fractional_frames;
+        return frames < reduction ? 0 : (int)(frames - reduction);
+    }
+    if (fractional_frames > INT_MAX || frames > (uint64_t)INT_MAX - (uint64_t)fractional_frames)
+        return INT_MAX;
+    return (int)(frames + (uint64_t)fractional_frames);
+}
+
+static void advance_host_cycle_phase(HwAudio* hw, int frames)
+{
+    const uint64_t scaled = (uint64_t)(uint32_t)frames * PORYAAAA_GBA_CLOCK_HZ + hw->host_cycle_remainder;
+    hw->host_cycle_remainder = (uint32_t)(scaled % hw->host_rate_hz);
 }
 static int chip_quirk_rate(uint8_t sampling_cycle)
 {
@@ -169,7 +245,8 @@ static int chip_internal_rate(uint8_t sampling_cycle)
     return chip_quirk_rate(sampling_cycle);
 }
 
-/* Apply SOUNDBIAS cadence changes to every clocked audio component. */
+/* SOUNDBIAS selects native DAC cadence. It never changes the fixed frontend
+ * output factor, which is tied to the GBA master clock. */
 static void hw_audio_sync_rates_from_mix(HwAudio* hw)
 {
     int desired_internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
@@ -178,10 +255,8 @@ static void hw_audio_sync_rates_from_mix(HwAudio* hw)
     {
         hw->internal_rate = desired_internal_rate;
         hw_psg_set_render_rate(&hw->psg, (float)hw->internal_rate);
-
-        /* mGBA changes the stream rate in place: buffered source history and
-         * the fractional frontend timestamp continue under the new step. */
-        hw_resample_set_rates(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+        if (hw->resample.aa.enabled)
+            hw_resample_set_antialias_input_rate(&hw->resample, (uint32_t)hw->internal_rate);
         hw->dac_cycle_remainder = 0;
         hw->live_sample_pending = true;
     }
@@ -189,17 +264,24 @@ static void hw_audio_sync_rates_from_mix(HwAudio* hw)
 
 HwAudio* hw_audio_create(float host_sample_rate)
 {
+    uint32_t host_rate_hz;
+    if (!host_rate_hz_from_float(host_sample_rate, &host_rate_hz))
+        return NULL;
+
     HwAudio* hw = (HwAudio*)calloc(1, sizeof(*hw));
     if (!hw)
         return NULL;
-    hw->host_rate = host_sample_rate;
+    hw->host_rate_hz = host_rate_hz;
     hw->solo_mask = HW_AUDIO_SOLO_FULL;
     hw_mix_init(&hw->mix); /* establishes m4a's sampling_cycle = 1 */
     hw->internal_rate = chip_internal_rate(hw->mix.sampling_cycle);
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
     hw_pcm_init(&hw->pcm, (uint32_t)hw->internal_rate);
-
-    reset_frontend(hw);
+    if (!init_frontend(hw))
+    {
+        free(hw);
+        return NULL;
+    }
     hw->live_sample_pending = true;
     return hw;
 }
@@ -215,6 +297,9 @@ void hw_audio_reset(HwAudio* hw)
     reset_frontend(hw);
     hw->live_cycle = 0;
     hw->dac_cycle_remainder = 0;
+    hw->host_cycle_remainder = 0;
+    /* A reset starts a new DAC timeline at cycle zero, just like creation
+     * and the trace path.  Do not inherit a consumed terminal sample. */
     hw->live_sample_pending = true;
 #if PORYAAAA_HW_AUDIO_TRACE
     hw->trace_cycle = 0;
@@ -233,8 +318,8 @@ void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
     if (destination->internal_rate != source->internal_rate)
     {
         destination->internal_rate = source->internal_rate;
-        hw_resample_set_rates(
-            &destination->resample, (double)destination->internal_rate, (double)destination->host_rate);
+        if (destination->resample.aa.enabled)
+            hw_resample_set_antialias_input_rate(&destination->resample, (uint32_t)destination->internal_rate);
     }
     hw_psg_set_render_rate(&destination->psg, source->psg.render_rate);
 
@@ -246,9 +331,32 @@ void hw_audio_sync_psg_timing(HwAudio* destination, const HwAudio* source)
     destination->psg.frame_seq_length_ticks = source->psg.frame_seq_length_ticks;
     destination->psg.frame_seq_sweep_ticks = source->psg.frame_seq_sweep_ticks;
     destination->live_cycle = source->live_cycle;
+    /* Sidecar chips begin the same host block as their source, so their
+     * deadline numerator phase must be cloned with the absolute cycle. */
+    destination->host_cycle_remainder = source->host_cycle_remainder;
     destination->dac_cycle_remainder = source->dac_cycle_remainder;
     destination->live_sample_pending = source->live_sample_pending;
     destination->psg.frame_seq_envelope_ticks = source->psg.frame_seq_envelope_ticks;
+}
+
+void hw_audio_sync_sidecar_frontend_timing(HwAudio* destination, const HwAudio* source)
+{
+    if (!destination || !source || destination == source || destination->host_rate_hz != source->host_rate_hz ||
+        destination->resample.left.factor != source->resample.left.factor ||
+        destination->resample.right.factor != source->resample.right.factor ||
+        source->resample.clock >= HW_RESAMPLE_FRAME_CLOCKS || source->frontend_queue_count > HW_AUDIO_DEFAULT_BUFFERS)
+        return;
+
+    /* A sidecar starts with its own silent native history. Copy only the
+     * clock/offset phase, then reserve source queue time with zero PCM16 so
+     * a primary mix sample cannot enter solo/invert output. */
+    reset_frontend(destination);
+    destination->resample.clock = source->resample.clock;
+    destination->resample.left.offset = source->resample.left.offset;
+    destination->resample.right.offset = source->resample.right.offset;
+    memset(destination->frontend_queue_l, 0, sizeof(destination->frontend_queue_l));
+    memset(destination->frontend_queue_r, 0, sizeof(destination->frontend_queue_r));
+    destination->frontend_queue_count = source->frontend_queue_count;
 }
 
 void hw_audio_clone_psg_lane(HwAudio* destination, const HwAudio* source, int lane)
@@ -343,14 +451,13 @@ uint32_t hw_audio_get_solo_mask(const HwAudio* hw)
     return hw ? hw->solo_mask : (uint32_t)HW_AUDIO_SOLO_FULL;
 }
 
-void hw_audio_set_host_rate(HwAudio* hw, float hz)
+void hw_audio_set_resample_antialias(HwAudio* hw, int enabled)
 {
     if (!hw)
         return;
-    hw->host_rate = hz;
-    /* Match mGBA's destination-rate update: retain source history and phase,
-     * and use the new step on the next frontend processing call. */
-    hw_resample_set_rates(&hw->resample, (double)hw->internal_rate, (double)hw->host_rate);
+    if (enabled != 0)
+        hw_resample_set_antialias_input_rate(&hw->resample, (uint32_t)hw->internal_rate);
+    hw_resample_set_antialias(&hw->resample, enabled != 0);
 }
 
 /* Apply mGBA's integer routing and DAC stage after channel production. */
@@ -369,45 +476,40 @@ static void mix_native_chunk(HwAudio* hw, int internal_count)
                   internal_count);
 }
 
-/* Feed the finished native PCM16 DAC observation directly into the
- * host-only frontend. Oscillator time advances separately by cycle spans. */
 static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host)
 {
     hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
     hw_pcm_render(&hw->pcm, &hw->scratch_dma_a[0], &hw->scratch_dma_b[0], 1);
     mix_native_chunk(hw, 1);
 
+    /* A previous DAC observation can have filled the presentation FIFO only
+     * after the prior public block was complete. Drain it before adding this
+     * observation, then capture again immediately after submission. */
+    capture_frontend(hw, outL, outR, rendered_host, target_host);
+    hw_resample_submit(
+        &hw->resample, hw->native_l[0], hw->native_r[0], PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate);
+    capture_frontend(hw, outL, outR, rendered_host, target_host);
     int max_host = target_host - *rendered_host;
     if (max_host < 0)
         max_host = 0;
-    *rendered_host += drain_frontend(hw,
-                                     hw->native_l,
-                                     hw->native_r,
-                                     1,
-                                     outL ? outL + *rendered_host : NULL,
-                                     outR ? outR + *rendered_host : NULL,
-                                     max_host);
+    *rendered_host +=
+        drain_frontend(hw, outL ? outL + *rendered_host : NULL, outR ? outR + *rendered_host : NULL, max_host);
 }
 
 /* Preserve real-time frontend latency independently of host block partitioning.
- * Drain any ready sinc output before filling host deadlines that passed
- * while mGBA's eight-frame source watermark was still stalled. */
+ * Drain ready fixed-blip PCM16 before filling host deadlines that passed while
+ * the frontend had no complete frame. */
 static void fill_host_through_cycle(
     HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host, uint64_t block_begin_cycle)
 {
-    int due = host_frames_through_cycle(hw->live_cycle - block_begin_cycle, (uint32_t)(hw->host_rate + 0.5f));
+    int due = host_frames_through_cycle(hw->live_cycle - block_begin_cycle, hw->host_rate_hz, hw->host_cycle_remainder);
     if (due > target_host)
         due = target_host;
     if (due <= *rendered_host)
         return;
 
-    *rendered_host += drain_frontend(hw,
-                                     NULL,
-                                     NULL,
-                                     0,
-                                     outL ? outL + *rendered_host : NULL,
-                                     outR ? outR + *rendered_host : NULL,
-                                     due - *rendered_host);
+    *rendered_host += drain_frontend(
+        hw, outL ? outL + *rendered_host : NULL, outR ? outR + *rendered_host : NULL, due - *rendered_host);
     fill_frontend_gap(hw, outL, outR, rendered_host, due);
 }
 
@@ -455,8 +557,8 @@ static bool render_to_cycle(HwAudio* hw,
     return true;
 }
 
-/* Legacy snapshot entrypoint only consumes trigger latches; production audio
- * must use the absolute-cycle event stream. */
+/* DEBUG / TEST ONLY. Production audio consumes the absolute-cycle event
+ * stream; this legacy snapshot helper exists solely to consume test latches. */
 void hw_audio_render(HwAudio* hw, M4ARegisterFile* regs, const M4APcmRing* pcm, float* outL, float* outR, int frames)
 {
     (void)hw;
@@ -483,7 +585,7 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
     if (frames <= 0)
         return;
     if (!hw || !events || (!events->events && events->count != 0) || events->end_cycle < events->begin_cycle ||
-        hw->host_rate <= 0.0f || hw->internal_rate <= 0)
+        hw->host_rate_hz == 0 || hw->internal_rate <= 0)
     {
         if (outL)
             memset(outL, 0, (size_t)frames * sizeof(float));
@@ -494,16 +596,14 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
 
     if (events->begin_cycle != hw->live_cycle)
     {
-        if (hw->live_cycle != 0 || !hw->live_sample_pending)
-        {
-            if (outL)
-                memset(outL, 0, (size_t)frames * sizeof(float));
-            if (outR)
-                memset(outR, 0, (size_t)frames * sizeof(float));
-            return;
-        }
-        hw->live_cycle = events->begin_cycle;
-        hw->dac_cycle_remainder = 0;
+        /* A nonzero first interval does not reveal the driver's host-frame
+         * numerator remainder. Do not manufacture a phase from its absolute
+         * cycle: callers must establish the timeline by replaying from zero. */
+        if (outL)
+            memset(outL, 0, (size_t)frames * sizeof(float));
+        if (outR)
+            memset(outR, 0, (size_t)frames * sizeof(float));
+        return;
     }
     hw_audio_sync_rates_from_mix(hw);
 
@@ -519,7 +619,7 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
         if (rate_change)
         {
             event_host_limit =
-                host_frames_through_cycle(ev->cycle - events->begin_cycle, (uint32_t)(hw->host_rate + 0.5f));
+                host_frames_through_cycle(ev->cycle - events->begin_cycle, hw->host_rate_hz, hw->host_cycle_remainder);
             if (event_host_limit > frames)
                 event_host_limit = frames;
         }
@@ -538,9 +638,6 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
         if (rate_change)
         {
             rendered_host += drain_frontend(hw,
-                                            NULL,
-                                            NULL,
-                                            0,
                                             outL ? outL + rendered_host : NULL,
                                             outR ? outR + rendered_host : NULL,
                                             event_host_limit - rendered_host);
@@ -569,15 +666,11 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
 
     if (rendered_host < frames)
     {
-        rendered_host += drain_frontend(hw,
-                                        NULL,
-                                        NULL,
-                                        0,
-                                        outL ? outL + rendered_host : NULL,
-                                        outR ? outR + rendered_host : NULL,
-                                        frames - rendered_host);
+        rendered_host += drain_frontend(
+            hw, outL ? outL + rendered_host : NULL, outR ? outR + rendered_host : NULL, frames - rendered_host);
     }
     fill_frontend_gap(hw, outL, outR, &rendered_host, frames);
+    advance_host_cycle_phase(hw, frames);
 }
 
 #if PORYAAAA_HW_AUDIO_TRACE
@@ -784,6 +877,7 @@ void hw_audio_trace_reset(HwAudio* hw)
     reset_frontend(hw);
     hw->live_cycle = 0;
     hw->dac_cycle_remainder = 0;
+    hw->host_cycle_remainder = 0;
     hw->live_sample_pending = true;
     hw->trace_cycle = 0;
     hw->trace_order = 0;

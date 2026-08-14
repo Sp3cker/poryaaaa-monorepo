@@ -384,6 +384,8 @@ static void prepare_invert_sidecars(M4AEngine* engine)
     sync_driver_phase(engine->auditionDriver, engine->driver);
     hw_audio_sync_psg_timing(engine->shadowHw, engine->hw);
     hw_audio_sync_psg_timing(engine->auditionHw, engine->hw);
+    hw_audio_sync_sidecar_frontend_timing(engine->shadowHw, engine->hw);
+    hw_audio_sync_sidecar_frontend_timing(engine->auditionHw, engine->hw);
 }
 
 static void render_driver(M4ADriver* driver, HwAudio* hw, float* left, float* right, int frames)
