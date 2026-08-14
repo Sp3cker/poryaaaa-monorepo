@@ -266,11 +266,16 @@ elseif(APPLE)
     )
 
     # MACOSX_BUNDLE_INFO_PLIST only works for MACOSX_BUNDLE (app bundles).
-    # For a generic BUNDLE (.clap), copy Info.plist manually.
+    # For a generic BUNDLE (.clap), copy its metadata and bundled LGPL notice manually.
     add_custom_command(TARGET poryaaaa POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
             "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Info.plist"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugin/hw_audio/LICENSE.blip_buf"
+            "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Resources/LICENSE.blip_buf"
     )
 
     set(PORYAAAA_CLAP_INSTALL_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP")

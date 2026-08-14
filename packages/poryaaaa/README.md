@@ -247,6 +247,13 @@ clap-sdk/                CLAP plugin SDK (submodule)
 imgui/                   Dear ImGui (submodule)
 ```
 
+### Third-party attribution
+
+The exact default host resampling path is adapted from **blip_buf 1.1.0**,
+Copyright (C) 2003–2009 Shay Green, under **LGPL-2.1-or-later**. The complete
+existing license text is in
+[`plugin/hw_audio/LICENSE.blip_buf`](plugin/hw_audio/LICENSE.blip_buf).
+
 ### CLAP extensions
 
 | Extension | Purpose |
