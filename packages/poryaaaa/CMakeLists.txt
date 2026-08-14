@@ -366,6 +366,16 @@ if(PORYAAAA_BUILD_TRACE_TOOLS)
     endif()
 endif()
 
+# ---- Independent installed mGBA 0.10.5 frontend reference ----
+option(PORYAAAA_BUILD_FRONTEND_PARITY_TESTS
+    "Build exact mGBA 0.10.5 blip_buf frontend parity tests" OFF)
+set(PORYAAAA_MGBA_0105_SOURCE "" CACHE PATH
+    "Untouched mGBA 0.10.5 source checkout for frontend parity")
+set(PORYAAAA_MGBA_0105_EXPECTED_REVISION
+    "26b7884bc25a5933960f3cdcd98bac1ae14d42e2" CACHE STRING
+    "Pinned mGBA 0.10.5 revision")
+
+
 # ---- Full mGBA MP2K reference recorder ----
 option(PORYAAAA_BUILD_MGBA_REFERENCE
     "Build the full-ROM mGBA reference recorder" OFF)
@@ -510,23 +520,6 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
             endif()
         endif()
 
-        # ---- Direct pinned mGBA frontend parity harness ----
-        add_executable(poryaaaa_frontend_parity_tests
-            test/test_hw_resample_parity.c
-        )
-        set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD 11)
-        set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD_REQUIRED ON)
-        poryaaaa_enable_project_warnings(poryaaaa_frontend_parity_tests)
-        target_include_directories(poryaaaa_frontend_parity_tests PRIVATE
-            plugin
-            test
-            "${_mgba_source}/include")
-        target_compile_definitions(poryaaaa_frontend_parity_tests PRIVATE
-            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>")
-        target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE hw_audio mgba)
-        if(NOT MSVC)
-            target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE m)
-        endif()
         target_link_libraries(mgba_mp2k_reference PRIVATE mgba)
         # mCore's public layout depends on mGBA's feature definitions. Compile the
         # recorder with the library's exact definitions to preserve its ABI.
@@ -569,6 +562,94 @@ if(PORYAAAA_BUILD_MGBA_REFERENCE)
     if(NOT MSVC)
         target_link_libraries(mgba_mp2k_reference PRIVATE m)
     endif()
+endif()
+
+if(PORYAAAA_BUILD_FRONTEND_PARITY_TESTS)
+    if(NOT PORYAAAA_MGBA_0105_SOURCE)
+        message(FATAL_ERROR
+            "PORYAAAA_BUILD_FRONTEND_PARITY_TESTS requires PORYAAAA_MGBA_0105_SOURCE")
+    endif()
+
+    get_filename_component(_mgba0105_source "${PORYAAAA_MGBA_0105_SOURCE}" REALPATH)
+    if(NOT EXISTS "${_mgba0105_source}/CMakeLists.txt" OR
+       NOT EXISTS "${_mgba0105_source}/.git")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be an untouched mGBA 0.10.5 git checkout")
+    endif()
+    if(NOT EXISTS "${_mgba0105_source}/src/third-party/blip_buf/blip_buf.c" OR
+       NOT EXISTS "${_mgba0105_source}/include/mgba/core/blip_buf.h")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE is missing mGBA 0.10.5 blip_buf")
+    endif()
+
+    find_package(Git REQUIRED)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" rev-parse HEAD
+        RESULT_VARIABLE _mgba0105_revision_status
+        OUTPUT_VARIABLE _mgba0105_revision
+        ERROR_VARIABLE _mgba0105_revision_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT "${_mgba0105_revision_status}" STREQUAL "0" OR
+       NOT "${_mgba0105_revision}" STREQUAL "${PORYAAAA_MGBA_0105_EXPECTED_REVISION}")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be at ${PORYAAAA_MGBA_0105_EXPECTED_REVISION}; "
+            "got '${_mgba0105_revision}' (${_mgba0105_revision_error})")
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" diff --quiet HEAD --
+        RESULT_VARIABLE _mgba0105_dirty_status
+        ERROR_VARIABLE _mgba0105_dirty_error)
+    if(NOT "${_mgba0105_dirty_status}" STREQUAL "0")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be clean: ${_mgba0105_dirty_error}")
+    endif()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" ls-files --others --exclude-standard
+        RESULT_VARIABLE _mgba0105_untracked_status
+        OUTPUT_VARIABLE _mgba0105_untracked_paths
+        ERROR_VARIABLE _mgba0105_untracked_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT "${_mgba0105_untracked_status}" STREQUAL "0" OR _mgba0105_untracked_paths)
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must have no untracked paths: "
+            "${_mgba0105_untracked_paths}${_mgba0105_untracked_error}")
+    endif()
+
+    # Compile untouched upstream code without project warning/Werror settings.
+    # These private renames keep every mGBA blip symbol out of production targets.
+    add_library(poryaaaa_mgba0105_blip_reference STATIC
+        "${_mgba0105_source}/src/third-party/blip_buf/blip_buf.c")
+    set_property(TARGET poryaaaa_mgba0105_blip_reference PROPERTY C_STANDARD 11)
+    set_property(TARGET poryaaaa_mgba0105_blip_reference PROPERTY C_STANDARD_REQUIRED ON)
+    target_include_directories(poryaaaa_mgba0105_blip_reference PRIVATE
+        "${_mgba0105_source}/include")
+    target_compile_definitions(poryaaaa_mgba0105_blip_reference PRIVATE
+        blip_new=poryaaaa_mgba0105_blip_new
+        blip_set_rates=poryaaaa_mgba0105_blip_set_rates
+        blip_clear=poryaaaa_mgba0105_blip_clear
+        blip_add_delta=poryaaaa_mgba0105_blip_add_delta
+        blip_add_delta_fast=poryaaaa_mgba0105_blip_add_delta_fast
+        blip_clocks_needed=poryaaaa_mgba0105_blip_clocks_needed
+        blip_end_frame=poryaaaa_mgba0105_blip_end_frame
+        blip_samples_avail=poryaaaa_mgba0105_blip_samples_avail
+        blip_read_samples=poryaaaa_mgba0105_blip_read_samples
+        blip_delete=poryaaaa_mgba0105_blip_delete)
+
+    add_executable(poryaaaa_frontend_parity_tests
+        test/test_hw_resample_parity.c)
+    set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD 11)
+    set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD_REQUIRED ON)
+    poryaaaa_enable_msvc_c_atomics(poryaaaa_frontend_parity_tests)
+    poryaaaa_enable_project_warnings(poryaaaa_frontend_parity_tests)
+    target_include_directories(poryaaaa_frontend_parity_tests PRIVATE plugin test)
+    target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE
+        hw_audio
+        poryaaaa_mgba0105_blip_reference)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE m)
+    endif()
+    add_test(NAME poryaaaa_frontend_parity_tests COMMAND poryaaaa_frontend_parity_tests)
 endif()
 
 # ---- Headless VBA-M libretro reference recorder ----
@@ -722,8 +803,8 @@ set(_default_sources
     "$<TARGET_PROPERTY:hw_audio,SOURCES>"
     "$<TARGET_PROPERTY:m4a_driver,SOURCES>")
 foreach(_surface IN LISTS _default_links _default_sources)
-    if(_surface MATCHES "poryaaaa_hw_audio_trace_tool|poryaaaa_m4a_trace_writer|hw_audio_trace_(text|schedule)\\.c|m4a_driver_trace\\.c|poryaaaa_audio_trace|poryaaaa_driver_trace|mgba_audio_trace_replay|atomic_publish|driver_compare|native_compare|waveform_compare")
-        message(FATAL_ERROR "Default target graph contains trace tooling: ${_surface}")
+    if(_surface MATCHES "poryaaaa_hw_audio_trace_tool|poryaaaa_m4a_trace_writer|hw_audio_trace_(text|schedule)\\.c|m4a_driver_trace\\.c|poryaaaa_audio_trace|poryaaaa_driver_trace|mgba_audio_trace_replay|poryaaaa_mgba0105_blip_reference|mgba_mp2k_reference|(^|;)mgba(;|$)|src/third-party/blip_buf/blip_buf\\.c|tools/mgba-reference/|atomic_publish|driver_compare|native_compare|waveform_compare")
+        message(FATAL_ERROR "Default target graph contains trace or opt-in mGBA reference tooling: ${_surface}")
     endif()
 endforeach()
 ]=])
