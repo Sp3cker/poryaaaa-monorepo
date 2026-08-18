@@ -12,6 +12,27 @@ if [[ ! -x "$recorder" || ! -f "$decomp/pokeemerald-hearth.gba" \
     exit 0
 fi
 
+# Reads one little-endian uint32 from the recorder's canonical WAV header.
+read_le32() {
+    local bytes
+    read -r -a bytes <<<"$(od -An -v -tu1 -j "$2" -N 4 "$1")"
+    printf '%u' "$((bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24)))"
+}
+
+# Guards the ROM-selected frontend rate and requested capture duration.
+assert_wav_geometry() {
+    local wav="$1"
+    local expected_frames="$2"
+    local sample_rate data_bytes frames
+    sample_rate="$(read_le32 "$wav" 24)"
+    data_bytes="$(read_le32 "$wav" 40)"
+    frames="$((data_bytes / 4))"
+    if [[ "$sample_rate" -ne 65536 || "$frames" -ne "$expected_frames" ]]; then
+        echo "FAIL: expected 65536 Hz and $expected_frames frames, got ${sample_rate} Hz and $frames frames: $wav" >&2
+        exit 1
+    fi
+}
+
 square_1="$(mktemp "${TMPDIR:-/tmp}/poryaaaa-mgba-square-1.XXXXXX")"
 square_2="$(mktemp "${TMPDIR:-/tmp}/poryaaaa-mgba-square-2.XXXXXX")"
 song="$(mktemp "${TMPDIR:-/tmp}/poryaaaa-mgba-se-pc-on.XXXXXX")"
@@ -77,6 +98,12 @@ if [[ ! -s "$square_1" || ! -s "$square_2" || ! -s "$song" || ! -s "$door" \
     echo "FAIL: a reference WAV has no PCM payload" >&2
     exit 1
 fi
+assert_wav_geometry "$square_1" 32768
+assert_wav_geometry "$square_2" 32768
+assert_wav_geometry "$song" 81920
+assert_wav_geometry "$door" 81920
+assert_wav_geometry "$slateport_no_psg" 131072
+assert_wav_geometry "$slateport_no_directsound" 131072
 if cmp -s "$square_1" "$square_2"; then
     echo "FAIL: distinct PSG voices produced identical mGBA WAVs" >&2
     exit 1

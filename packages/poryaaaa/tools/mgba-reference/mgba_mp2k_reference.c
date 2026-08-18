@@ -293,6 +293,7 @@ typedef struct Recorder
     PendingTimer pendingTimers[2];
     bool capturing;
     bool writeFailed;
+    bool sampleRateChanged;
     bool observationOverflow;
     bool nativeCapturing;
     bool nativeFinished;
@@ -767,6 +768,18 @@ static void post_audio_buffer(struct mAVStream* stream, struct mAudioBuffer* buf
         for (size_t i = 0u; i < frames; ++i)
             write_audio_frame(recorder, samples[i * 2u], samples[i * 2u + 1u]);
     }
+}
+
+/* Tracks mGBA rate changes and rejects a WAV whose cadence changes after capture starts. */
+static void audio_rate_changed(struct mAVStream* stream, unsigned sampleRate)
+{
+    Recorder* recorder = (Recorder*)stream;
+    if (recorder->capturing && recorder->sampleRate != 0u && sampleRate != recorder->sampleRate)
+    {
+        recorder->sampleRateChanged = true;
+        return;
+    }
+    recorder->sampleRate = sampleRate;
 }
 
 /* Writes or rewrites the canonical 44-byte stereo PCM WAV header. */
@@ -2669,9 +2682,11 @@ static bool align_driver_capture_after_vblank(struct mCore* core, Recorder* reco
     return aligned && reachedVBlank;
 }
 
-/* Opens the legacy frontend WAV at the rate exposed by pinned mGBA. */
-static bool begin_frontend_capture(Recorder* recorder, const Options* options)
+/* Opens the frontend WAV using mGBA's rate after the ROM initialized SOUNDBIAS. */
+static bool begin_frontend_capture(struct mCore* core, Recorder* recorder, const Options* options)
 {
+    recorder->sampleRate = core->audioSampleRate(core);
+    recorder->sampleRateChanged = false;
     if (recorder->sampleRate == 0u)
         return false;
 
@@ -2691,7 +2706,7 @@ static bool begin_frontend_capture(Recorder* recorder, const Options* options)
 static bool finish_frontend_capture(Recorder* recorder)
 {
     recorder->capturing = false;
-    if (recorder->writeFailed || recorder->framesWritten != recorder->targetFrames)
+    if (recorder->writeFailed || recorder->sampleRateChanged || recorder->framesWritten != recorder->targetFrames)
     {
         return false;
     }
@@ -2705,7 +2720,7 @@ static bool capture_reference(struct mCore* core, Recorder* recorder, const Opti
 {
     bool frontendRequested = (options->captureStage & CAPTURE_STAGE_FRONTEND) != 0u;
     bool nativeRequested = (options->captureStage & CAPTURE_STAGE_NATIVE) != 0u;
-    if ((frontendRequested && !begin_frontend_capture(recorder, options)) ||
+    if ((frontendRequested && !begin_frontend_capture(core, recorder, options)) ||
         (nativeRequested && !recorder->nativeCapturing && !begin_native_capture(core, recorder, options)))
     {
         return false;
@@ -2735,7 +2750,7 @@ static bool capture_boot_song(struct mCore* core, Recorder* recorder, const Opti
 
     bool frontendRequested = (options->captureStage & CAPTURE_STAGE_FRONTEND) != 0u;
     bool nativeRequested = (options->captureStage & CAPTURE_STAGE_NATIVE) != 0u;
-    if ((frontendRequested && !begin_frontend_capture(recorder, options)) ||
+    if ((frontendRequested && !begin_frontend_capture(core, recorder, options)) ||
         (nativeRequested && !begin_native_capture(core, recorder, options)))
     {
         return false;
@@ -2832,6 +2847,7 @@ int main(int argc, char** argv)
         .stream =
             {
                 .postAudioBuffer = post_audio_buffer,
+                .audioRateChanged = audio_rate_changed,
             },
     };
     struct mCore* core = GBACoreCreate();
@@ -2875,15 +2891,6 @@ int main(int argc, char** argv)
             goto unload;
         }
         options.enabledChannels = recorder.driverIdentity.soloMask;
-    }
-    if (frontendRequested)
-    {
-        recorder.sampleRate = core->audioSampleRate(core);
-        if (recorder.sampleRate == 0u)
-        {
-            fprintf(stderr, "mGBA did not expose a frontend audio sample rate\n");
-            goto unload;
-        }
     }
     if (!apply_audio_channel_mask(core, options.enabledChannels))
     {

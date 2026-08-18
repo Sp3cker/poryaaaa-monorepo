@@ -165,6 +165,11 @@ fit gain to study local waveform shape. Such a result covers only the selected
 512-sample window. Compare left and right independently before making any
 stereo observation.
 
+The recorder reads mGBA's frontend rate when capture opens, after the ROM's
+`m4aSoundInit` configures `SOUNDBIAS`. Do not double the requested duration or
+rewrite the WAV rate afterward. A rate change during capture fails rather than
+publishing a mixed-cadence WAV.
+
 ```bash
 tools/mgba-reference/capture_song_pair.sh \
   --decomp /path/to/hearth-test --song se_pc_on --solo sq1
