@@ -1,12 +1,6 @@
-set(PORYAAAA_M4A_DRIVER_SOURCES
-    ../m4a_tables.c
-    m4a_driver.c
-    m4a_freq.c
-    m4a_track.c
-    m4a_cgb.c
-    m4a_pcm.c
-    m4a_main.c
-)
+if(NOT PORYAAAA_M4A_DRIVER_SOURCES)
+    include("${CMAKE_CURRENT_LIST_DIR}/m4a_driver_sources.cmake")
+endif()
 
 add_library(m4a_driver STATIC
     ${PORYAAAA_M4A_DRIVER_SOURCES}

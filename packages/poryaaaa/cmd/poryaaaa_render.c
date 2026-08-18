@@ -44,6 +44,7 @@
 #include "voicegroup/voicegroup_loader.h"
 
 #include "m4a/m4a_driver.h"
+#include "m4a/m4a_pcm_mixer_mode.h"
 #include "hw_audio/hw_audio.h"
 
 static M4ADriver* g_driver;
@@ -846,9 +847,9 @@ static void print_usage(const char* prog)
             "Audio options:\n"
             "  --song-volume <0-127>       Song master volume (default: 127)\n"
             "  --reverb <0-127>            Reverb amount (default: 0)\n"
+            "  --pcm-mixer <ipatix|sappy>  PCM mixer implementation (default: ipatix)\n"
             "  --polyphony <1-12>          Max simultaneous PCM channels (default: 5)\n"
             "  --cgb-only                  Disable PCM channels; render CGB voices only\n"
-            "  --sample-rate <hz>          Sample rate in Hz (default: 44100)\n"
             "  --tail <seconds>            Silence after last event, no loop markers (default: 3.0)\n"
             "\n"
             "Loop options (when MIDI contains '[' / ']' text events):\n"
@@ -956,6 +957,7 @@ int main(int argc, char* argv[])
     double fadeoutSeconds = 5.0;
     double totalDurSeconds = -1.0; /* -1 = not set */
     const char* soloName = NULL;
+    M4APcmMixerMode pcmMixerMode = M4A_PCM_MIXER_IPATIX;
 
     for (int i = 3; i < argc; i++)
     {
@@ -986,6 +988,18 @@ int main(int argc, char* argv[])
                 reverbAmount = 0;
             if (reverbAmount > 127)
                 reverbAmount = 127;
+        }
+        else if (strcmp(argv[i], "--pcm-mixer") == 0)
+        {
+            const char* value = (i + 1 < argc) ? argv[++i] : "";
+            if (!m4a_pcm_mixer_parse(value, &pcmMixerMode))
+            {
+                char diagnostic[256];
+                m4a_pcm_mixer_format_diagnostic(diagnostic, sizeof(diagnostic), value);
+                fprintf(stderr, "%s\n", diagnostic);
+                print_usage(argv[0]);
+                return 1;
+            }
         }
         else if (strcmp(argv[i], "--polyphony") == 0 && i + 1 < argc)
         {
@@ -1240,8 +1254,9 @@ int main(int argc, char* argv[])
     /* ---- Initialize audio runtime ---- */
     const bool renderAudio = outputPath || doPlay;
     g_driver = m4a_driver_create((float)sampleRate);
+    const bool pcmMixerModeSet = g_driver && m4a_driver_set_pcm_mixer_mode(g_driver, pcmMixerMode);
     g_hw_audio = renderAudio ? hw_audio_create((float)sampleRate) : NULL;
-    if (!g_driver || (renderAudio && !g_hw_audio))
+    if (!g_driver || !pcmMixerModeSet || (renderAudio && !g_hw_audio))
     {
         fprintf(stderr, "Failed to initialize M4A audio runtime\n");
         hw_audio_destroy(g_hw_audio);

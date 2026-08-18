@@ -6,6 +6,7 @@
 #include <clap/clap.h>
 #include "voicegroup/voicegroup_types.h"
 #include "voicegroup/project_asset_index.h"
+#include "m4a/m4a_driver.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -24,6 +25,7 @@ extern "C"
         char voicegroupError[512];
         uint8_t volume;
         uint8_t reverbAmount;
+        M4APcmMixerMode pcmMixerMode;
         bool voicegroupLoaded;
     } M4AGuiSettings;
 
@@ -94,6 +96,12 @@ extern "C"
      * Only the displayed values are updated; text input buffers are refreshed.
      */
     void m4a_gui_update_settings(M4AGuiState* gui, const M4AGuiSettings* settings);
+
+    /*
+     * Refresh the displayed mixer selector from a host/state event without
+     * creating a new editor change.
+     */
+    void m4a_gui_set_pcm_mixer_mode(M4AGuiState* gui, M4APcmMixerMode mode);
 
     /*
      * Extend the per-channel MIDI activity indicator pulse for the given MIDI

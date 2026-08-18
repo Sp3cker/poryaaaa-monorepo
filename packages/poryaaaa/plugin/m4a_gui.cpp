@@ -116,6 +116,7 @@ static void gui_log(const char* fmt, ...)
 
 /* Our C interface */
 #include "m4a_gui.h"
+#include "m4a/m4a_pcm_mixer_mode.h"
 #include "m4a_plugin.h"
 #include "m4a_recorder.h"
 #include "m4a_gui_font_assets.h"
@@ -444,6 +445,25 @@ static void render_general_tab(M4AGuiState* gui)
         {
             gui->settings.reverbAmount = (uint8_t)v;
             gui->settingsChanged = true;
+        }
+    }
+    {
+        M4APcmMixerMode mixerMode = gui->settings.pcmMixerMode;
+        if (!m4a_pcm_mixer_name(mixerMode))
+            mixerMode = M4A_PCM_MIXER_IPATIX;
+        int modeIndex = (int)mixerMode;
+        const char* mixerNames[] = {
+            m4a_pcm_mixer_name(M4A_PCM_MIXER_IPATIX),
+            m4a_pcm_mixer_name(M4A_PCM_MIXER_SAPPY),
+        };
+        if (ImGui::Combo("PCM Mixer", &modeIndex, mixerNames, 2))
+        {
+            M4APcmMixerMode selectedMode;
+            if (m4a_pcm_mixer_from_raw((uint8_t)modeIndex, &selectedMode))
+            {
+                gui->settings.pcmMixerMode = selectedMode;
+                gui->settingsChanged = true;
+            }
         }
     }
 }
@@ -1015,6 +1035,12 @@ extern "C"
     bool m4a_gui_can_resize(M4AGuiState* gui)
     {
         return gui && poryaaaa::gui::imgui_pugl_shell_can_resize(gui->shell);
+    }
+    void m4a_gui_set_pcm_mixer_mode(M4AGuiState* gui, M4APcmMixerMode mode)
+    {
+        if (!gui || !m4a_pcm_mixer_name(mode))
+            return;
+        gui->settings.pcmMixerMode = mode;
     }
 
     void m4a_gui_update_settings(M4AGuiState* gui, const M4AGuiSettings* settings)

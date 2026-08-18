@@ -16,7 +16,7 @@ mod shared_projects_json;
 mod test_support;
 
 pub use config::PluginConfig;
-pub use params::{PoryaaaaParams, PROGRAM_COUNT};
+pub use params::{MixerMode, PoryaaaaParams, PROGRAM_COUNT};
 pub use plugin::PoryaaaaPlugin;
 
 #[doc(hidden)]

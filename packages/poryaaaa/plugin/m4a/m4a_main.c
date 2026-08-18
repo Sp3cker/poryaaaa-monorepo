@@ -1,4 +1,5 @@
 #include "m4a_internal.h"
+#include "m4a_pcm_internal.h"
 
 /* Forward decls from m4a_cgb.c / m4a_pcm.c */
 extern void m4a_cgb_sound(M4ADriver* drv);

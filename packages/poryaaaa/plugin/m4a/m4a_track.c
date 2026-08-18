@@ -18,12 +18,10 @@ const uint8_t gNumPulseWidthModPatterns = (uint8_t)(sizeof(gPulseWidthModPattern
 
 #define M4A_MAX_SONG_VOLUME 127
 
-/* Forward decls — provided by m4a_cgb.c / m4a_pcm.c.  Kept private to
- * plugin/m4a/. */
+/* Forward declarations for CGB lifecycle helpers, kept private to m4a/. */
 extern void m4a_chn_vol_set_cgb(M4ADriverCgbChan* ch, M4ADriverTrack* track);
 extern void m4a_drv_cgb_start(M4ADriverCgbChan* ch);
 extern void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx);
-extern void m4a_drv_pcm_start(M4ADriverPcmChan* ch, WaveData* wav, uint8_t type, uint32_t startOffset);
 
 /* TrkVolPitSet — pokeemerald m4a.c equivalent.
  * Recomputes the per-track effective L/R volume (volMR/volML) and effective
@@ -129,7 +127,7 @@ static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
             continue;
         if (ch->type & VOICE_TYPE_FIX)
         {
-            ch->frequency = pcm_fixed_frequency(drv);
+            m4a_drv_pcm_update_pitch(drv, ch, pcm_fixed_frequency(drv));
             continue;
         }
 
@@ -139,7 +137,7 @@ static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
         if (finalKey > 127)
             finalKey = 127;
         uint32_t f = m4a_midi_key_to_freq(ch->wav, (uint8_t)finalKey, track->pitM);
-        ch->frequency = (uint32_t)((uint64_t)f * divFreq);
+        m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)f * divFreq));
     }
 }
 
@@ -297,7 +295,7 @@ static void apply_portamento_pitch(M4ADriver* drv, M4ADriverTrack* track, int tr
         if (ch->type & VOICE_TYPE_FIX)
             continue;
         uint32_t frequency = m4a_midi_key_to_freq(ch->wav, (uint8_t)key, fine);
-        ch->frequency = (uint32_t)((uint64_t)frequency * divFreq);
+        m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)frequency * divFreq));
     }
 
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
@@ -525,7 +523,7 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
 
         if (portamentoInherit)
         {
-            ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+            ch->status = M4A_CHN_ENV_SUSTAIN;
             ch->freshStart = false;
             ch->modify |= M4A_MO_PIT;
             if (ch->dutyCycle != previousDuty)
@@ -651,18 +649,18 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
          * converts it to step-per-tick × 2^23 at the active PCM cadence. */
         if (voice->type & VOICE_TYPE_FIX)
         {
-            ch->frequency = pcm_fixed_frequency(drv);
+            m4a_drv_pcm_update_pitch(drv, ch, pcm_fixed_frequency(drv));
         }
         else
         {
             const uint32_t divFreq = pcm_div_freq(drv);
             uint32_t f = m4a_midi_key_to_freq(voice->wav, (uint8_t)pcmFinalKey, t->pitM);
-            ch->frequency = (uint32_t)((uint64_t)f * divFreq);
+            m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)f * divFreq));
         }
 
         /* xcmd 0D is carried in the track's extended value and starts
          * DirectSound playback from an offset inside the source sample. */
-        m4a_drv_pcm_start(ch, voice->wav, voice->type, t->extendedValue);
+        m4a_drv_pcm_start(drv, ch, voice->wav, voice->type, t->extendedValue);
 
         t->lfoDelayC = t->lfoDelay;
         if (t->lfoDelay != 0)
@@ -676,13 +674,10 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
                 if (previous == ch || !(previous->status & M4A_CHN_ON) || previous->trackIndex != track ||
                     previous->wav != voice->wav)
                     continue;
-                ch->currentPointer = previous->currentPointer;
-                ch->sampleStored = previous->sampleStored;
-                ch->count = previous->count;
-                ch->fw = previous->fw;
-                ch->synthPulseDuty = previous->synthPulseDuty;
+                if (!m4a_drv_pcm_inherit(drv, ch, previous))
+                    continue;
                 ch->envelopeVolume = previous->envelopeVolume > ch->sustain ? previous->envelopeVolume : ch->sustain;
-                ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN | (previous->status & M4A_CHN_LOOP);
+                ch->status = M4A_CHN_ENV_SUSTAIN | (previous->status & M4A_CHN_LOOP);
                 previous->status = 0;
                 break;
             }

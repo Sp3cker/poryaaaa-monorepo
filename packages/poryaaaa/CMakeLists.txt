@@ -46,6 +46,12 @@ function(poryaaaa_enable_project_warnings target_name)
     endif()
 endfunction()
 
+function(poryaaaa_configure_pcm_gate_target target_name)
+    poryaaaa_enable_msvc_c_atomics(${target_name})
+    poryaaaa_enable_project_warnings(${target_name})
+    target_include_directories(${target_name} PRIVATE plugin)
+endfunction()
+
 function(poryaaaa_enable_project_source_warnings)
     if(MSVC)
         set_property(SOURCE ${ARGN} APPEND PROPERTY COMPILE_OPTIONS
@@ -71,7 +77,7 @@ function(poryaaaa_enable_project_source_warnings)
 endfunction()
 
 if(MSVC)
-    set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_params.c
+    set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_plugin_state.c plugin/m4a_params.c
         PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")
 endif()
 
@@ -166,6 +172,7 @@ option(PORYAAAA_BUILD_TRACE_TOOLS "Build audio trace capture and replay tools" O
 enable_testing()
 
 # ---- Direct audio runtime libraries: M4ADriver + HwAudio ----
+include("${CMAKE_CURRENT_SOURCE_DIR}/plugin/m4a/m4a_driver_sources.cmake")
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
@@ -178,6 +185,7 @@ set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
 
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
     plugin/m4a_params.c
     plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
@@ -195,6 +203,7 @@ if(MSVC)
 endif()
 poryaaaa_enable_project_source_warnings(
     plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
     plugin/m4a_params.c
     plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
@@ -846,3 +855,129 @@ endforeach()
     add_test(NAME poryaaaa_opt_in_trace_link_graph
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_opt_in_trace_link_graph.cmake")
 endif()
+# ---- PCM mixer oracle fixture runner ----
+set(PORYAAAA_PCM_MIXER_ORACLE_SCRIPT
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/mgba-reference/pcm-mixer-oracle/validate_pcm_mixer_oracles.py")
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    set(PORYAAAA_PCM_MIXER_ORACLE_COMMAND
+        "${Python3_EXECUTABLE}" "${PORYAAAA_PCM_MIXER_ORACLE_SCRIPT}")
+else()
+    set(PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT
+        "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_pcm_mixer_python_required.cmake")
+    file(WRITE "${PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT}"
+        "message(FATAL_ERROR \"PCM mixer oracle requires a Python 3 interpreter; configure with -DPython3_EXECUTABLE=/path/to/python3\")\n")
+    set(PORYAAAA_PCM_MIXER_ORACLE_COMMAND
+        "${CMAKE_COMMAND}" -P "${PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT}")
+endif()
+set(PORYAAAA_PCM_MIXER_FIXTURE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/m4a_pcm")
+file(GLOB_RECURSE PORYAAAA_PCM_MIXER_FIXTURE_FILES CONFIGURE_DEPENDS
+    "${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}/*")
+if(NOT PORYAAAA_PCM_MIXER_FIXTURE_FILES)
+    message(FATAL_ERROR
+        "The checked-in PCM mixer fixture tree is empty: ${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}")
+endif()
+
+add_executable(poryaaaa_pcm_mixer_fixture_runner
+    test/test_pcm_mixer_fixture_runner.c
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_fixture_runner)
+target_link_libraries(poryaaaa_pcm_mixer_fixture_runner PRIVATE m4a_driver)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_pcm_mixer_fixture_runner PRIVATE m)
+endif()
+
+if(Python3_Interpreter_FOUND)
+    add_custom_target(poryaaaa_pcm_mixer_oracle_tests
+        DEPENDS
+            poryaaaa_pcm_mixer_fixture_runner
+            ${PORYAAAA_PCM_MIXER_FIXTURE_FILES}
+    )
+else()
+    add_custom_target(poryaaaa_pcm_mixer_oracle_tests
+        COMMAND ${PORYAAAA_PCM_MIXER_ORACLE_COMMAND}
+        DEPENDS
+            poryaaaa_pcm_mixer_fixture_runner
+            ${PORYAAAA_PCM_MIXER_FIXTURE_FILES}
+        VERBATIM
+    )
+endif()
+add_test(NAME poryaaaa_pcm_mixer_oracle
+    COMMAND
+        ${PORYAAAA_PCM_MIXER_ORACLE_COMMAND}
+        --fixtures "${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}"
+        --runner "$<TARGET_FILE:poryaaaa_pcm_mixer_fixture_runner>"
+)
+set_tests_properties(poryaaaa_pcm_mixer_oracle PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+# ---- PCM mixer no-allocation gate ----
+add_library(poryaaaa_pcm_mixer_no_alloc_driver OBJECT
+    ${PORYAAAA_M4A_DRIVER_SOURCES}
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_no_alloc_driver)
+if(MSVC)
+    target_compile_options(poryaaaa_pcm_mixer_no_alloc_driver PRIVATE
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/test/test_allocator_wrap.h"
+    )
+elseif(UNIX)
+    target_compile_options(poryaaaa_pcm_mixer_no_alloc_driver PRIVATE
+        -include
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/test_allocator_wrap.h"
+    )
+else()
+    message(FATAL_ERROR
+        "poryaaaa_pcm_mixer_no_alloc_tests requires Darwin, ELF, or MSVC allocator interception")
+endif()
+
+# Keep the wrapper in a separately compiled object: force-including its header
+# would redirect the CRT calls that the wrapper must delegate to.
+add_library(poryaaaa_pcm_mixer_allocator OBJECT
+    test/test_allocator_wrap.c
+)
+poryaaaa_enable_msvc_c_atomics(poryaaaa_pcm_mixer_allocator)
+poryaaaa_enable_project_warnings(poryaaaa_pcm_mixer_allocator)
+
+add_executable(poryaaaa_pcm_mixer_no_alloc_tests
+    test/test_pcm_mixer_no_alloc.c
+    $<TARGET_OBJECTS:poryaaaa_pcm_mixer_no_alloc_driver>
+    $<TARGET_OBJECTS:poryaaaa_pcm_mixer_allocator>
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_no_alloc_tests)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_pcm_mixer_no_alloc_tests PRIVATE m)
+endif()
+add_test(NAME poryaaaa_pcm_mixer_no_alloc
+    COMMAND "$<TARGET_FILE:poryaaaa_pcm_mixer_no_alloc_tests>"
+)
+
+# ---- C plugin state compatibility gate ----
+add_executable(poryaaaa_m4a_state_compat_tests
+    test/test_m4a_state_compat.c
+    test/test_m4a_state_compat_main.c
+    plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
+    plugin/m4a_params.c
+    plugin/voicegroup/project_asset_index.c
+    plugin/m4a_recorder.cpp
+)
+target_compile_features(poryaaaa_m4a_state_compat_tests PRIVATE cxx_std_23)
+poryaaaa_configure_pcm_gate_target(poryaaaa_m4a_state_compat_tests)
+target_link_libraries(poryaaaa_m4a_state_compat_tests PRIVATE
+    clap
+    m4a_driver
+    hw_audio
+    voicegroup_loader
+    recorder
+)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_m4a_state_compat_tests PRIVATE m)
+endif()
+add_test(NAME poryaaaa_m4a_state_compat
+    COMMAND "$<TARGET_FILE:poryaaaa_m4a_state_compat_tests>"
+)
+set_tests_properties(poryaaaa_m4a_state_compat PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)

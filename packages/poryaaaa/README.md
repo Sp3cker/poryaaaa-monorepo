@@ -32,7 +32,7 @@ Output (at least one required):
 Audio options:
   --song-volume <0-127>       Song master volume (default: 127)
   --reverb <0-127>            Reverb amount (default: 0)
-  --analog-filter             Enable GBA analog low-pass filter (default: off)
+  --pcm-mixer <ipatix|sappy>  PCM mixer implementation (default: ipatix)
   --polyphony <1-12>          Max simultaneous PCM channels (default: 5)
   --sample-rate <hz>          Sample rate in Hz (default: 44100)
   --tail <seconds>            Silence after last event, no loop markers (default: 3.0)
@@ -43,13 +43,20 @@ Loop options (when MIDI contains '[' / ']' text events):
   --total-duration-seconds <s>  Override loop-count; set exact total duration
                                 (fadeout occupies the final --fadeout seconds)
 ```
+`--pcm-mixer` accepts exactly `ipatix` or `sappy`; the default is `ipatix`.
+The renderer applies this selection before dispatching any MIDI note or
+advancing the driver and does not read an adjacent `poryaaaa.cfg`. In the
+plugin, a live mode change hard-stops PCM voices at the next SoundMain/VBlank
+entry; CGB voices continue, already-published PCM ring bytes drain normally,
+and there is no crossfade or active-voice conversion.
+
 
 Examples:
 
 ```bash
-# Render to WAV with reverb and analog filter
+# Render to WAV with reverb
 ./build/poryaaaa_render /path/to/pokeemerald petalburg \
-    --midi song.mid --output out.wav --reverb 40 --analog-filter
+    --midi song.mid --output out.wav --reverb 40
 
 # Play through speakers
 ./build/poryaaaa_render /path/to/pokeemerald petalburg \
@@ -152,7 +159,12 @@ Notes:
 | `reverb` | `0` | Reverb amount (0–127) |
 | `master_volume` | `15` | M4A master volume (0–15) |
 | `song_master_volume` | `127` | Song-level volume multiplier (0–127) |
+| `pcm_mixer` | `ipatix` | PCM mixer implementation: exactly `ipatix` or `sappy` |
 | `log` | *(off)* | Diagnostic log file path |
+
+`pcm_mixer` is case-sensitive, trims surrounding value whitespace, and uses
+last-wins semantics for duplicate keys. A missing key or file keeps the
+`ipatix` default; an invalid value is fatal for that plugin instance.
 
 #### GUI
 
@@ -272,7 +284,11 @@ engine wrapper. The canonical direct-render sequence is defined by the
 
 The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelopes and LFO. The complete hardware mix is generated at the SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`) and converted to the configured host rate by the same `blip_buf` frontend used by mGBA.
 
-**PCM channels** use the same 23-bit fractional sample position and linear interpolation as the GBA's `SoundMainRAM` mixer. Frequency is computed using `MidiKeyToFreq` with the exact scale/frequency table lookups. The resulting DirectSound samples are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
+**PCM channels** use the selected source-defined mixer (`ipatix` by default or
+`sappy` when selected). Both adapters publish through the common DirectSound
+ring and hardware cadence. Frequency is computed using `MidiKeyToFreq` with
+the exact scale/frequency table lookups, and the resulting DirectSound samples
+are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
 
 **CGB channels** are synthesized in software: square duty steps advance on integer GBA CPU-cycle deadlines, programmable wave reads 4-bit nibbles from 16-byte waveforms, and noise follows mGBA's 7-bit or 15-bit LFSR behavior.
 

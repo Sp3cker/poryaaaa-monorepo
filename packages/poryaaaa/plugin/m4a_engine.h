@@ -103,17 +103,9 @@ extern "C"
         int8_t rhythmPan;
         uint8_t gateTime;
         WaveData* wav;
-        int8_t* currentPointer;
-        int32_t count;
-        uint32_t fw;
         uint32_t frequency;
         int trackIndex;
         bool audition;
-        bool isLoop;
-        int32_t loopLen;
-        int8_t* loopStart;
-        uint8_t synthType;
-        uint32_t synthPulseDuty;
     } M4APCMChannel;
 
     typedef struct
@@ -246,6 +238,8 @@ extern "C"
     void m4a_engine_set_xcmd_callback(M4AEngine* engine, M4AEngineXcmdFn xcmd_fn, void* xcmd_ctx);
 
     void m4a_engine_set_pcm_mix_rate(M4AEngine* engine, float rate);
+    /* Queue one validated mode request for all engine-owned drivers. */
+    bool m4a_engine_set_pcm_mixer_mode(M4AEngine* engine, M4APcmMixerMode mode);
     void m4a_engine_set_voicegroup(M4AEngine* engine, ToneData* voiceGroup);
     void m4a_engine_refresh_voices(M4AEngine* engine);
     void m4a_engine_note_on(M4AEngine* engine, int trackIndex, uint8_t key, uint8_t velocity);

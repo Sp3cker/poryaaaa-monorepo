@@ -7,6 +7,7 @@
 #include "m4a_driver.h"
 #include "m4a_register_file.h"
 #include "m4a_pcm_ring.h"
+#include "m4a_pcm_internal.h"
 #include "voicegroup/voicegroup_types.h"
 
 #ifdef __cplusplus
@@ -45,22 +46,19 @@ extern "C"
 #define M4A_GBA_SCANLINE_CYCLES 1232u
 #define M4A_VCOUNT_TO_VBLANK_CYCLES (10u * M4A_GBA_SCANLINE_CYCLES)
 
-/* Channel `status` flag bits — match pokeemerald m4a_internal.h CHN_*.
- * We mirror the real m4a constants so disasm reads match. */
-#define M4A_CHN_ON 0x80
+/* Channel status values follow the source-canonical m4a encoding.  ON is an
+ * aggregate predicate mask; it is never written as a channel phase. */
+#define M4A_CHN_START 0x80
 #define M4A_CHN_STOP 0x40
+#define M4A_CHN_SPECIAL 0x20 /* Vanilla alternate/reverse path initialized */
 #define M4A_CHN_LOOP 0x10
-#define M4A_CHN_START 0x20
 #define M4A_CHN_IEC 0x04 /* In Echo/pseudo-echo */
-/* Envelope phase ordinals.  Encoded so `status--` walks the envelope
- * forward (ATTACK→DECAY→SUSTAIN→RELEASE), matching the ROM driver
- * ordering.  m4a_cgb.c / m4a_pcm.c rely on this ordering when
- * transitioning between phases. */
 #define M4A_CHN_ENV_MASK 0x03
 #define M4A_CHN_ENV_RELEASE 0x00
 #define M4A_CHN_ENV_SUSTAIN 0x01
 #define M4A_CHN_ENV_DECAY 0x02
 #define M4A_CHN_ENV_ATTACK 0x03
+#define M4A_CHN_ON (M4A_CHN_START | M4A_CHN_STOP | M4A_CHN_IEC | M4A_CHN_ENV_MASK)
 
 /* CgbSound `modify` bits — pokeemerald m4a_internal.h MO_*. */
 #define M4A_MO_PIT 0x1  /* re-emit NRx3 + NRx4 freq write */
@@ -174,10 +172,9 @@ extern "C"
         bool freshStart;
     } M4ADriverCgbChan;
 
-    /* Driver-internal PCM channel state.  Voice synthesis happens here in
-     * software (the ROM's SoundMainRAM); the hardware FIFOs only receive
-     * the post-mix int8 stream. */
-    typedef struct
+    /* Driver-internal common PCM channel state.  Cursor, interpolation,
+     * decoder, synth, and feedback state is embedded in the active adapter. */
+    typedef struct M4ADriverPcmChan
     {
         uint8_t status; /* M4A_CHN_* flags */
         uint8_t type;   /* voice type (incl. VOICE_TYPE_FIX bit) */
@@ -188,8 +185,8 @@ extern "C"
         uint8_t sustain;
         uint8_t release;
         uint8_t key;
-        uint8_t envelopeVolume;      /* current 0..255 */
-        uint8_t envelopeVolumeRight; /* env × right × master, computed per tick */
+        uint8_t envelopeVolume;
+        uint8_t envelopeVolumeRight;
         uint8_t envelopeVolumeLeft;
         uint8_t pseudoEchoVolume;
         uint8_t pseudoEchoLength;
@@ -198,31 +195,21 @@ extern "C"
         uint8_t priority;
         int8_t rhythmPan;
         uint8_t gateTime;
-
-        /* Sample-read state */
         WaveData* wav;
-        int8_t* currentPointer; /* forward: current sample; reverse: one past next sample */
-        int8_t sampleStored;    /* preceding source byte for reverse interpolation */
-        int32_t count;          /* remaining samples in current segment */
-        uint32_t fw;            /* 23-bit fractional position accumulator */
-        uint32_t frequency;     /* per-PCM-tick step, Q9.23 */
-
-        bool isLoop;
-        int32_t loopLen;
-        int8_t* loopStart;
-
+        uint32_t frequency;
         int trackIndex;
-        /* Zero-length WaveData descriptors select Golden Sun's software
-         * oscillators.  `fw` is then the 32-bit oscillator phase and `count`
-         * is the pulse LFO accumulator or pseudo-saw filter state. */
-        uint8_t synthType;
-        uint32_t synthPulseDuty;
-
+        union
+        {
+            M4APcmIpatixChannelState ipatix;
+            M4APcmSappyChannelState sappy;
+        };
     } M4ADriverPcmChan;
-
     struct M4ADriver
     {
-        /* Lifecycle / config */
+        /* Requested mode is producer-owned; active mode changes only at the
+         * SoundMainRAM boundary so hardware timing remains common. */
+        M4APcmMixerMode active_pcm_mode;
+        M4APcmMixerMode requested_pcm_mode;
         float host_rate;
         float pcm_mix_rate; /* requested rate; zero follows host_rate */
         uint32_t pcm_rate_hz;
@@ -300,36 +287,11 @@ extern "C"
         M4ADriverTrack tracks[M4A_MAX_TRACKS];
         M4ADriverCgbChan cgb[M4A_MAX_CGB_CHANNELS];
         M4ADriverPcmChan pcmChans[M4A_MAX_PCM_CHANNELS];
-
-        /* SoundMainRAM accumulates a stereo sample as one 00LL00RR packed
-         * word.  The ARM MLA deliberately lets the right product carry into
-         * the left lane; the later downsampler separates both FIFO bytes. */
-        uint32_t pcmMixPacked[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
-        int16_t pcmMixL[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
-        int16_t pcmMixR[M4A_PCM_MAX_SAMPLES_PER_VBLANK];
-
-        /* SoundMainRAM carries the discarded low seven mixer bits between
-         * adjacent output samples independently for the two packed lanes. */
-        uint8_t pcm_noise_shape_left;
-        uint8_t pcm_noise_shape_right;
-
-        /* Reverb delay-line state.  Vanilla Sappy SoundMainRAM_Reverb is a
-         * 4-tap design: read current L+R and (current+frameSize) L+R, sum,
-         * scale by amount>>9, write back.  The active buffer retains the
-         * canonical DMA buffer's duration as the PCM rate changes; the
-         * other tap remains one active vblank ahead.
-         *
-         * Type is int8 because the ROM reverb buffer is the int8 FIFO buffer
-         * (gPcmDmaBuffer) — wet samples are clamped to int8 range before
-         * writeback so future tap reads see the same values that would have
-         * been DMA'd.  An int16 buffer here would diverge on heavy mixes where
-         * pcmMix temporarily exceeds [-128, 127] before the final
-         * clamp-to-int8 stage; the delay line would feed those out-of-range
-         * values back into subsequent reverb sums, drifting from
-         * real-hardware behavior. */
-        int8_t reverbBufL[M4A_PCM_MAX_DMA_BUF_SIZE];
-        int8_t reverbBufR[M4A_PCM_MAX_DMA_BUF_SIZE];
-        uint16_t reverbPos;
+        union
+        {
+            M4APcmIpatixGlobalState ipatix;
+            M4APcmSappyGlobalState sappy;
+        } pcmMixerState;
 
         /* Public contract output (driver→chip).  CgbSound writes regs each
          * tick; SoundMainRAM writes pcm.ring_a/ring_b each vblank. */

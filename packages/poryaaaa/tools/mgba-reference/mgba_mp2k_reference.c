@@ -235,6 +235,7 @@ typedef struct Options
     uint32_t soundInfo;
     uint32_t voiceAddress;
     uint32_t fixtureAddress;
+    bool fixtureMode;
     DriverScenario driverScenario;
     const char* elfPath;
     const char* voicegroupSymbol;
@@ -285,6 +286,7 @@ typedef struct Recorder
     double sumSquares;
     int peak;
     int nativePeak;
+    uint64_t fifoWriteCount;
     unsigned sampleRate;
     uint32_t pendingTimerSequence;
     TracePosition tracePosition;
@@ -328,6 +330,8 @@ static void print_usage(const char* program)
             "   or: %s --rom FILE --output FILE --boot-song\n"
             "          --song-address ADDRESS --mplay-info ADDRESS\n"
             "          --sound-info ADDRESS [options]\n"
+            "   or: %s --rom FILE --fixture --capture-stage native\n"
+            "          --trace-output FILE --native-output-prefix PREFIX [options]\n"
             "\n"
             "--output is required for frontend/both capture. Native/both capture also\n"
             "requires --trace-output and --native-output-prefix.\n"
@@ -360,6 +364,7 @@ static void print_usage(const char* program)
             "  --dump-driver-track NAME  Print default fixed track bytes for a focused behavior test\n"
             "  --dump-driver-span NAME   Print a fixed driver measurement span\n"
             "  --dump-driver-family TYPE Print the family and solo mask for one ToneData type\n",
+            program,
             program,
             program,
             program);
@@ -492,6 +497,13 @@ static bool parse_options(int argc, char** argv, Options* options)
         if (strcmp(name, "--boot-song") == 0)
         {
             options->bootSong = true;
+            continue;
+        }
+        if (strcmp(name, "--fixture") == 0)
+        {
+            if (options->fixtureMode)
+                return false;
+            options->fixtureMode = true;
             continue;
         }
         if (i + 1 >= argc)
@@ -667,6 +679,16 @@ static bool parse_options(int argc, char** argv, Options* options)
         (options->elfPath != NULL || options->voicegroupSymbol != NULL || options->hasVoiceIndex))
     {
         return false;
+    }
+    if (options->fixtureMode)
+    {
+        return options->romPath != NULL && nativeCapture && !frontendCapture && outputConfiguration &&
+               options->mplayStart == 0u && options->mplayAllStop == 0u && options->m4aVSyncOff == 0u &&
+               options->m4aVSyncOn == 0u && options->m4aVSync == 0u && options->songStart == 0u &&
+               options->songAddress == 0u && !options->hasSongId && options->mplayInfo == 0u &&
+               options->soundInfo == 0u && options->voiceAddress == 0u && !options->bootSong &&
+               !driverScenarioRequested && options->elfPath == NULL && options->voicegroupSymbol == NULL &&
+               !options->hasVoiceIndex && !options->hasSolo && !options->hasMute && !options->hasRequiredMaxChans;
     }
     return options->romPath != NULL && outputConfiguration && options->mplayInfo != 0u && options->soundInfo != 0u &&
            (voiceMode || songMode || bootSongMode);
@@ -1407,14 +1429,20 @@ static bool write_trace_marker(Recorder* recorder, const char* marker, uint64_t 
 static bool write_trace_write(Recorder* recorder, const struct GBAAudioObservation* observation)
 {
     uint32_t order = 0u;
-    return next_trace_position(recorder, observation->cycle, &order) &&
-           fprintf(recorder->traceOutput,
-                   "WRITE %" PRIu64 " %" PRIu32 " %u 0x%08" PRIX32 " 0x%08" PRIX32 "\n",
-                   observation->cycle,
-                   order,
-                   (unsigned)observation->width,
-                   observation->address,
-                   observation->value) > 0;
+    bool written = next_trace_position(recorder, observation->cycle, &order) &&
+                   fprintf(recorder->traceOutput,
+                           "WRITE %" PRIu64 " %" PRIu32 " %u 0x%08" PRIX32 " 0x%08" PRIX32 "\n",
+                           observation->cycle,
+                           order,
+                           (unsigned)observation->width,
+                           observation->address,
+                           observation->value) > 0;
+    if (written && observation->width == 4u &&
+        (observation->address == 0x040000A0u || observation->address == 0x040000A4u))
+    {
+        ++recorder->fifoWriteCount;
+    }
+    return written;
 }
 
 /* Serializes timer callback lateness without adding a second trace time domain. */
@@ -1976,8 +2004,9 @@ static bool write_native_manifest(const Recorder* recorder,
 /* Publishes a complete native sibling set without replacing any destination. */
 static bool finish_native_capture(Recorder* recorder, const Options* options)
 {
+    bool missingSignal = options->fixtureMode ? recorder->fifoWriteCount == 0u : recorder->nativePeak == 0;
     if (recorder->nativeWriteFailed || !recorder->nativeFinished || recorder->nativeFramesWritten == 0u ||
-        recorder->nativePeak == 0 || recorder->traceOutput == NULL || recorder->nativePcmOutput == NULL ||
+        missingSignal || recorder->traceOutput == NULL || recorder->nativePcmOutput == NULL ||
         recorder->nativeCyclesOutput == NULL || recorder->nativeManifestOutput == NULL)
     {
         return false;
@@ -2873,6 +2902,28 @@ int main(int argc, char** argv)
 #endif
         reset_observations(&recorder);
     }
+    if (options.fixtureMode)
+    {
+        if (!begin_native_capture(core, &recorder, &options))
+        {
+            fprintf(stderr, "Could not open the fixture capture interval\n");
+            goto unload;
+        }
+        while (!recorder.nativeFinished)
+        {
+            if (!run_frame_and_drain(core, &recorder))
+            {
+                fprintf(stderr, "The fixture ROM stopped producing observations\n");
+                goto unload;
+            }
+        }
+        if (!finish_native_capture(&recorder, &options))
+        {
+            fprintf(stderr, "The fixture native capture failed\n");
+            goto unload;
+        }
+        goto validate_capture;
+    }
     uint32_t expectedHeader =
         options.songAddress != 0u ? options.songAddress : options.fixtureAddress + FIXTURE_HEADER_OFFSET;
     if (options.bootSong)
@@ -2973,7 +3024,8 @@ int main(int argc, char** argv)
         goto unload;
     }
 validate_capture:
-    if ((frontendRequested && recorder.peak == 0) || (nativeRequested && recorder.nativePeak == 0))
+    if ((frontendRequested && recorder.peak == 0) ||
+        (nativeRequested && (options.fixtureMode ? recorder.fifoWriteCount == 0u : recorder.nativePeak == 0)))
     {
         fprintf(stderr, "mGBA produced a silent capture for song header 0x%08" PRIX32 "\n", expectedHeader);
         goto unload;

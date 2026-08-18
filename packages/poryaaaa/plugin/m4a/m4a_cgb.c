@@ -77,14 +77,14 @@ void m4a_chn_vol_set_cgb(M4ADriverCgbChan* ch, M4ADriverTrack* track)
  * MO_VOL) so the next CgbSound tick emits the ROM's wave start transaction. */
 void m4a_drv_cgb_start(M4ADriverCgbChan* ch)
 {
-    ch->status = M4A_CHN_ON | M4A_CHN_ENV_ATTACK;
+    ch->status = M4A_CHN_ENV_ATTACK;
     ch->modify = M4A_MO_PIT | M4A_MO_VOL;
     ch->freshStart = true;
     ch->envelopeCounter = ch->attack;
     if (ch->attack == 0)
     {
         ch->envelopeVolume = ch->envelopeGoal;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_DECAY;
+        ch->status = M4A_CHN_ENV_DECAY;
         ch->envelopeCounter = ch->decay;
         ch->envelopeStepTimeAndDir = ch->decay & 0x07u;
         if (ch->decay == 0)
@@ -94,19 +94,22 @@ void m4a_drv_cgb_start(M4ADriverCgbChan* ch)
                 ch->envelopeVolume = ((ch->envelopeGoal * ch->pseudoEchoVolume) + 0xFF) >> 8;
                 if (ch->envelopeVolume)
                 {
-                    ch->status = M4A_CHN_ON | M4A_CHN_IEC;
+                    ch->status = M4A_CHN_IEC;
                     if (ch->type != 3)
                         ch->envelopeStepTimeAndDir = 0x08u;
                 }
                 else
                 {
-                    ch->status = M4A_CHN_ON;
+                    /* Keep the canonical START marker live so CgbSound
+                     * performs the same-tick initialization before
+                     * CgbOscOff handles the zero-volume result. */
+                    ch->status = M4A_CHN_START;
                 }
             }
             else
             {
                 ch->envelopeVolume = ch->sustainGoal;
-                ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+                ch->status = M4A_CHN_ENV_SUSTAIN;
                 ch->envelopeStepTimeAndDir = 0x08u;
             }
         }

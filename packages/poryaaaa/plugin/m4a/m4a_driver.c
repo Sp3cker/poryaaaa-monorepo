@@ -83,14 +83,7 @@ static void m4a_reset_pcm_fifo_scheduler(M4ADriver* drv)
 
 static void m4a_reset_pcm_output_state(M4ADriver* drv)
 {
-    memset(drv->pcmMixPacked, 0, sizeof(drv->pcmMixPacked));
-    memset(drv->pcmMixL, 0, sizeof(drv->pcmMixL));
-    memset(drv->pcmMixR, 0, sizeof(drv->pcmMixR));
-    memset(drv->reverbBufL, 0, sizeof(drv->reverbBufL));
-    memset(drv->reverbBufR, 0, sizeof(drv->reverbBufR));
-    drv->reverbPos = 0;
-    drv->pcm_noise_shape_left = 0;
-    drv->pcm_noise_shape_right = 0;
+    m4a_drv_pcm_reset(drv);
     drv->pcm_vblank_remainder = 0;
     memset(&drv->pcm, 0, sizeof(drv->pcm));
     drv->pcm.pcm_rate_hz = drv->pcm_rate_hz;
@@ -156,6 +149,10 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     if (!drv)
         return NULL;
     drv->host_rate = host_sample_rate;
+    /* calloc currently gives the same values, but make the fresh-driver
+     * contract explicit so future initialization changes cannot select Sappy. */
+    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
     m4a_internal_recompute_host_timing(drv);
     drv->next_vblank_cycle = M4A_VBLANK_CYCLES;
     drv->next_vcount_cycle = M4A_VBLANK_CYCLES - M4A_VCOUNT_TO_VBLANK_CYCLES;
@@ -227,6 +224,22 @@ void m4a_driver_destroy(M4ADriver* drv)
 int m4a_driver_recommended_max_advance_frames(void)
 {
     return M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
+}
+
+/* Queue a validated mode request without allocating or changing active mode. */
+bool m4a_driver_set_pcm_mixer_mode(M4ADriver* drv, M4APcmMixerMode mode)
+{
+    if (!drv || (mode != M4A_PCM_MIXER_IPATIX && mode != M4A_PCM_MIXER_SAPPY))
+        return false;
+    /* Repeating the active value deliberately cancels any queued change. */
+    drv->requested_pcm_mode = mode;
+    return true;
+}
+
+/* Return the committed mode; a queued request remains invisible to callers. */
+M4APcmMixerMode m4a_driver_get_pcm_mixer_mode(const M4ADriver* drv)
+{
+    return drv ? drv->active_pcm_mode : M4A_PCM_MIXER_IPATIX;
 }
 
 void m4a_driver_set_host_rate(M4ADriver* drv, float hz)

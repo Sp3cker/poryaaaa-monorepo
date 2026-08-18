@@ -1,0 +1,45 @@
+{
+  "case": "sappy-compressed-loop",
+  "hashes": {
+    "cases": "9211a4bf32f342d8c9009cceb711474adae647832b6fc0c5e9c7c10bbd58e564",
+    "elf": "495ab8ef754b04a8949e3054cd5b9b36a5376edbcd960455e93aba51e1d5d57c",
+    "generator": "89043ea5b07babf9985566eb61d67d06303bea99f4e81cc87ac044623b92548e",
+    "input": "8cb905f9d7de8a1f79e200cefada7448abe654e3cf2fb706d68e6b9c1a1f7a76",
+    "rom": "96eff1b36b1c9f782fdd8df7ee9bb813c33f5b1827bf8595930d02722736e276",
+    "trace": "a0282b48e978351e7491af75f6154b732837c6b6568973d2005916e235a4d011"
+  },
+  "mode": "sappy",
+  "observation": {
+    "mgba_commit": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9",
+    "patch_sha256": "3e5dec217b04917733767339e95dbb2b1eb64f292345603e69c57c47ce64a017"
+  },
+  "range": {
+    "begin_cycle": 0,
+    "end_cycle": 2013266,
+    "event_hash": "c34c552a2264596c50da6a82560e880b85f9cb4ed1346b41a5b4568734c3be8e",
+    "row_count": 144
+  },
+  "reference": {
+    "commit": "9a83a2bbe8e097e62c00f1dbd56849766775d7b6",
+    "feature_flags": {},
+    "patch_sha256": null,
+    "repository": "https://github.com/pret/pokeemerald",
+    "source_tree_sha256": "99dd70c5467723b4ab3b3351286c3ac7b5465c43599ce77211685f2180cb4640"
+  },
+  "schema": "poryaaaa.pcm-mixer-oracle",
+  "settings": {
+    "master_volume": 15,
+    "max_channels": 1,
+    "pcm_rate_hz": 5734,
+    "reverb": 0,
+    "voice_volume": 127
+  },
+  "toolchain": {
+    "assembler": "GNU assembler (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or later.\nThis program has absolutely no warranty.\nThis assembler was configured for a target of `arm-none-eabi'.",
+    "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "linker": "GNU ld (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty.",
+    "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty.",
+    "readelf": "GNU readelf (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty."
+  },
+  "version": 1
+}

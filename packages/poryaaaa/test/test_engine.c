@@ -7,6 +7,7 @@
 #include "test_assert.h"
 
 #include "m4a/m4a_driver.h"
+#include "m4a_engine.h"
 #include "hw_audio/hw_audio.h"
 #include "hw_audio/hw_pcm.h"
 #include "hw_audio/hw_psg.h"
@@ -528,8 +529,8 @@ static void test_polyphony_stealing(void)
     voices[0].sustain = 0xFF;
     voices[0].release = 0;
 
-    const uint8_t ACTIVE = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
-    const uint8_t STOPPING = M4A_CHN_ON | M4A_CHN_STOP | M4A_CHN_START;
+    const uint8_t ACTIVE = M4A_CHN_ENV_SUSTAIN;
+    const uint8_t STOPPING = M4A_CHN_START | M4A_CHN_STOP;
 
     M4ADriver* drv;
 
@@ -714,7 +715,7 @@ static void test_v2_prio_cc_and_player_priority_steal(void)
     M4ADriver* drv = create_polyphony_test_driver(voices);
     if (drv)
     {
-        const uint8_t active = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        const uint8_t active = M4A_CHN_ENV_SUSTAIN;
         m4a_program_change(drv, 1, 0);
         ASSERT_EQ(drv->player_priority, 0, "player priority defaults to zero");
 
@@ -961,7 +962,7 @@ static void test_v2_cgb_triple_zero_echo_starts_iec(void)
         }
     }
 
-    ASSERT_EQ(ch->status, M4A_CHN_ON | M4A_CHN_IEC, "triple-zero nonzero echo enters IEC on first tick");
+    ASSERT_EQ(ch->status, M4A_CHN_IEC, "triple-zero nonzero echo enters IEC on first tick");
     ASSERT(expectedVolume != 0, "configured nonzero pseudo-echo produces a nonzero volume");
     ASSERT_EQ(ch->envelopeVolume, expectedVolume, "triple-zero IEC uses ROM pseudo-echo volume");
     ASSERT_EQ(ch->pseudoEchoLength, 3, "triple-zero IEC length is not decremented on start tick");
@@ -1040,7 +1041,7 @@ static void test_v2_square_sustain_rollover_does_not_write(void)
         return;
 
     M4ADriverCgbChan* ch = &drv->cgb[1];
-    ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+    ch->status = M4A_CHN_ENV_SUSTAIN;
     ch->type = 2;
     ch->trackIndex = 0;
     ch->panMask = 0x22;
@@ -1273,6 +1274,344 @@ static void test_v2_pcm_default_master_volume_matches_rom(void)
     }
 }
 
+/* Prepare one isolated channel through the selected vanilla dispatcher. */
+static M4ADriverPcmChan* setup_sappy_test_voice(M4ADriver* drv, WaveData* wav, uint8_t type, uint32_t frequency)
+{
+    m4a_drv_pcm_reset(drv);
+    memset(&drv->pcmChans[0], 0, sizeof(drv->pcmChans[0]));
+    m4a_drv_pcm_start(drv, &drv->pcmChans[0], wav, type, 0);
+    M4ADriverPcmChan* channel = &drv->pcmChans[0];
+    channel->attack = 0xFF;
+    channel->decay = 0xFF;
+    channel->sustain = 0xFF;
+    channel->release = 0xFF;
+    channel->rightVolume = 0xFF;
+    channel->leftVolume = 0xFF;
+    m4a_drv_pcm_update_pitch(drv, channel, frequency);
+    return channel;
+}
+
+static M4ADriver* create_sappy_test_driver(uint8_t channels)
+{
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "vanilla Sappy test driver allocates");
+    if (drv)
+    {
+        m4a_set_master_volume(drv, 15);
+        m4a_set_max_pcm_channels(drv, channels);
+        m4a_set_reverb_amount(drv, 0);
+        ASSERT(m4a_driver_set_pcm_mixer_mode(drv, M4A_PCM_MIXER_SAPPY), "vanilla test driver queues Sappy");
+        m4a_sound_main_ram(drv);
+        m4a_drv_pcm_reset(drv);
+    }
+    return drv;
+}
+
+/* SoundMainRAM_Unk2 decodes one predictor, the low nibble of byte 1, then
+ * high/low pairs.  Its channel cache tag must switch exactly at sample 64. */
+static void test_sappy_compressed_cache_boundary(void)
+{
+    printf("Testing vanilla Sappy compressed cache boundary...\n");
+    enum
+    {
+        SAMPLES = M4A_SAPPY_COMPRESSED_BLOCK_SAMPLES * 2,
+        BYTES = M4A_SAPPY_COMPRESSED_BLOCK_BYTES * 2
+    };
+    int8_t encoded[BYTES];
+    memset(encoded, 0, sizeof(encoded));
+    encoded[0] = 10;
+    encoded[1] = 0x02;
+    encoded[2] = 0x34;
+    encoded[M4A_SAPPY_COMPRESSED_BLOCK_BYTES] = -20;
+    encoded[M4A_SAPPY_COMPRESSED_BLOCK_BYTES + 1] = 0x0F;
+    encoded[M4A_SAPPY_COMPRESSED_BLOCK_BYTES + 2] = 0x12;
+    WaveData wav = {0};
+    wav.type = 1;
+    wav.size = SAMPLES;
+    wav.data = encoded;
+
+    M4ADriver* drv = create_sappy_test_driver(1);
+    if (!drv)
+        return;
+    M4ADriverPcmChan* channel = setup_sappy_test_voice(drv, &wav, VOICE_CRY, 0x800000u);
+    channel->leftVolume = 0;
+    m4a_drv_pcm_render(drv, M4A_SAPPY_COMPRESSED_BLOCK_SAMPLES + 1u);
+
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 9, "compressed predictor reaches the DMA lane");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[1], 13, "byte 1 contributes only its low nibble");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[2], 22, "byte 2 contributes its high nibble first");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[M4A_SAPPY_COMPRESSED_BLOCK_SAMPLES],
+              -20,
+              "sample 64 comes from the next block predictor");
+    ASSERT_EQ(channel->sappy.decoded_block, 1, "cache tag changes at the 64-sample boundary");
+    ASSERT(channel->status & M4A_CHN_SPECIAL, "compressed path records vanilla special initialization");
+    ASSERT_EQ(drv->pcmMixerState.sappy.decoding_buffer[0], -20, "second block predictor is cached");
+    ASSERT_EQ(drv->pcmMixerState.sappy.decoding_buffer[1], -21, "second block low nibble is decoded first");
+    ASSERT_EQ(drv->pcmMixerState.sappy.decoding_buffer[2], -20, "following high nibble uses the delta table");
+    ASSERT_EQ(drv->pcmMixerState.sappy.decoding_buffer[3], -16, "following low nibble completes the pair");
+    m4a_driver_destroy(drv);
+}
+
+/* Vanilla START, ADSR, release, and IEC exercise the dispatcher lifecycle. */
+static void test_sappy_lifecycle_and_seams(void)
+{
+    printf("Testing vanilla Sappy lifecycle and dispatcher seams...\n");
+    int8_t data[64];
+    memset(data, 32, sizeof(data));
+    WaveData wav = {0};
+    wav.status = 0xC000;
+    wav.loopStart = 0;
+    wav.size = sizeof(data);
+    wav.data = data;
+
+    M4ADriver* drv = create_sappy_test_driver(1);
+    if (!drv)
+        return;
+    M4ADriverPcmChan* channel = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND_NO_RESAMPLE, 0x800000u);
+    channel->attack = 100;
+    channel->decay = 128;
+    channel->sustain = 50;
+    channel->release = 0;
+    channel->pseudoEchoVolume = 20;
+    channel->pseudoEchoLength = 2;
+
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->envelopeVolume, 100, "START enters attack and applies its first increment");
+    ASSERT_EQ(channel->status & M4A_CHN_ENV_MASK, M4A_CHN_ENV_ATTACK, "attack remains active");
+    m4a_drv_pcm_render(drv, 1);
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->envelopeVolume, 255, "attack clamps to 255");
+    ASSERT_EQ(channel->status & M4A_CHN_ENV_MASK, M4A_CHN_ENV_DECAY, "attack advances to decay");
+    m4a_drv_pcm_render(drv, 1);
+    m4a_drv_pcm_render(drv, 1);
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->envelopeVolume, 50, "decay clamps to sustain");
+    ASSERT_EQ(channel->status & M4A_CHN_ENV_MASK, M4A_CHN_ENV_SUSTAIN, "decay advances to sustain");
+
+    M4ADriverPcmChan clone = {0};
+    ASSERT(m4a_drv_pcm_clone(drv, &clone, drv, channel), "same-mode vanilla clone succeeds");
+    M4APcmChannelSnapshot sourceSnapshot = {0};
+    M4APcmChannelSnapshot cloneSnapshot = {0};
+    m4a_drv_pcm_snapshot(drv, channel, &sourceSnapshot);
+    m4a_drv_pcm_snapshot(drv, &clone, &cloneSnapshot);
+    ASSERT_EQ(cloneSnapshot.status, sourceSnapshot.status, "clone preserves observable lifecycle status");
+    ASSERT_EQ(cloneSnapshot.frequency, sourceSnapshot.frequency, "clone preserves observable pitch");
+    ASSERT(cloneSnapshot.wav == sourceSnapshot.wav, "clone preserves the observable wave");
+    M4ADriverPcmChan inherited = {0};
+    inherited.wav = &wav;
+    ASSERT(m4a_drv_pcm_inherit(drv, &inherited, channel), "same-wave vanilla inherit succeeds");
+    M4APcmChannelSnapshot snapshot = {0};
+    m4a_drv_pcm_snapshot(drv, channel, &snapshot);
+    ASSERT_EQ(snapshot.envelope_volume, 50, "snapshot exposes normalized envelope state");
+
+    channel->status |= M4A_CHN_STOP;
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT(channel->status & M4A_CHN_IEC, "release threshold enters pseudo-echo");
+    ASSERT_EQ(channel->envelopeVolume, 20, "pseudo-echo uses its pinned volume");
+    ASSERT_EQ(channel->pseudoEchoLength, 2, "IEC length is not decremented on entry");
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->pseudoEchoLength, 1, "first IEC tick decrements the length");
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->status & M4A_CHN_ON, 0, "final IEC tick turns the channel off");
+
+    channel = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND_NO_RESAMPLE, 0x800000u);
+    channel->status |= M4A_CHN_STOP;
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(channel->status, 0, "START and STOP together terminate before attack");
+    m4a_driver_destroy(drv);
+}
+
+/* Cover native fixed/resampled rates, forward loops, reverse endpoints, and
+ * the zero padding exposed by vanilla's uncompressed reverse loader. */
+static void test_sappy_traversal_rates_and_endpoints(void)
+{
+    printf("Testing vanilla Sappy traversal, rates, loops, and endpoints...\n");
+    M4ADriver* drv = create_sappy_test_driver(1);
+    if (!drv)
+        return;
+
+    int8_t fixed_data[] = {32, 64, 96, 0};
+    WaveData fixed = {0};
+    fixed.size = 3;
+    fixed.data = fixed_data;
+    M4ADriverPcmChan* channel = setup_sappy_test_voice(drv, &fixed, VOICE_DIRECTSOUND_NO_RESAMPLE, 0x800000u);
+    m4a_drv_pcm_render(drv, 5);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 31, "fixed path mixes sample zero");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[1], 63, "fixed path advances one sample");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[2], 95, "fixed path reaches its endpoint");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[3], 0, "fixed endpoint leaves seeded padding");
+    ASSERT_EQ(channel->status, 0, "fixed one-shot stops at its logical size");
+
+    int8_t rate_data[] = {0, 64, 127, 0};
+    WaveData rate = {0};
+    rate.size = 3;
+    rate.data = rate_data;
+    channel = setup_sappy_test_voice(drv, &rate, VOICE_DIRECTSOUND, 0x400000u);
+    m4a_drv_pcm_render(drv, 6);
+    const int expected_rate[] = {0, 31, 63, 94, 126, 62};
+    for (size_t i = 0; i < sizeof(expected_rate) / sizeof(expected_rate[0]); i++)
+        ASSERT_EQ(drv->pcmMixerState.sappy.output_right[i], expected_rate[i], "half-rate interpolation is exact");
+    ASSERT_EQ(channel->status, 0, "resampled one-shot stops after its final interpolation");
+
+    int8_t loop_data[] = {10, 20, 30};
+    WaveData loop = {0};
+    loop.status = 0xC000;
+    loop.loopStart = 1;
+    loop.size = 3;
+    loop.data = loop_data;
+    channel = setup_sappy_test_voice(drv, &loop, VOICE_DIRECTSOUND_NO_RESAMPLE, 0x800000u);
+    m4a_drv_pcm_render(drv, 5);
+    const int expected_loop[] = {9, 19, 29, 19, 29};
+    for (size_t i = 0; i < sizeof(expected_loop) / sizeof(expected_loop[0]); i++)
+        ASSERT_EQ(drv->pcmMixerState.sappy.output_right[i], expected_loop[i], "fixed loop restarts at loopStart");
+    ASSERT(channel->status & M4A_CHN_LOOP, "looping fixed voice remains active");
+    int8_t resampled_loop_data[] = {
+        127, 96, 64, 32, 0, -32, -64, -96, 127, 96, 64, 32, 0, -32, -64, -96, 127, 96, 64, 32,
+    };
+    WaveData resampled_loop = {0};
+    resampled_loop.status = 0xC000;
+    resampled_loop.loopStart = 7;
+    resampled_loop.size = 19;
+    resampled_loop.data = resampled_loop_data;
+    channel = setup_sappy_test_voice(drv, &resampled_loop, VOICE_DIRECTSOUND, 0x600000u);
+    channel->rightVolume = 127;
+    channel->leftVolume = 0;
+    m4a_drv_pcm_render(drv, 28);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[24], 31, "resampled loop reaches the last source pair");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[25], 19, "resampled loop keeps its fractional phase");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[26], 7, "exact wrap starts at loopStart");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[27], 58, "wrapped interpolation advances from loopStart");
+
+    int8_t reverse_data[] = {10, 20, 30, 40};
+    WaveData reverse = {0};
+    reverse.size = 4;
+    reverse.data = reverse_data;
+    channel = setup_sappy_test_voice(drv, &reverse, VOICE_TYPE_REV | VOICE_TYPE_FIX, 0x800000u);
+    m4a_drv_pcm_render(drv, 4);
+    const int expected_reverse[] = {39, 29, 19, 9};
+    for (size_t i = 0; i < sizeof(expected_reverse) / sizeof(expected_reverse[0]); i++)
+        ASSERT_EQ(drv->pcmMixerState.sappy.output_right[i],
+                  expected_reverse[i],
+                  "reverse path reaches every source byte in descending order");
+    ASSERT_EQ(channel->status, 0, "reverse one-shot stops at its logical endpoint");
+
+    int8_t padded_reverse_data[] = {64, 0};
+    WaveData padded_reverse = {0};
+    padded_reverse.size = 1;
+    padded_reverse.data = padded_reverse_data;
+    channel = setup_sappy_test_voice(drv, &padded_reverse, VOICE_TYPE_REV, 0x400000u);
+    m4a_drv_pcm_render(drv, 2);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 63, "resampled reverse starts at the final byte");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[1],
+              31,
+              "resampled reverse interpolates into the wave-header padding byte");
+    ASSERT_EQ(channel->status, 0, "resampled reverse stops after its padded endpoint");
+    m4a_driver_destroy(drv);
+}
+
+/* Each voice is truncated before a modulo-256 add to the right/left DMA byte. */
+static void test_sappy_direct_byte_mixing(void)
+{
+    printf("Testing vanilla Sappy direct signed-byte mixing...\n");
+    int8_t data[] = {127};
+    WaveData wav = {0};
+    wav.status = 0xC000;
+    wav.size = 1;
+    wav.data = data;
+    M4ADriver* drv = create_sappy_test_driver(2);
+    if (!drv)
+        return;
+    M4ADriverPcmChan* first = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND_NO_RESAMPLE, 0x800000u);
+    m4a_set_max_pcm_channels(drv, 2);
+    first->leftVolume = 128;
+    M4ADriverPcmChan* second = &drv->pcmChans[1];
+    memset(second, 0, sizeof(*second));
+    m4a_drv_pcm_start(drv, second, &wav, VOICE_DIRECTSOUND_NO_RESAMPLE, 0);
+    second->attack = 0xFF;
+    second->decay = 0xFF;
+    second->sustain = 0xFF;
+    second->rightVolume = 0xFF;
+    second->leftVolume = 0xFF;
+    m4a_drv_pcm_update_pitch(drv, second, 0x800000u);
+
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(first->envelopeVolumeRight, 254, "voice gain truncates after master scaling");
+    ASSERT_EQ(first->envelopeVolumeLeft, 127, "left and right gains remain independent");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], -4, "two positive voice bytes wrap modulo 256");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_left[0], -67, "left lane uses its own byte order and gain");
+    m4a_driver_destroy(drv);
+}
+
+/* Vanilla reverb seeds the destination before voices from current and
+ * one-block-ahead DMA taps; later empty blocks expose the resulting tail. */
+static void test_sappy_reverb_first_steady_tail(void)
+{
+    printf("Testing vanilla Sappy reverb first, steady, and tail blocks...\n");
+    M4ADriver* drv = create_sappy_test_driver(0);
+    if (!drv)
+        return;
+    m4a_set_reverb_amount(drv, 64);
+    memset(&drv->pcm, 0, sizeof(drv->pcm));
+    m4a_drv_pcm_render(drv, 4);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 0, "first empty reverb block starts at zero");
+
+    drv->pcm.ring_a[0] = 100;
+    drv->pcm.ring_b[0] = -20;
+    drv->pcm.ring_a[4] = 60;
+    drv->pcm.ring_b[4] = 20;
+    drv->pcm.ring_a[1] = -64;
+    drv->pcm.ring_b[1] = -64;
+    m4a_drv_pcm_render(drv, 4);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 20, "steady reverb sums all four signed DMA taps");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_left[0], 20, "vanilla reverb writes a mono seed to both lanes");
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[1], -15, "negative reverb applies the pinned byte rounding");
+
+    drv->pcm.ring_a[0] = 0;
+    drv->pcm.ring_b[0] = 0;
+    drv->pcm.ring_a[1] = 0;
+    drv->pcm.ring_b[1] = 0;
+    m4a_drv_pcm_render(drv, 4);
+    ASSERT_EQ(drv->pcmMixerState.sappy.output_right[0], 10, "future DMA history alone produces the tail");
+    m4a_driver_destroy(drv);
+}
+
+/* A zero-size Camelot descriptor is a vanilla sample endpoint, never a synth. */
+static void test_sappy_zero_length_descriptor_diverges(void)
+{
+    printf("Testing vanilla Sappy zero-length descriptor divergence...\n");
+    int8_t descriptor[] = {0, 0, 64, 0, 0, 0};
+    WaveData wav = {0};
+    wav.size = 0;
+    wav.data = descriptor;
+    M4ADriver* sappy = create_sappy_test_driver(1);
+    if (!sappy)
+        return;
+    M4ADriverPcmChan* sappy_channel = setup_sappy_test_voice(sappy, &wav, VOICE_DIRECTSOUND, 0x800000u);
+    m4a_drv_pcm_render(sappy, 8);
+    ASSERT_EQ(sappy_channel->status, 0, "vanilla zero-length descriptor stops as a sample");
+    for (int i = 0; i < 8; i++)
+        ASSERT_EQ(sappy->pcmMixerState.sappy.output_right[i], 0, "vanilla descriptor emits no synth bytes");
+
+    M4ADriver* synth = m4a_driver_create(44100.0f);
+    ASSERT(synth != NULL, "comparison synth driver allocates");
+    if (synth)
+    {
+        m4a_set_master_volume(synth, 15);
+        m4a_set_max_pcm_channels(synth, 1);
+        M4ADriverPcmChan* synth_channel = &synth->pcmChans[0];
+        m4a_drv_pcm_start(synth, synth_channel, &wav, VOICE_DIRECTSOUND, 0);
+        synth_channel->attack = 0xFF;
+        synth_channel->rightVolume = 0xFF;
+        synth_channel->leftVolume = 0;
+        m4a_drv_pcm_update_pitch(synth, synth_channel, 0x800000u);
+        const M4APcmBlockOutput synth_output = m4a_drv_pcm_render(synth, 8);
+        ASSERT(synth_channel->status & M4A_CHN_ON, "comparison adapter treats the descriptor as a live oscillator");
+        ASSERT(synth_output.right[0] != 0, "zero-length descriptor deliberately diverges from oscillator output");
+        m4a_driver_destroy(synth);
+    }
+    m4a_driver_destroy(sappy);
+}
+
 /* A fresh PCM channel starts with envelope zero; SoundMainRAM applies the
  * first attack increment exactly once on its first mixer tick. */
 static void test_v2_pcm_first_tick_applies_one_attack_step(void)
@@ -1318,6 +1657,53 @@ static void test_v2_pcm_first_tick_applies_one_attack_step(void)
 
     m4a_driver_destroy(drv);
 }
+/* Pinned C_channel_state_loop clears INIT|RELEASE before any ADSR work. */
+static void test_v2_pcm_start_stop_stops_immediately(void)
+{
+    printf("Testing v2 PCM START|STOP turns a new voice off immediately...\n");
+
+    static int8_t data[9];
+    memset(data, 32, sizeof(data));
+    WaveData wav = {0};
+    wav.freq = 22050u << 10;
+    wav.size = 8;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+    voices[0].release = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "START|STOP PCM driver allocates");
+    if (!drv)
+        return;
+    m4a_set_max_pcm_channels(drv, 1);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    drv->tracks[0].pseudoEchoVolume = 0x80;
+    drv->tracks[0].pseudoEchoLength = 3;
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "START|STOP PCM voice starts");
+    if (ch)
+    {
+        ch->status |= M4A_CHN_STOP;
+        m4a_sound_main_ram(drv);
+        ASSERT_EQ(ch->status, 0, "START|STOP PCM voice is stopped before ADSR/release");
+        ASSERT_EQ(ch->envelopeVolume, 0, "START|STOP PCM voice never enters attack");
+        ASSERT_EQ(ch->status & M4A_CHN_IEC, 0, "START|STOP PCM voice never enters pseudo-echo");
+    }
+
+    m4a_driver_destroy(drv);
+}
 
 /* SoundMainRAM skips source processing when its packed integer L/R mixer
  * volume is zero, leaving every sample-cursor field untouched. */
@@ -1356,25 +1742,26 @@ static void test_v2_pcm_zero_mix_volume_freezes_source_cursor(void)
     ASSERT(ch != NULL, "zero-volume voice starts a PCM channel");
     if (ch)
     {
-        ch->status = M4A_CHN_ON | M4A_CHN_LOOP | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_LOOP | M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 1;
         ch->leftVolume = 1;
         ch->envelopeVolume = 0xFF;
-        ch->sampleStored = 17;
-        ch->fw = 12345;
+        ch->ipatix.sample_stored = 17;
+        ch->ipatix.fine_position = 12345;
 
-        int8_t* pointerBefore = ch->currentPointer;
-        int32_t countBefore = ch->count;
-        uint32_t fwBefore = ch->fw;
-        int8_t storedBefore = ch->sampleStored;
+        int8_t* pointerBefore = ch->ipatix.current_pointer;
+        int32_t countBefore = ch->ipatix.count;
+        uint32_t finePositionBefore = ch->ipatix.fine_position;
+        int8_t storedBefore = ch->ipatix.sample_stored;
         m4a_sound_main_ram(drv);
 
         ASSERT_EQ(ch->envelopeVolumeRight, 0, "right integer mix volume quantizes to zero");
         ASSERT_EQ(ch->envelopeVolumeLeft, 0, "left integer mix volume quantizes to zero");
-        ASSERT(ch->currentPointer == pointerBefore, "zero packed volume freezes source pointer");
-        ASSERT_EQ(ch->count, countBefore, "zero packed volume freezes source count");
-        ASSERT_EQ((int)ch->fw, (int)fwBefore, "zero packed volume freezes fractional cursor");
-        ASSERT_EQ(ch->sampleStored, storedBefore, "zero packed volume freezes interpolation store");
+        ASSERT(ch->ipatix.current_pointer == pointerBefore, "zero packed volume freezes source pointer");
+        ASSERT_EQ(ch->ipatix.count, countBefore, "zero packed volume freezes source count");
+        ASSERT_EQ(
+            (int)ch->ipatix.fine_position, (int)finePositionBefore, "zero packed volume freezes fractional cursor");
+        ASSERT_EQ(ch->ipatix.sample_stored, storedBefore, "zero packed volume freezes interpolation store");
     }
 
     m4a_driver_destroy(drv);
@@ -1449,9 +1836,9 @@ static void test_v2_pcm_ring_fills(void)
 }
 
 /* PCM frequency scaling multiplies MidiKeyToFreq by divFreq before storing.
- * Verify fw advances at the rate required by the canonical formula.  The
- * first PCM tick advances fw by `frequency`; integer-sample step =
- * frequency >> 23. */
+ * Verify the iPatix fine_position advances at the rate required by the
+ * canonical formula.  The first PCM tick advances fine_position by
+ * `frequency`; integer-sample step = frequency >> 23. */
 static void test_v2_pcm_frequency_scale(void)
 {
     printf("Testing v2 PCM frequency divFreq scaling...\n");
@@ -1554,9 +1941,9 @@ static void test_v2_pcm_resampled_starts_from_m4a_sample_store(void)
     ASSERT(ch != NULL, "resampled voice starts a PCM channel");
     if (ch)
     {
-        ASSERT_EQ(ch->sampleStored, 0, "resampled voice clears M4A sample store on start");
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "resampled voice clears iPatix sample store on start");
         ch->frequency = 0;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
@@ -1605,19 +1992,18 @@ static void test_v2_pcm_fast_mix_flat_negative_sample(void)
     ASSERT(ch != NULL, "flat negative sample starts a PCM channel");
     if (ch)
     {
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
         ch->frequency = 0x400000u;
-        ch->fw = 0;
-        ch->sampleStored = -64;
+        ch->ipatix.fine_position = 0;
+        ch->ipatix.sample_stored = -64;
 
         m4a_sound_main_ram(drv);
 
-        ASSERT_EQ((int32_t)drv->pcmMixPacked[1],
-                  (int32_t)drv->pcmMixPacked[0],
-                  "flat negative interpolation is identical before the first source advance");
+        const M4APcmRing* ring = m4a_get_pcm_ring(drv);
+        ASSERT_EQ(ring->ring_a[1], ring->ring_a[0], "flat negative interpolation is identical in the published FIFO");
     }
 
     m4a_driver_destroy(drv);
@@ -1665,25 +2051,26 @@ static void test_v2_pcm_unbuffered_exact_loop_wrap_uses_loop_predecessor(void)
     ASSERT(ch != NULL, "looping voice starts a PCM channel");
     if (ch)
     {
-        ch->status = M4A_CHN_ON | M4A_CHN_LOOP | M4A_CHN_ENV_SUSTAIN;
-        ch->currentPointer = data + SAMPLE_COUNT - 4;
-        ch->count = 4;
-        ch->fw = 0;
-        ch->sampleStored = data[SAMPLE_COUNT - 5];
+        ch->status = M4A_CHN_LOOP | M4A_CHN_ENV_SUSTAIN;
+        ch->ipatix.current_pointer = data + SAMPLE_COUNT - 4;
+        ch->ipatix.count = 4;
+        ch->ipatix.fine_position = 0;
+        ch->ipatix.sample_stored = data[SAMPLE_COUNT - 5];
         ch->frequency = 4u << 23;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
 
         m4a_sound_main_ram(drv);
-
-        uint32_t packedVolume = ch->envelopeVolumeRight;
-        const uint32_t carry = packedVolume & 1u;
-        packedVolume = (packedVolume >> 1) + 0x8000u + carry;
-        packedVolume &= ~0x8000u;
-        const int32_t expected = (int32_t)(packedVolume * (uint32_t)(data[LOOP_START - 1] * 2));
-        ASSERT_EQ(
-            (int32_t)drv->pcmMixPacked[1], expected, "first sample after exact wrap interpolates from loopStart - 1");
+        uint32_t packed_volume = ch->envelopeVolumeRight;
+        const uint32_t carry = packed_volume & 1u;
+        packed_volume = ((packed_volume >> 1) + 0x8000u + carry) & ~0x8000u;
+        const int32_t expected_hq = (int32_t)(packed_volume * (uint32_t)(data[LOOP_START - 1] * 2));
+        const uint8_t expected_byte = (uint8_t)(((uint32_t)expected_hq << 16) >> 23);
+        const int expected_fifo = expected_byte <= 127 ? expected_byte : (int)expected_byte - 0x100;
+        ASSERT_EQ(m4a_get_pcm_ring(drv)->ring_a[1],
+                  expected_fifo,
+                  "published FIFO preserves the loop-predecessor sample after downsampling");
     }
 
     m4a_driver_destroy(drv);
@@ -1731,9 +2118,10 @@ static void test_v2_pcm_xcmd_start_offset_initializes_forward_sample_cursor(void
     ASSERT(ch != NULL, "offset forward voice starts a PCM channel");
     if (ch)
     {
-        ASSERT_EQ((int)(ch->currentPointer - data), START_OFFSET, "xcmd 0D offset advances forward start pointer");
-        ASSERT_EQ(ch->count, SAMPLE_COUNT - START_OFFSET, "xcmd 0D offset reduces forward remaining count");
-        ASSERT_EQ(ch->sampleStored, 0, "xcmd 0D offset still clears M4A sample store");
+        ASSERT_EQ(
+            (int)(ch->ipatix.current_pointer - data), START_OFFSET, "xcmd 0D offset advances forward start pointer");
+        ASSERT_EQ(ch->ipatix.count, SAMPLE_COUNT - START_OFFSET, "xcmd 0D offset reduces forward remaining count");
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "xcmd 0D offset still clears iPatix sample store");
     }
 
     m4a_driver_destroy(drv);
@@ -1779,11 +2167,267 @@ static void test_v2_pcm_xcmd_start_offset_initializes_reverse_sample_cursor(void
     ASSERT(ch != NULL, "offset reverse voice starts a PCM channel");
     if (ch)
     {
-        ASSERT_EQ((int)(ch->currentPointer - data),
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
                   SAMPLE_COUNT - START_OFFSET,
                   "xcmd 0D offset retreats reverse one-past cursor from sample end");
-        ASSERT_EQ(ch->count, SAMPLE_COUNT - START_OFFSET, "xcmd 0D offset reduces reverse remaining count");
-        ASSERT_EQ(ch->sampleStored, 0, "xcmd 0D offset still clears reverse M4A sample store");
+        ASSERT_EQ(ch->ipatix.count, SAMPLE_COUNT - START_OFFSET, "xcmd 0D offset reduces reverse remaining count");
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "xcmd 0D offset still clears iPatix sample store");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_compressed_reverse_start_uses_logical_end_cursor(void)
+{
+    printf("Testing v2 PCM compressed reverse start uses size-offset cursor...\n");
+
+    enum
+    {
+        SAMPLE_COUNT = 64,
+        START_OFFSET = 7,
+        ENCODED_BYTES = 33
+    };
+    static int8_t data[ENCODED_BYTES];
+    memset(data, 0, sizeof(data));
+    data[0] = 9;
+
+    WaveData wav = {0};
+    wav.type = 1;
+    wav.freq = 22050u << 10;
+    wav.size = SAMPLE_COUNT;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_ALT;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "compressed reverse start driver allocates");
+    if (!drv)
+        return;
+    m4a_set_max_pcm_channels(drv, 1);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    drv->tracks[0].extendedValue = START_OFFSET;
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "compressed reverse voice starts a PCM channel");
+    if (ch)
+    {
+        ASSERT_EQ(ch->ipatix.source_position,
+                  SAMPLE_COUNT - START_OFFSET,
+                  "compressed reverse keeps the pinned logical one-past cursor");
+        ASSERT_EQ(ch->ipatix.count, SAMPLE_COUNT - START_OFFSET, "compressed reverse count uses size-offset");
+        ASSERT(ch->ipatix.current_pointer == data,
+               "compressed reverse does not use the uncompressed byte-pointer convention");
+    }
+
+    m4a_driver_destroy(drv);
+}
+
+static void test_v2_pcm_bdpcm_incomplete_tail_zero_fills_decoder(void)
+{
+    printf("Testing v2 PCM BDPCM incomplete tail zero-fills decoded samples...\n");
+
+    enum
+    {
+        WAVE_SAMPLES = 65,
+        ENCODED_BYTES = M4A_IPATIX_BDPCM_BLOCK_BYTES + 2
+    };
+    static int8_t data[ENCODED_BYTES];
+    memset(data, 0, sizeof(data));
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES] = 77;
+
+    WaveData wav = {0};
+    wav.type = 1;
+    wav.freq = 22050u << 10;
+    wav.size = WAVE_SAMPLES;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND_NO_RESAMPLE;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "incomplete BDPCM driver allocates");
+    if (!drv)
+        return;
+    m4a_set_max_pcm_channels(drv, 1);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "incomplete BDPCM voice starts a PCM channel");
+    if (ch)
+    {
+        ch->status = M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+        ch->ipatix.source_position = WAVE_SAMPLES - 2;
+        ch->ipatix.current_pointer = data;
+        ch->ipatix.count = 2;
+        ch->ipatix.sample_stored = 0;
+        ch->frequency = 0x800000u;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ(ch->ipatix.decoded_block, 1, "incomplete BDPCM tail decodes its final block");
+        ASSERT_EQ(ch->ipatix.decoded_samples[0], 77, "incomplete BDPCM tail keeps the final block predictor");
+        ASSERT_EQ(ch->ipatix.decoded_samples[1], 0, "incomplete BDPCM tail zero-fills samples beyond wave length");
+        ASSERT_EQ(ch->status, 0, "incomplete BDPCM one-shot stops at logical wave end");
+    }
+
+    m4a_driver_destroy(drv);
+}
+static void test_v2_pcm_bdpcm_nibble_order(void)
+{
+    printf("Testing v2 PCM BDPCM nibble order across two blocks...\n");
+
+    enum
+    {
+        WAVE_SAMPLES = M4A_IPATIX_BDPCM_BLOCK_SAMPLES * 2,
+        ENCODED_BYTES = M4A_IPATIX_BDPCM_BLOCK_BYTES * 2
+    };
+    static int8_t data[ENCODED_BYTES];
+    memset(data, 0, sizeof(data));
+
+    data[0] = 10;
+    data[1] = 0x12; /* The pinned first-byte lookup uses the full byte. */
+    data[2] = 0x34; /* Remaining bytes use high nibble, then low nibble. */
+    data[3] = 0x50;
+
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES] = -20;
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES + 1] = 0xA3;
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES + 2] = 0xB4;
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES + 3] = 0x20;
+
+    WaveData wav = {0};
+    wav.type = 1;
+    wav.size = WAVE_SAMPLES;
+    wav.data = data;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "BDPCM nibble-order driver allocates");
+    if (!drv)
+        return;
+    m4a_set_max_pcm_channels(drv, 1);
+
+    M4ADriverPcmChan* ch = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, ch, &wav, VOICE_DIRECTSOUND, 0);
+    ch->status = M4A_CHN_ENV_SUSTAIN;
+    ch->rightVolume = 0xFF;
+    ch->envelopeVolume = 0xFF;
+    m4a_drv_pcm_update_pitch(drv, ch, 0);
+
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT_EQ(ch->ipatix.decoded_block, 0, "BDPCM decoder caches the first block");
+    ASSERT_EQ(ch->ipatix.decoded_samples[0], 10, "BDPCM block 0 keeps its predictor");
+    ASSERT_EQ(ch->ipatix.decoded_samples[1], 10, "BDPCM block 0 takes the first full-byte lookup");
+    ASSERT_EQ(ch->ipatix.decoded_samples[2], 19, "BDPCM block 0 takes remaining high nibble first");
+    ASSERT_EQ(ch->ipatix.decoded_samples[3], 35, "BDPCM block 0 takes remaining low nibble second");
+    ASSERT_EQ(ch->ipatix.decoded_samples[4], 60, "BDPCM block 0 advances the next high nibble");
+    for (uint32_t sample = 5; sample < M4A_IPATIX_BDPCM_BLOCK_SAMPLES; sample++)
+        ASSERT_EQ(ch->ipatix.decoded_samples[sample], 60, "BDPCM block 0 preserves decoded sample order");
+
+    ch->status = M4A_CHN_ENV_SUSTAIN;
+    ch->ipatix.source_position = M4A_IPATIX_BDPCM_BLOCK_SAMPLES;
+    ch->ipatix.current_pointer = data;
+    ch->ipatix.count = M4A_IPATIX_BDPCM_BLOCK_SAMPLES;
+    ch->ipatix.sample_stored = 0;
+    ch->ipatix.fine_position = 0;
+    m4a_drv_pcm_render(drv, 1);
+
+    ASSERT_EQ(ch->ipatix.decoded_block, 1, "BDPCM decoder caches the second block");
+    ASSERT_EQ(ch->ipatix.decoded_samples[0], -20, "BDPCM block 1 keeps its predictor");
+    ASSERT_EQ(ch->ipatix.decoded_samples[1], -52, "BDPCM block 1 takes its first full-byte lookup");
+    ASSERT_EQ(ch->ipatix.decoded_samples[2], -77, "BDPCM block 1 takes its remaining high nibble first");
+    ASSERT_EQ(ch->ipatix.decoded_samples[3], -61, "BDPCM block 1 takes its remaining low nibble second");
+    ASSERT_EQ(ch->ipatix.decoded_samples[4], -57, "BDPCM block 1 advances the next high nibble");
+    for (uint32_t sample = 5; sample < M4A_IPATIX_BDPCM_BLOCK_SAMPLES; sample++)
+        ASSERT_EQ(ch->ipatix.decoded_samples[sample], -57, "BDPCM block 1 preserves decoded sample order");
+
+    m4a_driver_destroy(drv);
+}
+
+/* A resampled BDPCM voice must fetch its interpolation look-ahead from the
+ * next logical block without reading past either encoded block. */
+static void test_v2_pcm_bdpcm_lookahead_crosses_block_boundary(void)
+{
+    printf("Testing v2 PCM BDPCM look-ahead crosses a block boundary...\n");
+
+    enum
+    {
+        WAVE_SAMPLES = M4A_IPATIX_BDPCM_BLOCK_SAMPLES * 2,
+        ENCODED_BYTES = M4A_IPATIX_BDPCM_BLOCK_BYTES * 2
+    };
+    static int8_t data[ENCODED_BYTES];
+    memset(data, 0, sizeof(data));
+    data[M4A_IPATIX_BDPCM_BLOCK_BYTES] = 100;
+
+    WaveData wav = {0};
+    wav.type = 1;
+    wav.freq = 22050u << 10;
+    wav.size = WAVE_SAMPLES;
+    wav.data = data;
+
+    ToneData voices[128];
+    memset(voices, 0, sizeof(voices));
+    voices[0].type = VOICE_DIRECTSOUND;
+    voices[0].key = 60;
+    voices[0].wav = &wav;
+    voices[0].attack = 0xFF;
+    voices[0].sustain = 0xFF;
+
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "BDPCM look-ahead driver allocates");
+    if (!drv)
+        return;
+    m4a_set_max_pcm_channels(drv, 1);
+    m4a_driver_set_voicegroup(drv, voices);
+    m4a_program_change(drv, 0, 0);
+    m4a_cc(drv, 0, 7, 127);
+    m4a_cc(drv, 0, 10, 64);
+    m4a_note_on(drv, 0, 60, 127);
+
+    M4ADriverPcmChan* ch = first_active_pcm_channel(drv);
+    ASSERT(ch != NULL, "BDPCM look-ahead voice starts a PCM channel");
+    if (ch)
+    {
+        ch->status = M4A_CHN_ENV_SUSTAIN;
+        ch->rightVolume = 0xFF;
+        ch->leftVolume = 0;
+        ch->envelopeVolume = 0xFF;
+        ch->ipatix.source_position = M4A_IPATIX_BDPCM_BLOCK_SAMPLES - 1;
+        ch->ipatix.current_pointer = data;
+        ch->ipatix.count = 2;
+        ch->ipatix.sample_stored = 0;
+        ch->ipatix.fine_position = 0;
+        ch->frequency = 0x400000u;
+
+        m4a_sound_main_ram(drv);
+
+        ASSERT_EQ(ch->ipatix.decoded_block, 1, "BDPCM look-ahead decodes the next logical block");
+        ASSERT_EQ(ch->ipatix.decoded_samples[0], 100, "BDPCM look-ahead uses the next block predictor");
+        ASSERT_EQ(ch->ipatix.source_position,
+                  M4A_IPATIX_BDPCM_BLOCK_SAMPLES,
+                  "BDPCM look-ahead advances across the block boundary");
+        ASSERT_EQ(ch->ipatix.count, 0, "BDPCM look-ahead stops at the logical endpoint");
+        ASSERT_EQ(ch->status, 0, "BDPCM look-ahead one-shot stops after its final block");
     }
 
     m4a_driver_destroy(drv);
@@ -1828,22 +2472,21 @@ static void test_v2_pcm_no_resample_steps_one_sample_per_tick(void)
     if (ch)
     {
         ASSERT_EQ((int)ch->frequency, 0x800000, "no-resample frequency is fixed at one sample per tick");
-        ASSERT_EQ(ch->sampleStored, 0, "no-resample starts with M4A sample store clear");
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "no-resample starts with iPatix sample store clear");
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
 
         m4a_sound_main_ram(drv);
-
-        ASSERT_EQ((int)(ch->currentPointer - data),
+        ASSERT(m4a_get_pcm_ring(drv)->ring_a[0] < 0, "no-resample first mixed sample comes from source sample start");
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
                   M4A_PCM_SAMPLES_PER_VBLANK,
                   "no-resample cursor advances exactly one source sample per PCM tick");
-        ASSERT_EQ(ch->count,
+        ASSERT_EQ(ch->ipatix.count,
                   SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
                   "no-resample remaining count drops by one source sample per PCM tick");
-        ASSERT(m4a_get_pcm_ring(drv)->ring_a[0] < 0, "no-resample first mixed sample comes from sample start");
-        ASSERT_EQ(ch->sampleStored, 0, "no-resample does not consume the M4A resample store");
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "no-resample does not consume the iPatix sample store");
     }
 
     m4a_driver_destroy(drv);
@@ -1887,24 +2530,26 @@ static void test_v2_pcm_alt_reverse_starts_at_sample_end(void)
     ASSERT(ch != NULL, "alt voice starts a PCM channel");
     if (ch)
     {
-        ASSERT_EQ((int)(ch->currentPointer - data), SAMPLE_COUNT, "alt reverse cursor starts one past the sample end");
-        ASSERT_EQ(ch->sampleStored, 0, "alt reverse clears M4A sample store on start");
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
+                  SAMPLE_COUNT,
+                  "alt reverse cursor starts one past the sample end");
+        ASSERT_EQ(ch->ipatix.sample_stored, 0, "alt reverse clears iPatix sample store on start");
         ch->frequency = 0x800000u;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
 
         m4a_sound_main_ram(drv);
 
-        ASSERT_EQ((int)(ch->currentPointer - data),
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
                   SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
                   "alt reverse cursor moves backward one source sample per PCM tick");
-        ASSERT_EQ(ch->count,
+        ASSERT_EQ(ch->ipatix.count,
                   SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK,
                   "alt reverse remaining count follows M4A one-past-end cursor convention");
         ASSERT_EQ(m4a_get_pcm_ring(drv)->ring_a[0], 0, "alt first mixed sample starts from M4A sample store");
-        ASSERT_EQ(ch->sampleStored,
+        ASSERT_EQ(ch->ipatix.sample_stored,
                   data[SAMPLE_COUNT - M4A_PCM_SAMPLES_PER_VBLANK],
                   "alt reverse sample store tracks the last crossed source byte");
     }
@@ -1919,7 +2564,7 @@ static void test_v2_pcm_alt_reverse_loops_across_boundary(void)
     enum
     {
         SAMPLE_COUNT = 256,
-        LOOP_START = 211
+        LOOP_START = 220
     };
     static int8_t data[SAMPLE_COUNT + 1];
     for (int i = 0; i < SAMPLE_COUNT; i++)
@@ -1956,15 +2601,15 @@ static void test_v2_pcm_alt_reverse_loops_across_boundary(void)
     ASSERT(ch != NULL, "looped alt voice starts a PCM channel");
     if (ch)
     {
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN | M4A_CHN_LOOP;
+        ch->status = M4A_CHN_ENV_SUSTAIN | M4A_CHN_LOOP;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
 
-        ch->currentPointer = data + SAMPLE_COUNT;
-        ch->count = SAMPLE_COUNT;
-        ch->sampleStored = data[LOOP_START];
-        ch->fw = 0x400000u;
+        ch->ipatix.current_pointer = data + SAMPLE_COUNT;
+        ch->ipatix.count = SAMPLE_COUNT;
+        ch->ipatix.sample_stored = data[LOOP_START];
+        ch->ipatix.fine_position = 0x400000u;
         ch->frequency = 0;
 
         m4a_sound_main_ram(drv);
@@ -1972,10 +2617,10 @@ static void test_v2_pcm_alt_reverse_loops_across_boundary(void)
         ASSERT(m4a_get_pcm_ring(drv)->ring_a[0] > 0,
                "looped alt reverse interpolates from stored loop start toward sample end");
 
-        ch->currentPointer = data + SAMPLE_COUNT;
-        ch->count = SAMPLE_COUNT;
-        ch->sampleStored = 0;
-        ch->fw = 0;
+        ch->ipatix.current_pointer = data + SAMPLE_COUNT;
+        ch->ipatix.count = SAMPLE_COUNT;
+        ch->ipatix.sample_stored = 0;
+        ch->ipatix.fine_position = 0;
         ch->frequency = 0x800000u;
 
         m4a_sound_main_ram(drv);
@@ -1983,11 +2628,36 @@ static void test_v2_pcm_alt_reverse_loops_across_boundary(void)
         int loopLen = SAMPLE_COUNT - LOOP_START;
         int remainder = M4A_PCM_SAMPLES_PER_VBLANK % loopLen;
         int expectedCount = remainder == 0 ? SAMPLE_COUNT : SAMPLE_COUNT - remainder;
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
+                  expectedCount,
+                  "looped alt reverse wraps to a non-exact cursor position");
+        ASSERT_EQ(ch->ipatix.count, expectedCount, "looped alt reverse count follows non-exact loop cycles");
         ASSERT_EQ(
-            (int)(ch->currentPointer - data), expectedCount, "looped alt reverse wraps to a non-exact cursor position");
-        ASSERT_EQ(ch->count, expectedCount, "looped alt reverse count follows non-exact loop cycles");
-        ASSERT_EQ(ch->sampleStored, data[expectedCount], "looped alt reverse sample store follows final cursor");
+            ch->ipatix.sample_stored, data[expectedCount], "looped alt reverse sample store follows final cursor");
         ASSERT(ch->status & M4A_CHN_ON, "looped alt reverse remains active after wrapping");
+        /*
+         * The reverse loop predecessor must remain loopStart when a
+         * fractional step lands exactly at the boundary with an advance > 1.
+         */
+        ch->ipatix.current_pointer = data + SAMPLE_COUNT;
+        ch->ipatix.count = SAMPLE_COUNT;
+        ch->ipatix.sample_stored = 0;
+        ch->ipatix.fine_position = 0;
+        ch->frequency = 0x900000u;
+
+        m4a_sound_main_ram(drv);
+
+        const int reverseAdvance = (9 * M4A_PCM_SAMPLES_PER_VBLANK) / 8;
+        const int reverseRemainder = reverseAdvance % loopLen;
+        const int reverseExpectedCount = reverseRemainder == 0 ? SAMPLE_COUNT : SAMPLE_COUNT - reverseRemainder;
+        const int reverseExpectedStored = reverseRemainder == 0 ? LOOP_START : reverseExpectedCount;
+        ASSERT_EQ((int)(ch->ipatix.current_pointer - data),
+                  reverseExpectedCount,
+                  "reverse loop preserves the cursor after fractional multi-sample advances");
+        ASSERT_EQ(ch->ipatix.count, reverseExpectedCount, "reverse loop count follows fractional multi-sample cycles");
+        ASSERT_EQ(ch->ipatix.sample_stored,
+                  data[reverseExpectedStored],
+                  "reverse loop uses the loop predecessor after an exact multi-sample wrap");
     }
 
     m4a_driver_destroy(drv);
@@ -2034,7 +2704,7 @@ static void test_v2_pcm_alt_reverse_non_loop_stops_at_start(void)
     if (ch)
     {
         ch->frequency = 0x800000u;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
@@ -2042,15 +2712,15 @@ static void test_v2_pcm_alt_reverse_non_loop_stops_at_start(void)
         m4a_sound_main_ram(drv);
 
         ASSERT_EQ(ch->status, 0, "non-loop alt reverse stops after consuming the sample");
-        ASSERT_EQ(ch->count, 0, "non-loop alt reverse consumes exactly the remaining source bytes");
+        ASSERT_EQ(ch->ipatix.count, 0, "non-loop alt reverse consumes exactly the remaining source bytes");
     }
 
     m4a_driver_destroy(drv);
 }
 
-static void test_v2_pcm_alt_reverse_resampled_emits_final_source_byte(void)
+static void test_v2_pcm_alt_reverse_resampled_stops_without_artificial_tail(void)
 {
-    printf("Testing v2 PCM alt reverse resampled emits the final source byte...\n");
+    printf("Testing v2 PCM alt reverse resampled stops without an artificial tail...\n");
 
     enum
     {
@@ -2086,20 +2756,22 @@ static void test_v2_pcm_alt_reverse_resampled_emits_final_source_byte(void)
     ASSERT(ch != NULL, "tail-check alt voice starts a PCM channel");
     if (ch)
     {
-        ch->currentPointer = data + 1;
-        ch->count = 1;
-        ch->sampleStored = data[1];
-        ch->fw = 0;
+        ch->ipatix.current_pointer = data + 1;
+        ch->ipatix.count = 1;
+        ch->ipatix.sample_stored = data[1];
+        ch->ipatix.fine_position = 0;
         ch->frequency = 0x800000u;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+        ch->status = M4A_CHN_ENV_SUSTAIN;
         ch->rightVolume = 0xFF;
         ch->leftVolume = 0;
         ch->envelopeVolume = 0xFF;
 
         m4a_sound_main_ram(drv);
 
-        ASSERT(m4a_get_pcm_ring(drv)->ring_a[1] > 0,
-               "resampled alt reverse emits the final source byte after crossing the start");
+        ASSERT_EQ(
+            m4a_get_pcm_ring(drv)->ring_a[1], 0, "resampled alt reverse does not emit an artificial interpolated tail");
+        ASSERT_EQ(
+            m4a_get_pcm_ring(drv)->ring_a[2], 0, "resampled alt reverse does not emit indefinite endpoint padding");
         ASSERT_EQ(ch->status, 0, "resampled alt reverse stops after rendering its padded tail");
     }
 
@@ -2211,12 +2883,11 @@ static void test_v2_pcm_cc7_refresh(void)
 
 /* §12 step 2 audit — reverb pipeline regression.
  *
- * The reverb stage runs in-place on the int16 pcmMix buffer (4-tap
- * sum scaled by amount>>9, added to current mix) and writes the
- * INT8-clamped wet output back into the delay buffer.  Real m4a's delay
- * buffer is the int8 FIFO, so future tap reads see byte-clamped values.
- * An int16 delay buffer would
- * silently feed back values outside the FIFO range on heavy mixes.
+ * The iPatix stage keeps a persistent packed HQ seed, downconverts the
+ * current block, reads four historical 8-bit DMA taps from the common source
+ * ring, and replaces each consumed HQ word with the next wet seed.  The ring
+ * remains byte-domain state, so wrapping and FIFO publication are exercised
+ * directly.
  *
  * This test exercises the pipeline end-to-end:
  *   1. With reverb disabled: ring output is non-zero (baseline).
@@ -2237,7 +2908,7 @@ static void test_v2_pcm_reverb_pipeline(void)
     wd->freq = 22050u << 10;
     wd->size = dataSize;
     wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
-    /* High-amplitude saw pushes the pcmMix toward int8 limits, giving
+    /* High-amplitude saw pushes the iPatix packed_mix toward int8 limits, giving
      * the int8-clamp delay-line writeback a meaningful workout. */
     for (int i = 0; i < dataSize; i++)
         wd->data[i] = (int8_t)((i * 4) - 127);
@@ -2345,7 +3016,7 @@ static void test_v2_pcm_gate_time_completes_decay_before_release(void)
         return;
 
     M4ADriverPcmChan* ch = &drv->pcmChans[0];
-    ch->status = M4A_CHN_ON | M4A_CHN_ENV_DECAY;
+    ch->status = M4A_CHN_ENV_DECAY;
     ch->envelopeVolume = 255;
     ch->decay = 188;
     ch->release = 244;
@@ -2441,7 +3112,7 @@ static void init_pcm_echo_test_voice(ToneData* voices, WaveData* wd)
 
 static void test_v2_pcm_pseudo_echo_zero_length_stops(void)
 {
-    printf("Testing v2 PCM pseudo-echo length 0 wraps...\n");
+    printf("Testing v2 PCM pseudo-echo length 0 stops...\n");
 
     WaveData* wd = make_v2_pcm_echo_test_wave();
     ASSERT(wd != NULL, "PCM pseudo-echo test wave allocated");
@@ -2472,14 +3143,17 @@ static void test_v2_pcm_pseudo_echo_zero_length_stops(void)
     ASSERT(pcm != NULL, "PCM pseudo-echo zero-length test starts a note");
     if (pcm)
     {
+        m4a_sound_main_ram(drv);
+        ASSERT(!(pcm->status & M4A_CHN_START), "PCM pseudo-echo note is started before note-off");
+        ASSERT(pcm->status & M4A_CHN_ON, "PCM pseudo-echo started voice remains active");
         m4a_note_off(drv, 0, 60);
         m4a_sound_main_ram(drv);
         ASSERT(pcm->status & M4A_CHN_IEC, "PCM pseudo-echo length 0 enters IEC on release tick");
         ASSERT_EQ(pcm->pseudoEchoLength, 0, "PCM pseudo-echo length 0 is not decremented on IEC entry");
 
         m4a_sound_main_ram(drv);
-        ASSERT(pcm->status & M4A_CHN_ON, "PCM pseudo-echo length 0 remains active after wrapping");
-        ASSERT_EQ(pcm->pseudoEchoLength, 255, "PCM pseudo-echo length 0 wraps to 255 in IEC");
+        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0, "PCM pseudo-echo original length 0 stops on its IEC tick");
+        ASSERT_EQ(pcm->pseudoEchoLength, 255, "PCM pseudo-echo length 0 still wraps during the ARM subtraction");
     }
 
     m4a_driver_destroy(drv);
@@ -2519,18 +3193,22 @@ static void test_v2_pcm_pseudo_echo_nonzero_length_counts_down(void)
     ASSERT(pcm != NULL, "PCM pseudo-echo countdown test starts a note");
     if (pcm)
     {
+        m4a_sound_main_ram(drv);
+        ASSERT(!(pcm->status & M4A_CHN_START), "PCM pseudo-echo countdown note is started before note-off");
+        ASSERT(pcm->status & M4A_CHN_ON, "PCM pseudo-echo countdown voice remains active");
         m4a_note_off(drv, 0, 60);
         m4a_sound_main_ram(drv);
         ASSERT(pcm->status & M4A_CHN_IEC, "PCM pseudo-echo nonzero length enters IEC");
         ASSERT_EQ(pcm->pseudoEchoLength, 2, "PCM pseudo-echo nonzero length is not decremented on entry");
 
         m4a_sound_main_ram(drv);
+        ASSERT(pcm->status & M4A_CHN_IEC, "PCM pseudo-echo original length 2 remains in IEC after decrement");
         ASSERT(pcm->status & M4A_CHN_ON, "PCM pseudo-echo remains active before countdown reaches zero");
-        ASSERT_EQ(pcm->pseudoEchoLength, 1, "PCM pseudo-echo nonzero length decrements while in IEC");
+        ASSERT_EQ(pcm->pseudoEchoLength, 1, "PCM pseudo-echo original length 2 decrements to 1");
 
         m4a_sound_main_ram(drv);
-        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0, "PCM pseudo-echo nonzero length stops at countdown zero");
-        ASSERT_EQ(pcm->pseudoEchoLength, 0, "PCM pseudo-echo nonzero length reaches zero");
+        ASSERT_EQ(pcm->status & M4A_CHN_ON, 0, "PCM pseudo-echo original length 1 stops on its IEC tick");
+        ASSERT_EQ(pcm->pseudoEchoLength, 0, "PCM pseudo-echo length 1 reaches zero");
     }
 
     m4a_driver_destroy(drv);
@@ -6926,10 +7604,324 @@ static void test_chip_canned_soundbias_cycle_0_vs_3_levels(void)
     ASSERT(peak0 > 0.001f, "sc=0 audible");
     ASSERT(peak3 > 0.001f, "sc=3 audible");
 }
+/* Exercise the allocation-free dual-mode transaction at the SoundMainRAM
+ * boundary.  The fixture deliberately uses a wrapped published window and
+ * distinct ordinary, compressed, and zero-length synth voices so the common
+ * dispatcher—not either adapter's arithmetic—owns the transition. */
+static void test_pcm_mixer_mode_switch_transaction(void)
+{
+    printf("Testing dual PCM mixer mode switching transaction...\n");
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "mode switch driver allocates");
+    if (!drv)
+        return;
 
-int main(void)
+    ASSERT_EQ(m4a_driver_get_pcm_mixer_mode(drv), M4A_PCM_MIXER_IPATIX, "fresh driver commits iPatix");
+    ASSERT(m4a_driver_set_pcm_mixer_mode(drv, M4A_PCM_MIXER_SAPPY), "valid Sappy request is accepted");
+    ASSERT_EQ(
+        m4a_driver_get_pcm_mixer_mode(drv), M4A_PCM_MIXER_IPATIX, "setter reports active mode before the boundary");
+    ASSERT(m4a_driver_set_pcm_mixer_mode(drv, M4A_PCM_MIXER_IPATIX), "active mode cancels a pending request");
+    ASSERT_EQ(drv->requested_pcm_mode, M4A_PCM_MIXER_IPATIX, "last request wins before SoundMain");
+    ASSERT(!m4a_driver_set_pcm_mixer_mode(drv, (M4APcmMixerMode)2), "invalid mode is rejected");
+    ASSERT_EQ(drv->requested_pcm_mode, M4A_PCM_MIXER_IPATIX, "invalid mode does not mutate the pending request");
+
+    int8_t ordinary_data[] = {16, 32, 48, 64, 80, 96, 112, 120};
+    WaveData ordinary = {0};
+    ordinary.size = (uint32_t)sizeof(ordinary_data);
+    ordinary.data = ordinary_data;
+    drv->max_pcm_channels = 1;
+    M4ADriverPcmChan* channel = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, channel, &ordinary, VOICE_DIRECTSOUND_NO_RESAMPLE, 0);
+    channel->attack = 0xFF;
+    channel->decay = 0xFF;
+    channel->sustain = 0xFF;
+    channel->release = 0xFF;
+    channel->rightVolume = 0xFF;
+    channel->leftVolume = 0xFF;
+    m4a_drv_pcm_update_pitch(drv, channel, 0x800000u);
+    m4a_drv_pcm_render(drv, 4);
+    M4APcmChannelSnapshot ordinarySnapshot = {0};
+    m4a_drv_pcm_snapshot(drv, channel, &ordinarySnapshot);
+    ASSERT(ordinarySnapshot.status & M4A_CHN_ON, "iPatix ordinary voice uses the start seam");
+
+    /* The source window wraps: A keeps 14,15,0,1; B keeps 12..15,0,1. */
+    const uint32_t ring_size = 16;
+    drv->pcm_dma_buf_size = ring_size;
+    drv->pcm.pcm_dma_buf_size = ring_size;
+    drv->pcm_max_samples_per_vblank = 4;
+    drv->pcm_dma_period = 7;
+    drv->pcm_dma_counter = 2;
+    drv->pcm.write_cursor = 18;
+    drv->pcm_fifo_a_source_cursor = 14;
+    drv->pcm_fifo_b_source_cursor = 12;
+    drv->pcm_fifo_a_read = 3;
+    drv->pcm_fifo_a_write = 6;
+    drv->pcm_fifo_b_read = 4;
+    drv->pcm_fifo_b_write = 7;
+    drv->pcm_fifo_a_internal_remaining = 2;
+    drv->pcm_fifo_b_internal_remaining = 1;
+    drv->next_pcm_timer_cycle = 0x11112222u;
+    drv->current_cycle = 0x33334444u;
+    drv->next_vcount_cycle = 0x55556666u;
+    drv->next_vblank_cycle = 0x77778888u;
+    drv->event_range_begin_cycle = 0x9999u;
+    drv->event_cycle = 0xAAAau;
+    drv->event_next_order = 17;
+    drv->event_count = 1;
+    drv->events_dropped = 9;
+    drv->events[0] = (M4ARegWrite){.cycle = 0xBBBBu, .reg = M4A_REG_FIFO_A, .value = 0xCCDDu, .order = 4};
+    const uint32_t old_remainder = 1234;
+    drv->pcm_vblank_remainder = old_remainder;
+    for (uint32_t i = 0; i < ring_size; ++i)
+    {
+        drv->pcm.ring_a[i] = (int8_t)(10 + i);
+        drv->pcm.ring_b[i] = (int8_t)(40 + i);
+    }
+
+    drv->cgb[0].status = M4A_CHN_ON;
+    drv->cgb[0].trackIndex = 7;
+    drv->cgb[0].frequency = 1234;
+    const M4ADriverCgbChan cgb_before = drv->cgb[0];
+    const uint64_t old_write_cursor = drv->pcm.write_cursor;
+    const uint64_t old_timer = drv->next_pcm_timer_cycle;
+    const uint64_t old_cycle = drv->current_cycle;
+    const uint64_t old_vcount = drv->next_vcount_cycle;
+    const uint64_t old_vblank = drv->next_vblank_cycle;
+    const uint64_t old_event_begin = drv->event_range_begin_cycle;
+    const uint64_t old_event_cycle = drv->event_cycle;
+    const uint32_t old_event_order = drv->event_next_order;
+    const uint32_t old_event_dropped = drv->events_dropped;
+    const M4ARegWrite old_event = drv->events[0];
+    const uint64_t old_a_source = drv->pcm_fifo_a_source_cursor;
+    const uint64_t old_b_source = drv->pcm_fifo_b_source_cursor;
+    const uint8_t old_a_read = drv->pcm_fifo_a_read;
+    const uint8_t old_a_write = drv->pcm_fifo_a_write;
+    const uint8_t old_b_read = drv->pcm_fifo_b_read;
+    const uint8_t old_b_write = drv->pcm_fifo_b_write;
+    const uint8_t old_a_remaining = drv->pcm_fifo_a_internal_remaining;
+    const uint8_t old_b_remaining = drv->pcm_fifo_b_internal_remaining;
+
+    ASSERT(m4a_driver_set_pcm_mixer_mode(drv, M4A_PCM_MIXER_SAPPY), "iPatix-to-Sappy request is accepted");
+    m4a_sound_main_ram(drv);
+    const uint32_t expected_remainder =
+        (uint32_t)(((uint64_t)old_remainder + (uint64_t)drv->pcm_rate_hz * M4A_PCM_VBLANK_RATE_DENOMINATOR) %
+                   M4A_PCM_VBLANK_RATE_NUMERATOR);
+    ASSERT_EQ(m4a_driver_get_pcm_mixer_mode(drv), M4A_PCM_MIXER_SAPPY, "Sappy commits at SoundMainRAM");
+    ASSERT_EQ(drv->requested_pcm_mode, M4A_PCM_MIXER_SAPPY, "Sappy remains the committed request");
+    ASSERT_EQ(drv->pcmChans[0].status, 0, "mode commit hard-stops PCM controls");
+    ASSERT_EQ(drv->pcm.write_cursor, old_write_cursor + 4, "ordinary block advances write cursor once");
+    ASSERT_EQ(drv->pcm_vblank_remainder, expected_remainder, "mode commit preserves cadence remainder");
+    ASSERT_EQ(drv->next_pcm_timer_cycle, old_timer, "mode commit preserves PCM timer deadline");
+    ASSERT_EQ(drv->current_cycle, old_cycle, "mode commit preserves current cycle");
+    ASSERT_EQ(drv->next_vcount_cycle, old_vcount, "mode commit preserves VCount deadline");
+    ASSERT_EQ(drv->next_vblank_cycle, old_vblank, "mode commit preserves VBlank deadline");
+    ASSERT_EQ(drv->event_range_begin_cycle, old_event_begin, "mode commit preserves event range");
+    ASSERT_EQ(drv->event_cycle, old_event_cycle, "mode commit preserves event cycle");
+    ASSERT_EQ(drv->event_next_order, old_event_order, "mode commit preserves event ordering");
+    ASSERT_EQ(drv->event_count, 1, "mode commit preserves queued events");
+    ASSERT_EQ(drv->events_dropped, old_event_dropped, "mode commit preserves event drops");
+    ASSERT_EQ(drv->events[0].cycle, old_event.cycle, "mode commit preserves event payload cycle");
+    ASSERT_EQ(drv->events[0].reg, old_event.reg, "mode commit preserves event register");
+    ASSERT_EQ(drv->events[0].value, old_event.value, "mode commit preserves event payload");
+    ASSERT_EQ(drv->events[0].order, old_event.order, "mode commit preserves event payload order");
+    ASSERT_EQ(drv->pcm_fifo_a_source_cursor, old_a_source, "mode commit preserves FIFO A source cursor");
+    ASSERT_EQ(drv->pcm_fifo_b_source_cursor, old_b_source, "mode commit preserves FIFO B source cursor");
+    ASSERT_EQ(drv->pcm_fifo_a_read, old_a_read, "mode commit preserves FIFO A read index");
+    ASSERT_EQ(drv->pcm_fifo_a_write, old_a_write, "mode commit preserves FIFO A write index");
+    ASSERT_EQ(drv->pcm_fifo_b_read, old_b_read, "mode commit preserves FIFO B read index");
+    ASSERT_EQ(drv->pcm_fifo_b_write, old_b_write, "mode commit preserves FIFO B write index");
+    ASSERT_EQ(drv->pcm_fifo_a_internal_remaining, old_a_remaining, "mode commit preserves FIFO A internal count");
+    ASSERT_EQ(drv->pcm_fifo_b_internal_remaining, old_b_remaining, "mode commit preserves FIFO B internal count");
+    ASSERT(memcmp(&drv->cgb[0], &cgb_before, sizeof(cgb_before)) == 0, "mode commit preserves CGB state");
+    ASSERT_EQ(drv->pcm.ring_a[14], 24, "published A slot 14 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_a[15], 25, "published A slot 15 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_a[0], 10, "wrapped published A slot 0 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_a[1], 11, "wrapped published A slot 1 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[12], 52, "published B slot 12 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[13], 53, "published B slot 13 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[14], 54, "published B slot 14 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[15], 55, "published B slot 15 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[0], 40, "wrapped published B slot 0 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_b[1], 41, "wrapped published B slot 1 remains immutable");
+    ASSERT_EQ(drv->pcm.ring_a[2], 0, "unpublished A slot 2 is cleared");
+    ASSERT_EQ(drv->pcm.ring_a[13], 0, "unpublished A slot 13 is cleared");
+    ASSERT_EQ(drv->pcm.ring_b[2], 0, "unpublished B slot 2 is cleared");
+    ASSERT_EQ(drv->pcm.ring_b[11], 0, "unpublished B slot 11 is cleared");
+
+    /* The Sappy path is exercised through the same start/render seams with a
+     * two-block compressed source before switching back to iPatix. */
+    int8_t compressed_data[M4A_SAPPY_COMPRESSED_BLOCK_BYTES * 2] = {0};
+    compressed_data[0] = 8;
+    compressed_data[M4A_SAPPY_COMPRESSED_BLOCK_BYTES] = -8;
+    WaveData compressed = {0};
+    compressed.type = 1;
+    compressed.size = M4A_SAPPY_COMPRESSED_BLOCK_SAMPLES * 2;
+    compressed.data = compressed_data;
+    channel = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, channel, &compressed, VOICE_CRY, 0);
+    channel->attack = 0xFF;
+    channel->decay = 0xFF;
+    channel->sustain = 0xFF;
+    channel->release = 0xFF;
+    channel->rightVolume = 0xFF;
+    channel->leftVolume = 0xFF;
+    m4a_drv_pcm_update_pitch(drv, channel, 0x800000u);
+    m4a_drv_pcm_render(drv, 4);
+    M4APcmChannelSnapshot compressedSnapshot = {0};
+    m4a_drv_pcm_snapshot(drv, channel, &compressedSnapshot);
+    ASSERT(compressedSnapshot.status & M4A_CHN_SPECIAL,
+           "Sappy compressed voice remains observable through the dispatcher");
+
+    ASSERT(m4a_driver_set_pcm_mixer_mode(drv, M4A_PCM_MIXER_IPATIX), "Sappy-to-iPatix request is accepted");
+    m4a_sound_main_ram(drv);
+    ASSERT_EQ(m4a_driver_get_pcm_mixer_mode(drv), M4A_PCM_MIXER_IPATIX, "iPatix commits at the next boundary");
+    ASSERT_EQ(drv->pcmChans[0].status, 0, "reverse mode commit hard-stops Sappy voices");
+
+    int8_t synth_data[] = {0, 0};
+    WaveData synth = {0};
+    synth.size = 0;
+    synth.data = synth_data;
+    channel = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, channel, &synth, VOICE_DIRECTSOUND, 0);
+    M4APcmChannelSnapshot synthSnapshot = {0};
+    m4a_drv_pcm_snapshot(drv, channel, &synthSnapshot);
+    ASSERT(synthSnapshot.wav == &synth, "iPatix zero-length synth uses the start seam");
+    m4a_drv_pcm_render(drv, 1);
+    ASSERT(channel->status != 0, "iPatix synth voice renders through the active adapter");
+
+    M4ADriver* other = m4a_driver_create(44100.0f);
+    ASSERT(other != NULL, "cross-mode clone fixture allocates");
+    if (other)
+    {
+        ASSERT(m4a_driver_set_pcm_mixer_mode(other, M4A_PCM_MIXER_SAPPY), "cross-mode clone fixture queues Sappy");
+        m4a_sound_main_ram(other);
+        ASSERT(!m4a_drv_pcm_clone(drv, &drv->pcmChans[1], other, &other->pcmChans[0]), "cross-mode clone is rejected");
+        m4a_driver_destroy(other);
+    }
+
+    /* Absolute cursors use modulo-2^64 distance.  Preserve a published
+     * window that crosses both the ring boundary and uint64_t wrap. */
+    M4ADriver* wrapped = m4a_driver_create(44100.0f);
+    ASSERT(wrapped != NULL, "absolute cursor wrap fixture allocates");
+    if (wrapped)
+    {
+        const uint32_t wrapped_ring_size = 16;
+        wrapped->pcm_dma_buf_size = wrapped_ring_size;
+        wrapped->pcm.pcm_dma_buf_size = wrapped_ring_size;
+        wrapped->pcm_max_samples_per_vblank = 4;
+        wrapped->pcm_dma_period = 7;
+        wrapped->pcm_dma_counter = 2;
+        wrapped->pcm.write_cursor = 2;
+        wrapped->pcm_fifo_a_source_cursor = UINT64_MAX - 1;
+        wrapped->pcm_fifo_b_source_cursor = UINT64_MAX - 1;
+        for (uint32_t i = 0; i < wrapped_ring_size; ++i)
+        {
+            wrapped->pcm.ring_a[i] = (int8_t)(10 + i);
+            wrapped->pcm.ring_b[i] = (int8_t)(40 + i);
+        }
+        ASSERT(m4a_driver_set_pcm_mixer_mode(wrapped, M4A_PCM_MIXER_SAPPY),
+               "absolute cursor wrap fixture queues Sappy");
+        m4a_sound_main_ram(wrapped);
+        ASSERT_EQ(wrapped->pcm.ring_a[14], 24, "wrapped absolute A slot 14 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_a[15], 25, "wrapped absolute A slot 15 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_a[0], 10, "wrapped absolute A slot 0 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_a[1], 11, "wrapped absolute A slot 1 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_b[14], 54, "wrapped absolute B slot 14 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_b[15], 55, "wrapped absolute B slot 15 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_b[0], 40, "wrapped absolute B slot 0 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_b[1], 41, "wrapped absolute B slot 1 remains immutable");
+        ASSERT_EQ(wrapped->pcm.ring_a[13], 0, "unpublished wrapped absolute A slot is cleared");
+        ASSERT_EQ(wrapped->pcm.ring_b[13], 0, "unpublished wrapped absolute B slot is cleared");
+        m4a_driver_destroy(wrapped);
+    }
+    /* A non-wrapped published interval can seed nonzero adapter reverb, but a
+     * hard commit publishes silence without modifying that adapter output. */
+    M4ADriver* silent = m4a_driver_create(44100.0f);
+    ASSERT(silent != NULL, "hard-stop output fixture allocates");
+    if (silent)
+    {
+        silent->pcm_dma_buf_size = 16;
+        silent->pcm_max_samples_per_vblank = 4;
+        silent->pcm_dma_period = 3;
+        silent->pcm_dma_counter = 1;
+        silent->pcm.write_cursor = 4;
+        silent->pcm_fifo_a_source_cursor = 0;
+        silent->pcm_fifo_b_source_cursor = 0;
+        silent->reverb_amount = 64;
+        memset(silent->pcm.ring_a, 16, 16);
+        memset(silent->pcm.ring_b, 16, 16);
+        ASSERT(m4a_driver_set_pcm_mixer_mode(silent, M4A_PCM_MIXER_SAPPY), "hard-stop output fixture queues Sappy");
+        m4a_sound_main_ram(silent);
+        ASSERT(silent->pcmMixerState.sappy.output_right[0] != 0, "hard stop leaves immutable adapter output untouched");
+        ASSERT_EQ(silent->pcm.ring_a[0], 0, "hard stop publishes zero right bytes");
+        ASSERT_EQ(silent->pcm.ring_b[0], 0, "hard stop publishes zero left bytes");
+        m4a_driver_destroy(silent);
+    }
+
+    /* Equal cursors are an empty window; a distance equal to the ring size is
+     * a full window.  A zero-frame commit isolates interval clearing. */
+    M4ADriver* interval = m4a_driver_create(44100.0f);
+    ASSERT(interval != NULL, "empty/full interval fixture allocates");
+    if (interval)
+    {
+        interval->pcm_rate_hz = 0;
+        interval->pcm_dma_buf_size = 16;
+        interval->pcm.write_cursor = 21;
+        interval->pcm_fifo_a_source_cursor = 21;
+        interval->pcm_fifo_b_source_cursor = 5;
+        memset(interval->pcm.ring_a, 7, 16);
+        memset(interval->pcm.ring_b, 9, 16);
+        ASSERT(m4a_driver_set_pcm_mixer_mode(interval, M4A_PCM_MIXER_SAPPY),
+               "empty/full interval fixture queues Sappy");
+        m4a_sound_main_ram(interval);
+        for (uint32_t i = 0; i < 16; ++i)
+        {
+            ASSERT_EQ(interval->pcm.ring_a[i], 0, "empty interval clears every slot");
+            ASSERT_EQ(interval->pcm.ring_b[i], 9, "full interval preserves every slot");
+        }
+        m4a_driver_destroy(interval);
+    }
+
+    M4AEngine engine = {0};
+    ASSERT(m4a_engine_init(&engine, 44100.0f), "engine mode setter fixture initializes");
+    ASSERT(m4a_engine_set_pcm_mixer_mode(&engine, M4A_PCM_MIXER_SAPPY),
+           "engine queues one mode for primary, shadow, and audition");
+    ASSERT_EQ(m4a_driver_get_pcm_mixer_mode(engine.driver),
+              M4A_PCM_MIXER_IPATIX,
+              "engine setter leaves primary active until its boundary");
+    ASSERT_EQ(engine.driver->requested_pcm_mode, M4A_PCM_MIXER_SAPPY, "engine setter queues primary request");
+    ASSERT_EQ(engine.shadowDriver->requested_pcm_mode, M4A_PCM_MIXER_SAPPY, "engine setter queues shadow request");
+    ASSERT_EQ(engine.auditionDriver->requested_pcm_mode, M4A_PCM_MIXER_SAPPY, "engine setter queues audition request");
+    ASSERT(!m4a_engine_set_pcm_mixer_mode(&engine, (M4APcmMixerMode)2), "engine rejects invalid mode without mutation");
+    ASSERT_EQ(
+        engine.driver->requested_pcm_mode, M4A_PCM_MIXER_SAPPY, "invalid engine mode leaves queued requests unchanged");
+    ASSERT(m4a_engine_set_pcm_mixer_mode(&engine, M4A_PCM_MIXER_IPATIX),
+           "engine active mode request cancels pending switch on all drivers");
+    ASSERT_EQ(
+        engine.auditionDriver->requested_pcm_mode, M4A_PCM_MIXER_IPATIX, "engine cancellation reaches audition driver");
+    m4a_engine_destroy(&engine);
+    m4a_driver_destroy(drv);
+}
+
+static void run_sappy_tests(void)
+{
+    test_sappy_compressed_cache_boundary();
+    test_sappy_lifecycle_and_seams();
+    test_sappy_traversal_rates_and_endpoints();
+    test_sappy_direct_byte_mixing();
+    test_sappy_reverb_first_steady_tail();
+    test_sappy_zero_length_descriptor_diverges();
+}
+
+int main(int argc, char** argv)
 {
     printf("=== M4A Engine Unit Tests ===\n\n");
+    if (argc == 2 && strcmp(argv[1], "--sappy") == 0)
+    {
+        run_sappy_tests();
+        printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
+        return (tests_passed == tests_run) ? 0 : 1;
+    }
 
     test_frequency_word_precision();
     test_scale_table();
@@ -6953,7 +7945,10 @@ int main(void)
     test_v2_default_pcm_pool_is_hearth_12();
     test_v2_song_volume_rescales();
     test_v2_pcm_default_master_volume_matches_rom();
+    test_pcm_mixer_mode_switch_transaction();
+    run_sappy_tests();
     test_v2_pcm_first_tick_applies_one_attack_step();
+    test_v2_pcm_start_stop_stops_immediately();
     test_v2_pcm_zero_mix_volume_freezes_source_cursor();
     test_v2_pcm_ring_fills();
     test_v2_pcm_frequency_scale();
@@ -6962,11 +7957,15 @@ int main(void)
     test_v2_pcm_unbuffered_exact_loop_wrap_uses_loop_predecessor();
     test_v2_pcm_xcmd_start_offset_initializes_forward_sample_cursor();
     test_v2_pcm_xcmd_start_offset_initializes_reverse_sample_cursor();
+    test_v2_pcm_compressed_reverse_start_uses_logical_end_cursor();
+    test_v2_pcm_bdpcm_incomplete_tail_zero_fills_decoder();
+    test_v2_pcm_bdpcm_nibble_order();
+    test_v2_pcm_bdpcm_lookahead_crosses_block_boundary();
     test_v2_pcm_no_resample_steps_one_sample_per_tick();
     test_v2_pcm_alt_reverse_starts_at_sample_end();
     test_v2_pcm_alt_reverse_loops_across_boundary();
     test_v2_pcm_alt_reverse_non_loop_stops_at_start();
-    test_v2_pcm_alt_reverse_resampled_emits_final_source_byte();
+    test_v2_pcm_alt_reverse_resampled_stops_without_artificial_tail();
     test_v2_cgb_pan_mask_routes();
     test_v2_pcm_cc7_refresh();
     test_v2_pcm_reverb_pipeline();

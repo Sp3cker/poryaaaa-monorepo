@@ -2,6 +2,7 @@
 #define M4A_DRIVER_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include "audio_trace_format.h"
 
 #include "m4a_register_file.h"
@@ -19,6 +20,18 @@ extern "C"
      * and PCM ring are the authoritative driver-to-chip outputs. Song
      * sequencing remains external because the DAW or renderer owns it. */
     typedef struct M4ADriver M4ADriver;
+    /* The two source-owned PCM algorithms exposed by the driver.  Numeric
+     * values are part of the frontend/state contract and must remain stable. */
+    typedef enum M4APcmMixerMode
+    {
+        M4A_PCM_MIXER_IPATIX = 0,
+        M4A_PCM_MIXER_SAPPY = 1,
+    } M4APcmMixerMode;
+
+    /* Queue a mode change for the next SoundMain boundary without allocating.
+     * The getter below intentionally reports the committed active mode. */
+    bool m4a_driver_set_pcm_mixer_mode(M4ADriver* drv, M4APcmMixerMode mode);
+    M4APcmMixerMode m4a_driver_get_pcm_mixer_mode(const M4ADriver* drv);
 
     /* xCmd callback owned by direct driver consumers. */
     typedef void (*M4ADriverXcmdFn)(void* ctx, int trackIndex, uint8_t selector, uint32_t value);

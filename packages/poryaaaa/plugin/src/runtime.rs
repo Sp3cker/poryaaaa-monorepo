@@ -1,4 +1,5 @@
 use crate::ffi;
+use crate::params::MixerMode;
 use crate::process::ProcessRuntime;
 use std::ffi::{CStr, CString};
 use std::ptr::NonNull;
@@ -232,6 +233,22 @@ impl M4aRuntime {
             unsafe { ffi::m4a_set_reverb_amount(driver.as_mut_ptr(), amount) }
         }
     }
+    /// Queues a validated mixer selection for the driver's next audio boundary.
+    pub fn set_pcm_mixer_mode(&mut self, mode: MixerMode) -> bool {
+        self.driver.as_mut().is_some_and(|driver| unsafe {
+            ffi::m4a_driver_set_pcm_mixer_mode(driver.as_mut_ptr(), ffi::mixer_mode_to_c(mode))
+        })
+    }
+
+    /// Reads the driver's active mixer mode for runtime and event-order tests.
+    #[cfg(test)]
+    pub(crate) fn pcm_mixer_mode(&self) -> Option<MixerMode> {
+        self.driver.as_ref().and_then(|driver| {
+            let mode = unsafe { ffi::m4a_driver_get_pcm_mixer_mode(driver.as_const_ptr()) };
+            ffi::mixer_mode_from_c(mode)
+        })
+    }
+
 
     #[allow(dead_code)]
     pub fn all_notes_off(&mut self, track: i32) {
@@ -403,6 +420,25 @@ mod tests {
             reverb: 20,
         };
         assert!(runtime.reconfigure(new_config).is_ok());
+    }
+
+    #[test]
+    fn mixer_mode_request_commits_at_render_boundary() {
+        let config = RuntimeConfig {
+            sample_rate: 44100.0,
+            volume: 100,
+            reverb: 10,
+        };
+        let mut runtime = M4aRuntime::new(config).expect("create runtime");
+
+        assert_eq!(runtime.pcm_mixer_mode(), Some(MixerMode::Ipatix));
+        assert!(runtime.set_pcm_mixer_mode(MixerMode::Sappy));
+        assert_eq!(runtime.pcm_mixer_mode(), Some(MixerMode::Ipatix));
+
+        let mut left = [0.0; 1024];
+        let mut right = [0.0; 1024];
+        runtime.process(&mut left, &mut right);
+        assert_eq!(runtime.pcm_mixer_mode(), Some(MixerMode::Sappy));
     }
 
     #[test]

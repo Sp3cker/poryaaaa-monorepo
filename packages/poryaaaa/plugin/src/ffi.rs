@@ -1,5 +1,27 @@
+use crate::params::MixerMode;
 use std::ffi::{c_char, c_float, c_int, c_uchar};
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum M4APcmMixerMode {
+    Ipatix = 0,
+    Sappy = 1,
+}
+
+pub(crate) fn mixer_mode_to_c(mode: MixerMode) -> M4APcmMixerMode {
+    match mode {
+        MixerMode::Ipatix => M4APcmMixerMode::Ipatix,
+        MixerMode::Sappy => M4APcmMixerMode::Sappy,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn mixer_mode_from_c(mode: M4APcmMixerMode) -> Option<MixerMode> {
+    match mode {
+        M4APcmMixerMode::Ipatix => Some(MixerMode::Ipatix),
+        M4APcmMixerMode::Sappy => Some(MixerMode::Sappy),
+    }
+}
 pub(crate) enum M4ADriver {}
 pub(crate) enum HwAudio {}
 pub(crate) enum M4ARegWriteBatch {}
@@ -14,6 +36,14 @@ pub(crate) fn recommended_max_advance_frames() -> usize {
 }
 
 unsafe extern "C" {
+    pub(crate) fn m4a_driver_set_pcm_mixer_mode(
+        driver: *mut M4ADriver,
+        mode: M4APcmMixerMode,
+    ) -> bool;
+    #[cfg(test)]
+    pub(crate) fn m4a_driver_get_pcm_mixer_mode(
+        driver: *const M4ADriver,
+    ) -> M4APcmMixerMode;
     pub(crate) fn m4a_driver_create(sample_rate: c_float) -> *mut M4ADriver;
     pub(crate) fn m4a_driver_destroy(driver: *mut M4ADriver);
     pub(crate) fn m4a_driver_set_voicegroup(driver: *mut M4ADriver, voice_group: *mut ToneData);
@@ -57,4 +87,28 @@ unsafe extern "C" {
     pub(crate) fn voicegroup_free(vg: *mut LoadedVoiceGroup);
     pub(crate) fn voicegroup_loaded_voices(vg: *mut LoadedVoiceGroup) -> *mut ToneData;
     pub(crate) fn voicegroup_loader_last_error() -> *const c_char;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixer_mode_mapping_matches_c_enum_values() {
+        assert_eq!(M4APcmMixerMode::Ipatix as i32, 0);
+        assert_eq!(M4APcmMixerMode::Sappy as i32, 1);
+        assert_eq!(
+            mixer_mode_to_c(MixerMode::Ipatix),
+            M4APcmMixerMode::Ipatix
+        );
+        assert_eq!(mixer_mode_to_c(MixerMode::Sappy), M4APcmMixerMode::Sappy);
+        assert_eq!(
+            mixer_mode_from_c(M4APcmMixerMode::Ipatix),
+            Some(MixerMode::Ipatix)
+        );
+        assert_eq!(
+            mixer_mode_from_c(M4APcmMixerMode::Sappy),
+            Some(MixerMode::Sappy)
+        );
+    }
 }

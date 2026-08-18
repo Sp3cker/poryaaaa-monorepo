@@ -125,43 +125,35 @@ static void apply_public_state(M4AEngine* engine)
     apply_driver_config(engine, engine->auditionDriver, MAX_PCM_CHANNELS);
 }
 
-static void copy_pcm_channel(M4APCMChannel* destination, const M4ADriverPcmChan* source, bool audition)
+static void copy_pcm_channel(M4APCMChannel* destination, const M4APcmChannelSnapshot* source, bool audition)
 {
     const bool active = (source->status & M4A_CHN_ON) != 0;
     memset(destination, 0, sizeof(*destination));
     destination->status = source->status;
     destination->type = source->type;
-    destination->rightVolume = source->rightVolume;
-    destination->leftVolume = source->leftVolume;
+    destination->rightVolume = source->right_volume;
+    destination->leftVolume = source->left_volume;
     destination->attack = source->attack;
     destination->decay = source->decay;
     destination->sustain = source->sustain;
     destination->release = source->release;
     destination->key = source->key;
-    destination->envelopeVolume = source->envelopeVolume;
-    destination->envelopeVolumeRight = source->envelopeVolumeRight;
-    destination->envelopeVolumeLeft = source->envelopeVolumeLeft;
-    destination->pseudoEchoVolume = source->pseudoEchoVolume;
-    destination->pseudoEchoLength = source->pseudoEchoLength;
-    destination->midiKey = source->midiKey;
+    destination->envelopeVolume = source->envelope_volume;
+    destination->envelopeVolumeRight = source->envelope_volume_right;
+    destination->envelopeVolumeLeft = source->envelope_volume_left;
+    destination->pseudoEchoVolume = source->pseudo_echo_volume;
+    destination->pseudoEchoLength = source->pseudo_echo_length;
+    destination->midiKey = source->midi_key;
     destination->velocity = source->velocity;
     destination->priority = source->priority;
-    destination->rhythmPan = source->rhythmPan;
-    destination->gateTime = source->gateTime;
-    destination->trackIndex = active ? source->trackIndex : -1;
+    destination->rhythmPan = source->rhythm_pan;
+    destination->gateTime = source->gate_time;
+    destination->trackIndex = active ? source->track_index : -1;
     destination->audition = active && audition;
     if (!active)
         return;
     destination->wav = source->wav;
-    destination->currentPointer = source->currentPointer;
-    destination->count = source->count;
-    destination->fw = source->fw;
     destination->frequency = source->frequency;
-    destination->isLoop = source->isLoop;
-    destination->loopLen = source->loopLen;
-    destination->loopStart = source->loopStart;
-    destination->synthType = source->synthType;
-    destination->synthPulseDuty = source->synthPulseDuty;
 }
 
 static void copy_cgb_channel(M4ACGBChannel* destination, const M4ADriverCgbChan* source, bool audition)
@@ -207,9 +199,11 @@ static void sync_channels(M4AEngine* engine)
     {
         for (int i = 0; i < MAX_PCM_CHANNELS; ++i)
         {
-            if (!(engine->driver->pcmChans[i].status & M4A_CHN_ON))
+            M4APcmChannelSnapshot snapshot;
+            m4a_drv_pcm_snapshot(engine->driver, &engine->driver->pcmChans[i], &snapshot);
+            if (!(snapshot.status & M4A_CHN_ON))
                 engine->primaryPcmAudition[i] = false;
-            copy_pcm_channel(&engine->pcmChannels[i], &engine->driver->pcmChans[i], engine->primaryPcmAudition[i]);
+            copy_pcm_channel(&engine->pcmChannels[i], &snapshot, engine->primaryPcmAudition[i]);
         }
         for (int i = 0; i < MAX_CGB_CHANNELS; ++i)
         {
@@ -222,11 +216,11 @@ static void sync_channels(M4AEngine* engine)
     {
         for (int i = 0; i < MAX_PCM_CHANNELS; ++i)
         {
-            if (!(engine->shadowDriver->pcmChans[i].status & M4A_CHN_ON))
+            M4APcmChannelSnapshot snapshot;
+            m4a_drv_pcm_snapshot(engine->shadowDriver, &engine->shadowDriver->pcmChans[i], &snapshot);
+            if (!(snapshot.status & M4A_CHN_ON))
                 engine->shadowPcmAudition[i] = false;
-            copy_pcm_channel(&engine->pcmChannels[MAX_PCM_CHANNELS + i],
-                             &engine->shadowDriver->pcmChans[i],
-                             engine->shadowPcmAudition[i]);
+            copy_pcm_channel(&engine->pcmChannels[MAX_PCM_CHANNELS + i], &snapshot, engine->shadowPcmAudition[i]);
         }
         for (int i = 0; i < MAX_CGB_CHANNELS; ++i)
             copy_cgb_channel(&engine->cgbChannels[MAX_CGB_CHANNELS + i],
@@ -512,6 +506,19 @@ void m4a_engine_set_pcm_mix_rate(M4AEngine* engine, float rate)
     sync_public_state(engine);
 }
 
+/* Keep primary, shadow, and audition requests ordered identically. */
+bool m4a_engine_set_pcm_mixer_mode(M4AEngine* engine, M4APcmMixerMode mode)
+{
+    if (!engine || !engine->driver || !engine->shadowDriver || !engine->auditionDriver ||
+        (mode != M4A_PCM_MIXER_IPATIX && mode != M4A_PCM_MIXER_SAPPY))
+        return false;
+    /* Validate before touching any driver so an invalid request is atomic. */
+    const bool primary = m4a_driver_set_pcm_mixer_mode(engine->driver, mode);
+    const bool shadow = m4a_driver_set_pcm_mixer_mode(engine->shadowDriver, mode);
+    const bool audition = m4a_driver_set_pcm_mixer_mode(engine->auditionDriver, mode);
+    return primary && shadow && audition;
+}
+
 void m4a_engine_set_voicegroup(M4AEngine* engine, ToneData* voiceGroup)
 {
     if (!engine)
@@ -594,7 +601,7 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
         M4ADriverPcmChan* channel = select_pcm_channel(engine->driver, engine->tracks[track].priority, track);
         const bool dropped = channel == NULL;
         int index = -1;
-        M4ADriverPcmChan victim;
+        M4APcmChannelSnapshot victim;
         if (dropped)
         {
             record_poly_event(engine, M4A_POLY_DROPPED, (uint8_t)track, key, (uint8_t)track);
@@ -604,22 +611,22 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
         else
         {
             index = (int)(channel - engine->driver->pcmChans);
-            victim = *channel;
+            m4a_drv_pcm_snapshot(engine->driver, channel, &victim);
             if (victim.status & M4A_CHN_ON)
             {
                 record_poly_event(engine,
                                   (victim.status & M4A_CHN_STOP) ? M4A_POLY_TAIL_CUT : M4A_POLY_STOLEN,
-                                  (uint8_t)victim.trackIndex,
-                                  victim.midiKey,
+                                  (uint8_t)victim.track_index,
+                                  victim.midi_key,
                                   (uint8_t)track);
                 if (engine->polyDebugInvert)
                 {
                     M4ADriverPcmChan* shadow =
-                        select_pcm_channel(engine->shadowDriver, victim.priority, victim.trackIndex);
+                        select_pcm_channel(engine->shadowDriver, victim.priority, victim.track_index);
                     if (shadow)
                     {
                         const int shadowIndex = (int)(shadow - engine->shadowDriver->pcmChans);
-                        *shadow = victim;
+                        m4a_drv_pcm_clone(engine->shadowDriver, shadow, engine->driver, channel);
                         engine->shadowPcmAudition[shadowIndex] = engine->primaryPcmAudition[index];
                     }
                 }

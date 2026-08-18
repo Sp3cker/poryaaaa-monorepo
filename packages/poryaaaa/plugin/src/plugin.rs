@@ -1,11 +1,11 @@
 use crate::{
     editor,
-    params::VoicegroupLoadStatus,
+    params::{MixerMode, VoicegroupLoadStatus, PCM_MIXER_PARAM_ID},
     process::{self, ProcessRuntime},
     runtime::{M4aRuntime, RuntimeConfig},
     shared_projects_json, PoryaaaaParams, PROGRAM_COUNT,
 };
-use nice_plug::prelude::*;
+use nice_plug::{log, prelude::*};
 use nice_plug_iced::iced::PollSubNotifier;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,12 +25,16 @@ pub struct PoryaaaaPlugin {
     gui_notifier: PollSubNotifier,
     last_host_tempo_bpm: Option<f64>,
     last_applied_audio_settings: Option<crate::params::AudioSettings>,
+    config_error: Option<String>,
 }
-
 impl Default for PoryaaaaPlugin {
     fn default() -> Self {
-        let config = crate::config::load_default_config();
-        let params = PoryaaaaParams::with_audio_defaults(config.volume, config.reverb);
+        let (config, config_error) = crate::config::load_default_config_with_error();
+        let params = PoryaaaaParams::with_audio_defaults_and_mixer(
+            config.volume,
+            config.reverb,
+            config.pcm_mixer,
+        );
         Self::apply_config_defaults_to_params(&params, &config);
         Self {
             params: Arc::new(params),
@@ -38,6 +42,7 @@ impl Default for PoryaaaaPlugin {
             gui_notifier: PollSubNotifier::new(),
             last_host_tempo_bpm: None,
             last_applied_audio_settings: None,
+            config_error,
         }
     }
 }
@@ -195,6 +200,10 @@ impl PoryaaaaPlugin {
 
         runtime.set_volume(settings.volume);
         runtime.set_reverb_amount(settings.reverb);
+        if !runtime.set_pcm_mixer_mode(settings.mixer_mode) {
+            log::warn!("native runtime rejected validated pcm mixer mode");
+            return;
+        }
         self.last_applied_audio_settings = Some(settings);
     }
 
@@ -256,6 +265,12 @@ impl Plugin for PoryaaaaPlugin {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        if let Some(error) = self.config_error.as_ref() {
+            self.set_runtime_voicegroup_error(error.clone());
+            *self.runtime.lock().expect("runtime lock") = None;
+            return false;
+        }
+
         let audio_settings = self.params.audio_settings();
         let config = RuntimeConfig {
             sample_rate: buffer_config.sample_rate,
@@ -270,6 +285,11 @@ impl Plugin for PoryaaaaPlugin {
                 return false;
             }
         };
+        if !runtime.set_pcm_mixer_mode(audio_settings.mixer_mode) {
+            self.set_runtime_voicegroup_error("failed to set pcm mixer mode".to_owned());
+            *self.runtime.lock().expect("runtime lock") = None;
+            return false;
+        }
         if let Some((project_root, bank)) = self.params.committed_voicegroup_selection() {
             let committed_load = shared_projects_json::default_projects_json_path()
                 .and_then(|path| Self::load_committed_voicegroup(self.params.as_ref(), &path));
@@ -314,8 +334,33 @@ impl Plugin for PoryaaaaPlugin {
             Some(Err(err)) => {
                 self.set_runtime_voicegroup_error(err.to_string());
             }
+
             None => {}
         }
+    }
+    fn filter_state(state: &mut PluginState) {
+        let (mode, warning) = match state.params.get(PCM_MIXER_PARAM_ID) {
+            Some(nice_plug::plugin::ParamValue::String(id)) => (
+                MixerMode::from_stable_id(id).unwrap_or(MixerMode::Ipatix),
+                MixerMode::from_stable_id(id).is_none(),
+            ),
+            Some(nice_plug::plugin::ParamValue::I32(value)) => (
+                MixerMode::from_state_integer(*value).unwrap_or(MixerMode::Ipatix),
+                MixerMode::from_state_integer(*value).is_none(),
+            ),
+            Some(_) => (MixerMode::Ipatix, true),
+            None => {
+                log::warn!("missing pcm_mixer state; defaulting to ipatix");
+                (MixerMode::Ipatix, false)
+            }
+        };
+        if warning {
+            log::warn!("invalid pcm_mixer state; defaulting to ipatix");
+        }
+        state.params.insert(
+            PCM_MIXER_PARAM_ID.to_owned(),
+            nice_plug::plugin::ParamValue::String(mode.stable_id().to_owned()),
+        );
     }
 
     fn deactivate(&mut self) {
@@ -409,10 +454,59 @@ impl ClapPlugin for PoryaaaaPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::MixerMode;
     use crate::test_support::{
         temp_project, write_file, IsolatedHome, TestInitContext, TEST_ENV_LOCK,
     };
+    use nice_plug::plugin::ParamValue;
+    use std::collections::BTreeMap;
     use std::fs;
+    fn plugin_state(mixer_value: Option<ParamValue>) -> PluginState {
+        let mut params = BTreeMap::new();
+        if let Some(value) = mixer_value {
+            params.insert("pcm_mixer".to_owned(), value);
+        }
+        PluginState {
+            version: String::new(),
+            params,
+            fields: BTreeMap::new(),
+        }
+    }
+
+    fn filtered_mixer_id(value: Option<ParamValue>) -> String {
+        let mut state = plugin_state(value);
+        <PoryaaaaPlugin as Plugin>::filter_state(&mut state);
+        match state
+            .params
+            .remove("pcm_mixer")
+            .expect("filter inserts mixer state")
+        {
+            ParamValue::String(id) => id,
+            _ => panic!("filter must normalize mixer state to a string ID"),
+        }
+    }
+
+    #[test]
+    fn filter_state_migrates_and_repairs_mixer_values() {
+        assert_eq!(
+            filtered_mixer_id(Some(ParamValue::String("ipatix".to_owned()))),
+            "ipatix"
+        );
+        assert_eq!(
+            filtered_mixer_id(Some(ParamValue::String("sappy".to_owned()))),
+            "sappy"
+        );
+        assert_eq!(filtered_mixer_id(Some(ParamValue::I32(0))), "ipatix");
+        assert_eq!(filtered_mixer_id(Some(ParamValue::I32(1))), "sappy");
+        assert_eq!(filtered_mixer_id(None), "ipatix");
+        assert_eq!(filtered_mixer_id(Some(ParamValue::I32(2))), "ipatix");
+        assert_eq!(
+            filtered_mixer_id(Some(ParamValue::String("SAPPY".to_owned()))),
+            "ipatix"
+        );
+        assert_eq!(filtered_mixer_id(Some(ParamValue::F32(1.0))), "ipatix");
+    }
+
 
     #[test]
     fn remember_host_tempo_keeps_only_finite_positive_values() {
@@ -429,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_param_config_seeds_volume_and_reverb_params() {
+    fn audio_param_config_seeds_volume_reverb_and_mixer_params() {
         let config_dir = temp_project("audio-param-config-dir");
         write_file(
             &config_dir,
@@ -437,6 +531,7 @@ mod tests {
             "\
 volume=64
 reverb=23
+pcm_mixer=sappy
 ",
         );
         let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
@@ -448,6 +543,37 @@ reverb=23
         fs::remove_dir_all(config_dir).expect("remove temp config dir");
         assert_eq!(plugin.params_for_test().volume.value(), 64);
         assert_eq!(plugin.params_for_test().reverb.value(), 23);
+        assert_eq!(
+            plugin.params_for_test().pcm_mixer.value(),
+            MixerMode::Sappy
+        );
+    }
+
+    #[test]
+    fn invalid_mixer_config_is_retained_and_fails_initialize() {
+        let config_dir = temp_project("audio-param-config-invalid");
+        write_file(&config_dir, "poryaaaa.cfg", "pcm_mixer=Sappy\n");
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        crate::config::set_default_config_dir_for_test(Some(config_dir.clone()));
+
+        let mut plugin = PoryaaaaPlugin::default();
+        let mut init_context = TestInitContext;
+        let initialized = plugin.initialize(
+            &PoryaaaaPlugin::AUDIO_IO_LAYOUTS[0],
+            &test_buffer_config(),
+            &mut init_context,
+        );
+
+        crate::config::set_default_config_dir_for_test(None);
+        fs::remove_dir_all(config_dir).expect("remove temp config dir");
+        assert!(!initialized);
+        assert_eq!(
+            plugin.params_for_test().voicegroup_status(),
+            Some(crate::params::VoicegroupLoadStatus {
+                text: "invalid pcm_mixer value 'Sappy'; expected ipatix or sappy".to_owned(),
+                is_error: true,
+            })
+        );
     }
 
     #[test]
@@ -502,7 +628,10 @@ reverb=23
                 .flatten()
                 .fold(muted_peak, |peak, sample| peak.max(sample.abs()));
         }
-        assert!(muted_peak < 0.0001);
+        /* A zero-goal CGB trigger can publish one minimal envelope step before
+         * the source lifecycle disables it; the parameter must prevent any
+         * sustained/full-scale output. */
+        assert!(muted_peak <= 3.0 / 128.0, "zero-volume peak was {muted_peak}");
 
         plugin.deactivate();
         fs::remove_dir_all(root).expect("remove temp project");

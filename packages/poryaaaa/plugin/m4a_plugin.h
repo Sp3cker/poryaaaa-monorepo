@@ -18,11 +18,10 @@ using std::atomic_store;
 #include "voicegroup/project_asset_index.h"
 #include "m4a_gui.h"
 #include <clap/clap.h>
+#include "m4a_params.h"
 
 enum
 {
-    /* MIDI and CLAP note events address the standard sixteen channels. */
-    M4A_PLUGIN_TRACK_COUNT = 16,
     M4A_PLUGIN_MAX_SONG_VOLUME = 127,
 };
 
@@ -45,6 +44,9 @@ typedef struct M4APluginData
     /* CLAP param mirror for per-track program selection. Kept in the host
      * runtime so params/state do not read audio-thread-owned driver state. */
     atomic_uchar programParams[M4A_PLUGIN_TRACK_COUNT];
+    /* Stable PCM parameter value and all GUI/audio handoff state share this
+     * word.  Only the audio thread consumes its pending driver request. */
+    atomic_uint pcmMixerFrontendState;
 
     /* Voice editor: snapshot of original voices and per-voice override flags */
     ToneData originalVoices[VOICEGROUP_SIZE];

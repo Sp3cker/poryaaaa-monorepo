@@ -1,0 +1,30 @@
+{
+  "schema": "poryaaaa.pcm-mixer-cases",
+  "version": 1,
+  "cases": [
+    {"id": "silence", "mode": "ipatix", "source": "inputs/ipatix-silence.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 0, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "one-voice", "mode": "ipatix", "source": "inputs/ipatix-one-voice.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "many-voices", "mode": "ipatix", "source": "inputs/ipatix-many-voices.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 12, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "clamp-positive", "mode": "ipatix", "source": "inputs/ipatix-clamp-positive.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 12, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "clamp-negative", "mode": "ipatix", "source": "inputs/ipatix-clamp-negative.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 12, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "rate-sub-unity", "mode": "ipatix", "source": "inputs/ipatix-rate-sub-unity.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "rate-equal-unity", "mode": "ipatix", "source": "inputs/ipatix-rate-equal-unity.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "rate-greater-unity", "mode": "ipatix", "source": "inputs/ipatix-rate-greater-unity.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "rate-fixed", "mode": "ipatix", "source": "inputs/ipatix-rate-fixed.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "forward-endpoint", "mode": "ipatix", "source": "inputs/ipatix-forward-endpoint.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "reverse-endpoint", "mode": "ipatix", "source": "inputs/ipatix-reverse-endpoint.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "loop-wrap", "mode": "ipatix", "source": "inputs/ipatix-loop-wrap.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "bdpcm-block-boundary", "mode": "ipatix", "source": "inputs/ipatix-bdpcm-block-boundary.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "bdpcm-lookahead-boundary", "mode": "ipatix", "source": "inputs/ipatix-bdpcm-lookahead-boundary.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "synth-pwm", "mode": "ipatix", "source": "inputs/ipatix-synth-pwm.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "synth-pseudosaw", "mode": "ipatix", "source": "inputs/ipatix-synth-pseudosaw.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "synth-triangle", "mode": "ipatix", "source": "inputs/ipatix-synth-triangle.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "pseudo-echo", "mode": "ipatix", "source": "inputs/ipatix-pseudo-echo.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "reverb-first", "mode": "ipatix", "source": "inputs/ipatix-reverb-first.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 32}},
+    {"id": "reverb-steady", "mode": "ipatix", "source": "inputs/ipatix-reverb-steady.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 96}},
+    {"id": "reverb-tail", "mode": "ipatix", "source": "inputs/ipatix-reverb-tail.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 127}},
+    {"id": "ring-wrap", "mode": "ipatix", "source": "inputs/ipatix-ring-wrap.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 1, "master_volume": 15, "voice_volume": 127, "reverb": 64}},
+    {"id": "packed-overflow-positive", "mode": "ipatix", "source": "inputs/ipatix-packed-overflow-positive.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 12, "master_volume": 15, "voice_volume": 127, "reverb": 0}},
+    {"id": "packed-overflow-negative", "mode": "ipatix", "source": "inputs/ipatix-packed-overflow-negative.s", "settings": {"pcm_rate_hz": 5734, "max_channels": 12, "master_volume": 15, "voice_volume": 127, "reverb": 0}}
+  ]
+}

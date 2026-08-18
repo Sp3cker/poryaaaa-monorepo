@@ -18,7 +18,10 @@ fn main() {
             .define("_CRT_NONSTDC_NO_WARNINGS", None);
     }
 
-    for file in NATIVE_SOURCES {
+    for file in M4A_DRIVER_SOURCES.lines() {
+        build.file(manifest_dir.join("m4a").join(file));
+    }
+    for file in NATIVE_OTHER_SOURCES {
         build.file(manifest_dir.join(file));
     }
 
@@ -29,7 +32,14 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=build.rs");
-    for file in NATIVE_SOURCES.iter().chain(NATIVE_HEADERS) {
+    println!("cargo:rerun-if-changed=m4a/m4a_driver_sources.txt");
+    for file in M4A_DRIVER_SOURCES.lines() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir.join("m4a").join(file).display()
+        );
+    }
+    for file in NATIVE_OTHER_SOURCES.iter().chain(NATIVE_HEADERS) {
         println!(
             "cargo:rerun-if-changed={}",
             manifest_dir.join(file).display()
@@ -37,14 +47,9 @@ fn main() {
     }
 }
 
-const NATIVE_SOURCES: &[&str] = &[
-    "m4a_tables.c",
-    "m4a/m4a_driver.c",
-    "m4a/m4a_freq.c",
-    "m4a/m4a_track.c",
-    "m4a/m4a_cgb.c",
-    "m4a/m4a_pcm.c",
-    "m4a/m4a_main.c",
+const M4A_DRIVER_SOURCES: &str = include_str!("m4a/m4a_driver_sources.txt");
+
+const NATIVE_OTHER_SOURCES: &[&str] = &[
     "hw_audio/hw_audio.c",
     "hw_audio/hw_psg.c",
     "hw_audio/hw_pcm.c",
@@ -67,6 +72,8 @@ const NATIVE_HEADERS: &[&str] = &[
     "m4a/m4a_driver.h",
     "m4a/m4a_freq.h",
     "m4a/m4a_internal.h",
+    "m4a/m4a_pcm_internal.h",
+    "m4a/m4a_pcm_mixer_mode.h",
     "m4a/m4a_pcm_ring.h",
     "m4a/m4a_register_file.h",
     "hw_audio/hw_audio.h",
