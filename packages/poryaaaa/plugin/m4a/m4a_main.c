@@ -144,7 +144,18 @@ static bool advance_pcm_timer(M4ADriver* drv)
 {
     const uint32_t samples_per_vblank =
         drv->pcm_max_samples_per_vblank ? drv->pcm_max_samples_per_vblank : M4A_PCM_SAMPLES_PER_VBLANK;
-    const uint32_t timer_period = M4A_VBLANK_CYCLES / samples_per_vblank;
+    /* The truncated period alone runs the FIFO consumption clock away from
+     * the mixer block rate (e.g. 280896/548 truncates to 512 cycles, i.e.
+     * 32768 Hz consumption against 548-samples-per-vblank production), so
+     * the FIFO underruns periodically and the DMA reads stale words. Carry
+     * the division remainder to keep the long-run rate exact. */
+    uint64_t timer_period = M4A_VBLANK_CYCLES / samples_per_vblank;
+    drv->pcm_timer_cycle_remainder += M4A_VBLANK_CYCLES % samples_per_vblank;
+    if (drv->pcm_timer_cycle_remainder >= samples_per_vblank)
+    {
+        drv->pcm_timer_cycle_remainder -= samples_per_vblank;
+        timer_period += 1;
+    }
     if (drv->next_pcm_timer_cycle > UINT64_MAX - timer_period)
         return false;
     drv->next_pcm_timer_cycle += timer_period;

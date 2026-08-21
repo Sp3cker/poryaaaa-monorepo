@@ -15,5 +15,5 @@ exec ./build/sine_purity_capture \
     --block 256 \
     --pcm-mixer ipatix \
     --polyphony 15 \
-    --volume 127 \
-    --sample-hz 18157
+    --sample-hz 18157 \
+    --table-len 284

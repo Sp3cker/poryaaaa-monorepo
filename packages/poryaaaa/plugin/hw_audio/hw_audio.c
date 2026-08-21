@@ -12,12 +12,36 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
+/* Temporary autoresearch diagnostic: dump the native DAC-rate stream when
+ * SINE_DUMP_NATIVE is set in the environment. */
+#include <stdio.h>
+static FILE* native_dump;
+static FILE* fifo_bytes_dump;
+static FILE* dma_dump;
+static unsigned long fifo_record_count;
+
+static void native_dump_init(void)
+{
+    if (!native_dump && getenv("SINE_DUMP_NATIVE"))
+        native_dump = fopen(getenv("SINE_DUMP_NATIVE"), "wb");
+}
 /* Inner chunk size for the native render and fixed PCM16 frontend drain.
  * It bounds HwAudio's preallocated scratch storage; no render path allocates. */
 #define HW_AUDIO_INTERNAL_CHUNK 1024
 #define HW_AUDIO_DEFAULT_FPS_TARGET 59.72750056960583f
 #define HW_AUDIO_DEFAULT_BUFFERS 1536u
+
+typedef struct
+{
+    uint64_t cycles[24];
+    int16_t values[24];
+    int head;
+    int count;
+    uint64_t last_tick_cycle;
+    uint32_t tick_period;
+} HwFifoRecon;
 
 struct HwAudio
 {
@@ -50,6 +74,13 @@ struct HwAudio
      * sides). */
     uint32_t solo_mask;
 
+    /* Optional band-limited DirectSound reconstruction: recent FIFO byte
+     * consumptions with their absolute consumption cycles, so the native
+     * DAC stream can interpolate the 13.4 kHz FIFO content instead of
+     * holding it (which folds mix-rate images into the audible band). */
+    HwFifoRecon fifo_recon_a, fifo_recon_b;
+    bool fifo_reconstruct;
+
 #if PORYAAAA_HW_AUDIO_TRACE
     /* Absolute trace position is independent of the production host-frame
      * renderer. It rejects reordered captures before they reach chip state. */
@@ -75,6 +106,71 @@ struct HwAudio
     uint32_t frontend_queue_head;
     uint32_t frontend_queue_count;
 };
+
+static void fifo_recon_reset(HwAudio* hw)
+{
+    memset(&hw->fifo_recon_a, 0, sizeof(hw->fifo_recon_a));
+    memset(&hw->fifo_recon_b, 0, sizeof(hw->fifo_recon_b));
+}
+
+/* Record one FIFO byte consumption: the byte becomes the held sample at the
+ * timer tick's absolute cycle. */
+static void fifo_recon_record(HwFifoRecon* r, uint64_t cycle, int8_t value)
+{
+    if (r->last_tick_cycle != 0 && cycle > r->last_tick_cycle)
+    {
+        const uint64_t delta = cycle - r->last_tick_cycle;
+        if (delta >= 128 && delta <= 65536)
+            r->tick_period = (uint32_t)delta;
+    }
+    r->last_tick_cycle = cycle;
+    r->cycles[r->head] = cycle;
+    r->values[r->head] = value;
+    r->head = (r->head + 1) % 24;
+    if (r->count < 24)
+        r->count++;
+}
+
+static void fifo_recon_record_dumped(HwFifoRecon* r, uint64_t cycle, int8_t value)
+{
+    fifo_recon_record(r, cycle, value);
+    if (fifo_bytes_dump)
+    {
+        fwrite(&value, 1, 1, fifo_bytes_dump);
+        fflush(fifo_bytes_dump);
+    }
+}
+
+/* Band-limited reconstruction of the FIFO content stream, evaluated one
+ * kernel-span behind the newest consumptions so every tap is available.
+ * The zero-order hold folds mix-rate images (f_mix +- f0) into the audible
+ * band; this Hann-windowed sinc suppresses them. */
+static int16_t fifo_recon_evaluate(const HwFifoRecon* r, uint64_t at_cycle)
+{
+    if (r->count == 0)
+        return 0;
+    const uint32_t period = r->tick_period ? r->tick_period : 1254u;
+    double acc = 0.0;
+    for (int m = 0; m < r->count; m++)
+    {
+        const int idx = (r->head - 1 - m + 24) % 24;
+        const double d = (double)((int64_t)(at_cycle - r->cycles[idx])) / (double)period;
+        if (d <= -12.0 || d > 12.0)
+            continue;
+        if (d == 0.0)
+        {
+            acc += (double)r->values[idx];
+            continue;
+        }
+        const double window = 0.5 + 0.5 * cos(M_PI * d / 12.0);
+        acc += (double)r->values[idx] * window * sin(M_PI * d) / (M_PI * d);
+    }
+    if (acc > 127.0)
+        return 127;
+    if (acc < -128.0)
+        return -128;
+    return (int16_t)lround(acc);
+}
 
 static bool host_rate_hz_from_float(float hz, uint32_t* rate_hz)
 {
@@ -264,6 +360,7 @@ static void hw_audio_sync_rates_from_mix(HwAudio* hw)
 
 HwAudio* hw_audio_create(float host_sample_rate)
 {
+    native_dump_init();
     uint32_t host_rate_hz;
     if (!host_rate_hz_from_float(host_sample_rate, &host_rate_hz))
         return NULL;
@@ -282,6 +379,12 @@ HwAudio* hw_audio_create(float host_sample_rate)
         free(hw);
         return NULL;
     }
+    hw->fifo_reconstruct = getenv("PORYAAAA_FIFO_RECONSTRUCT") != NULL;
+    if (!fifo_bytes_dump && getenv("PORYAAAA_DUMP_FIFO_BYTES"))
+        fifo_bytes_dump = fopen(getenv("PORYAAAA_DUMP_FIFO_BYTES"), "wb");
+    if (!dma_dump && getenv("PORYAAAA_DUMP_DMA"))
+        dma_dump = fopen(getenv("PORYAAAA_DUMP_DMA"), "wb");
+    fifo_recon_reset(hw);
     hw->live_sample_pending = true;
     return hw;
 }
@@ -301,6 +404,7 @@ void hw_audio_reset(HwAudio* hw)
     /* A reset starts a new DAC timeline at cycle zero, just like creation
      * and the trace path.  Do not inherit a consumed terminal sample. */
     hw->live_sample_pending = true;
+    fifo_recon_reset(hw);
 #if PORYAAAA_HW_AUDIO_TRACE
     hw->trace_cycle = 0;
     hw->trace_order = 0;
@@ -480,12 +584,28 @@ static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* render
 {
     hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
     hw_pcm_render(&hw->pcm, &hw->scratch_dma_a[0], &hw->scratch_dma_b[0], 1);
+    if (hw->fifo_reconstruct)
+    {
+        /* Evaluate one kernel half-span behind the newest tick so the sinc
+         * has both neighbours for every tap. */
+        const uint64_t delay_a = 11u * hw->fifo_recon_a.tick_period;
+        const uint64_t delay_b = 11u * hw->fifo_recon_b.tick_period;
+        hw->scratch_dma_a[0] = (int8_t)fifo_recon_evaluate(&hw->fifo_recon_a, hw->live_cycle - delay_a);
+        hw->scratch_dma_b[0] = (int8_t)fifo_recon_evaluate(&hw->fifo_recon_b, hw->live_cycle - delay_b);
+    }
+    if (dma_dump)
+        fwrite(&hw->scratch_dma_a[0], 1, 1, dma_dump);
     mix_native_chunk(hw, 1);
 
     /* A previous DAC observation can have filled the presentation FIFO only
      * after the prior public block was complete. Drain it before adding this
      * observation, then capture again immediately after submission. */
     capture_frontend(hw, outL, outR, rendered_host, target_host);
+    if (native_dump)
+    {
+        int16_t frame[2] = {hw->native_l[0], hw->native_r[0]};
+        fwrite(frame, sizeof(frame), 1, native_dump);
+    }
     hw_resample_submit(
         &hw->resample, hw->native_l[0], hw->native_r[0], PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate);
     capture_frontend(hw, outL, outR, rendered_host, target_host);
@@ -643,9 +763,18 @@ void hw_audio_render_events(HwAudio* hw, const M4ARegWriteBatch* events, float* 
                                             event_host_limit - rendered_host);
             fill_frontend_gap(hw, outL, outR, &rendered_host, event_host_limit);
         }
-
         hw_psg_apply_event(&hw->psg, ev);
         hw_pcm_apply_event(&hw->pcm, ev);
+        if (ev->reg == M4A_REG_TIMER_0)
+        {
+            fifo_record_count++;
+            if (hw->pcm.clocked_a)
+                fifo_recon_record_dumped(&hw->fifo_recon_a, ev->cycle, hw->pcm.fifo_a.held_sample);
+            if (hw->pcm.clocked_b)
+                fifo_recon_record_dumped(&hw->fifo_recon_b, ev->cycle, hw->pcm.fifo_b.held_sample);
+        }
+        if (getenv("PORYAAAA_DUMP_FIFO_BYTES") && fifo_record_count % 4000 == 1)
+            fprintf(stderr, "fifo records so far: %lu\n", fifo_record_count);
         hw_mix_apply_event(&hw->mix, ev);
         if (ev->reg == M4A_REG_SOUNDBIAS)
             hw_audio_sync_rates_from_mix(hw);

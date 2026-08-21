@@ -58,10 +58,18 @@ void hw_pcm_clock_timer(HwPcm* pcm, uint8_t timer)
 {
     if (!pcm || timer > 1u || !pcm->master_enabled)
         return;
+    pcm->clocked_a = false;
+    pcm->clocked_b = false;
     if (pcm->route_a && pcm->timer_a == timer)
+    {
         hw_pcm_clock_fifo(&pcm->fifo_a);
+        pcm->clocked_a = true;
+    }
     if (pcm->route_b && pcm->timer_b == timer)
+    {
         hw_pcm_clock_fifo(&pcm->fifo_b);
+        pcm->clocked_b = true;
+    }
 }
 
 void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev)

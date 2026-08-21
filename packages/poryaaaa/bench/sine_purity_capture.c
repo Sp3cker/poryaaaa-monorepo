@@ -23,9 +23,12 @@
 enum
 {
     VG_SIZE = 128,
-    SINE_TABLE_LEN = 64,
+    SINE_TABLE_MAX = 4096,
+    /* 18157 / 284 = 63.93 Hz — the GBA DirectSound low-frequency target. */
+    SINE_TABLE_DEFAULT = 284,
     HARMONICS = 10,
 };
+
 
 typedef struct
 {
@@ -37,6 +40,9 @@ typedef struct
     int polyphony;
     int volume;
     uint32_t sample_hz;
+    int pcm_mix_rate;
+    int table_len;
+    int antialias;
 } Options;
 
 static void write_u16_le(FILE* f, uint16_t val)
@@ -309,6 +315,8 @@ static bool parse_args(int argc, char** argv, Options* opt)
     opt->polyphony = 15;
     opt->volume = 127;
     opt->sample_hz = 18157;
+    opt->table_len = SINE_TABLE_DEFAULT;
+    opt->pcm_mix_rate = 0;
 
     for (int i = 1; i < argc; i++)
     {
@@ -336,11 +344,17 @@ static bool parse_args(int argc, char** argv, Options* opt)
             opt->volume = atoi(argv[++i]);
         else if (strcmp(argv[i], "--sample-hz") == 0 && i + 1 < argc)
             opt->sample_hz = (uint32_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--table-len") == 0 && i + 1 < argc)
+            opt->table_len = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--antialias") == 0)
+            opt->antialias = 1;
+        else if (strcmp(argv[i], "--pcm-mix-rate") == 0 && i + 1 < argc)
+            opt->pcm_mix_rate = atoi(argv[++i]);
         else
             return false;
     }
 
-    return opt->output && opt->seconds > 0 && opt->sample_rate > 0 && opt->block > 0 && opt->polyphony > 0 && opt->polyphony <= M4A_MAX_PCM_CHANNELS && opt->volume >= 0 && opt->volume <= 127 && opt->sample_hz > 1000;
+    return opt->output && opt->seconds > 0 && opt->sample_rate > 0 && opt->block > 0 && opt->polyphony > 0 && opt->polyphony <= M4A_MAX_PCM_CHANNELS && opt->volume >= 0 && opt->volume <= 127 && opt->sample_hz > 1000 && opt->table_len > 0 && opt->table_len <= SINE_TABLE_MAX;
 }
 
 /* Build one cycle of a pure unit sine quantised to signed 8-bit PCM. */
@@ -361,8 +375,8 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    int8_t table[SINE_TABLE_LEN];
-    build_sine_table(table, SINE_TABLE_LEN);
+    int8_t table[SINE_TABLE_MAX];
+    build_sine_table(table, opt.table_len);
 
     static WaveData wav;
     wav.type = 0;
@@ -371,7 +385,7 @@ int main(int argc, char** argv)
      * (see voicegroup_loader.c AIFF path: "freq = COMM rate * 1024"). */
     wav.freq = opt.sample_hz * 1024u;
     wav.loopStart = 0;
-    wav.size = SINE_TABLE_LEN;
+    wav.size = (uint32_t)opt.table_len;
     wav.data = table;
 
     static ToneData voices[VG_SIZE];
@@ -409,6 +423,10 @@ int main(int argc, char** argv)
         free(right);
         return 1;
     }
+    if (opt.pcm_mix_rate > 0)
+        m4a_driver_set_pcm_mix_rate(drv, (float)opt.pcm_mix_rate);
+    if (opt.antialias)
+        hw_audio_set_resample_antialias(hw, 1);
 
     m4a_driver_set_pcm_mixer_mode(drv, opt.mixer);
     m4a_set_max_pcm_channels(drv, (uint8_t)opt.polyphony);
@@ -417,14 +435,51 @@ int main(int argc, char** argv)
     m4a_cc(drv, 0, 7, (uint8_t)opt.volume);
     m4a_cc(drv, 0, 10, 64);
     m4a_note_on(drv, 0, 60, 127);
+    uint64_t timer_events = 0, fifo_a_words = 0;
+    const M4APcmRing* ring0 = m4a_get_pcm_ring(drv);
+    uint64_t wc0 = ring0 ? ring0->write_cursor : 0;
 
     for (int done = 0; done < frames;)
     {
         int n = frames - done < opt.block ? frames - done : opt.block;
         m4a_advance(drv, n);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), left + done, right + done, n);
+        const M4ARegWriteBatch* batch = m4a_get_pending_writes(drv);
+        for (size_t e = 0; batch && e < batch->count; e++)
+        {
+            if (batch->events[e].reg == M4A_REG_TIMER_0)
+                timer_events++;
+            else if (batch->events[e].reg == M4A_REG_FIFO_A)
+                fifo_a_words++;
+        }
+        hw_audio_render_events(hw, batch, left + done, right + done, n);
         m4a_consume_writes(drv);
         done += n;
+    }
+
+    const M4APcmRing* ring1 = m4a_get_pcm_ring(drv);
+    double secs = (double)frames / opt.sample_rate;
+    fprintf(stderr, "diag timer0/s=%.3f fifo_words/s=%.3f ring_produced/s=%.3f samples_per_vblank=%u\n",
+            (double)timer_events / secs, (double)fifo_a_words / secs,
+            ring1 ? (double)(ring1->write_cursor - wc0) / secs : -1.0,
+            ring1 ? ring1->pcm_samples_per_vblank : 0u);
+
+    /* Dump the last second of raw mixer ring output (int8 at the canonical
+     * 13379 Hz mix rate) so distortion can be localized to the driver vs
+     * the hw_audio FIFO/DAC chain. */
+    if (ring1)
+    {
+        FILE* rf = fopen("/tmp/sine_ring.raw", "wb");
+        if (rf)
+        {
+            uint64_t total = ring1->write_cursor;
+            uint64_t start = total > 13379 ? total - 13379 : 0;
+            for (uint64_t i = start; i < total; i++)
+            {
+                int8_t v = ring1->ring_a[i % ring1->pcm_dma_buf_size];
+                fwrite(&v, 1, 1, rf);
+            }
+            fclose(rf);
+        }
     }
 
     m4a_all_sound_off(drv);
@@ -465,7 +520,7 @@ int main(int argc, char** argv)
         total += x[i] * x[i];
     }
 
-    double nominal = (double)opt.sample_hz / (double)SINE_TABLE_LEN;
+    double nominal = (double)opt.sample_hz / (double)opt.table_len;
     double f0 = 0.0;
     if (!find_fundamental(x, win, (double)opt.sample_rate, nominal, &f0))
     {
@@ -502,6 +557,13 @@ int main(int argc, char** argv)
     for (int k = 1; k < HARMONICS; k++)
         dist += harm_power[k];
     dist += resid;
+
+    /* Diagnostic breakdown on stderr: per-harmonic and residual share,
+     * relative to the fundamental. Not part of the METRIC contract. */
+    for (int k = 1; k < HARMONICS; k++)
+        fprintf(stderr, "diag h%d=%.2f dB\n", k + 1, 10.0 * log10(harm_power[k] / fund));
+    fprintf(stderr, "diag residual=%.2f dB\n", 10.0 * log10(resid / fund));
+    fprintf(stderr, "diag total=%.2f dB\n", 10.0 * log10(dist / fund));
 
     printf("METRIC thd_db=%.6f\n", 10.0 * log10(dist / fund));
     printf("METRIC purity_pct=%.4f\n", 100.0 * fund / total);

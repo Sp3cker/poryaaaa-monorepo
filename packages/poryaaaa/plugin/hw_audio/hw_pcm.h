@@ -34,6 +34,10 @@ extern "C"
         bool route_a;
         bool route_b;
         bool master_enabled;
+        /* Set by the last hw_pcm_clock_timer call; per-channel consumption
+         * actually happened. */
+        bool clocked_a;
+        bool clocked_b;
     } HwPcm;
 
     /* Live m4a defaults have DirectSound enabled; trace reset overrides this

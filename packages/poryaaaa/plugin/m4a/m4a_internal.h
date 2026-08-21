@@ -217,6 +217,9 @@ extern "C"
         uint32_t pcm_dma_buf_size;
         /* Remainder of rate * 400 / 23891, reset with each PCM epoch. */
         uint32_t pcm_vblank_remainder;
+        /* Fractional-carry residue of the DirectSound timer period so the
+         * long-run FIFO consumption rate equals the mixer block rate. */
+        uint32_t pcm_timer_cycle_remainder;
         ToneData* voicegroup;
         M4ADriverXcmdFn xcmd_fn;
         void* xcmd_ctx;

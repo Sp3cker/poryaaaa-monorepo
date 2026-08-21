@@ -79,6 +79,7 @@ static void m4a_reset_pcm_fifo_scheduler(M4ADriver* drv)
     drv->pcm_fifo_a_internal_remaining = 0;
     drv->pcm_fifo_b_internal_remaining = 0;
     drv->next_pcm_timer_cycle = drv->current_cycle + timer_period;
+    drv->pcm_timer_cycle_remainder = 0;
 }
 
 static void m4a_reset_pcm_output_state(M4ADriver* drv)
