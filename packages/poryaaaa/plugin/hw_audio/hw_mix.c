@@ -56,105 +56,89 @@ void hw_mix_apply_event(HwMixBus* mix, const M4ARegWrite* ev)
     }
 }
 
-static float gba_apply_bias(float sample, uint16_t bias_level)
+/* Apply mGBA's 10-bit GBA DAC bias, clip, and fixed 0x100 master volume. */
+static int16_t gba_apply_bias(int32_t sample, uint16_t bias_level)
 {
-    sample += (float)bias_level;
-    if (sample >= 1024.0f)
-    {
-        sample = 1023.0f;
-    }
-    else if (sample < 0.0f)
-    {
-        sample = 0.0f;
-    }
-    return sample - (float)bias_level;
+    sample += bias_level;
+    if (sample >= 0x400)
+        sample = 0x3FF;
+    else if (sample < 0)
+        sample = 0;
+    return (int16_t)(((sample - bias_level) * 0x100 * 3) >> 4);
 }
 
 void hw_mix_render(const HwMixBus* mix,
-                   const float* in_sq1,
-                   const float* in_sq2,
-                   const float* in_wave,
-                   const float* in_noise,
-                   const float* in_dma_a,
-                   const float* in_dma_b,
-                   float* outL,
-                   float* outR,
+                   const uint8_t* in_sq1,
+                   const uint8_t* in_sq2,
+                   const uint8_t* in_wave,
+                   const uint8_t* in_noise,
+                   const int8_t* in_dma_a,
+                   const int8_t* in_dma_b,
+                   int16_t* outL,
+                   int16_t* outR,
                    int frames)
 {
     if (frames <= 0)
         return;
 
-    /* From here until the final output write, L/R are mGBA sample counts:
-     * the same signed integer domain that gba/audio.c passes into
-     * _applyBias().  That keeps the GBA DAC clip point in its native unit
-     * and avoids pre-scaling individual voices into final float output. */
-    const uint8_t psg_code = (uint8_t)(mix->psg_volume_code & 3);
-    const float psg_shift = (float)(1u << (4u - psg_code));
-    const float psg_unit = (15.0f * 8.0f) / psg_shift;
-    const float dma_a_unit = mix->dma_a_vol_code ? 512.0f : 256.0f;
-    const float dma_b_unit = mix->dma_b_vol_code ? 512.0f : 256.0f;
-
-    /* NR51 pan-mask bit positions: sq1=bit0, sq2=bit1, wave=bit2, noise=bit3.
-     * Pre-multiply with the side scalars so the inner loop is a sum of
-     * masked products, no per-sample branches. */
-    const float psg_l = psg_unit * (float)(mix->master_vol_left + 1);
-    const float psg_r = psg_unit * (float)(mix->master_vol_right + 1);
-    const float sq1_l = ((mix->pan_mask_left & 0x01) ? psg_l : 0.0f);
-    const float sq1_r = ((mix->pan_mask_right & 0x01) ? psg_r : 0.0f);
-    const float sq2_l = ((mix->pan_mask_left & 0x02) ? psg_l : 0.0f);
-    const float sq2_r = ((mix->pan_mask_right & 0x02) ? psg_r : 0.0f);
-    const float wave_l = ((mix->pan_mask_left & 0x04) ? psg_l : 0.0f);
-    const float wave_r = ((mix->pan_mask_right & 0x04) ? psg_r : 0.0f);
-    const float noise_l = ((mix->pan_mask_left & 0x08) ? psg_l : 0.0f);
-    const float noise_r = ((mix->pan_mask_right & 0x08) ? psg_r : 0.0f);
-
-    const float a_l = (mix->dma_a_left ? dma_a_unit : 0.0f);
-    const float a_r = (mix->dma_a_right ? dma_a_unit : 0.0f);
-    const float b_l = (mix->dma_b_left ? dma_b_unit : 0.0f);
-    const float b_r = (mix->dma_b_right ? dma_b_unit : 0.0f);
-
-    /* mGBA's default GBA masterVolume is 0x100; _applyBias returns
-     * (sample * masterVolume * 3) >> 4.  Normalize int16 output here. */
-    const float output_scale = 48.0f / 32768.0f;
+    const uint8_t psg_shift = (uint8_t)(4u - (mix->psg_volume_code & 3u));
+    const int32_t dma_a_scale = mix->dma_a_vol_code ? 4 : 2;
+    const int32_t dma_b_scale = mix->dma_b_vol_code ? 4 : 2;
 
     for (int i = 0; i < frames; i++)
     {
-        float L = 0.0f, R = 0.0f;
+        int32_t left_psg = 0;
+        int32_t right_psg = 0;
 
         if (in_sq1)
         {
-            L += in_sq1[i] * sq1_l;
-            R += in_sq1[i] * sq1_r;
+            if (mix->pan_mask_left & 0x01u)
+                left_psg += in_sq1[i];
+            if (mix->pan_mask_right & 0x01u)
+                right_psg += in_sq1[i];
         }
         if (in_sq2)
         {
-            L += in_sq2[i] * sq2_l;
-            R += in_sq2[i] * sq2_r;
+            if (mix->pan_mask_left & 0x02u)
+                left_psg += in_sq2[i];
+            if (mix->pan_mask_right & 0x02u)
+                right_psg += in_sq2[i];
         }
         if (in_wave)
         {
-            L += in_wave[i] * wave_l;
-            R += in_wave[i] * wave_r;
+            if (mix->pan_mask_left & 0x04u)
+                left_psg += in_wave[i];
+            if (mix->pan_mask_right & 0x04u)
+                right_psg += in_wave[i];
         }
         if (in_noise)
         {
-            L += in_noise[i] * noise_l;
-            R += in_noise[i] * noise_r;
+            if (mix->pan_mask_left & 0x08u)
+                left_psg += in_noise[i];
+            if (mix->pan_mask_right & 0x08u)
+                right_psg += in_noise[i];
         }
+
+        int32_t left = ((left_psg << 3) * (mix->master_vol_left + 1)) >> psg_shift;
+        int32_t right = ((right_psg << 3) * (mix->master_vol_right + 1)) >> psg_shift;
         if (in_dma_a)
         {
-            L += in_dma_a[i] * a_l;
-            R += in_dma_a[i] * a_r;
+            if (mix->dma_a_left)
+                left += in_dma_a[i] * dma_a_scale;
+            if (mix->dma_a_right)
+                right += in_dma_a[i] * dma_a_scale;
         }
         if (in_dma_b)
         {
-            L += in_dma_b[i] * b_l;
-            R += in_dma_b[i] * b_r;
+            if (mix->dma_b_left)
+                left += in_dma_b[i] * dma_b_scale;
+            if (mix->dma_b_right)
+                right += in_dma_b[i] * dma_b_scale;
         }
 
         if (outL)
-            outL[i] = gba_apply_bias(L, mix->bias_level) * output_scale;
+            outL[i] = gba_apply_bias(left, mix->bias_level);
         if (outR)
-            outR[i] = gba_apply_bias(R, mix->bias_level) * output_scale;
+            outR[i] = gba_apply_bias(right, mix->bias_level);
     }
 }

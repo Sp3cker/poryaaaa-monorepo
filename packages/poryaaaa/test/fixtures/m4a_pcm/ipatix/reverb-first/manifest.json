@@ -1,0 +1,49 @@
+{
+  "case": "reverb-first",
+  "hashes": {
+    "cases": "1f0bede791dae94d5dc9c8aa0b44caaafed5f62cd15048c4e6dfadcb87b35e23",
+    "elf": "29f8cac11d17fe79c114f1fbe50a1c3dc2a77aae47c987a8789e8b7fa31f5a69",
+    "generator": "5847b9c364beecaeef04e2cb96c16e97c58c6c06e3a13eabcb952ca1f0e3075c",
+    "input": "54be3fe7fe7889f8fa455c8c6bcdd61af84def37c4c43512443c03ee9c2b33f8",
+    "rom": "125794b71b9678b63d800d494798f362105ded7d4270d6c8425168bd16d05590",
+    "trace": "606fbf40f1518f00dd4d778b8e3b7ac68f0bfc045e070f2be7fff7c452283fe0"
+  },
+  "mode": "ipatix",
+  "observation": {
+    "mgba_commit": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9",
+    "patch_sha256": "3e5dec217b04917733767339e95dbb2b1eb64f292345603e69c57c47ce64a017"
+  },
+  "range": {
+    "begin_cycle": 0,
+    "end_cycle": 2013266,
+    "event_hash": "dd7da8630e03173a9ab47c200a1b50bcf17743ae1fb5fbf988a7a78dab18eb74",
+    "row_count": 48
+  },
+  "reference": {
+    "commit": "2bd31435101e4c3a4af568a6ed33d7cc9f1a6da9",
+    "feature_flags": {
+      "ENABLE_DMA": 1,
+      "ENABLE_REVERB": 1,
+      "ENABLE_STEREO": 1,
+      "POKE_CHN_INIT": 1
+    },
+    "patch_sha256": "063dc98e03581bab797e2112aa42108201272b3710f0664f204539d70eecf38b",
+    "repository": "https://github.com/ipatix/gba-hq-mixer",
+    "source_tree_sha256": "f5951a43562e6e2a3c2b1663e64eb79f06183f44d7bef668449a40d8fcac5593"
+  },
+  "schema": "poryaaaa.pcm-mixer-oracle",
+  "settings": {
+    "master_volume": 15,
+    "max_channels": 1,
+    "pcm_rate_hz": 5734,
+    "reverb": 32,
+    "voice_volume": 127
+  },
+  "toolchain": {
+    "assembler": "GNU assembler (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or later.\nThis program has absolutely no warranty.\nThis assembler was configured for a target of `arm-none-eabi'.",
+    "linker": "GNU ld (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty.",
+    "objcopy": "GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty.",
+    "readelf": "GNU readelf (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty."
+  },
+  "version": 1
+}

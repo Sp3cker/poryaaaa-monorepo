@@ -9,10 +9,9 @@ extern "C"
 {
 #endif
 
-    /* GBA audio register snapshot — driver writes, chip reads.
-     *
-     * Provisional v2-scaffold contract; replaced at Layer 1.5 by an
-     * ordered M4ARegWrite event stream.  See HW_AUDIO_SCAFFOLD_PLAN.md §6a/§6c. */
+    /* GBA audio register snapshot for non-event consumers and the retained
+     * snapshot render path. Production rendering uses the ordered M4ARegWrite
+     * event stream. */
     typedef struct
     {
         bool psg_master_enabled;

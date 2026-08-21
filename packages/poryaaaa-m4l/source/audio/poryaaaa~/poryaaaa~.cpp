@@ -67,6 +67,7 @@ typedef struct _porya
     long reverbAmount;
     long analogFilter;
     long maxPcmChannels;
+    long pcmMixRate;
 
     /* raw MIDI byte parser state — driven by [midiin] → int inlet */
     uint8_t midiStatus;
@@ -130,6 +131,7 @@ static t_max_err songvol_set(t_porya* x, t_object* attr, long ac, t_atom* av);
 static t_max_err reverb_set(t_porya* x, t_object* attr, long ac, t_atom* av);
 static t_max_err analog_set(t_porya* x, t_object* attr, long ac, t_atom* av);
 static t_max_err maxpcm_set(t_porya* x, t_object* attr, long ac, t_atom* av);
+static t_max_err pcmmixrate_set(t_porya* x, t_object* attr, long ac, t_atom* av);
 static long clamp_long(long v, long lo, long hi)
 {
     if (v < lo)
@@ -192,6 +194,12 @@ extern "C" void ext_main(void* r)
     CLASS_ATTR_FILTER_CLIP(c, "analogfilter", 0, 1);
     CLASS_ATTR_SAVE(c, "analogfilter", 0);
 
+    CLASS_ATTR_LONG(c, "pcmmixrate", 0, t_porya, pcmMixRate);
+    CLASS_ATTR_ACCESSORS(c, "pcmmixrate", NULL, pcmmixrate_set);
+    CLASS_ATTR_FILTER_CLIP(c, "pcmmixrate", 0, M4A_PCM_MAX_RATE_HZ);
+    CLASS_ATTR_SAVE(c, "pcmmixrate", 0);
+    CLASS_ATTR_LABEL(c, "pcmmixrate", 0, "PCM mix rate (0 = host)");
+
     class_dspinit(c);
     class_register(CLASS_BOX, c);
     porya_class = c;
@@ -234,6 +242,7 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     x->reverbAmount = 0;
     x->analogFilter = 0;
     x->maxPcmChannels = PORYA_DEFAULT_MAX_PCM_CHANNELS;
+    x->pcmMixRate = M4A_PCM_RATE_HZ;
     x->midiStatus = 0;
     x->midiData1 = 0;
     x->midiBytesNeeded = 0;
@@ -248,6 +257,7 @@ static void* porya_new(t_symbol* s, long argc, t_atom* argv)
     m4a_set_reverb_amount(x->m4a, (uint8_t)x->reverbAmount);
     m4a_set_analog_filter(x->m4a, x->analogFilter ? true : false);
     m4a_set_max_pcm_channels(x->m4a, (uint8_t)x->maxPcmChannels);
+    m4a_driver_set_pcm_mix_rate(x->m4a, (float)x->pcmMixRate);
     x->hw = hw_audio_create((float)x->samplerate);
 
     /* attributes (including ATTR_SAVE restored values) are set by attr_args_process */
@@ -343,6 +353,7 @@ static void porya_dsp64(t_porya* x, t_object* dsp64, short* count, double sample
         m4a_set_reverb_amount(x->m4a, (uint8_t)x->reverbAmount);
         m4a_set_analog_filter(x->m4a, x->analogFilter ? true : false);
         m4a_set_max_pcm_channels(x->m4a, (uint8_t)x->maxPcmChannels);
+        m4a_driver_set_pcm_mix_rate(x->m4a, (float)x->pcmMixRate);
         if (x->loadedVg)
         {
             m4a_driver_set_voicegroup(x->m4a, x->loadedVg->voices);
@@ -397,8 +408,7 @@ static void porya_perform64(t_porya* x,
         if (chunk > (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
             chunk = (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
         m4a_advance(x->m4a, (int)chunk);
-        hw_audio_render_events(
-            x->hw, m4a_get_pending_writes(x->m4a), m4a_get_pcm_ring(x->m4a), sL + off, sR + off, (int)chunk);
+        hw_audio_render_events(x->hw, m4a_get_pending_writes(x->m4a), sL + off, sR + off, (int)chunk);
         m4a_consume_writes(x->m4a);
         off += chunk;
         toGo -= chunk;
@@ -565,6 +575,12 @@ static void porya_tempo(t_porya* x, double bpm)
  * transport is stopped; `record 0` clears MIDI so the next export starts clean. */
 static void porya_record(t_porya* x, long armed)
 {
+    // A recording boundary must not let a partial raw MIDI message cross takes.
+    x->midiStatus = 0;
+    x->midiData1 = 0;
+    x->midiBytesNeeded = 0;
+    x->midiBytesGot = 0;
+    x->midiInSysex = 0;
     if (armed != 0)
     {
         x->capture->record_on();
@@ -848,5 +864,18 @@ static t_max_err analog_set(t_porya* x, t_object* attr, long ac, t_atom* av)
     long v = clamp_long(atom_getlong(av), 0, 1);
     x->analogFilter = v;
     m4a_set_analog_filter(x->m4a, v ? true : false);
+    return MAX_ERR_NONE;
+}
+
+static t_max_err pcmmixrate_set(t_porya* x, t_object* attr, long ac, t_atom* av)
+{
+    if (ac < 1 || !av)
+        return MAX_ERR_NONE;
+    long v = atom_getlong(av);
+    if (v != 0)
+        v = clamp_long(v, 1000, M4A_PCM_MAX_RATE_HZ);
+    x->pcmMixRate = v;
+    if (x->m4a)
+        m4a_driver_set_pcm_mix_rate(x->m4a, (float)v);
     return MAX_ERR_NONE;
 }

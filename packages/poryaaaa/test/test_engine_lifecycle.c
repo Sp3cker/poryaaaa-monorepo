@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "m4a_engine.h"
 #include "voicegroup/voicegroup_loader.h"
 
 #include "m4a/m4a_driver.h"
@@ -14,7 +13,7 @@
 #define SAMPLE_RATE 44100.0f
 #define DEFAULT_LOOPS 1000
 #define RENDER_FRAMES 4096
-#define CHUNK_FRAMES 512
+#define CHUNK_FRAMES M4A_RECOMMENDED_MAX_ADVANCE_FRAMES
 
 static int failures = 0;
 
@@ -120,79 +119,22 @@ static int first_playable_program(ToneData* voices)
     return -1;
 }
 
-static bool run_engine_cycle(ToneData* voices, int program)
+static void render_driver_batch(M4ADriver* drv, HwAudio* hw, float* left, float* right, int frames)
 {
-    M4AEngine engine;
-    float left[CHUNK_FRAMES];
-    float right[CHUNK_FRAMES];
-    float peak = 0.0f;
-
-    if (!m4a_engine_init(&engine, SAMPLE_RATE))
+    for (int offset = 0; offset < frames;)
     {
-        return false;
-    }
-
-    m4a_engine_set_voicegroup(&engine, voices);
-    m4a_engine_program_change(&engine, 0, (uint8_t)program);
-    m4a_engine_cc(&engine, 0, 7, 127);
-    m4a_engine_cc(&engine, 0, 10, 64);
-    m4a_engine_note_on(&engine, 0, 60, 100);
-
-    for (int done = 0; done < RENDER_FRAMES; done += CHUNK_FRAMES)
-    {
-        memset(left, 0, sizeof(left));
-        memset(right, 0, sizeof(right));
-        m4a_engine_process(&engine, left, right, CHUNK_FRAMES);
-        float chunk_peak = peak_abs(left, right, CHUNK_FRAMES);
-        if (chunk_peak > peak)
+        int chunk = frames - offset;
+        if (chunk > M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
         {
-            peak = chunk_peak;
+            chunk = M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
         }
+
+        m4a_advance(drv, chunk);
+        const M4ARegWriteBatch* writes = m4a_get_pending_writes(drv);
+        hw_audio_render_events(hw, writes, left + offset, right + offset, chunk);
+        m4a_consume_writes(drv);
+        offset += chunk;
     }
-
-    m4a_engine_note_off(&engine, 0, 60);
-    m4a_engine_all_sound_off(&engine);
-    m4a_engine_destroy(&engine);
-
-    return peak > 0.0001f;
-}
-
-static bool run_heap_engine_cycle(ToneData* voices, int program)
-{
-    M4AEngine* engine = m4a_engine_create(SAMPLE_RATE);
-    float left[CHUNK_FRAMES];
-    float right[CHUNK_FRAMES];
-    float peak = 0.0f;
-
-    if (!engine)
-    {
-        return false;
-    }
-
-    m4a_engine_set_voicegroup(engine, voices);
-    m4a_engine_program_change(engine, 0, (uint8_t)program);
-    m4a_engine_cc(engine, 0, 7, 127);
-    m4a_engine_cc(engine, 0, 10, 64);
-    m4a_engine_note_on(engine, 0, 60, 100);
-
-    for (int done = 0; done < RENDER_FRAMES; done += CHUNK_FRAMES)
-    {
-        memset(left, 0, sizeof(left));
-        memset(right, 0, sizeof(right));
-        m4a_engine_process(engine, left, right, CHUNK_FRAMES);
-        float chunk_peak = peak_abs(left, right, CHUNK_FRAMES);
-        if (chunk_peak > peak)
-        {
-            peak = chunk_peak;
-        }
-    }
-
-    m4a_engine_note_off(engine, 0, 60);
-    m4a_engine_all_sound_off(engine);
-    m4a_engine_free(engine);
-    m4a_engine_free(NULL);
-
-    return peak > 0.0001f;
 }
 
 static bool run_driver_hw_cycle(ToneData* voices, int program)
@@ -226,9 +168,7 @@ static bool run_driver_hw_cycle(ToneData* voices, int program)
     {
         memset(left, 0, sizeof(left));
         memset(right, 0, sizeof(right));
-        m4a_advance(drv, CHUNK_FRAMES);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), left, right, CHUNK_FRAMES);
-        m4a_consume_writes(drv);
+        render_driver_batch(drv, hw, left, right, CHUNK_FRAMES);
         float chunk_peak = peak_abs(left, right, CHUNK_FRAMES);
         if (chunk_peak > peak)
         {
@@ -257,9 +197,7 @@ static void run_synthetic_cycles(int loops)
         }
         make_test_voicegroup(voices, wd);
 
-        CHECK(run_heap_engine_cycle(voices, 0), "heap M4AEngine cycle produces audio");
-        CHECK(run_engine_cycle(voices, 0), "M4AEngine cycle produces audio");
-        CHECK(run_driver_hw_cycle(voices, 0), "M4ADriver/HwAudio cycle produces audio");
+        CHECK(run_driver_hw_cycle(voices, 0), "direct driver/hardware lifecycle cycle produces audio");
 
         free(wd);
     }
@@ -287,9 +225,8 @@ static void run_loaded_voicegroup_cycles(const char* project_root, const char* v
             return;
         }
 
-        CHECK(run_heap_engine_cycle(voices, program), "loaded voicegroup heap engine cycle produces audio");
-        CHECK(run_engine_cycle(voices, program), "loaded voicegroup engine cycle produces audio");
-        CHECK(run_driver_hw_cycle(voices, program), "loaded voicegroup driver/hw cycle produces audio");
+        CHECK(run_driver_hw_cycle(voices, program),
+              "loaded voicegroup direct driver/hardware lifecycle cycle produces audio");
 
         voicegroup_free(vg);
     }

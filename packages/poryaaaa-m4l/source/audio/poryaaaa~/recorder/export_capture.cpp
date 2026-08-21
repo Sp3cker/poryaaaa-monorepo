@@ -6,6 +6,7 @@ namespace ccomidi
 void ExportCapture::record_on(TimePoint)
 {
     midiBuffer_.reset();
+    currentBeat_ = 0.0;
     state_ = CaptureState::Exporting;
 }
 
@@ -50,6 +51,7 @@ void ExportCapture::capture_event(uint8_t status, uint8_t d1, uint8_t d2)
 void ExportCapture::clear(TimePoint)
 {
     midiBuffer_.reset();
+    currentBeat_ = 0.0;
     state_ = CaptureState::Idle;
 }
 

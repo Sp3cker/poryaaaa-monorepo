@@ -322,6 +322,27 @@ test("G2d: explicit BBS Loop Start and Loop End fields insert loop markers", asy
     assert.equal(close!.tick, 4 * PPQ);
 });
 
+test("G2d regression: zero-subdivision song-end marker is emitted at the boundary", async () => {
+    const events: MidiEvent[] = [
+        { beats: 6,  status: 0x90, d1: 60, d2: 100 },
+        { beats: 65, status: 0x80, d1: 60, d2: 0   },
+    ];
+    const state = requiredState();
+    const { harness, writer } = makeHarness({
+        events,
+        markerRange: () => ({ start: "2.3.1", end: "17.2.0" }),
+        ...state,
+    });
+    await writer.save();
+
+    const markers = metaEvents(parseSmf(harness.writes[0].bytes)).filter((e) => e.metaType === 0x06);
+    const open  = markers.find((m) => String.fromCharCode(m.data[0]) === "[");
+    const close = markers.find((m) => String.fromCharCode(m.data[0]) === "]");
+    assert.ok(open && close);
+    assert.equal(open.tick, 0);
+    assert.equal(close.tick, 59 * PPQ);
+});
+
 test("G2e: blank marker fields ignore Live loop markers", async () => {
     const events: MidiEvent[] = [
         { beats: 4, status: 0x90, d1: 60, d2: 100 },

@@ -1,6 +1,6 @@
 use crate::{
     midi_activity::{MidiActivitySnapshot, MIDI_CHANNEL_COUNT},
-    params::VoicegroupLoadStatus,
+    params::{MixerMode, VoicegroupLoadStatus},
     plugin::PoryaaaaBackgroundTask,
     shared_projects_json, PoryaaaaParams, PoryaaaaPlugin,
 };
@@ -46,6 +46,7 @@ enum Message {
     BrowseProjectRoot,
     ProjectRootSelected(Option<PathBuf>),
     LoadVoicegroup,
+    MixerModeSelected(MixerMode),
     VolumeGestured(Gesture),
     ReverbGestured(Gesture),
 }
@@ -209,6 +210,11 @@ impl PoryaaaaGui {
                     );
                 }
             }
+            Message::MixerModeSelected(mode) => {
+                let setter = self.nice_ctx.param_setter();
+                set_mixer_mode_parameter(params.as_ref(), &setter, mode);
+            }
+
             Message::VolumeGestured(gesture) => {
                 let setter = self.nice_ctx.param_setter();
                 iced_audio::param::set_nice_param(&params.volume, gesture, &setter);
@@ -226,6 +232,7 @@ impl PoryaaaaGui {
         column![
             text("poryaaaa").size(22),
             self.view_config_section(),
+            self.view_mixer_section(),
             self.view_knob_section(),
             self.view_midi_activity_section(),
         ]
@@ -259,6 +266,23 @@ impl PoryaaaaGui {
             self.view_status_section(),
         ]
         .spacing(6)
+        .width(Length::Fill)
+    }
+
+    fn view_mixer_section(&self) -> Row<'_, Message> {
+        let params = &self.editor_state.params;
+        let active = match params.pcm_mixer.value() {
+            MixerMode::Ipatix => "ipatix",
+            MixerMode::Sappy => "sappy",
+        };
+
+        row![
+            text(format!("PCM Mixer ({active})")),
+            button("iPatix").on_press(Message::MixerModeSelected(MixerMode::Ipatix)),
+            button("Sappy").on_press(Message::MixerModeSelected(MixerMode::Sappy)),
+        ]
+        .spacing(8)
+        .align_y(Center)
         .width(Length::Fill)
     }
 
@@ -345,6 +369,14 @@ fn browse_project_root_task(initial_directory: String) -> Task<Message> {
     )
 }
 
+fn set_mixer_mode_parameter(
+    params: &PoryaaaaParams,
+    setter: &ParamSetter<'_>,
+    mode: MixerMode,
+) {
+    setter.set_parameter(&params.pcm_mixer, mode);
+}
+
 fn audio_knob_column<'a>(
     param: &'a IntParam,
     on_gesture: fn(Gesture) -> Message,
@@ -374,6 +406,49 @@ fn refresh_midi_activity_lights(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    struct TestGuiContext;
+
+    impl GuiContext for TestGuiContext {
+        fn plugin_api(&self) -> PluginApi {
+            PluginApi::Clap
+        }
+
+        fn request_resize(&self) -> bool {
+            false
+        }
+
+        unsafe fn raw_begin_set_parameter(&self, _param: ParamPtr) {}
+
+        unsafe fn raw_set_parameter_normalized(&self, param: ParamPtr, normalized: f32) {
+            unsafe {
+                param._internal_set_normalized_value(normalized);
+            }
+        }
+
+        unsafe fn raw_end_set_parameter(&self, _param: ParamPtr) {}
+
+        fn get_state(&self) -> PluginState {
+            PluginState {
+                version: String::new(),
+                params: BTreeMap::new(),
+                fields: BTreeMap::new(),
+            }
+        }
+
+        fn set_state(&self, _state: PluginState) {}
+    }
+    #[test]
+    fn mixer_editor_uses_normal_parameter_setter() {
+        let params = PoryaaaaParams::default();
+        let context = TestGuiContext;
+        let setter = ParamSetter::new(&context);
+
+        set_mixer_mode_parameter(&params, &setter, MixerMode::Sappy);
+
+        assert_eq!(params.pcm_mixer.value(), MixerMode::Sappy);
+    }
 
     #[test]
     fn midi_activity_light_holds_recent_counter_changes_briefly() {

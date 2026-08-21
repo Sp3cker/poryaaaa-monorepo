@@ -2,15 +2,19 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
-
+#include <ctype.h>
 #include <clap/clap.h>
 #include <clap/ext/gui.h>
 #include <clap/ext/timer-support.h>
+#include <clap/ext/params.h>
+#include <clap/ext/log.h>
 #include <clap/ext/draft/undo.h>
 #include "m4a_plugin.h"
 #include "m4a_params.h"
-#include "m4a_engine.h"
-#include "m4a_engine_recorder.h"
+#include "m4a_plugin_state.h"
+#include "m4a/m4a_driver.h"
+#include "m4a/m4a_pcm_mixer_mode.h"
+#include "m4a_recorder.h"
 #include "voicegroup/voicegroup_loader.h"
 #include "voicegroup/voicegroup_project_state.h"
 #include "m4a_gui.h"
@@ -31,9 +35,15 @@
 /*
  * M4A VSTi Plugin - CLAP implementation
  *
- * A CLAP instrument plugin that uses the GBA m4a sound engine to render audio.
+ * A CLAP instrument plugin that uses the GBA m4a driver and hardware renderer.
  * Receives MIDI input from the DAW and produces stereo audio output.
  */
+
+static void plugin_apply_driver_settings(M4APluginData* data);
+static void plugin_reapply_driver_state(M4APluginData* data);
+static void plugin_log(const char* fmt, ...);
+static bool config_load_file(M4APluginData* data);
+static void plugin_report_config_error(M4APluginData* data, const char* message);
 
 /* Plugin descriptor */
 static const char* s_features[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -51,7 +61,7 @@ static const clap_plugin_descriptor_t s_descriptor = {
     .manual_url = "",
     .support_url = "",
     .version = "0.1.0",
-    .description = "GBA M4A sound engine plugin for pokeemerald music preview",
+    .description = "GBA M4A instrument plugin for pokeemerald music preview",
     .features = s_features,
 };
 
@@ -66,58 +76,57 @@ static char s_pluginDir[512] = {0};
 /* Optional diagnostic log path, set from config key "log=<path>" */
 static const char* s_pluginLogPath = NULL;
 
-#define M4A_PLUGIN_STATE_VERSION 2
-
-static void plugin_apply_engine_settings(M4APluginData* data);
-static void plugin_reapply_engine_state(M4APluginData* data);
-static void plugin_log(const char* fmt, ...);
+static char* trim_config_whitespace(char* text)
+{
+    while (*text && isspace((unsigned char)*text))
+        ++text;
+    char* end = text + strlen(text);
+    while (end > text && isspace((unsigned char)end[-1]))
+        *--end = '\0';
+    return text;
+}
 
 /*
- * Load settings from poryaaaa.cfg placed next to the .clap file.
- *
- * The config file uses simple key=value lines, one per line.
- * Lines starting with '#' are comments and are ignored.
- *
- * Supported keys:
- *   project_root   - Path to the pokeemerald project directory
- *   voicegroup     - Voicegroup name (e.g. petalburg, littleroot_town)
- *   reverb         - Reverb amount (0-127)
- *   volume         - Song volume (0-127)
+ * Load settings from poryaaaa.cfg placed next to the .clap file. Missing
+ * configuration is nonfatal. The final pcm_mixer assignment wins, including
+ * when an earlier duplicate was invalid.
  */
-static void load_config_file(M4APluginData* data)
+static bool config_load_file(M4APluginData* data)
 {
     if (s_pluginDir[0] == '\0')
-        return;
+        return true;
 
     char configPath[600];
     snprintf(configPath, sizeof(configPath), "%s/poryaaaa.cfg", s_pluginDir);
 
     FILE* f = fopen(configPath, "r");
     if (!f)
-        return;
+        return true;
 
     char line[600];
+    bool mixerSeen = false;
+    bool mixerValid = true;
+    char lastMixerValue[128] = {0};
     while (fgets(line, sizeof(line), f))
     {
-        /* Strip trailing newline and carriage return */
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             line[--len] = '\0';
 
-        /* Skip comments and empty lines */
-        if (line[0] == '#' || line[0] == '\0')
+        char* trimmedLine = trim_config_whitespace(line);
+        if (trimmedLine[0] == '#' || trimmedLine[0] == '\0')
             continue;
 
-        char* eq = strchr(line, '=');
+        char* eq = strchr(trimmedLine, '=');
         if (!eq)
             continue;
         *eq = '\0';
-        const char* key = line;
-        const char* value = eq + 1;
+        char* key = trim_config_whitespace(trimmedLine);
+        char* value = trim_config_whitespace(eq + 1);
 
         if (strcmp(key, "log") == 0)
         {
-            s_pluginLogPath = strdup(value); /* leak is fine for a dev diagnostic */
+            s_pluginLogPath = strdup(value);
         }
         else if (strcmp(key, "project_root") == 0)
         {
@@ -141,31 +150,48 @@ static void load_config_file(M4APluginData* data)
             int v = atoi(value);
             if (v < 0)
                 v = 0;
-            if (v > MAX_SONG_VOLUME)
-                v = MAX_SONG_VOLUME;
+            if (v > M4A_PLUGIN_MAX_SONG_VOLUME)
+                v = M4A_PLUGIN_MAX_SONG_VOLUME;
             data->volume = (uint8_t)v;
         }
+        else if (strcmp(key, "pcm_mixer") == 0)
+        {
+            M4APcmMixerMode mode;
+            mixerSeen = true;
+            snprintf(lastMixerValue, sizeof(lastMixerValue), "%s", value);
+            mixerValid = m4a_pcm_mixer_parse(value, &mode);
+            if (mixerValid)
+                m4a_params_set_pcm_mixer(data, mode);
+        }
     }
-
     fclose(f);
+
+    if (mixerSeen && !mixerValid)
+    {
+        char diagnostic[256];
+        m4a_pcm_mixer_format_diagnostic(diagnostic, sizeof(diagnostic), lastMixerValue);
+        plugin_report_config_error(data, diagnostic);
+        return false;
+    }
+    return true;
 }
 
-static void plugin_apply_engine_settings(M4APluginData* data)
+static void plugin_apply_driver_settings(M4APluginData* data)
 {
-    m4a_engine_set_volume(&data->engine, data->volume);
-    m4a_engine_set_reverb_amount(&data->engine, data->reverbAmount);
+    m4a_set_song_volume(data->driver, data->volume);
+    m4a_set_reverb_amount(data->driver, data->reverbAmount);
 }
 
-static void plugin_reapply_engine_state(M4APluginData* data)
+static void plugin_reapply_driver_state(M4APluginData* data)
 {
-    plugin_apply_engine_settings(data);
+    plugin_apply_driver_settings(data);
     if (data->loadedVg)
     {
-        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-        m4a_params_sync_to_engine(data);
+        m4a_driver_set_voicegroup(data->driver, data->loadedVg->voices);
+        m4a_params_sync_to_driver(data);
     }
     if (data->extClockBpm > 0.0)
-        m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
+        m4a_set_tempo_bpm(data->driver, data->extClockBpm);
 }
 
 static void plugin_clear_voicegroup(M4APluginData* data)
@@ -175,7 +201,18 @@ static void plugin_clear_voicegroup(M4APluginData* data)
     data->loadedVg = NULL;
     memset(data->originalVoices, 0, sizeof(data->originalVoices));
     memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
-    m4a_engine_set_voicegroup(&data->engine, NULL);
+    m4a_driver_set_voicegroup(data->driver, NULL);
+}
+
+/* A runtime owns one driver and one chip. Destroy the chip before the driver
+ * because it is the final consumer of the driver's pending write batches. */
+static void plugin_release_audio_runtime(M4APluginData* data)
+{
+    hw_audio_destroy(data->hwAudio);
+    data->hwAudio = NULL;
+    m4a_driver_destroy(data->driver);
+    data->driver = NULL;
+    data->sampleRate = 0.0f;
 }
 
 static LoadedVoiceGroup* plugin_load_voicegroup(M4APluginData* data, const char* root, const char* name)
@@ -212,7 +249,8 @@ static void plugin_write_voicegroup_project_state(M4APluginData* data)
 static bool plugin_init(const clap_plugin_t* plugin)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    data->volume = MAX_SONG_VOLUME;
+    s_pluginLogPath = NULL;
+    data->volume = M4A_PLUGIN_MAX_SONG_VOLUME;
     data->reverbAmount = 0;
     data->projectRoot[0] = '\0';
     data->voicegroupName[0] = '\0';
@@ -220,7 +258,7 @@ static bool plugin_init(const clap_plugin_t* plugin)
     data->activated = false;
     data->gui = NULL;
     data->guiTimerId = CLAP_INVALID_ID;
-    for (int i = 0; i < MAX_TRACKS; i++)
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; i++)
     {
         atomic_init(&data->midiActivitySeq[i], 0);
         data->guiMidiActivitySeqSeen[i] = 0;
@@ -241,8 +279,13 @@ static bool plugin_init(const clap_plugin_t* plugin)
     data->extClockInitialized = false;
     data->extClockPlaying = false;
     m4a_params_init(data);
-    /* Load defaults from config file placed next to the .clap */
-    load_config_file(data);
+    /* Load defaults from config file placed next to the .clap. */
+    if (!config_load_file(data))
+    {
+        m4a_recorder_destroy(data->recorder);
+        data->recorder = NULL;
+        return false;
+    }
     /* Forward the log path into the voicegroup loader so it can emit diagnostics */
     voicegroup_loader_set_log_path(s_pluginLogPath);
 
@@ -259,7 +302,7 @@ static bool plugin_init(const clap_plugin_t* plugin)
 static void plugin_destroy(const clap_plugin_t* plugin)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    /* GUI must already be destroyed by the host (gui->destroy before plugin->destroy) */
+    /* GUI must already be destroyed before plugin->destroy */
     if (data->loadedVg)
     {
         voicegroup_free(data->loadedVg);
@@ -267,7 +310,7 @@ static void plugin_destroy(const clap_plugin_t* plugin)
     }
     project_asset_index_destroy(data->assetIndex);
     data->assetIndex = NULL;
-    m4a_engine_destroy(&data->engine);
+    plugin_release_audio_runtime(data);
     m4a_recorder_destroy(data->recorder);
     data->recorder = NULL;
     free(data);
@@ -278,13 +321,35 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
 {
     (void)min_frames;
     (void)max_frames;
-
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    if (!m4a_engine_init(&data->engine, (float)sample_rate))
+    if (data->activated || data->driver || data->hwAudio)
         return false;
-    plugin_apply_engine_settings(data);
+    M4APcmMixerMode pcmMixerMode;
+    if (!m4a_params_get_pcm_mixer(data, &pcmMixerMode))
+        return false;
+
+    M4ADriver* driver = m4a_driver_create((float)sample_rate);
+    if (!driver)
+        return false;
+    m4a_driver_set_portamento_enabled(driver, true);
+    m4a_driver_set_pwm_enabled(driver, true);
+    m4a_set_max_pcm_channels(driver, 12);
+
+    HwAudio* hwAudio = hw_audio_create((float)sample_rate);
+    if (!hwAudio)
+    {
+        m4a_driver_destroy(driver);
+        return false;
+    }
+
+    /* Publish ownership only after both allocations succeed. */
+    data->driver = driver;
+    data->hwAudio = hwAudio;
+    data->sampleRate = (float)sample_rate;
+    m4a_params_mark_pcm_mixer_pending(data);
+    plugin_apply_driver_settings(data);
     if (data->extClockBpm > 0.0)
-        m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
+        m4a_set_tempo_bpm(data->driver, data->extClockBpm);
 
     /* Build asset index if not yet created (e.g. projectRoot set via state_load) */
     if (data->projectRoot[0] && !data->assetIndex)
@@ -294,7 +359,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
             project_asset_index_rebuild(data->assetIndex, data->projectRoot);
     }
 
-    /* If voicegroup is configured, load it */
+    /* Load voicegroup if configured */
     if (data->projectRoot[0] && data->voicegroupName[0])
     {
         LoadedVoiceGroup* newVg = plugin_load_voicegroup(data, data->projectRoot, data->voicegroupName);
@@ -303,13 +368,13 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
             if (data->loadedVg)
                 voicegroup_free(data->loadedVg);
             data->loadedVg = newVg;
-            m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
+            m4a_driver_set_voicegroup(data->driver, data->loadedVg->voices);
             memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
             memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
             /* Apply any pending sample overrides */
             if (data->assetIndex)
                 project_asset_index_apply_overrides(data->assetIndex, data->projectRoot, data->loadedVg);
-            m4a_params_sync_to_engine(data);
+            m4a_params_sync_to_driver(data);
             plugin_write_voicegroup_project_state(data);
         }
         else
@@ -331,7 +396,6 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
             m4a_gui_set_voice_data(data->gui, data->loadedVg->voices, data->originalVoices, data->voiceOverrides);
         else
             m4a_gui_set_voice_data(data->gui, NULL, NULL, NULL);
-
         /* Provide project asset catalog to the GUI for the sample selector */
         if (data->assetIndex)
             m4a_gui_set_project_assets(data->gui,
@@ -342,11 +406,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
                                        data->assetIndex->overrides);
         else
             m4a_gui_set_project_assets(data->gui, NULL, 0, NULL, 0, NULL);
-    }
-
-    /* Notify GUI of current voicegroup status */
-    if (data->gui)
-    {
+        /* Notify GUI of current voicegroup status */
         M4AGuiSettings gs;
         memset(&gs, 0, sizeof(gs));
         snprintf(gs.projectRoot, sizeof(gs.projectRoot), "%s", data->projectRoot);
@@ -354,6 +414,7 @@ static bool plugin_activate(const clap_plugin_t* plugin, double sample_rate, uin
         snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
         gs.volume = data->volume;
         gs.reverbAmount = data->reverbAmount;
+        gs.pcmMixerMode = pcmMixerMode;
         gs.voicegroupLoaded = (data->loadedVg != NULL);
         m4a_gui_update_settings(data->gui, &gs);
     }
@@ -366,8 +427,8 @@ static void plugin_deactivate(const clap_plugin_t* plugin)
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
     if (data->gui)
         m4a_gui_set_voice_data(data->gui, NULL, NULL, NULL);
-    m4a_engine_destroy(&data->engine);
     data->activated = false;
+    plugin_release_audio_runtime(data);
 }
 
 static bool plugin_start_processing(const clap_plugin_t* plugin)
@@ -379,24 +440,36 @@ static bool plugin_start_processing(const clap_plugin_t* plugin)
 static void plugin_stop_processing(const clap_plugin_t* plugin)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    m4a_engine_all_sound_off(&data->engine);
+    if (data->driver)
+        m4a_all_sound_off(data->driver);
 }
 
 static void plugin_reset(const clap_plugin_t* plugin)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    if (!m4a_engine_reset(&data->engine))
-    {
-        data->activated = false;
+    if (!data->activated || !data->driver || !data->hwAudio)
         return;
-    }
-    plugin_reapply_engine_state(data);
+
+    M4ADriver* replacement = m4a_driver_create(data->sampleRate);
+    if (!replacement)
+        return;
+    m4a_driver_set_portamento_enabled(replacement, true);
+    m4a_driver_set_pwm_enabled(replacement, true);
+    m4a_set_max_pcm_channels(replacement, 12);
+
+    /* Replace the driver before resetting the chip, then replay host state. */
+    m4a_driver_destroy(data->driver);
+    data->driver = replacement;
+    m4a_params_mark_pcm_mixer_pending(data);
+
+    hw_audio_reset(data->hwAudio);
+    plugin_reapply_driver_state(data);
 }
 
 /* ---- MIDI event processing ---- */
 
 /* External MIDI clock pulse: derive BPM from interval between consecutive 0xF8s
- * (24 pulses per quarter), apply a light EMA so jitter doesn't shake the engine,
+ * (24 pulses per quarter), apply a light EMA so jitter doesn't shake the driver,
  * and push the result into the same APIs the host-transport path uses. */
 static void process_midi_clock_pulse(M4APluginData* data, uint32_t sample_in_block)
 {
@@ -416,7 +489,7 @@ static void process_midi_clock_pulse(M4APluginData* data, uint32_t sample_in_blo
     if (dt == 0)
         return;
 
-    double sr = (double)data->engine.sampleRate;
+    double sr = (double)data->sampleRate;
     if (sr <= 0.0)
         return;
 
@@ -431,7 +504,7 @@ static void process_midi_clock_pulse(M4APluginData* data, uint32_t sample_in_blo
         data->extClockBpm = data->extClockBpm * 0.85 + instBpm * 0.15;
 
     data->recorderTempoBpm = data->extClockBpm;
-    m4a_engine_set_tempo_bpm(&data->engine, data->extClockBpm);
+    m4a_set_tempo_bpm(data->driver, data->extClockBpm);
 }
 
 /* Status bytes 0xF0..0xFF have no channel nibble. Handle the subset that's
@@ -476,7 +549,7 @@ static void process_midi_event(
 
     uint8_t status = msg[0] & 0xF0;
     uint8_t channel = msg[0] & 0x0F;
-    if (channel < MAX_TRACKS)
+    if (channel < M4A_PLUGIN_TRACK_COUNT)
         atomic_fetch_add(&data->midiActivitySeq[channel], 1);
 
     switch (status)
@@ -484,39 +557,39 @@ static void process_midi_event(
     case 0x90: /* Note On */
         if (msg[2] > 0)
         {
-            m4a_engine_note_on(&data->engine, channel, msg[1], msg[2]);
+            m4a_note_on(data->driver, channel, msg[1], msg[2]);
         }
         else
         {
             /* velocity 0 = note off */
-            m4a_engine_note_off(&data->engine, channel, msg[1]);
+            m4a_note_off(data->driver, channel, msg[1]);
         }
         break;
     case 0x80: /* Note Off */
-        m4a_engine_note_off(&data->engine, channel, msg[1]);
+        m4a_note_off(data->driver, channel, msg[1]);
         break;
     case 0xC0: /* Program Change */
         /* Keep the CLAP param mirror in sync even when the source of truth is
          * an incoming MIDI program-change rather than host automation. */
         m4a_params_set_program(data, channel, msg[1]);
-        m4a_engine_program_change(&data->engine, channel, msg[1]);
+        m4a_program_change(data->driver, channel, msg[1]);
         break;
     case 0xB0: /* Control Change */
-        m4a_engine_cc(&data->engine, channel, msg[1], msg[2]);
+        m4a_cc(data->driver, channel, msg[1], msg[2]);
         break;
     case 0xE0: /* Pitch Bend */
     {
         int16_t bend = ((int16_t)msg[2] << 7 | msg[1]) - 8192;
-        m4a_engine_pitch_bend(&data->engine, channel, bend);
+        m4a_pitch_bend(data->driver, channel, bend);
         break;
     }
     }
 
     /* Record MIDI to the embedded recorder when armed. Beat positions come
      * from the host transport, so hosts without a beat timeline can still
-     * drive the engine but do not stamp recorder events. While capturing,
-     * latch the recorder-tab per-channel PC/Vol/Pan indicators so the GUI can
-     * show what's been captured. */
+     * drive playback but do not stamp recorder events. While capturing, latch
+     * the recorder-tab per-channel PC/Vol/Pan indicators so the GUI can show
+     * what's been captured. */
     if (atomic_load(&data->recorderArmed) && has_recorder_beats)
     {
         m4a_recorder_push_beats(data->recorder, recorder_beats, msg[0], msg[1], msg[2]);
@@ -536,7 +609,7 @@ static void process_clap_note_event(M4APluginData* data,
                                     double recorder_beats)
 {
     int channel = ev->channel >= 0 ? ev->channel : 0;
-    if (channel >= MAX_TRACKS)
+    if (channel >= M4A_PLUGIN_TRACK_COUNT)
         channel = 0;
     atomic_fetch_add(&data->midiActivitySeq[channel], 1);
 
@@ -545,15 +618,15 @@ static void process_clap_note_event(M4APluginData* data,
         uint8_t velocity = (uint8_t)(ev->velocity * 127.0 + 0.5);
         if (velocity == 0)
             velocity = 1;
-        m4a_engine_note_on(&data->engine, channel, (uint8_t)ev->key, velocity);
+        m4a_note_on(data->driver, channel, (uint8_t)ev->key, velocity);
     }
     else if (ev->header.type == CLAP_EVENT_NOTE_OFF)
     {
-        m4a_engine_note_off(&data->engine, channel, (uint8_t)ev->key);
+        m4a_note_off(data->driver, channel, (uint8_t)ev->key);
     }
     else if (ev->header.type == CLAP_EVENT_NOTE_CHOKE)
     {
-        m4a_engine_note_off(&data->engine, channel, (uint8_t)ev->key);
+        m4a_note_off(data->driver, channel, (uint8_t)ev->key);
     }
 
     /* Record CLAP note events to the embedded recorder when armed. */
@@ -625,7 +698,7 @@ static double recorder_beat_mapper_beats_at(const RecorderBeatMapper* mapper, ui
 
 static void plugin_apply_host_tempo(M4APluginData* data, double tempoBpm)
 {
-    m4a_engine_set_tempo_bpm(&data->engine, tempoBpm);
+    m4a_set_tempo_bpm(data->driver, tempoBpm);
     data->recorderTempoBpm = tempoBpm;
     /* Host transport wins: drop any externally-derived clock state so we
      * don't fight it on the next clock pulse. */
@@ -669,11 +742,13 @@ static clap_process_status plugin_process(const clap_plugin_t* plugin, const cla
 
     if (!data->activated)
         return CLAP_PROCESS_ERROR;
+    if (!m4a_params_consume_pcm_mixer(data))
+        return CLAP_PROCESS_ERROR;
 
     const uint32_t numFrames = process->frames_count;
     const uint32_t numEvents = process->in_events->size(process->in_events);
     RecorderBeatMapper recorderMapper;
-    recorder_beat_mapper_init(&recorderMapper, (double)data->engine.sampleRate);
+    recorder_beat_mapper_init(&recorderMapper, (double)data->sampleRate);
     recorder_beat_mapper_apply_transport(data, &recorderMapper, process->transport, 0);
 
     /* Get output buffers */
@@ -714,12 +789,12 @@ static clap_process_status plugin_process(const clap_plugin_t* plugin, const cla
                     /* MIDI Program Change is the source of truth when it
                      * arrives; mirror it back out as a CLAP param event so
                      * the host's automation lane and saved state stay in
-                     * sync with the engine instead of clobbering it on the
+                     * sync with the driver instead of clobbering them on the
                      * next params_flush. */
                     if ((midiEv->data[0] & 0xF0) == 0xC0 && process->out_events)
                     {
                         uint8_t channel = midiEv->data[0] & 0x0F;
-                        if (channel < MAX_TRACKS)
+                        if (channel < M4A_PLUGIN_TRACK_COUNT)
                         {
                             clap_event_param_value_t pv;
                             memset(&pv, 0, sizeof(pv));
@@ -746,6 +821,8 @@ static clap_process_status plugin_process(const clap_plugin_t* plugin, const cla
                     break;
                 case CLAP_EVENT_PARAM_VALUE:
                     m4a_params_process_event(data, (const clap_event_param_value_t*)hdr);
+                    if (!m4a_params_consume_pcm_mixer(data))
+                        return CLAP_PROCESS_ERROR;
                     break;
                 }
             }
@@ -773,9 +850,13 @@ static clap_process_status plugin_process(const clap_plugin_t* plugin, const cla
             while (toGo > 0)
             {
                 uint32_t chunk = toGo;
-                if (chunk > (uint32_t)M4A_ENGINE_MAX_PROCESS_FRAMES)
-                    chunk = (uint32_t)M4A_ENGINE_MAX_PROCESS_FRAMES;
-                m4a_engine_process(&data->engine, outL + off, outR + off, (int)chunk);
+                if (chunk > (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
+                    chunk = (uint32_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
+
+                m4a_advance(data->driver, (int)chunk);
+                const M4ARegWriteBatch* writes = m4a_get_pending_writes(data->driver);
+                hw_audio_render_events(data->hwAudio, writes, outL + off, outR + off, (int)chunk);
+                m4a_consume_writes(data->driver);
                 off += chunk;
                 toGo -= chunk;
             }
@@ -844,197 +925,101 @@ static const clap_plugin_note_ports_t s_note_ports = {
     .get = note_ports_get,
 };
 
-/* State extension - save/load voicegroup configuration */
+/* State extension: the codec stages complete v3/legacy transactions; this
+ * layer alone applies a validated snapshot to live plugin resources. */
 static bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
+    M4APluginStateData state;
+    memset(&state, 0, sizeof(state));
+    static_assert(M4A_PLUGIN_TRACK_COUNT == M4A_PLUGIN_STATE_TRACK_COUNT, "plugin and state track counts must match");
 
-    /* Write a simple format: lengths + strings + parameters */
-    uint32_t version = M4A_PLUGIN_STATE_VERSION;
-    uint32_t rootLen = (uint32_t)strlen(data->projectRoot);
-    uint32_t nameLen = (uint32_t)strlen(data->voicegroupName);
-
-    if (stream->write(stream, &version, sizeof(version)) != sizeof(version))
+    snprintf(state.projectRoot, sizeof(state.projectRoot), "%s", data->projectRoot);
+    snprintf(state.voicegroupName, sizeof(state.voicegroupName), "%s", data->voicegroupName);
+    state.volume = data->volume;
+    state.reverbAmount = data->reverbAmount;
+    if (!m4a_params_get_pcm_mixer(data, &state.mixerMode))
         return false;
-    if (stream->write(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen))
-        return false;
-    if (rootLen > 0 && stream->write(stream, data->projectRoot, rootLen) != (int64_t)rootLen)
-        return false;
-    if (stream->write(stream, &nameLen, sizeof(nameLen)) != sizeof(nameLen))
-        return false;
-    if (nameLen > 0 && stream->write(stream, data->voicegroupName, nameLen) != (int64_t)nameLen)
-        return false;
-    if (stream->write(stream, &data->volume, 1) != 1)
-        return false;
-    if (stream->write(stream, &data->reverbAmount, 1) != 1)
-        return false;
-    if (!m4a_params_state_save(data, stream))
-        return false;
-
-    /* Recorder state (optional block — old loads simply won't have it) */
-    uint8_t armed = atomic_load(&data->recorderArmed) ? 1 : 0;
-    if (stream->write(stream, &armed, 1) != 1)
-        return false;
-    uint32_t pathLen = (uint32_t)strlen(data->recorderPath);
-    if (stream->write(stream, &pathLen, sizeof(pathLen)) != sizeof(pathLen))
-        return false;
-    if (pathLen > 0 && stream->write(stream, data->recorderPath, pathLen) != (int64_t)pathLen)
-        return false;
-
-    return true;
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; ++i)
+        state.programs[i] = atomic_load(&data->programParams[i]);
+    state.recorderArmed = atomic_load(&data->recorderArmed);
+    snprintf(state.recorderPath, sizeof(state.recorderPath), "%s", data->recorderPath);
+    return m4a_plugin_state_write(stream, &state);
 }
 
 static bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream)
 {
     M4APluginData* data = (M4APluginData*)plugin->plugin_data;
-    char newRoot[sizeof(data->projectRoot)];
-    char newName[sizeof(data->voicegroupName)];
-    uint8_t newVolume;
-    uint8_t newReverbAmount;
-    uint8_t newPrograms[MAX_TRACKS];
-    bool newRecorderArmed = atomic_load(&data->recorderArmed);
-    char newRecorderPath[sizeof(data->recorderPath)];
+    M4APluginStateData state;
+    if (!m4a_plugin_state_read(stream, &state))
+        return false;
+
     LoadedVoiceGroup* newVg = NULL;
-
-    newRoot[0] = '\0';
-    newName[0] = '\0';
-    snprintf(newRecorderPath, sizeof(newRecorderPath), "%s", data->recorderPath);
-
-    uint32_t versionOrRootLen, rootLen, nameLen;
-    bool legacyState = false;
-
-    if (stream->read(stream, &versionOrRootLen, sizeof(versionOrRootLen)) != sizeof(versionOrRootLen))
-        return false;
-    if (versionOrRootLen == M4A_PLUGIN_STATE_VERSION)
+    const bool vgChanged =
+        strcmp(state.projectRoot, data->projectRoot) != 0 || strcmp(state.voicegroupName, data->voicegroupName) != 0;
+    char oldVoicegroupError[sizeof(data->voicegroupError)];
+    memcpy(oldVoicegroupError, data->voicegroupError, sizeof(oldVoicegroupError));
+    if (data->activated && vgChanged && state.projectRoot[0] && state.voicegroupName[0])
     {
-        if (stream->read(stream, &rootLen, sizeof(rootLen)) != sizeof(rootLen))
-            return false;
-    }
-    else
-    {
-        legacyState = true;
-        rootLen = versionOrRootLen;
-    }
-    if (rootLen >= sizeof(newRoot))
-        return false;
-    if (rootLen > 0 && stream->read(stream, newRoot, rootLen) != (int64_t)rootLen)
-        return false;
-    newRoot[rootLen] = '\0';
-
-    if (stream->read(stream, &nameLen, sizeof(nameLen)) != sizeof(nameLen))
-        return false;
-    if (nameLen >= sizeof(newName))
-        return false;
-    if (nameLen > 0 && stream->read(stream, newName, nameLen) != (int64_t)nameLen)
-        return false;
-    newName[nameLen] = '\0';
-
-    if (legacyState)
-    {
-        uint8_t oldMasterVolume = 15;
-        uint8_t oldAnalogFilter = 1;
-        uint8_t oldMaxPcmChannels = 12;
-        if (stream->read(stream, &newReverbAmount, 1) != 1)
-            return false;
-        if (stream->read(stream, &oldMasterVolume, 1) != 1)
-            return false;
-        if (stream->read(stream, &newVolume, 1) != 1)
-            return false;
-        stream->read(stream, &oldAnalogFilter, 1);
-        stream->read(stream, &oldMaxPcmChannels, 1);
-        (void)oldMasterVolume;
-        (void)oldAnalogFilter;
-        (void)oldMaxPcmChannels;
-    }
-    else
-    {
-        if (stream->read(stream, &newVolume, 1) != 1)
-            return false;
-        if (stream->read(stream, &newReverbAmount, 1) != 1)
-            return false;
-    }
-    for (int i = 0; i < MAX_TRACKS; ++i)
-    {
-        uint8_t program = 0;
-        stream->read(stream, &program, 1);
-        newPrograms[i] = program;
-    }
-
-    /* Recorder state (optional — EOF here means an older save; don't fail) */
-    {
-        uint8_t armed = 0;
-        if (stream->read(stream, &armed, 1) == 1)
+        newVg = plugin_load_voicegroup(data, state.projectRoot, state.voicegroupName);
+        if (!newVg)
         {
-            newRecorderArmed = (armed != 0);
-            uint32_t pathLen = 0;
-            if (stream->read(stream, &pathLen, sizeof(pathLen)) == (int64_t)sizeof(pathLen) &&
-                pathLen < sizeof(newRecorderPath))
-            {
-                if (pathLen > 0)
-                    stream->read(stream, newRecorderPath, pathLen);
-                newRecorderPath[pathLen] = '\0';
-            }
+            memcpy(data->voicegroupError, oldVoicegroupError, sizeof(data->voicegroupError));
+            return false;
+        }
+    }
+
+    snprintf(data->projectRoot, sizeof(data->projectRoot), "%s", state.projectRoot);
+    snprintf(data->voicegroupName, sizeof(data->voicegroupName), "%s", state.voicegroupName);
+    data->volume = state.volume;
+    data->reverbAmount = state.reverbAmount;
+    m4a_params_set_pcm_mixer(data, state.mixerMode);
+    for (int i = 0; i < M4A_PLUGIN_TRACK_COUNT; ++i)
+        m4a_params_set_program(data, i, state.programs[i]);
+    atomic_store(&data->recorderArmed, state.recorderArmed);
+    snprintf(data->recorderPath, sizeof(data->recorderPath), "%s", state.recorderPath);
+
+    if (vgChanged)
+    {
+        if (newVg)
+        {
+            if (data->loadedVg)
+                voicegroup_free(data->loadedVg);
+            data->loadedVg = newVg;
+            m4a_driver_set_voicegroup(data->driver, data->loadedVg->voices);
+            memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
+            memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
+            plugin_write_voicegroup_project_state(data);
+        }
+        else
+        {
+            plugin_clear_voicegroup(data);
         }
     }
 
     if (data->activated)
     {
-        /* Only reload voicegroup if the project root or name actually changed */
-        bool vgChanged = strcmp(newRoot, data->projectRoot) != 0 || strcmp(newName, data->voicegroupName) != 0;
-        if (vgChanged)
-        {
-            if (!newRoot[0] || !newName[0])
-                return false;
-            newVg = plugin_load_voicegroup(data, newRoot, newName);
-            if (!newVg)
-                return false;
-        }
+        plugin_apply_driver_settings(data);
+        m4a_params_sync_to_driver(data);
     }
 
-    snprintf(data->projectRoot, sizeof(data->projectRoot), "%s", newRoot);
-    snprintf(data->voicegroupName, sizeof(data->voicegroupName), "%s", newName);
-    data->volume = newVolume;
-    data->reverbAmount = newReverbAmount;
-    for (int i = 0; i < MAX_TRACKS; ++i)
-        m4a_params_set_program(data, i, newPrograms[i]);
-    atomic_store(&data->recorderArmed, newRecorderArmed);
-    snprintf(data->recorderPath, sizeof(data->recorderPath), "%s", newRecorderPath);
-
-    if (newVg)
-    {
-        if (data->loadedVg)
-            voicegroup_free(data->loadedVg);
-        data->loadedVg = newVg;
-        m4a_engine_set_voicegroup(&data->engine, data->loadedVg->voices);
-        memcpy(data->originalVoices, data->loadedVg->voices, sizeof(data->originalVoices));
-        memset(data->voiceOverrides, 0, sizeof(data->voiceOverrides));
-        plugin_write_voicegroup_project_state(data);
-    }
-
-    if (data->activated)
-    {
-        plugin_apply_engine_settings(data);
-        m4a_params_sync_to_engine(data);
-    }
-
-    /* Push restored values into the GUI so it reflects the loaded state */
     if (data->gui)
     {
-        M4AGuiSettings gs;
-        memset(&gs, 0, sizeof(gs));
-        snprintf(gs.projectRoot, sizeof(gs.projectRoot), "%s", data->projectRoot);
-        snprintf(gs.voicegroupName, sizeof(gs.voicegroupName), "%s", data->voicegroupName);
-        snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
-        gs.volume = data->volume;
-        gs.reverbAmount = data->reverbAmount;
-        gs.voicegroupLoaded = (data->loadedVg != NULL);
-        m4a_gui_update_settings(data->gui, &gs);
+        M4AGuiSettings settings;
+        memset(&settings, 0, sizeof(settings));
+        snprintf(settings.projectRoot, sizeof(settings.projectRoot), "%s", data->projectRoot);
+        snprintf(settings.voicegroupName, sizeof(settings.voicegroupName), "%s", data->voicegroupName);
+        snprintf(settings.voicegroupError, sizeof(settings.voicegroupError), "%s", data->voicegroupError);
+        settings.volume = data->volume;
+        settings.reverbAmount = data->reverbAmount;
+        settings.pcmMixerMode = state.mixerMode;
+        settings.voicegroupLoaded = data->loadedVg != NULL;
+        m4a_gui_update_settings(data->gui, &settings);
         if (data->loadedVg)
             m4a_gui_set_voice_data(data->gui, data->loadedVg->voices, data->originalVoices, data->voiceOverrides);
         else
             m4a_gui_set_voice_data(data->gui, NULL, NULL, NULL);
     }
-
     return true;
 }
 
@@ -1061,6 +1046,19 @@ static void plugin_log(const char* fmt, ...)
     fputc('\n', f);
     fclose(f);
 }
+static void plugin_report_config_error(M4APluginData* data, const char* message)
+{
+    if (data->host && data->host->get_extension)
+    {
+        const clap_host_log_t* hostLog = (const clap_host_log_t*)data->host->get_extension(data->host, CLAP_EXT_LOG);
+        if (hostLog && hostLog->log)
+        {
+            hostLog->log(data->host, CLAP_LOG_ERROR, message);
+            return;
+        }
+    }
+    fprintf(stderr, "[poryaaaa] %s\n", message);
+}
 
 /* ---- Timer support extension ---- */
 
@@ -1075,7 +1073,7 @@ static void timer_on_timer(const clap_plugin_t* plugin, clap_id timer_id)
     if (data->guiTimerId != CLAP_INVALID_ID && timer_id != data->guiTimerId)
         return;
 
-    for (int ch = 0; ch < MAX_TRACKS; ch++)
+    for (int ch = 0; ch < M4A_PLUGIN_TRACK_COUNT; ch++)
     {
         unsigned int midiSeq = atomic_load(&data->midiActivitySeq[ch]);
         if (midiSeq != data->guiMidiActivitySeqSeen[ch])
@@ -1085,7 +1083,11 @@ static void timer_on_timer(const clap_plugin_t* plugin, clap_id timer_id)
         }
     }
 
-    /* Render one GUI frame */
+    /* Render one GUI frame from the current stable host-visible value. */
+    M4APcmMixerMode pcmMixerMode;
+    if (!m4a_params_get_pcm_mixer(data, &pcmMixerMode))
+        return;
+    m4a_gui_set_pcm_mixer_mode(data->gui, pcmMixerMode);
     m4a_gui_tick(data->gui);
 
     /* Handle voice restore requests from the voice editor */
@@ -1106,7 +1108,7 @@ static void timer_on_timer(const clap_plugin_t* plugin, clap_id timer_id)
         voicesChanged = true;
     if (voicesChanged && data->activated)
     {
-        m4a_engine_refresh_voices(&data->engine);
+        m4a_driver_refresh_voices(data->driver);
     }
 
     /* Handle sample swap requests from the voice editor */
@@ -1132,12 +1134,22 @@ static void timer_on_timer(const clap_plugin_t* plugin, clap_id timer_id)
 
     /* Immediate audio settings - safe to write since they're byte-sized */
     data->volume = gs.volume;
+    if (m4a_params_request_gui_pcm_mixer(data, gs.pcmMixerMode))
+    {
+        if (data->host && data->host->get_extension)
+        {
+            const clap_host_params_t* hostParams =
+                (const clap_host_params_t*)data->host->get_extension(data->host, CLAP_EXT_PARAMS);
+            if (hostParams && hostParams->request_flush)
+                hostParams->request_flush(data->host);
+        }
+    }
     data->reverbAmount = gs.reverbAmount;
 
     if (data->activated)
     {
-        m4a_engine_set_volume(&data->engine, gs.volume);
-        m4a_engine_set_reverb_amount(&data->engine, gs.reverbAmount);
+        m4a_set_song_volume(data->driver, gs.volume);
+        m4a_set_reverb_amount(data->driver, gs.reverbAmount);
     }
 
     if (reloadVoicegroup)
@@ -1241,6 +1253,8 @@ static bool gui_create(const clap_plugin_t* plugin, const char* api, bool is_flo
     snprintf(gs.voicegroupError, sizeof(gs.voicegroupError), "%s", data->voicegroupError);
     gs.volume = data->volume;
     gs.reverbAmount = data->reverbAmount;
+    if (!m4a_params_get_pcm_mixer(data, &gs.pcmMixerMode))
+        return false;
     gs.voicegroupLoaded = (data->loadedVg != NULL);
 
     data->gui = m4a_gui_create(data->host, &gs, s_pluginLogPath);

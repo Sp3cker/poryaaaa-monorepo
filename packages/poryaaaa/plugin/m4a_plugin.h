@@ -11,16 +11,25 @@ using std::atomic_store;
 #else
 #    include <stdatomic.h>
 #endif
-#include "m4a_engine.h"
-#include "m4a_engine_recorder.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
+#include "m4a_recorder.h"
 #include "voicegroup/voicegroup_loader.h"
 #include "voicegroup/project_asset_index.h"
 #include "m4a_gui.h"
 #include <clap/clap.h>
+#include "m4a_params.h"
 
-typedef struct
+enum
 {
-    M4AEngine engine;
+    M4A_PLUGIN_MAX_SONG_VOLUME = 127,
+};
+
+typedef struct M4APluginData
+{
+    M4ADriver* driver;
+    HwAudio* hwAudio;
+    float sampleRate;
     LoadedVoiceGroup* loadedVg;
     char projectRoot[512];
     char voicegroupName[256];
@@ -31,11 +40,13 @@ typedef struct
     /* Per-channel activity counters. Incremented from the audio thread at the
      * channel's index whenever a MIDI/note event arrives for that channel;
      * the GUI polls them from the main thread and pulses the matching LED. */
-    atomic_uint midiActivitySeq[MAX_TRACKS];
-    /* CLAP param mirror for per-track program selection.
-     * Kept outside the engine so params/state can read it without poking
-     * directly at audio-thread-owned track state. */
-    atomic_uchar programParams[MAX_TRACKS];
+    atomic_uint midiActivitySeq[M4A_PLUGIN_TRACK_COUNT];
+    /* CLAP param mirror for per-track program selection. Kept in the host
+     * runtime so params/state do not read audio-thread-owned driver state. */
+    atomic_uchar programParams[M4A_PLUGIN_TRACK_COUNT];
+    /* Stable PCM parameter value and all GUI/audio handoff state share this
+     * word.  Only the audio thread consumes its pending driver request. */
+    atomic_uint pcmMixerFrontendState;
 
     /* Voice editor: snapshot of original voices and per-voice override flags */
     ToneData originalVoices[VOICEGROUP_SIZE];
@@ -48,7 +59,7 @@ typedef struct
     const clap_host_t* host;
     M4AGuiState* gui;
     clap_id guiTimerId;
-    unsigned int guiMidiActivitySeqSeen[MAX_TRACKS];
+    unsigned int guiMidiActivitySeqSeen[M4A_PLUGIN_TRACK_COUNT];
 
     /* Recorder UI/wire state. The RecorderCore is plugin-owned.
      * `recorderArmed` gates the audio thread's push calls.

@@ -16,7 +16,7 @@ mod shared_projects_json;
 mod test_support;
 
 pub use config::PluginConfig;
-pub use params::{PoryaaaaParams, PROGRAM_COUNT};
+pub use params::{MixerMode, PoryaaaaParams, PROGRAM_COUNT};
 pub use plugin::PoryaaaaPlugin;
 
 #[doc(hidden)]
@@ -776,13 +776,13 @@ route104::
     }
 
     #[test]
-    fn c_runtime_creates_resets_and_drops_engine() {
-        let config = crate::runtime::EngineConfig {
+    fn direct_runtime_creates_resets_and_drops_native_handles() {
+        let config = crate::runtime::RuntimeConfig {
             sample_rate: 48_000.0,
             volume: 127,
             reverb: 0,
         };
-        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
+        let mut runtime = crate::runtime::M4aRuntime::new(config).expect("runtime");
 
         assert!(runtime.reset().is_ok());
         assert!(!runtime.is_ready());
@@ -790,12 +790,12 @@ route104::
 
     #[test]
     fn failed_runtime_voicegroup_load_keeps_no_loaded_voicegroup() {
-        let config = crate::runtime::EngineConfig {
+        let config = crate::runtime::RuntimeConfig {
             sample_rate: 48_000.0,
             volume: 127,
             reverb: 0,
         };
-        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
+        let mut runtime = crate::runtime::M4aRuntime::new(config).expect("runtime");
 
         let result = runtime.load_voicegroup("/definitely/not/a/poryaaaa/project", "voicegroup000");
 
@@ -815,12 +815,12 @@ route104::
                 \tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3
             ",
         );
-        let config = crate::runtime::EngineConfig {
+        let config = crate::runtime::RuntimeConfig {
             sample_rate: 48_000.0,
             volume: 127,
             reverb: 0,
         };
-        let mut runtime = crate::runtime::M4aEngine::new(config).expect("runtime");
+        let mut runtime = crate::runtime::M4aRuntime::new(config).expect("runtime");
         runtime
             .load_voicegroup(&root.to_string_lossy(), "voicegroup000")
             .expect("initial load");

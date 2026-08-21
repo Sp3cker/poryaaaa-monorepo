@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "poryaaaa.pcm-mixer-oracle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "case", "mode", "reference", "toolchain", "observation", "hashes", "settings", "range"],
+  "properties": {
+    "schema": {"type": "string", "const": "poryaaaa.pcm-mixer-oracle"},
+    "version": {"type": "integer", "const": 1},
+    "case": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "mode": {"type": "string", "enum": ["ipatix", "sappy"]},
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "source_tree_sha256", "patch_sha256", "feature_flags"],
+      "properties": {
+        "repository": {"type": "string", "enum": ["https://github.com/ipatix/gba-hq-mixer", "https://github.com/pret/pokeemerald"]},
+        "commit": {"type": "string", "enum": ["2bd31435101e4c3a4af568a6ed33d7cc9f1a6da9", "9a83a2bbe8e097e62c00f1dbd56849766775d7b6"]},
+        "source_tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "patch_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "feature_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {
+            "POKE_CHN_INIT": {"type": "integer", "const": 1},
+            "ENABLE_STEREO": {"type": "integer", "const": 1},
+            "ENABLE_REVERB": {"type": "integer", "const": 1},
+            "ENABLE_DMA": {"type": "integer", "const": 1}
+          }
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assembler", "linker", "objcopy", "readelf"],
+      "properties": {
+        "assembler": {"type": "string", "minLength": 1},
+        "compiler": {"type": "string", "minLength": 1},
+        "linker": {"type": "string", "minLength": 1},
+        "objcopy": {"type": "string", "minLength": 1},
+        "readelf": {"type": "string", "minLength": 1}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mgba_commit", "patch_sha256"],
+      "properties": {
+        "mgba_commit": {"type": "string", "const": "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9"},
+        "patch_sha256": {"type": "string", "const": "3e5dec217b04917733767339e95dbb2b1eb64f292345603e69c57c47ce64a017"}
+      }
+    },
+    "hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator", "cases", "elf", "rom", "input", "trace"],
+      "properties": {
+        "generator": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "cases": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "input": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "elf": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rom": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "trace": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pcm_rate_hz", "max_channels", "master_volume", "voice_volume", "reverb"],
+      "properties": {
+        "pcm_rate_hz": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "max_channels": {"type": "integer", "minimum": 0, "maximum": 15},
+        "master_volume": {"type": "integer", "minimum": 0, "maximum": 15},
+        "voice_volume": {"type": "integer", "minimum": 0, "maximum": 127},
+        "reverb": {"type": "integer", "minimum": 0, "maximum": 127}
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["begin_cycle", "end_cycle", "row_count", "event_hash"],
+      "properties": {
+        "begin_cycle": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "end_cycle": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "row_count": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "event_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

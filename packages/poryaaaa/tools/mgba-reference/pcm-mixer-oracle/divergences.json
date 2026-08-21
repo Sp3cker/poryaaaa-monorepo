@@ -1,0 +1,18 @@
+{
+  "schema": "poryaaaa.pcm-mixer-divergences",
+  "version": 1,
+  "pairs": [
+    {
+      "id": "unity-rate",
+      "ipatix": "rate-equal-unity",
+      "sappy": "sappy-resample-unity",
+      "reason": "Both fixtures use one voice, the same PCM rate, unity resampling, and the shared default waveform; the pinned mixers intentionally publish different FIFO bytes."
+    },
+    {
+      "id": "reverb-first",
+      "ipatix": "reverb-first",
+      "sappy": "sappy-reverb-first",
+      "reason": "Both fixtures use one voice and reverb 32; the pinned mixer families intentionally publish different first-block FIFO bytes."
+    }
+  ]
+}

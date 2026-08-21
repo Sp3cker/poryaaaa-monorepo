@@ -2,8 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "m4a_engine.h"
 #include "voicegroup/voicegroup_loader.h"
+#include "m4a/m4a_driver.h"
+#include "hw_audio/hw_audio.h"
 
 /*
  * ⚠ Manual artifact / smoke utility — NOT a correctness or parity test.
@@ -12,9 +13,8 @@
  * resulting audio to a WAV file.  There are no automated assertions
  * here: the binary's job is to produce a listenable artifact for human
  * ears (or for diff against another build).  CI does NOT gate on its
- * output, and parity / spectral / level claims should NOT be derived
- * from this WAV — see HW_AUDIO_SCAFFOLD_PLAN.md §12 for the actual
- * parity gates (steps 9 + 10 + 11).
+ * output, and parity, spectral, or level claims should not be derived
+ * from this WAV. See docs/arch-parity-fix-plan.md for the parity gates.
  *
  * Usage: poryaaaa_test <project_root> <voicegroup_name> [output.wav]
  *
@@ -26,16 +26,21 @@
 #define DURATION_SECONDS 8
 #define TOTAL_SAMPLES (SAMPLE_RATE * DURATION_SECONDS)
 
-static void render_engine(M4AEngine* engine, float* outL, float* outR, int frames)
+static void render_driver(M4ADriver* drv, HwAudio* hw, float* outL, float* outR, int frames)
 {
-    int off = 0;
-    while (off < frames)
+    for (int offset = 0; offset < frames;)
     {
-        int chunk = frames - off;
-        if (chunk > M4A_ENGINE_MAX_PROCESS_FRAMES)
-            chunk = M4A_ENGINE_MAX_PROCESS_FRAMES;
-        m4a_engine_process(engine, outL + off, outR + off, chunk);
-        off += chunk;
+        int chunk = frames - offset;
+        if (chunk > M4A_RECOMMENDED_MAX_ADVANCE_FRAMES)
+        {
+            chunk = M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
+        }
+
+        m4a_advance(drv, chunk);
+        const M4ARegWriteBatch* writes = m4a_get_pending_writes(drv);
+        hw_audio_render_events(hw, writes, outL + offset, outR + offset, chunk);
+        m4a_consume_writes(drv);
+        offset += chunk;
     }
 }
 
@@ -110,7 +115,7 @@ static int write_wav(const char* path, const float* left, const float* right, in
 /*
  * Play a multi-program test using various instruments
  */
-static void play_multi_program_test(M4AEngine* engine, const char* outputPath)
+static void play_multi_program_test(M4ADriver* drv, HwAudio* hw, const char* outputPath)
 {
     int totalSamples = SAMPLE_RATE * 12;
     float* outL = calloc(totalSamples, sizeof(float));
@@ -122,9 +127,9 @@ static void play_multi_program_test(M4AEngine* engine, const char* outputPath)
     for (int i = 0; i < 8 && pos < totalSamples; i++)
     {
         uint8_t prog = programs[i];
-        m4a_engine_program_change(engine, 0, prog);
-        m4a_engine_cc(engine, 0, 7, 127);
-        m4a_engine_cc(engine, 0, 10, 64);
+        m4a_program_change(drv, 0, prog);
+        m4a_cc(drv, 0, 7, 127);
+        m4a_cc(drv, 0, 10, 64);
 
         /* Play 3 notes */
         uint8_t notesInstrument[] = {60, 64, 67};
@@ -132,15 +137,15 @@ static void play_multi_program_test(M4AEngine* engine, const char* outputPath)
         for (int n = 0; n < 3 && pos < totalSamples; n++)
         {
             uint8_t* notes = prog == 0 ? notesPercussion : notesInstrument;
-            m4a_engine_note_on(engine, 0, notes[n], 100);
+            m4a_note_on(drv, 0, notes[n], 100);
 
             int len = SAMPLE_RATE / 3;
             if (pos + len > totalSamples)
                 len = totalSamples - pos;
-            render_engine(engine, outL + pos, outR + pos, len);
+            render_driver(drv, hw, outL + pos, outR + pos, len);
             pos += len;
 
-            m4a_engine_note_off(engine, 0, notes[n]);
+            m4a_note_off(drv, 0, notes[n]);
         }
 
         /* Small gap */
@@ -149,7 +154,7 @@ static void play_multi_program_test(M4AEngine* engine, const char* outputPath)
             gap = totalSamples - pos;
         if (gap > 0)
         {
-            render_engine(engine, outL + pos, outR + pos, gap);
+            render_driver(drv, hw, outL + pos, outR + pos, gap);
             pos += gap;
         }
     }
@@ -157,7 +162,7 @@ static void play_multi_program_test(M4AEngine* engine, const char* outputPath)
     /* Fill remaining */
     if (pos < totalSamples)
     {
-        render_engine(engine, outL + pos, outR + pos, totalSamples - pos);
+        render_driver(drv, hw, outL + pos, outR + pos, totalSamples - pos);
     }
 
     printf("Writing %s...\n", outputPath);
@@ -242,23 +247,36 @@ int main(int argc, char* argv[])
            vg->progWaveCount,
            vg->subGroupCount);
 
-    /* Initialize engine */
-    M4AEngine engine;
-    if (!m4a_engine_init(&engine, SAMPLE_RATE))
+    M4ADriver* drv = m4a_driver_create(SAMPLE_RATE);
+    HwAudio* hw = hw_audio_create(SAMPLE_RATE);
+    if (!drv || !hw)
     {
-        fprintf(stderr, "Failed to initialize m4a engine\n");
+        fprintf(stderr, "Failed to initialize direct audio runtime\n");
+        if (hw)
+            hw_audio_destroy(hw);
+        if (drv)
+            m4a_driver_destroy(drv);
         voicegroup_free(vg);
         return 1;
     }
-    m4a_engine_set_voicegroup(&engine, vg->voices);
+    /* The export utility has always rendered with this product configuration:
+     * a 15-step m4a master and five DirectSound voices.  Set it on the
+     * authoritative driver rather than depending on removed facade defaults. */
+    m4a_set_master_volume(drv, 15);
+    m4a_set_song_volume(drv, 127);
+    m4a_set_reverb_amount(drv, 0);
+    m4a_set_analog_filter(drv, false);
+    m4a_set_max_pcm_channels(drv, 5);
+    m4a_driver_set_voicegroup(drv, vg->voices);
 
     /* Run test */
-    play_multi_program_test(&engine, outputPath);
+    play_multi_program_test(drv, hw, outputPath);
 
     printf("Done! Output written to %s\n", outputPath);
 
     /* Cleanup */
-    m4a_engine_destroy(&engine);
+    hw_audio_destroy(hw);
+    m4a_driver_destroy(drv);
     voicegroup_free(vg);
 
     return 0;

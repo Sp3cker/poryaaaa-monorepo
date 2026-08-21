@@ -1,4 +1,6 @@
 build/
+build-*/
+.build/
 build-windows/
 build_pugl/
 *.wav
@@ -9,3 +11,4 @@ poryaaaa.cfg
 .cache
 .DS_Store
 poryaaaa.log
+__pycache__/

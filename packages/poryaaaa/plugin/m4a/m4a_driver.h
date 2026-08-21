@@ -2,6 +2,8 @@
 #define M4A_DRIVER_H
 
 #include <stddef.h>
+#include <stdbool.h>
+#include "audio_trace_format.h"
 
 #include "m4a_register_file.h"
 #include "m4a_pcm_ring.h"
@@ -18,24 +20,35 @@ extern "C"
      * and PCM ring are the authoritative driver-to-chip outputs. Song
      * sequencing remains external because the DAW or renderer owns it. */
     typedef struct M4ADriver M4ADriver;
+    /* The two source-owned PCM algorithms exposed by the driver.  Numeric
+     * values are part of the frontend/state contract and must remain stable. */
+    typedef enum M4APcmMixerMode
+    {
+        M4A_PCM_MIXER_IPATIX = 0,
+        M4A_PCM_MIXER_SAPPY = 1,
+    } M4APcmMixerMode;
 
-    /* Mirror of M4AEngineXcmdFn so v2 can be wired into poryaaaa's xcmd path
-     * without dragging in m4a_engine.h. */
+    /* Queue a mode change for the next SoundMain boundary without allocating.
+     * The getter below intentionally reports the committed active mode. */
+    bool m4a_driver_set_pcm_mixer_mode(M4ADriver* drv, M4APcmMixerMode mode);
+    M4APcmMixerMode m4a_driver_get_pcm_mixer_mode(const M4ADriver* drv);
+
+    /* xCmd callback owned by direct driver consumers. */
     typedef void (*M4ADriverXcmdFn)(void* ctx, int trackIndex, uint8_t selector, uint32_t value);
 
-    /* ---- Layer 1.5 event-stream contract (HW_AUDIO_SCAFFOLD_PLAN.md §6c) ----
+    /* Canonical hardware time shared by every public event consumer. */
+#define M4A_GBA_CYCLES_PER_SECOND PORYAAAA_GBA_CLOCK_HZ
+#define M4A_VBLANK_CYCLES 280896u
+#define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
+
+    /* ---- Cycle-domain driver→chip event contract ----
      *
-     * Authoritative driver→chip interface from Layer 1.5 onwards.  Driver
-     * appends register-write events in CgbSound's actual emit order; chip
-     * segments its render span at each event's sample_offset and applies
-     * the write at that boundary, exactly as mGBA does with
-     * GBAAudioSample() + write.
-     *
-     * The snapshot (M4ARegisterFile) is still computed as a side effect and
-     * remains queryable via m4a_get_register_file() for non-timing
-     * consumers (UI, params, debug).  Chip-internal logic from this layer
-     * onwards MUST drive off the event stream — using the snapshot for
-     * timing-sensitive PSG decisions defeats the whole point. */
+     * Driver events are ordered hardware observations, not host-buffer
+     * annotations.  Each carries an absolute GBA cycle and an order that
+     * restarts at zero whenever the cycle changes.  The chip advances to
+     * that cycle before applying the write.  The register snapshot remains
+     * available for UI/debug consumers only; timing-sensitive chip logic
+     * MUST consume this stream. */
     typedef enum
     {
         M4A_REG_NR10,
@@ -61,27 +74,37 @@ extern "C"
         M4A_REG_NR52,
         M4A_REG_SOUNDCNT_H,
         M4A_REG_SOUNDBIAS,
-        /* Per §6c: wave RAM is byte-granular (16 events for a full rewrite,
-         * matching m4a's STMIA write order).  value = (addr_in_wave_ram << 8) | byte. */
+        /* Generic byte event retained for replaying external trace writes.
+         * value = (addr_in_wave_ram << 8) | byte. */
         M4A_REG_WAVE_RAM_BYTE,
-        /* PCM ring publication.  value is the exact count in this block;
-         * zero remains the canonical default for older event producers. */
-        M4A_REG_PCM_PUBLISH,
-        /* Starts a fresh PCM ring/FIFO epoch after a mix-rate change. */
-        M4A_REG_PCM_RESET,
+        /* ROM CgbSound's four fixed little-endian 32-bit Wave RAM stores.
+         * value is the raw word payload for 0x04000090 + 4 * word_index. */
+        M4A_REG_WAVE_RAM_WORD_0,
+        M4A_REG_WAVE_RAM_WORD_1,
+        M4A_REG_WAVE_RAM_WORD_2,
+        M4A_REG_WAVE_RAM_WORD_3,
+        /* Canonical DirectSound bus observations.  FIFO values are one
+         * little-endian 32-bit word; TIMER event values identify timer 0/1. */
+        M4A_REG_FIFO_A,
+        M4A_REG_FIFO_B,
+        M4A_REG_TIMER_0,
+        M4A_REG_TIMER_1,
     } M4ARegId;
 
     typedef struct
     {
-        uint32_t sample_offset; /* 0..frames-1 within the current render span */
+        uint64_t cycle; /* absolute GBA cycle */
         M4ARegId reg;
         uint32_t value; /* register payload, see plan §6c */
+        uint32_t order; /* strictly increasing among events at `cycle` */
     } M4ARegWrite;
 
     typedef struct
     {
         const M4ARegWrite* events;
         size_t count;
+        uint64_t begin_cycle; /* inclusive render interval */
+        uint64_t end_cycle;   /* inclusive event boundary, exclusive output end */
     } M4ARegWriteBatch;
 
     /* Lifecycle */
@@ -95,8 +118,11 @@ extern "C"
     /* Voicegroup wiring (driver receives an already-populated ToneData*). */
     void m4a_driver_set_voicegroup(M4ADriver* drv, ToneData* vg);
     void m4a_driver_refresh_voices(M4ADriver* drv);
-
+    /* Optional musical effects are disabled by default for direct runtimes. */
+    void m4a_driver_set_portamento_enabled(M4ADriver* drv, bool enabled);
+    void m4a_driver_set_pwm_enabled(M4ADriver* drv, bool enabled);
     /* MIDI ingress. */
+    void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime);
     void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity);
     void m4a_note_off(M4ADriver* drv, int track, uint8_t key);
     void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value);
@@ -110,43 +136,43 @@ extern "C"
     void m4a_set_master_volume(M4ADriver* drv, uint8_t volume); /* 0..15 m4a master */
     void m4a_set_reverb_amount(M4ADriver* drv, uint8_t amount); /* 0..127 */
     void m4a_set_analog_filter(M4ADriver* drv, bool enabled);   /* chip-side LPF */
+    /* Zero deliberately disables DirectSound allocation; positive values are
+     * clamped to M4A_MAX_PCM_CHANNELS. */
     void m4a_set_max_pcm_channels(M4ADriver* drv, uint8_t maxChannels);
+    void m4a_set_player_priority(M4ADriver* drv, uint8_t priority);
     void m4a_set_tempo_bpm(M4ADriver* drv, double bpm);
 
-    /* Advance the driver's internal vblank clock by `host_frames` at the
-     * configured host rate.  Each elapsed vblank fires SoundMain
-     * internally:
-     *   - c15 cycle + tempo accumulator
-     *   - CgbSound: ticks each CGB channel's envelope, writes to the
-     *     M4ARegisterFile snapshot, and queues NRxx events with sample_offset
-     *     stamps for the chip's event-driven render path.
-     *   - SoundMainRAM: PCM voice mix → reverb → clamp → write into the
-     *     M4APcmRing at write_cursor.
-     *
+    /* Advance the driver by `host_frames` while converting the host duration
+     * to absolute GBA cycles with an integer remainder.  SoundMain fires at
+     * the exact 280896-cycle VBlank cadence and emits ordered cycle events.
      * Bound `host_frames` to M4A_RECOMMENDED_MAX_ADVANCE_FRAMES per
      * render-event-consume cycle (chunk if larger).  m4a_get_events_dropped()
      * reports any overflow. */
     void m4a_advance(M4ADriver* drv, int host_frames);
-    /* Publish exactly one current-state PCM block for a fresh ring epoch.
-     * Unlike SoundMain, this does not advance gate, envelope, or LFO state. */
-    void m4a_driver_prefill_pcm(M4ADriver* drv);
+
+    /* Returns the completed absolute GBA cycle of the host-facing advance. */
+    uint64_t m4a_driver_current_cycle(const M4ADriver* drv);
+
+    /* Rebase a driver with no pending writes to an absolute timeline.  The
+     * next SoundMain callback remains on hardware VBlank cadence; PCM timing
+     * restarts from this cycle. */
+    bool m4a_driver_set_initial_cycle(M4ADriver* drv, uint64_t cycle);
 
     /* Read-only accessor for non-timing consumers (UI, params, debug). */
     const M4ARegisterFile* m4a_get_register_file(const M4ADriver* drv);
     const M4APcmRing* m4a_get_pcm_ring(const M4ADriver* drv);
 
-    /* Mutable accessor for the chip's render path.  The chip *consumes*
-     * edge-trigger latches (trigger_sq1/sq2/wave/noise) by clearing them
-     * after applying the corresponding NRx4 write — see §6a "Edge-trigger
-     * latches" in HW_AUDIO_SCAFFOLD_PLAN.md.  Other consumers should use
-     * the const accessor above. */
+    /* Mutable accessor for the snapshot render path.  Rendering consumes the
+     * trigger_sq1/sq2/wave/noise edge latches by clearing them after the
+     * corresponding NRx4 write. Other consumers use the const accessor. */
     M4ARegisterFile* m4a_get_register_file_mut(M4ADriver* drv);
 
-/* Layer 1.5 event-stream accessors. 
+/* Layer 1.5 event-stream accessors.
  *
  * Capacity / chunking: the queue is bounded. m4a_get_events_dropped() returns a
  * monotonic counter incremented on overflow; tests assert it stays 0. */
 #define M4A_RECOMMENDED_MAX_ADVANCE_FRAMES 2048
+    int m4a_driver_recommended_max_advance_frames(void);
 
     const M4ARegWriteBatch* m4a_get_pending_writes(const M4ADriver* drv);
     void m4a_consume_writes(M4ADriver* drv);

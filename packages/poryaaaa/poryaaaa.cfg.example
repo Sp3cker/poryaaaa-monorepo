@@ -17,6 +17,12 @@ project_root=C:\path\to\pokeemerald
 # Examples: petalburg, littleroot_town, voicegroup000, prologue
 voicegroup=petalburg
 
+# PCM mixer implementation. The only values are `ipatix` and `sappy`.
+# Default: ipatix. Values are case-sensitive; surrounding whitespace is trimmed.
+# A live mode change hard-stops PCM voices at the next SoundMain/VBlank entry.
+# CGB voices continue and already-published PCM ring bytes drain normally.
+pcm_mixer=ipatix
+
 # Reverb amount (0 = none, 127 = maximum).
 reverb=0
 

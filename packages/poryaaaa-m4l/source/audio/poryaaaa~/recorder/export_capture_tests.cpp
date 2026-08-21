@@ -191,6 +191,28 @@ void test_rearming_clears_previous_capture()
     CHECK_EQ(capture.size(), static_cast<std::size_t>(0));
 }
 
+// Recording again after toggling off must not inherit the prior take's timestamp.
+void test_record_toggle_resets_latched_beat()
+{
+    ExportCapture capture;
+    capture.beats(42.5);
+    capture.record_on(at_ms(0));
+    capture.capture_event(0x90, 60, 100);
+    auto firstTake = capture.snapshot();
+    CHECK_EQ(firstTake.size(), static_cast<std::size_t>(1));
+    check_event(firstTake[0], 0.0, 0x90, 60, 100);
+    capture.record_off();
+    CHECK_EQ(capture.state(), CaptureState::Idle);
+    CHECK_EQ(capture.size(), static_cast<std::size_t>(0));
+    CHECK_EQ(capture.current_beat(), 0.0);
+
+    capture.record_on(at_ms(300));
+    capture.capture_event(0x90, 61, 100);
+    auto events = capture.snapshot();
+    CHECK_EQ(events.size(), static_cast<std::size_t>(1));
+    check_event(events[0], 0.0, 0x90, 61, 100);
+}
+
 } // namespace
 
 int main()
@@ -202,6 +224,7 @@ int main()
     test_record_off_resets_export_state_and_buffer();
     test_finish_export_freezes_buffer_for_dump();
     test_rearming_clears_previous_capture();
+    test_record_toggle_resets_latched_beat();
 
     if (failures != 0)
     {

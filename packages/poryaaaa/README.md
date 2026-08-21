@@ -32,7 +32,7 @@ Output (at least one required):
 Audio options:
   --song-volume <0-127>       Song master volume (default: 127)
   --reverb <0-127>            Reverb amount (default: 0)
-  --analog-filter             Enable GBA analog low-pass filter (default: off)
+  --pcm-mixer <ipatix|sappy>  PCM mixer implementation (default: ipatix)
   --polyphony <1-12>          Max simultaneous PCM channels (default: 5)
   --sample-rate <hz>          Sample rate in Hz (default: 44100)
   --tail <seconds>            Silence after last event, no loop markers (default: 3.0)
@@ -43,13 +43,20 @@ Loop options (when MIDI contains '[' / ']' text events):
   --total-duration-seconds <s>  Override loop-count; set exact total duration
                                 (fadeout occupies the final --fadeout seconds)
 ```
+`--pcm-mixer` accepts exactly `ipatix` or `sappy`; the default is `ipatix`.
+The renderer applies this selection before dispatching any MIDI note or
+advancing the driver and does not read an adjacent `poryaaaa.cfg`. In the
+plugin, a live mode change hard-stops PCM voices at the next SoundMain/VBlank
+entry; CGB voices continue, already-published PCM ring bytes drain normally,
+and there is no crossfade or active-voice conversion.
+
 
 Examples:
 
 ```bash
-# Render to WAV with reverb and analog filter
+# Render to WAV with reverb
 ./build/poryaaaa_render /path/to/pokeemerald petalburg \
-    --midi song.mid --output out.wav --reverb 40 --analog-filter
+    --midi song.mid --output out.wav --reverb 40
 
 # Play through speakers
 ./build/poryaaaa_render /path/to/pokeemerald petalburg \
@@ -117,26 +124,31 @@ CC 30 = 0x08, CC 29 = 0x22   -> xiecv 0x22
 CC 30 = 0x09, CC 29 = 0x11   -> xiecl 0x11
 ```
 
-Supported XCMD subcommands:
+Supported XCMD subcommands (`gXcmdTable` `0x00`–`0x0D`):
 
-- `0x01` `xwave`: 4 payload bytes, little-endian 32-bit wave pointer
-- `0x02` `xtype`: 1 payload byte
-- `0x04` `xatta`: 1 payload byte
-- `0x05` `xdeca`: 1 payload byte
-- `0x06` `xsust`: 1 payload byte
-- `0x07` `xrele`: 1 payload byte
-- `0x08` `xiecv`: 1 payload byte
-- `0x09` `xiecl`: 1 payload byte
-- `0x0A` `xleng`: 1 payload byte
-- `0x0B` `xswee`: 1 payload byte
-- `0x0C`: 2 payload bytes, little-endian
-- `0x0D`: 4 payload bytes, little-endian
+- `0x00`, `0x03`: ROM `ply_xxx` nops. Not accepted (`dataLength == 0`).
+- `0x01` `xwave`: 4 LE bytes. Notify-only; `currentVoice.wav` is not written
+  (payload is a ROM address, not a host pointer).
+- `0x02` `xtype`: 1 byte → `currentVoice.type`
+- `0x04` `xatta`: 1 byte → `currentVoice.attack`
+- `0x05` `xdeca`: 1 byte → `currentVoice.decay`
+- `0x06` `xsust`: 1 byte → `currentVoice.sustain`
+- `0x07` `xrele`: 1 byte → `currentVoice.release`
+- `0x08` `xiecv`: 1 byte → `pseudoEchoVolume`
+- `0x09` `xiecl`: 1 byte → `pseudoEchoLength`
+- `0x0A` `xleng`: 1 byte → `currentVoice.length`
+- `0x0B` `xswee`: 1 byte → `currentVoice.panSweep`
+- `0x0C` `xwait`: ROM stalls the song PC. Not accepted here (`dataLength == 0`);
+  there is no bytecode walker on the MIDI path.
+- `0x0D`: 4 LE bytes → `extendedValue`. Next DirectSound note-on uses that
+  value as a sample start offset.
 
 Notes:
 
 - Multi-byte payloads are assembled from repeated `CC 29`/`CC 31` messages.
-- Audio-affecting XCMD changes apply to notes started after the command is received.
-- `0x0C` tracks the original engine's loop/wait state but does not alter playback flow in `poryaaaa`, because there is no song-script interpreter in the MIDI path.
+- Audio-affecting XCMD changes apply to notes started after the command.
+- Selector is sticky after apply; only the payload byte count resets.
+- Full CC state machine: `xcmd.md`.
 
 #### Plugin config reference
 
@@ -147,7 +159,12 @@ Notes:
 | `reverb` | `0` | Reverb amount (0–127) |
 | `master_volume` | `15` | M4A master volume (0–15) |
 | `song_master_volume` | `127` | Song-level volume multiplier (0–127) |
+| `pcm_mixer` | `ipatix` | PCM mixer implementation: exactly `ipatix` or `sappy` |
 | `log` | *(off)* | Diagnostic log file path |
+
+`pcm_mixer` is case-sensitive, trims surrounding value whitespace, and uses
+last-wins semantics for duplicate keys. A missing key or file keeps the
+`ipatix` default; an invalid value is fatal for that plugin instance.
 
 #### GUI
 
@@ -226,9 +243,8 @@ cmd/
 plugin/
   m4a_plugin.c/.h             CLAP entry point, MIDI event handling, extension dispatch
   m4a_gui.cpp/.h              Dear ImGui + Pugl settings GUI (C++ with C interface)
-  m4a_engine.c/.h             Public engine wrapper: MIDI routing and v2 driver/chip ownership
-  m4a/                        M4A software driver: tracks, commands, PCM/CGB event generation
-  hw_audio/                   GBA audio hardware emulation: PSG, DirectSound, mixing, reverb
+  m4a/                        M4ADriver: tracks, commands, PCM/CGB event generation
+  hw_audio/                   HwAudio: GBA audio hardware emulation, PSG, DirectSound, mixing, reverb
   m4a_tables.c/.h             Frequency/scale tables (from m4a_tables.c)
   voicegroup_loader.c/.h      Project discovery, .inc/.s parser, sample loader
 
@@ -243,6 +259,13 @@ clap-sdk/                CLAP plugin SDK (submodule)
 imgui/                   Dear ImGui (submodule)
 ```
 
+### Third-party attribution
+
+The exact default host resampling path is adapted from **blip_buf 1.1.0**,
+Copyright (C) 2003–2009 Shay Green, under **LGPL-2.1-or-later**. The complete
+existing license text is in
+[`plugin/hw_audio/LICENSE.blip_buf`](plugin/hw_audio/LICENSE.blip_buf).
+
 ### CLAP extensions
 
 | Extension | Purpose |
@@ -255,9 +278,17 @@ imgui/                   Dear ImGui (submodule)
 
 ### How the engine works
 
+Each runtime directly owns an `M4ADriver` and an `HwAudio`; there is no public
+engine wrapper. The canonical direct-render sequence is defined by the
+[`HwAudio` event-render contract](plugin/hw_audio/hw_audio.h).
+
 The engine runs a **tick** at the GBA's VBlank rate (~59.7 Hz) to advance envelopes and LFO. The complete hardware mix is generated at the SOUNDBIAS-selected DAC cadence (`32768 << sampling_cycle`) and converted to the configured host rate by the same `blip_buf` frontend used by mGBA.
 
-**PCM channels** use the same 23-bit fractional sample position and linear interpolation as the GBA's `SoundMainRAM` mixer. Frequency is computed using `MidiKeyToFreq` with the exact scale/frequency table lookups. The resulting DirectSound samples are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
+**PCM channels** use the selected source-defined mixer (`ipatix` by default or
+`sappy` when selected). Both adapters publish through the common DirectSound
+ring and hardware cadence. Frequency is computed using `MidiKeyToFreq` with
+the exact scale/frequency table lookups, and the resulting DirectSound samples
+are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
 
 **CGB channels** are synthesized in software: square duty steps advance on integer GBA CPU-cycle deadlines, programmable wave reads 4-bit nibbles from 16-byte waveforms, and noise follows mGBA's 7-bit or 15-bit LFSR behavior.
 

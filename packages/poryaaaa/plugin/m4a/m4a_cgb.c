@@ -74,33 +74,42 @@ void m4a_chn_vol_set_cgb(M4ADriverCgbChan* ch, M4ADriverTrack* track)
 
 /* CgbSound channel start — pokeemerald m4a.c equivalent.  Sets up envelope
  * state for the attack phase and queues a full register rewrite (MO_PIT |
- * MO_VOL) so the next CgbSound tick emits NRx2/NRx3/NRx4 with trigger=1.
- * For wave channels (type 3), also marks the wave RAM dirty so the
- * emitter pushes 16 byte-granular WAVE_RAM_BYTE events. */
+ * MO_VOL) so the next CgbSound tick emits the ROM's wave start transaction. */
 void m4a_drv_cgb_start(M4ADriverCgbChan* ch)
 {
-    ch->status = M4A_CHN_ON | M4A_CHN_ENV_ATTACK;
+    ch->status = M4A_CHN_ENV_ATTACK;
     ch->modify = M4A_MO_PIT | M4A_MO_VOL;
     ch->freshStart = true;
-    if (ch->type == 3)
-        ch->waveRamPending = true;
     ch->envelopeCounter = ch->attack;
     if (ch->attack == 0)
     {
         ch->envelopeVolume = ch->envelopeGoal;
-        ch->status = M4A_CHN_ON | M4A_CHN_ENV_DECAY;
+        ch->status = M4A_CHN_ENV_DECAY;
         ch->envelopeCounter = ch->decay;
         ch->envelopeStepTimeAndDir = ch->decay & 0x07u;
         if (ch->decay == 0)
         {
             if (ch->sustain == 0)
             {
-                ch->status = M4A_CHN_ON | M4A_CHN_ENV_RELEASE;
+                ch->envelopeVolume = ((ch->envelopeGoal * ch->pseudoEchoVolume) + 0xFF) >> 8;
+                if (ch->envelopeVolume)
+                {
+                    ch->status = M4A_CHN_IEC;
+                    if (ch->type != 3)
+                        ch->envelopeStepTimeAndDir = 0x08u;
+                }
+                else
+                {
+                    /* Keep the canonical START marker live so CgbSound
+                     * performs the same-tick initialization before
+                     * CgbOscOff handles the zero-volume result. */
+                    ch->status = M4A_CHN_START;
+                }
             }
             else
             {
                 ch->envelopeVolume = ch->sustainGoal;
-                ch->status = M4A_CHN_ON | M4A_CHN_ENV_SUSTAIN;
+                ch->status = M4A_CHN_ENV_SUSTAIN;
                 ch->envelopeStepTimeAndDir = 0x08u;
             }
         }
@@ -152,8 +161,8 @@ static void apply_pan_to_regs(M4ARegisterFile* regs, int chanIdx, uint8_t pan)
 }
 
 /* Encode and emit a Layer-1.5 NR51 event reflecting the current pan
- * masks.  Called whenever a channel's pan changes (each emit_vol_write,
- * each disable). */
+ * masks.  Called whenever an envelope/volume update changes a channel's
+ * routing; CgbOscOff does not modify NR51. */
 static void emit_nr51_event(M4ADriver* drv)
 {
     uint32_t nr51 = ((uint32_t)drv->regs.pan_mask_left << 4) | (uint32_t)drv->regs.pan_mask_right;
@@ -233,6 +242,18 @@ static void emit_start_write(M4ADriver* drv, M4ADriverCgbChan* ch)
         break;
     }
     case 3:
+        if (ch->wavePointer && ch->wavePointer != ch->loadedWavePointer)
+        {
+            m4a_internal_emit_event(drv, M4A_REG_NR30, 0x40u);
+            for (uint32_t i = 0; i < 4; i++)
+                m4a_internal_emit_event(drv, (M4ARegId)(M4A_REG_WAVE_RAM_WORD_0 + i), ch->wavePointer[i]);
+            memcpy(r->wave_ram, ch->wavePointer, sizeof(r->wave_ram));
+            ch->loadedWavePointer = ch->wavePointer;
+        }
+        r->wave_length = ch->length;
+        r->wave_length_enable = ch->length != 0;
+        m4a_internal_emit_event(drv, M4A_REG_NR30, 0);
+        m4a_internal_emit_event(drv, M4A_REG_NR31, ch->length);
         break;
     case 4:
     {
@@ -256,7 +277,6 @@ static void emit_vol_write(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     apply_pan_to_regs(r, idx, ch->pan);
     if (ch->type != 3)
         emit_nr51_event(drv);
-
     switch (ch->type)
     {
     case 1:
@@ -284,26 +304,16 @@ static void emit_vol_write(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
         uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
         uint8_t nr32 = gCgb3Vol[ch->envelopeVolume & 0x0F];
         r->wave_volume_shift = wave_vol_shift_from_nr32(nr32);
-        r->wave_length = ch->length;
-        r->wave_dac_on = ch->envelopeVolume != 0;
         r->wave_enabled = (ch->status & M4A_CHN_ON) != 0;
         r->trigger_wave = ch->freshStart;
-        if (ch->wavePointer)
-            memcpy(r->wave_ram, ch->wavePointer, sizeof(r->wave_ram));
-        if (ch->waveRamPending && ch->wavePointer)
-        {
-            m4a_internal_emit_event(drv, M4A_REG_NR30, 0u);
-            const uint8_t* wb = (const uint8_t*)ch->wavePointer;
-            for (uint32_t i = 0; i < 16; i++)
-                m4a_internal_emit_event(drv, M4A_REG_WAVE_RAM_BYTE, (i << 8) | wb[i]);
-            ch->waveRamPending = false;
-        }
-        m4a_internal_emit_event(drv, M4A_REG_NR30, r->wave_dac_on ? 0x80u : 0u);
-        m4a_internal_emit_event(drv, M4A_REG_NR31, ch->length);
-        m4a_internal_emit_event(drv, M4A_REG_NR32, nr32);
-        m4a_internal_emit_event(drv, M4A_REG_NR33, freq & 0xFF);
-        m4a_internal_emit_event(drv, M4A_REG_NR34, encode_nrx4(freq, ch->freshStart, lengthEnable));
         emit_nr51_event(drv);
+        m4a_internal_emit_event(drv, M4A_REG_NR32, nr32);
+        if (ch->freshStart)
+        {
+            r->wave_dac_on = true;
+            m4a_internal_emit_event(drv, M4A_REG_NR30, 0x80u);
+            m4a_internal_emit_event(drv, M4A_REG_NR34, encode_nrx4(freq, /*trigger=*/true, lengthEnable));
+        }
         break;
     }
     case 4:
@@ -347,7 +357,7 @@ static void emit_pit_write(M4ADriver* drv, M4ADriverCgbChan* ch)
         uint16_t freq = cgb_pitch_freq_for_registers(drv, ch);
         r->wave_freq = freq & 0x07FF;
         m4a_internal_emit_event(drv, M4A_REG_NR33, freq & 0xFF);
-        m4a_internal_emit_event(drv, M4A_REG_NR34, encode_nrx4(freq, /*trigger=*/false, lengthEnable));
+        m4a_internal_emit_event(drv, M4A_REG_NR34, encode_nrx4(freq, ch->freshStart, lengthEnable));
         break;
     }
     case 4:
@@ -365,8 +375,8 @@ static void emit_pit_write(M4ADriver* drv, M4ADriverCgbChan* ch)
 /* Applies the ROM's CgbOscOff writes while marking the driver channel free. */
 void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
 {
+    (void)idx;
     M4ARegisterFile* r = &drv->regs;
-    apply_pan_to_regs(r, idx, 0);
     switch (ch->type)
     {
     case 1:
@@ -397,7 +407,6 @@ void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
         m4a_internal_emit_event(drv, M4A_REG_NR44, 0x80u);
         break;
     }
-    emit_nr51_event(drv);
 }
 
 /* Tick one CGB channel's envelope.  c15==0 every 15 vblanks fires a double
@@ -408,17 +417,35 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     if (!(ch->status & M4A_CHN_ON))
         return;
 
-    if (ch->freshStart && ch->type != 3)
+    if (ch->freshStart && (ch->status & M4A_CHN_STOP))
+    {
+        ch->status = 0;
+        m4a_drv_cgb_disable(drv, ch, idx);
+        return;
+    }
+
+    if (ch->freshStart)
         emit_start_write(drv, ch);
+
+    if (ch->freshStart && ch->envelopeVolume == 0 && !(ch->status & M4A_CHN_IEC) &&
+        (ch->status & M4A_CHN_ENV_MASK) == 0)
+    {
+        ch->status = 0;
+        m4a_drv_cgb_disable(drv, ch, idx);
+        return;
+    }
 
     if (ch->status & M4A_CHN_IEC)
     {
-        ch->pseudoEchoLength--;
-        if ((int8_t)ch->pseudoEchoLength <= 0)
+        if (!ch->freshStart)
         {
-            ch->status = 0;
-            m4a_drv_cgb_disable(drv, ch, idx);
-            return;
+            ch->pseudoEchoLength--;
+            if ((int8_t)ch->pseudoEchoLength <= 0)
+            {
+                ch->status = 0;
+                m4a_drv_cgb_disable(drv, ch, idx);
+                return;
+            }
         }
         goto done;
     }
@@ -447,6 +474,7 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     step_repeat:
         if (ch->envelopeCounter == 0)
         {
+            m4a_chn_vol_set_cgb(ch, &drv->tracks[ch->trackIndex]);
             uint8_t envState = ch->status & M4A_CHN_ENV_MASK;
             if (ch->type == 3)
                 ch->modify |= M4A_MO_VOL;
@@ -477,16 +505,11 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
             }
             else if (envState == M4A_CHN_ENV_SUSTAIN)
             {
-                /* SUSTAIN counter rolls every 7 ticks.  If a mid-song
-                 * volume change (set_song_volume, CC7, LFO tremolo,
-                 * voice-edit refresh) updated sustainGoal, this is
-                 * where envelopeVolume actually lands on the new value;
-                 * fire MO_VOL so the chip's NRx2 picks it up. */
-                uint8_t prev = ch->envelopeVolume;
+                /* The ROM updates only its software sustain volume here.
+                 * A hardware volume transaction requires an independent
+                 * modify flag from the track or another envelope phase. */
                 ch->envelopeVolume = ch->sustainGoal;
                 ch->envelopeCounter = 7;
-                if (ch->envelopeVolume != prev)
-                    ch->modify |= M4A_MO_VOL;
             }
             else if (envState == M4A_CHN_ENV_DECAY)
             {
@@ -555,20 +578,10 @@ done:
         emit_duty_write(drv, ch);
 
     /* CgbSound applies pitch before pan/envelope writes on each tick. */
-    if (ch->type == 3)
-    {
-        if (ch->modify & M4A_MO_VOL)
-            emit_vol_write(drv, ch, idx);
-        if (ch->modify & M4A_MO_PIT)
-            emit_pit_write(drv, ch);
-    }
-    else
-    {
-        if (ch->modify & M4A_MO_PIT)
-            emit_pit_write(drv, ch);
-        if (ch->modify & M4A_MO_VOL)
-            emit_vol_write(drv, ch, idx);
-    }
+    if (ch->modify & M4A_MO_PIT)
+        emit_pit_write(drv, ch);
+    if (ch->modify & M4A_MO_VOL)
+        emit_vol_write(drv, ch, idx);
     ch->modify = 0;
     ch->freshStart = false;
 }
@@ -581,6 +594,13 @@ void m4a_cgb_sound(M4ADriver* drv)
         return;
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
-        tick_one(drv, &drv->cgb[i], i);
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        tick_one(drv, ch, i);
+        if (ch->gateTime > 0)
+        {
+            ch->gateTime--;
+            if (ch->gateTime == 0)
+                ch->status |= M4A_CHN_STOP;
+        }
     }
 }

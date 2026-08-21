@@ -46,6 +46,12 @@ function(poryaaaa_enable_project_warnings target_name)
     endif()
 endfunction()
 
+function(poryaaaa_configure_pcm_gate_target target_name)
+    poryaaaa_enable_msvc_c_atomics(${target_name})
+    poryaaaa_enable_project_warnings(${target_name})
+    target_include_directories(${target_name} PRIVATE plugin)
+endfunction()
+
 function(poryaaaa_enable_project_source_warnings)
     if(MSVC)
         set_property(SOURCE ${ARGN} APPEND PROPERTY COMPILE_OPTIONS
@@ -71,7 +77,7 @@ function(poryaaaa_enable_project_source_warnings)
 endfunction()
 
 if(MSVC)
-    set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_params.c
+    set_source_files_properties(plugin/m4a_plugin.c plugin/m4a_plugin_state.c plugin/m4a_params.c
         PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")
 endif()
 
@@ -156,34 +162,35 @@ endif()
 add_subdirectory(plugin/voicegroup)
 
 # ---- Recorder (MIDI capture + SMF writer) ----
-# Vendored from the old ccomidi_recorder.clap project.  Pure C++23.
-# Engine will own a RecorderCore instance; M4L wrapper consumes it via
-# the engine accessor.  See recorder integration plan.md.
+# Pure C++23. The CLAP plugin owns an M4ARecorder; the M4L external has a
+# separate capture path. See recorder integration plan.md.
 add_subdirectory(plugin/recorder)
 
-# ---- v2 audio engine: m4a software driver + hw_audio chip emulation ----
+# Trace capture/replay is a developer toolchain, never part of the shipping
+# plugin, normal renderer, or default unit-test graph.
+option(PORYAAAA_BUILD_TRACE_TOOLS "Build audio trace capture and replay tools" OFF)
+enable_testing()
+
+# ---- Direct audio runtime libraries: M4ADriver + HwAudio ----
+include("${CMAKE_CURRENT_SOURCE_DIR}/plugin/m4a/m4a_driver_sources.cmake")
 add_subdirectory(plugin/m4a)
 add_subdirectory(plugin/hw_audio)
 
 # ---- Porydaw-compatible static engine core ----
 add_subdirectory(plugin/porydaw)
 
-# m4a audio engine sources (shared between plugin, renderer, tests).
-set(ENGINE_SOURCES
-    plugin/m4a_engine.c
-)
 
 # ---- CLAP Plugin ----
 set(PORYAAAA_FONT_DIR "${PORYAAAA_MONOREPO_ROOT}/shared/assets/fonts/Calamity")
 
 add_library(poryaaaa MODULE
     plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
     ${IMGUI_SOURCES}
     ${PUGL_SOURCES}
 )
@@ -196,12 +203,12 @@ if(MSVC)
 endif()
 poryaaaa_enable_project_source_warnings(
     plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
     plugin/m4a_params.c
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
     plugin/voicegroup/project_asset_index.c
     plugin/m4a_gui.cpp
-    ${ENGINE_SOURCES}
 )
 
 target_include_directories(poryaaaa PRIVATE
@@ -268,11 +275,16 @@ elseif(APPLE)
     )
 
     # MACOSX_BUNDLE_INFO_PLIST only works for MACOSX_BUNDLE (app bundles).
-    # For a generic BUNDLE (.clap), copy Info.plist manually.
+    # For a generic BUNDLE (.clap), copy its metadata and bundled LGPL notice manually.
     add_custom_command(TARGET poryaaaa POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/plugin/Info.plist"
             "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Info.plist"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugin/hw_audio/LICENSE.blip_buf"
+            "$<TARGET_BUNDLE_CONTENT_DIR:poryaaaa>/Resources/LICENSE.blip_buf"
     )
 
     set(PORYAAAA_CLAP_INSTALL_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/CLAP")
@@ -291,7 +303,6 @@ endif()
 # ---- WAV Export Test ----
 add_executable(poryaaaa_test
     test/test_wav_export.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_test)
 poryaaaa_enable_project_warnings(poryaaaa_test)
@@ -308,7 +319,6 @@ endif()
 # ---- CLI Renderer ----
 add_executable(poryaaaa_render
     cmd/poryaaaa_render.c
-    ${ENGINE_SOURCES}
 )
 poryaaaa_enable_msvc_c_atomics(poryaaaa_render)
 poryaaaa_enable_project_warnings(poryaaaa_render)
@@ -329,44 +339,331 @@ if(WIN32)
     endif()
 endif()
 
+if(PORYAAAA_BUILD_TRACE_TOOLS)
+    # ---- Cycle-domain native audio trace recorder ----
+    add_executable(poryaaaa_audio_trace
+        cmd/poryaaaa_audio_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_audio_trace)
+    target_include_directories(poryaaaa_audio_trace PRIVATE plugin)
+    target_link_libraries(poryaaaa_audio_trace PRIVATE poryaaaa_hw_audio_trace_tool)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_audio_trace PRIVATE m)
+    endif()
+
+    # ---- Driver lifecycle candidate trace ----
+    # Loads one supported voicegroup slot, derives its hardware family from
+    # ToneData, drives one fixed lifecycle, and serializes its pending bus events.
+    add_executable(poryaaaa_driver_trace
+        cmd/poryaaaa_driver_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_driver_trace)
+    target_include_directories(poryaaaa_driver_trace PRIVATE plugin)
+    target_link_libraries(poryaaaa_driver_trace PRIVATE m4a_driver poryaaaa_m4a_trace_writer voicegroup_loader)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_driver_trace PRIVATE m)
+    endif()
+
+
+    # ---- Retained trace-tool smoke ----
+    add_executable(poryaaaa_audio_trace_tool_tests
+        test/test_hw_audio_trace.c
+    )
+    poryaaaa_enable_project_warnings(poryaaaa_audio_trace_tool_tests)
+    target_compile_definitions(poryaaaa_audio_trace_tool_tests PRIVATE
+        PORYAAAA_HW_AUDIO_TRACE_TEST_MAIN=1
+    )
+    target_include_directories(poryaaaa_audio_trace_tool_tests PRIVATE plugin test)
+    target_link_libraries(poryaaaa_audio_trace_tool_tests PRIVATE poryaaaa_hw_audio_trace_tool)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_audio_trace_tool_tests PRIVATE m)
+    endif()
+endif()
+
+# ---- Independent installed mGBA 0.10.5 frontend reference ----
+option(PORYAAAA_BUILD_FRONTEND_PARITY_TESTS
+    "Build exact mGBA 0.10.5 blip_buf frontend parity tests" OFF)
+set(PORYAAAA_MGBA_0105_SOURCE "" CACHE PATH
+    "Untouched mGBA 0.10.5 source checkout for frontend parity")
+set(PORYAAAA_MGBA_0105_EXPECTED_REVISION
+    "26b7884bc25a5933960f3cdcd98bac1ae14d42e2" CACHE STRING
+    "Pinned mGBA 0.10.5 revision")
+
+
 # ---- Full mGBA MP2K reference recorder ----
 option(PORYAAAA_BUILD_MGBA_REFERENCE
     "Build the full-ROM mGBA reference recorder" OFF)
+set(PORYAAAA_MGBA_SOURCE "" CACHE PATH
+    "Authoritative patched mGBA afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9 source checkout")
 set(PORYAAAA_MGBA_ROOT "" CACHE PATH
-    "mGBA installation prefix for the reference recorder")
+    "Non-authoritative installed mGBA prefix for the reference recorder")
+set(PORYAAAA_MGBA_EXPECTED_REVISION "afd6f14eaf8bd35214ed3fb9dc69a92bfc3877a9")
 
 if(PORYAAAA_BUILD_MGBA_REFERENCE)
-    find_path(PORYAAAA_MGBA_INCLUDE_DIR mgba/core/core.h
-        HINTS
-            "${PORYAAAA_MGBA_ROOT}/include"
-            /usr/local/include
-            /opt/homebrew/include)
-    find_library(PORYAAAA_MGBA_LIBRARY mgba
-        HINTS
-            "${PORYAAAA_MGBA_ROOT}/lib"
-            /usr/local/lib
-            /opt/homebrew/lib)
-
-    if(NOT PORYAAAA_MGBA_INCLUDE_DIR OR NOT PORYAAAA_MGBA_LIBRARY)
-        message(FATAL_ERROR
-            "PORYAAAA_BUILD_MGBA_REFERENCE requires an mGBA development install; "
-            "set PORYAAAA_MGBA_ROOT to its prefix")
-    endif()
-
     add_executable(mgba_mp2k_reference
         tools/mgba-reference/mgba_mp2k_reference.c
     )
+    set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD 11)
+    set_property(TARGET mgba_mp2k_reference PROPERTY C_STANDARD_REQUIRED ON)
+    target_include_directories(mgba_mp2k_reference PRIVATE plugin)
     poryaaaa_enable_project_warnings(mgba_mp2k_reference)
-    target_include_directories(mgba_mp2k_reference PRIVATE
-        "${PORYAAAA_MGBA_INCLUDE_DIR}"
-    )
+    get_target_property(_mgba_recorder_compile_options mgba_mp2k_reference COMPILE_OPTIONS)
+    if(_mgba_recorder_compile_options STREQUAL "_mgba_recorder_compile_options-NOTFOUND")
+        set(_mgba_recorder_compile_options)
+    endif()
+    string(JOIN " " _mgba_recorder_compiler_flags
+        "${CMAKE_C_FLAGS}" ${_mgba_recorder_compile_options})
+    string(REPLACE ";" " " _mgba_recorder_compiler_flags "${_mgba_recorder_compiler_flags}")
+    string(REPLACE "\"" "\\\"" _mgba_recorder_compiler_flags "${_mgba_recorder_compiler_flags}")
+    target_compile_definitions(mgba_mp2k_reference PRIVATE
+        "PORYAAAA_MGBA_RECORDER_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
+        "PORYAAAA_MGBA_RECORDER_COMPILE_FLAGS=\"${_mgba_recorder_compiler_flags}\"")
     target_compile_definitions(mgba_mp2k_reference PRIVATE ENABLE_VFS=1)
-    target_link_libraries(mgba_mp2k_reference PRIVATE
-        "${PORYAAAA_MGBA_LIBRARY}"
-    )
+    if(PORYAAAA_MGBA_SOURCE)
+        get_filename_component(_mgba_source "${PORYAAAA_MGBA_SOURCE}" REALPATH)
+        if(NOT EXISTS "${_mgba_source}/CMakeLists.txt" OR NOT EXISTS "${_mgba_source}/.git")
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE must be the pinned mGBA git worktree, not an installation")
+        endif()
+        find_package(Git REQUIRED)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" rev-parse HEAD
+            RESULT_VARIABLE _mgba_revision_status
+            OUTPUT_VARIABLE _mgba_revision
+            ERROR_VARIABLE _mgba_revision_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_revision_status STREQUAL "0" OR
+           NOT _mgba_revision STREQUAL PORYAAAA_MGBA_EXPECTED_REVISION)
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE must be at ${PORYAAAA_MGBA_EXPECTED_REVISION}; "
+                "got '${_mgba_revision}' (${_mgba_revision_error})")
+        endif()
+
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" diff --name-only
+                    "${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            RESULT_VARIABLE _mgba_diff_status
+            OUTPUT_VARIABLE _mgba_changed_paths
+            ERROR_VARIABLE _mgba_diff_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_diff_status STREQUAL "0")
+            message(FATAL_ERROR "Could not inspect PORYAAAA_MGBA_SOURCE: ${_mgba_diff_error}")
+        endif()
+        set(_mgba_observation_patch_paths
+            "include/mgba/internal/gba/audio.h"
+            "src/gba/audio.c"
+            "src/gba/io.c")
+        set(_mgba_source_dirty 0)
+        if(_mgba_changed_paths)
+            set(_mgba_source_dirty 1)
+            string(REPLACE "\n" ";" _mgba_changed_path_list "${_mgba_changed_paths}")
+            foreach(_mgba_changed_path IN LISTS _mgba_changed_path_list)
+                list(FIND _mgba_observation_patch_paths "${_mgba_changed_path}" _mgba_known_patch_path)
+                if(_mgba_known_patch_path EQUAL -1)
+                    message(FATAL_ERROR
+                        "PORYAAAA_MGBA_SOURCE has an unexpected change: ${_mgba_changed_path}. "
+                        "Only the observation patch may differ from ${PORYAAAA_MGBA_EXPECTED_REVISION}.")
+                endif()
+            endforeach()
+        endif()
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" ls-files --others --exclude-standard
+            RESULT_VARIABLE _mgba_untracked_status
+            OUTPUT_VARIABLE _mgba_untracked_paths
+            ERROR_VARIABLE _mgba_untracked_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _mgba_untracked_status STREQUAL "0" OR _mgba_untracked_paths)
+            message(FATAL_ERROR
+                "PORYAAAA_MGBA_SOURCE has unexpected untracked files: "
+                "${_mgba_untracked_paths}${_mgba_untracked_error}")
+        endif()
+
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${_mgba_source}" diff --binary
+                    "${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            RESULT_VARIABLE _mgba_patch_status
+            OUTPUT_VARIABLE _mgba_observation_patch
+            ERROR_VARIABLE _mgba_patch_error)
+        if(NOT _mgba_patch_status STREQUAL "0")
+            message(FATAL_ERROR "Could not hash mGBA observation patch: ${_mgba_patch_error}")
+        endif()
+        string(SHA256 _mgba_observation_patch_sha256 "${_mgba_observation_patch}")
+
+        set(LIBMGBA_ONLY ON CACHE BOOL "" FORCE)
+        set(M_CORE_GBA ON CACHE BOOL "" FORCE)
+        set(M_CORE_GB OFF CACHE BOOL "" FORCE)
+        # mTimingGlobalTime is a true absolute clock only in this pinned mGBA
+        # configuration when its existing debugger timing counter is enabled.
+        set(ENABLE_DEBUGGERS ON CACHE BOOL "" FORCE)
+        set(USE_EDITLINE OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${_mgba_source}" "${CMAKE_CURRENT_BINARY_DIR}/mgba-reference" EXCLUDE_FROM_ALL)
+        if(NOT TARGET mgba)
+            message(FATAL_ERROR "Pinned mGBA source did not define the mgba library target")
+        endif()
+        if(PORYAAAA_BUILD_TRACE_TOOLS)
+            add_executable(mgba_audio_trace_replay
+                tools/mgba-reference/mgba_audio_trace_replay.c
+            )
+            set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD 11)
+            set_property(TARGET mgba_audio_trace_replay PROPERTY C_STANDARD_REQUIRED ON)
+            poryaaaa_enable_project_warnings(mgba_audio_trace_replay)
+            target_include_directories(mgba_audio_trace_replay PRIVATE plugin)
+            get_target_property(_mgba_replay_compile_options mgba_audio_trace_replay COMPILE_OPTIONS)
+            if(_mgba_replay_compile_options STREQUAL "_mgba_replay_compile_options-NOTFOUND")
+                set(_mgba_replay_compile_options)
+            endif()
+            string(JOIN " " _mgba_replay_compiler_flags
+                "${CMAKE_C_FLAGS}" ${_mgba_replay_compile_options})
+            string(REPLACE ";" " " _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
+            string(REPLACE "\"" "\\\"" _mgba_replay_compiler_flags "${_mgba_replay_compiler_flags}")
+            target_compile_definitions(mgba_audio_trace_replay PRIVATE ENABLE_VFS=1)
+            target_link_libraries(mgba_audio_trace_replay PRIVATE mgba)
+            # The replay adapter reads internal mGBA state, so its feature layout
+            # must match the linked mGBA target exactly.
+            target_compile_definitions(mgba_audio_trace_replay PRIVATE
+                "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>"
+                "PORYAAAA_MGBA_REPLAY_COMPILER=\"${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} ${CMAKE_C_COMPILER}\""
+                "PORYAAAA_MGBA_REPLAY_COMPILE_FLAGS=\"${_mgba_replay_compiler_flags}\""
+                PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
+                PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
+                PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
+                PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
+                PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
+            if(NOT MSVC)
+                target_link_libraries(mgba_audio_trace_replay PRIVATE m)
+            endif()
+        endif()
+
+        target_link_libraries(mgba_mp2k_reference PRIVATE mgba)
+        # mCore's public layout depends on mGBA's feature definitions. Compile the
+        # recorder with the library's exact definitions to preserve its ABI.
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            "$<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>")
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            PORYAAAA_MGBA_BASE_REVISION="${PORYAAAA_MGBA_EXPECTED_REVISION}"
+            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="${_mgba_observation_patch_sha256}"
+            PORYAAAA_MGBA_SOURCE_DIRTY=${_mgba_source_dirty}
+            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=1
+            PORYAAAA_MGBA_SOURCE_POLICY="authoritative-pinned-source")
+    else()
+        message(WARNING
+            "PORYAAAA_MGBA_ROOT installed-library mode is non-authoritative and frontend-only. "
+            "Native parity capture requires PORYAAAA_MGBA_SOURCE.")
+        find_path(PORYAAAA_MGBA_INCLUDE_DIR mgba/core/core.h
+            HINTS
+                "${PORYAAAA_MGBA_ROOT}/include"
+                /usr/local/include
+                /opt/homebrew/include)
+        find_library(PORYAAAA_MGBA_LIBRARY mgba
+            HINTS
+                "${PORYAAAA_MGBA_ROOT}/lib"
+                /usr/local/lib
+                /opt/homebrew/lib)
+        if(NOT PORYAAAA_MGBA_INCLUDE_DIR OR NOT PORYAAAA_MGBA_LIBRARY)
+            message(FATAL_ERROR
+                "PORYAAAA_BUILD_MGBA_REFERENCE requires PORYAAAA_MGBA_SOURCE or an mGBA development install")
+        endif()
+        target_include_directories(mgba_mp2k_reference PRIVATE "${PORYAAAA_MGBA_INCLUDE_DIR}")
+        target_link_libraries(mgba_mp2k_reference PRIVATE "${PORYAAAA_MGBA_LIBRARY}")
+        target_compile_definitions(mgba_mp2k_reference PRIVATE
+            PORYAAAA_MGBA_BASE_REVISION="unverified-installed-library"
+            PORYAAAA_MGBA_OBSERVATION_PATCH_SHA256="unverified-installed-library"
+            PORYAAAA_MGBA_SOURCE_DIRTY=0
+            PORYAAAA_MGBA_NATIVE_CAPTURE_AVAILABLE=0
+            PORYAAAA_MGBA_SOURCE_POLICY="non-authoritative-installed-library")
+    endif()
+
     if(NOT MSVC)
         target_link_libraries(mgba_mp2k_reference PRIVATE m)
     endif()
+endif()
+
+if(PORYAAAA_BUILD_FRONTEND_PARITY_TESTS)
+    if(NOT PORYAAAA_MGBA_0105_SOURCE)
+        message(FATAL_ERROR
+            "PORYAAAA_BUILD_FRONTEND_PARITY_TESTS requires PORYAAAA_MGBA_0105_SOURCE")
+    endif()
+
+    get_filename_component(_mgba0105_source "${PORYAAAA_MGBA_0105_SOURCE}" REALPATH)
+    if(NOT EXISTS "${_mgba0105_source}/CMakeLists.txt" OR
+       NOT EXISTS "${_mgba0105_source}/.git")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be an untouched mGBA 0.10.5 git checkout")
+    endif()
+    if(NOT EXISTS "${_mgba0105_source}/src/third-party/blip_buf/blip_buf.c" OR
+       NOT EXISTS "${_mgba0105_source}/include/mgba/core/blip_buf.h")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE is missing mGBA 0.10.5 blip_buf")
+    endif()
+
+    find_package(Git REQUIRED)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" rev-parse HEAD
+        RESULT_VARIABLE _mgba0105_revision_status
+        OUTPUT_VARIABLE _mgba0105_revision
+        ERROR_VARIABLE _mgba0105_revision_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT "${_mgba0105_revision_status}" STREQUAL "0" OR
+       NOT "${_mgba0105_revision}" STREQUAL "${PORYAAAA_MGBA_0105_EXPECTED_REVISION}")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be at ${PORYAAAA_MGBA_0105_EXPECTED_REVISION}; "
+            "got '${_mgba0105_revision}' (${_mgba0105_revision_error})")
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" diff --quiet HEAD --
+        RESULT_VARIABLE _mgba0105_dirty_status
+        ERROR_VARIABLE _mgba0105_dirty_error)
+    if(NOT "${_mgba0105_dirty_status}" STREQUAL "0")
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must be clean: ${_mgba0105_dirty_error}")
+    endif()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${_mgba0105_source}" ls-files --others --exclude-standard
+        RESULT_VARIABLE _mgba0105_untracked_status
+        OUTPUT_VARIABLE _mgba0105_untracked_paths
+        ERROR_VARIABLE _mgba0105_untracked_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT "${_mgba0105_untracked_status}" STREQUAL "0" OR _mgba0105_untracked_paths)
+        message(FATAL_ERROR
+            "PORYAAAA_MGBA_0105_SOURCE must have no untracked paths: "
+            "${_mgba0105_untracked_paths}${_mgba0105_untracked_error}")
+    endif()
+
+    # Compile untouched upstream code without project warning/Werror settings.
+    # These private renames keep every mGBA blip symbol out of production targets.
+    add_library(poryaaaa_mgba0105_blip_reference STATIC
+        "${_mgba0105_source}/src/third-party/blip_buf/blip_buf.c")
+    set_property(TARGET poryaaaa_mgba0105_blip_reference PROPERTY C_STANDARD 11)
+    set_property(TARGET poryaaaa_mgba0105_blip_reference PROPERTY C_STANDARD_REQUIRED ON)
+    target_include_directories(poryaaaa_mgba0105_blip_reference PRIVATE
+        "${_mgba0105_source}/include")
+    target_compile_definitions(poryaaaa_mgba0105_blip_reference PRIVATE
+        blip_new=poryaaaa_mgba0105_blip_new
+        blip_set_rates=poryaaaa_mgba0105_blip_set_rates
+        blip_clear=poryaaaa_mgba0105_blip_clear
+        blip_add_delta=poryaaaa_mgba0105_blip_add_delta
+        blip_add_delta_fast=poryaaaa_mgba0105_blip_add_delta_fast
+        blip_clocks_needed=poryaaaa_mgba0105_blip_clocks_needed
+        blip_end_frame=poryaaaa_mgba0105_blip_end_frame
+        blip_samples_avail=poryaaaa_mgba0105_blip_samples_avail
+        blip_read_samples=poryaaaa_mgba0105_blip_read_samples
+        blip_delete=poryaaaa_mgba0105_blip_delete)
+
+    add_executable(poryaaaa_frontend_parity_tests
+        test/test_hw_resample_parity.c)
+    set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD 11)
+    set_property(TARGET poryaaaa_frontend_parity_tests PROPERTY C_STANDARD_REQUIRED ON)
+    poryaaaa_enable_msvc_c_atomics(poryaaaa_frontend_parity_tests)
+    poryaaaa_enable_project_warnings(poryaaaa_frontend_parity_tests)
+    target_include_directories(poryaaaa_frontend_parity_tests PRIVATE plugin test)
+    target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE
+        hw_audio
+        poryaaaa_mgba0105_blip_reference)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_frontend_parity_tests PRIVATE m)
+    endif()
+    add_test(NAME poryaaaa_frontend_parity_tests COMMAND poryaaaa_frontend_parity_tests)
 endif()
 
 # ---- Headless VBA-M libretro reference recorder ----
@@ -441,14 +738,17 @@ endif()
 
 add_executable(poryaaaa_unit_tests
     test/test_engine.c
+    test/test_m4a_v2.c
+    test/test_porydaw_engine.c
+    plugin/m4a_engine.c
     test/test_gui_assets.cpp
     test/test_hw_mix.c
     test/test_recorder_core.cpp
     test/test_voicegroup_loader.c
+    test/test_hw_audio_contracts.c
     ${PORYAAAA_VOICEGROUP_CORE_PARITY_SOURCES}
-    plugin/m4a_engine_recorder.cpp
+    plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
-    ${ENGINE_SOURCES}
 )
 target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
@@ -474,8 +774,7 @@ endif()
 # ---- Engine lifecycle/leak harness ----
 add_executable(poryaaaa_engine_lifecycle
     test/test_engine_lifecycle.c
-    plugin/m4a_engine_recorder.cpp
-    ${ENGINE_SOURCES}
+    plugin/m4a_recorder.cpp
 )
 target_compile_features(poryaaaa_engine_lifecycle PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_engine_lifecycle)
@@ -490,10 +789,195 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_engine_lifecycle PRIVATE m)
 endif()
 
-# ---- v2 link wiring ----
+# ---- Direct runtime link wiring: M4ADriver + HwAudio ----
 set(_PORYAAAA_V2_TARGETS poryaaaa poryaaaa_test poryaaaa_render
                          poryaaaa_unit_tests poryaaaa_engine_lifecycle)
 
 foreach(_tgt IN LISTS _PORYAAAA_V2_TARGETS)
     target_link_libraries(${_tgt} PRIVATE m4a_driver hw_audio)
 endforeach()
+# These product and test runtimes link the direct driver/chip pair, never a
+# public engine wrapper. Its canonical render sequence is documented in
+# plugin/hw_audio/hw_audio.h.
+
+# Link-graph gates keep shipping targets free of trace parser, scheduler,
+# replay, writer, and trace-runtime objects. They inspect CMake's resolved
+# target properties rather than requiring a built artifact.
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_default_trace_link_graph.cmake"
+    CONTENT [=[
+set(_default_links
+    "$<TARGET_PROPERTY:poryaaaa,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:poryaaaa_render,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:poryaaaa_unit_tests,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:hw_audio,LINK_LIBRARIES>"
+    "$<TARGET_PROPERTY:m4a_driver,LINK_LIBRARIES>")
+set(_default_sources
+    "$<TARGET_PROPERTY:poryaaaa,SOURCES>"
+    "$<TARGET_PROPERTY:poryaaaa_render,SOURCES>"
+    "$<TARGET_PROPERTY:poryaaaa_unit_tests,SOURCES>"
+    "$<TARGET_PROPERTY:hw_audio,SOURCES>"
+    "$<TARGET_PROPERTY:m4a_driver,SOURCES>")
+foreach(_surface IN LISTS _default_links _default_sources)
+    if(_surface MATCHES "poryaaaa_hw_audio_trace_tool|poryaaaa_m4a_trace_writer|hw_audio_trace_(text|schedule)\\.c|m4a_driver_trace\\.c|poryaaaa_audio_trace|poryaaaa_driver_trace|mgba_audio_trace_replay|poryaaaa_mgba0105_blip_reference|mgba_mp2k_reference|(^|;)mgba(;|$)|src/third-party/blip_buf/blip_buf\\.c|tools/mgba-reference/|atomic_publish|driver_compare|native_compare|waveform_compare")
+        message(FATAL_ERROR "Default target graph contains trace or opt-in mGBA reference tooling: ${_surface}")
+    endif()
+endforeach()
+]=])
+add_test(NAME poryaaaa_default_trace_link_graph
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_default_trace_link_graph.cmake")
+
+if(PORYAAAA_BUILD_TRACE_TOOLS)
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_opt_in_trace_link_graph.cmake"
+        CONTENT [=[
+set(_audio_trace_links "$<TARGET_PROPERTY:poryaaaa_audio_trace,LINK_LIBRARIES>")
+set(_driver_trace_links "$<TARGET_PROPERTY:poryaaaa_driver_trace,LINK_LIBRARIES>")
+set(_trace_test_links "$<TARGET_PROPERTY:poryaaaa_audio_trace_tool_tests,LINK_LIBRARIES>")
+if(NOT _audio_trace_links MATCHES "(^|;)poryaaaa_hw_audio_trace_tool($|;)" OR
+   _audio_trace_links MATCHES "(^|;)hw_audio($|;)")
+    message(FATAL_ERROR "poryaaaa_audio_trace must link only the trace-enabled HwAudio variant")
+endif()
+if(NOT _driver_trace_links MATCHES "(^|;)poryaaaa_m4a_trace_writer($|;)")
+    message(FATAL_ERROR "poryaaaa_driver_trace must link poryaaaa_m4a_trace_writer")
+endif()
+if(NOT _trace_test_links MATCHES "(^|;)poryaaaa_hw_audio_trace_tool($|;)" OR
+   _trace_test_links MATCHES "(^|;)hw_audio($|;)")
+    message(FATAL_ERROR "poryaaaa_audio_trace_tool_tests must link only the trace-enabled HwAudio variant")
+endif()
+foreach(_target_links IN ITEMS _audio_trace_links _driver_trace_links _trace_test_links)
+    if("${${_target_links}}" MATCHES "(^|;)hw_audio(;|$)" AND
+       "${${_target_links}}" MATCHES "(^|;)poryaaaa_hw_audio_trace_tool(;|$)")
+        message(FATAL_ERROR "A trace tool links both HwAudio variants: ${${_target_links}}")
+    endif()
+endforeach()
+]=])
+    add_test(NAME poryaaaa_opt_in_trace_link_graph
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_opt_in_trace_link_graph.cmake")
+endif()
+# ---- PCM mixer oracle fixture runner ----
+set(PORYAAAA_PCM_MIXER_ORACLE_SCRIPT
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/mgba-reference/pcm-mixer-oracle/validate_pcm_mixer_oracles.py")
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    set(PORYAAAA_PCM_MIXER_ORACLE_COMMAND
+        "${Python3_EXECUTABLE}" "${PORYAAAA_PCM_MIXER_ORACLE_SCRIPT}")
+else()
+    set(PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT
+        "${CMAKE_CURRENT_BINARY_DIR}/poryaaaa_pcm_mixer_python_required.cmake")
+    file(WRITE "${PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT}"
+        "message(FATAL_ERROR \"PCM mixer oracle requires a Python 3 interpreter; configure with -DPython3_EXECUTABLE=/path/to/python3\")\n")
+    set(PORYAAAA_PCM_MIXER_ORACLE_COMMAND
+        "${CMAKE_COMMAND}" -P "${PORYAAAA_PCM_MIXER_PYTHON_REQUIRED_SCRIPT}")
+endif()
+set(PORYAAAA_PCM_MIXER_FIXTURE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/m4a_pcm")
+file(GLOB_RECURSE PORYAAAA_PCM_MIXER_FIXTURE_FILES CONFIGURE_DEPENDS
+    "${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}/*")
+if(NOT PORYAAAA_PCM_MIXER_FIXTURE_FILES)
+    message(FATAL_ERROR
+        "The checked-in PCM mixer fixture tree is empty: ${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}")
+endif()
+
+add_executable(poryaaaa_pcm_mixer_fixture_runner
+    test/test_pcm_mixer_fixture_runner.c
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_fixture_runner)
+target_link_libraries(poryaaaa_pcm_mixer_fixture_runner PRIVATE m4a_driver)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_pcm_mixer_fixture_runner PRIVATE m)
+endif()
+
+if(Python3_Interpreter_FOUND)
+    add_custom_target(poryaaaa_pcm_mixer_oracle_tests
+        DEPENDS
+            poryaaaa_pcm_mixer_fixture_runner
+            ${PORYAAAA_PCM_MIXER_FIXTURE_FILES}
+    )
+else()
+    add_custom_target(poryaaaa_pcm_mixer_oracle_tests
+        COMMAND ${PORYAAAA_PCM_MIXER_ORACLE_COMMAND}
+        DEPENDS
+            poryaaaa_pcm_mixer_fixture_runner
+            ${PORYAAAA_PCM_MIXER_FIXTURE_FILES}
+        VERBATIM
+    )
+endif()
+add_test(NAME poryaaaa_pcm_mixer_oracle
+    COMMAND
+        ${PORYAAAA_PCM_MIXER_ORACLE_COMMAND}
+        --fixtures "${PORYAAAA_PCM_MIXER_FIXTURE_ROOT}"
+        --runner "$<TARGET_FILE:poryaaaa_pcm_mixer_fixture_runner>"
+)
+set_tests_properties(poryaaaa_pcm_mixer_oracle PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+# ---- PCM mixer no-allocation gate ----
+add_library(poryaaaa_pcm_mixer_no_alloc_driver OBJECT
+    ${PORYAAAA_M4A_DRIVER_SOURCES}
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_no_alloc_driver)
+if(MSVC)
+    target_compile_options(poryaaaa_pcm_mixer_no_alloc_driver PRIVATE
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/test/test_allocator_wrap.h"
+    )
+elseif(UNIX)
+    target_compile_options(poryaaaa_pcm_mixer_no_alloc_driver PRIVATE
+        -include
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/test_allocator_wrap.h"
+    )
+else()
+    message(FATAL_ERROR
+        "poryaaaa_pcm_mixer_no_alloc_tests requires Darwin, ELF, or MSVC allocator interception")
+endif()
+
+# Keep the wrapper in a separately compiled object: force-including its header
+# would redirect the CRT calls that the wrapper must delegate to.
+add_library(poryaaaa_pcm_mixer_allocator OBJECT
+    test/test_allocator_wrap.c
+)
+poryaaaa_enable_msvc_c_atomics(poryaaaa_pcm_mixer_allocator)
+poryaaaa_enable_project_warnings(poryaaaa_pcm_mixer_allocator)
+
+add_executable(poryaaaa_pcm_mixer_no_alloc_tests
+    test/test_pcm_mixer_no_alloc.c
+    $<TARGET_OBJECTS:poryaaaa_pcm_mixer_no_alloc_driver>
+    $<TARGET_OBJECTS:poryaaaa_pcm_mixer_allocator>
+)
+poryaaaa_configure_pcm_gate_target(poryaaaa_pcm_mixer_no_alloc_tests)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_pcm_mixer_no_alloc_tests PRIVATE m)
+endif()
+add_test(NAME poryaaaa_pcm_mixer_no_alloc
+    COMMAND "$<TARGET_FILE:poryaaaa_pcm_mixer_no_alloc_tests>"
+)
+
+# ---- C plugin state compatibility gate ----
+add_executable(poryaaaa_m4a_state_compat_tests
+    test/test_m4a_state_compat.c
+    test/test_m4a_state_compat_main.c
+    plugin/m4a_plugin.c
+    plugin/m4a_plugin_state.c
+    plugin/m4a_params.c
+    plugin/voicegroup/project_asset_index.c
+    plugin/m4a_recorder.cpp
+)
+target_compile_features(poryaaaa_m4a_state_compat_tests PRIVATE cxx_std_23)
+poryaaaa_configure_pcm_gate_target(poryaaaa_m4a_state_compat_tests)
+target_link_libraries(poryaaaa_m4a_state_compat_tests PRIVATE
+    clap
+    m4a_driver
+    hw_audio
+    voicegroup_loader
+    recorder
+)
+if(NOT MSVC)
+    target_link_libraries(poryaaaa_m4a_state_compat_tests PRIVATE m)
+endif()
+add_test(NAME poryaaaa_m4a_state_compat
+    COMMAND "$<TARGET_FILE:poryaaaa_m4a_state_compat_tests>"
+)
+set_tests_properties(poryaaaa_m4a_state_compat PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)

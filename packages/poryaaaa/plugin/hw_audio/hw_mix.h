@@ -90,22 +90,18 @@ extern "C"
      * SOUNDBIAS.  Other events are silently ignored (PSG/PCM handle theirs). */
     void hw_mix_apply_event(HwMixBus* mix, const M4ARegWrite* ev);
 
-    /* Combine the six per-channel mono buffers into stereo with full
-     * SOUNDCNT_L/H routing+scaling + SOUNDBIAS bias-add + clip pipeline.
-     * Each PSG input is unipolar in [0, env_vol/15] or equivalent; each
-     * PCM input is dipolar in approximately [-1, +1] (s8 / 128.0).
-     *
-     * Outputs are WRITTEN (not summed) to outL/outR.  Pass NULL for any
-     * input buffer to treat that channel as silent. */
+    /* Combine native PSG values [0, 15] and signed FIFO bytes through
+     * mGBA's integer routing, volume, SOUNDBIAS, clipping, and PCM16 stages.
+     * Outputs are overwritten. Pass NULL for any silent input or unused side. */
     void hw_mix_render(const HwMixBus* mix,
-                       const float* in_sq1,
-                       const float* in_sq2,
-                       const float* in_wave,
-                       const float* in_noise,
-                       const float* in_dma_a,
-                       const float* in_dma_b,
-                       float* outL,
-                       float* outR,
+                       const uint8_t* in_sq1,
+                       const uint8_t* in_sq2,
+                       const uint8_t* in_wave,
+                       const uint8_t* in_noise,
+                       const int8_t* in_dma_a,
+                       const int8_t* in_dma_b,
+                       int16_t* outL,
+                       int16_t* outR,
                        int frames);
 
 #ifdef __cplusplus

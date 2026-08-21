@@ -1,0 +1,89 @@
+{
+  "schema": "poryaaaa.pcm-mixer-case-format",
+  "version": 1,
+  "descriptor": {
+    "magic": {"ipatix": "IPFD", "sappy": "SPFD"},
+    "version": 1,
+    "header_size": 96,
+    "wave_header_size": 16,
+    "frame_size": 96,
+    "logical_ring_size": 288,
+    "fields": [
+      {"name": "block_count", "symbol": "FIXTURE_BLOCK_COUNT", "offset": 12, "type": "u32", "minimum": 1, "maximum": 255},
+      {"name": "voice_count", "symbol": "FIXTURE_VOICE_COUNT", "offset": 16, "type": "u32", "minimum": 0, "maximum": 15},
+      {"name": "master_volume", "symbol": "FIXTURE_MASTER_VOLUME", "offset": 20, "type": "u8", "minimum": 0, "maximum": 15},
+      {"name": "reverb", "symbol": "FIXTURE_REVERB", "offset": 21, "type": "u8", "minimum": 0, "maximum": 127},
+      {"name": "release_block", "symbol": "FIXTURE_RELEASE_BLOCK", "offset": 22, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "flags", "symbol": "FIXTURE_FLAGS", "offset": 23, "type": "u8", "minimum": 0, "maximum": 3},
+      {"name": "step", "symbol": "FIXTURE_STEP", "offset": 24, "type": "u32", "minimum": 0, "maximum": 4294967295},
+      {"name": "start_segment", "symbol": "FIXTURE_START_SEGMENT", "offset": 32, "type": "u32", "minimum": 0, "maximum": 2},
+      {"name": "start_offset", "symbol": "FIXTURE_START_OFFSET", "offset": 36, "type": "u32", "minimum": 0, "maximum": 4294967295},
+      {"name": "wave_type", "symbol": "FIXTURE_WAVE_TYPE", "offset": 40, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "wave_status", "symbol": "FIXTURE_WAVE_STATUS", "offset": 41, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "channel_mode", "symbol": "FIXTURE_CHANNEL_MODE", "offset": 42, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "voice_count_byte", "symbol": "FIXTURE_VOICE_COUNT", "offset": 43, "type": "u8", "minimum": 0, "maximum": 15},
+      {"name": "volume_right", "symbol": "FIXTURE_VOLUME_RIGHT", "offset": 44, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "volume_left", "symbol": "FIXTURE_VOLUME_LEFT", "offset": 45, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "attack", "symbol": "FIXTURE_ATTACK", "offset": 46, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "decay", "symbol": "FIXTURE_DECAY", "offset": 47, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "sustain", "symbol": "FIXTURE_SUSTAIN", "offset": 48, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "release", "symbol": "FIXTURE_RELEASE", "offset": 49, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "echo_volume", "symbol": "FIXTURE_ECHO_VOLUME", "offset": 50, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "echo_length", "symbol": "FIXTURE_ECHO_LENGTH", "offset": 51, "type": "u8", "minimum": 0, "maximum": 255},
+      {"name": "loop_start", "symbol": "FIXTURE_LOOP_START", "offset": 52, "type": "u32", "minimum": 0, "maximum": 4294967295},
+      {"name": "wave_length", "symbol": "FIXTURE_WAVE_LENGTH", "offset": 56, "type": "u32", "minimum": 0, "maximum": 4294967295},
+      {"name": "mix_seed", "symbol": "FIXTURE_MIX_SEED", "offset": 64, "type": "u32", "minimum": 0, "maximum": 4294967295},
+      {"name": "ring_right", "symbol": "FIXTURE_RING_RIGHT", "offset": 68, "type": "u8", "minimum": -128, "maximum": 255},
+      {"name": "ring_left", "symbol": "FIXTURE_RING_LEFT", "offset": 69, "type": "u8", "minimum": -128, "maximum": 255},
+      {"name": "pcm_rate_hz", "symbol": "FIXTURE_PCM_RATE_HZ", "offset": 72, "type": "u32", "minimum": 1, "maximum": 1000000},
+      {"name": "voice_volume", "symbol": "FIXTURE_VOICE_VOLUME", "offset": 76, "type": "u32", "minimum": 0, "maximum": 127}
+    ],
+    "source_only_fields": [
+      {"name": "pattern", "symbol": "FIXTURE_PATTERN", "minimum": 0, "maximum": 6},
+      {"name": "synth_type", "symbol": "FIXTURE_SYNTH_TYPE", "minimum": 0, "maximum": 255}
+    ],
+    "memory_tail": {
+      "marker": "@ PORYAAAA_ROM_TAIL ",
+      "encoding": "lowercase-hex-or-dash",
+      "maximum_bytes": 4096
+    },
+    "offsets": {
+      "magic": 0,
+      "version": 4,
+      "header_size": 6,
+      "frame_size": 8,
+      "logical_ring_size": 28,
+      "wave_data_size": 60,
+      "wave_header": 96,
+      "wave_header_status": 99,
+      "wave_frequency": 100,
+      "wave_loop_start": 104,
+      "wave_header_length": 108,
+      "wave_data": 112
+    }
+  },
+  "case": {
+    "magic": {"ipatix": "IPCA", "sappy": "SPCA"},
+    "version": 1,
+    "header_size": 40,
+    "header_struct": "<4sHHIIQQII",
+    "schedule_struct": "<QII",
+    "schedule_row_size": 16,
+    "offsets": {
+      "magic": 0,
+      "version": 4,
+      "header_size": 6,
+      "descriptor_size": 8,
+      "row_count": 12,
+      "begin_cycle": 16,
+      "end_cycle": 24,
+      "begin_order": 32,
+      "end_order": 36
+    },
+    "schedule_offsets": {
+      "cycle": 0,
+      "order": 8,
+      "address": 12
+    }
+  }
+}

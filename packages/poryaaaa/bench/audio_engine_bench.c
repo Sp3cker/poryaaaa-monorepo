@@ -37,8 +37,33 @@ enum
 {
     BENCH_VOICEGROUP_SIZE = 128,
 };
+/* Map host-frame endpoints into the shared absolute GBA cycle domain. */
+static uint64_t bench_gba_cycles_for_frames(uint64_t frames, uint32_t sample_rate)
+{
+    return frames * M4A_GBA_CYCLES_PER_SECOND / sample_rate;
+}
 
-static const M4ARegWriteBatch EMPTY_BATCH = {NULL, 0};
+/* Form one explicit hardware-event interval for a benchmark host block. */
+static M4ARegWriteBatch bench_event_batch(M4ARegWrite* events, size_t count, uint64_t begin_cycle, uint64_t end_cycle)
+{
+    uint64_t previous_cycle = 0;
+    uint32_t order = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        if (i != 0 && events[i].cycle == previous_cycle)
+            order++;
+        else
+            order = 0;
+        events[i].order = order;
+        previous_cycle = events[i].cycle;
+    }
+    return (M4ARegWriteBatch){
+        .events = events,
+        .count = count,
+        .begin_cycle = begin_cycle,
+        .end_cycle = end_cycle,
+    };
+}
 
 /* Parse a positive integer option and reject partial strings. */
 static bool parse_positive_int(const char* text, int* out)
@@ -150,19 +175,6 @@ static double consume_audio(const float* left, const float* right, int frames)
     return sum;
 }
 
-/* Fill a deterministic DirectSound ring with non-silent PCM test material. */
-static void fill_pcm_ring(M4APcmRing* ring)
-{
-    memset(ring, 0, sizeof(*ring));
-    ring->pcm_rate_hz = M4A_PCM_RATE_HZ;
-    ring->write_cursor = M4A_PCM_DMA_BUF_SIZE;
-    for (int i = 0; i < M4A_PCM_DMA_BUF_SIZE; i++)
-    {
-        ring->ring_a[i] = (int8_t)((i * 5) - 127);
-        ring->ring_b[i] = (int8_t)(127 - (i * 3));
-    }
-}
-
 /* Render chip-only SQ2 so Instruments can isolate PSG/chip cost. */
 static bool run_chip_sq2(int sample_rate, int frames, int block, float* left, float* right, BenchState* state)
 {
@@ -171,21 +183,25 @@ static bool run_chip_sq2(int sample_rate, int frames, int block, float* left, fl
         return false;
 
     M4ARegWrite setup[] = {
-        {0, M4A_REG_NR52, 0x80},
-        {0, M4A_REG_NR50, 0x77},
-        {0, M4A_REG_NR51, 0x22},
-        {0, M4A_REG_SOUNDCNT_H, 0x02},
-        {0, M4A_REG_NR21, 0x80},
-        {0, M4A_REG_NR22, 0xF8},
-        {0, M4A_REG_NR23, 1700 & 0xFF},
-        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7)},
+        {0, M4A_REG_NR52, 0x80, 0},
+        {0, M4A_REG_NR50, 0x77, 1},
+        {0, M4A_REG_NR51, 0x22, 2},
+        {0, M4A_REG_SOUNDCNT_H, 0x02, 3},
+        {0, M4A_REG_NR21, 0x80, 4},
+        {0, M4A_REG_NR22, 0xF8, 5},
+        {0, M4A_REG_NR23, 1700 & 0xFF, 6},
+        {0, M4A_REG_NR24, 0x80 | ((1700 >> 8) & 7), 7},
     };
-    M4ARegWriteBatch first = {setup, sizeof(setup) / sizeof(setup[0])};
 
     for (int done = 0; done < frames;)
     {
         int n = frames - done < block ? frames - done : block;
-        hw_audio_render_events(hw, done == 0 ? &first : &EMPTY_BATCH, NULL, left, right, n);
+        M4ARegWriteBatch batch =
+            bench_event_batch(done == 0 ? setup : NULL,
+                              done == 0 ? sizeof(setup) / sizeof(setup[0]) : 0,
+                              bench_gba_cycles_for_frames((uint64_t)done, (uint32_t)sample_rate),
+                              bench_gba_cycles_for_frames((uint64_t)(done + n), (uint32_t)sample_rate));
+        hw_audio_render_events(hw, &batch, left, right, n);
         state->sink += consume_audio(left, right, n);
         done += n;
     }
@@ -201,18 +217,22 @@ static bool run_chip_pcm(int sample_rate, int frames, int block, float* left, fl
     if (!hw)
         return false;
 
-    M4APcmRing ring;
-    fill_pcm_ring(&ring);
-
     M4ARegWrite setup[] = {
-        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 2) | (1u << 3)},
+        {0, M4A_REG_SOUNDCNT_H, (1u << 8) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 2) | (1u << 3), 0},
+        {0, M4A_REG_FIFO_A, 0x7F40C000u, 1},
+        {0, M4A_REG_FIFO_B, 0x8040C000u, 2},
+        {0, M4A_REG_TIMER_0, 0, 3},
     };
-    M4ARegWriteBatch first = {setup, sizeof(setup) / sizeof(setup[0])};
 
     for (int done = 0; done < frames;)
     {
         int n = frames - done < block ? frames - done : block;
-        hw_audio_render_events(hw, done == 0 ? &first : &EMPTY_BATCH, &ring, left, right, n);
+        M4ARegWriteBatch batch =
+            bench_event_batch(done == 0 ? setup : NULL,
+                              done == 0 ? sizeof(setup) / sizeof(setup[0]) : 0,
+                              bench_gba_cycles_for_frames((uint64_t)done, (uint32_t)sample_rate),
+                              bench_gba_cycles_for_frames((uint64_t)(done + n), (uint32_t)sample_rate));
+        hw_audio_render_events(hw, &batch, left, right, n);
         state->sink += consume_audio(left, right, n);
         done += n;
     }
@@ -256,7 +276,7 @@ static bool run_driver_psg(int sample_rate, int frames, int block, float* left, 
     {
         int n = frames - done < block ? frames - done : block;
         m4a_advance(drv, n);
-        hw_audio_render_events(hw, m4a_get_pending_writes(drv), m4a_get_pcm_ring(drv), left, right, n);
+        hw_audio_render_events(hw, m4a_get_pending_writes(drv), left, right, n);
         m4a_consume_writes(drv);
         state->sink += consume_audio(left, right, n);
         done += n;

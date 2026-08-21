@@ -4,201 +4,113 @@
 
 enum
 {
+    HW_PCM_FIFO_WORDS = 8,
     HW_PCM_SOUND_A_FIFO_RESET = 0x0800,
     HW_PCM_SOUND_B_FIFO_RESET = 0x8000,
 };
 
-static void hw_pcm_reset_timeline(HwPcm* pcm)
+static void hw_pcm_fifo_reset(HwPcmFifo* fifo)
 {
-    pcm->pcm_pos = 0.0;
-    pcm->pcm_last_int_a = -1;
-    pcm->pcm_last_int_b = -1;
-    pcm->held_pcm_a = 0;
-    pcm->held_pcm_b = 0;
-    pcm->quirk_pos = 0.0;
-    pcm->quirk_last_int_a = -1;
-    pcm->quirk_last_int_b = -1;
-    pcm->held_quirk_a = 0;
-    pcm->held_quirk_b = 0;
-    pcm->pcm_published_through = 0;
-    pcm->publish_seen = false;
+    fifo->read_index = 0;
+    fifo->write_index = 0;
 }
 
-void hw_pcm_init(HwPcm* pcm, float render_rate)
+void hw_pcm_init(HwPcm* pcm, uint32_t unused_render_rate_hz)
 {
-    memset(pcm, 0, sizeof(*pcm));
-    pcm->render_rate = render_rate;
-    /* Standalone reset default follows SOUNDBIAS sampling_cycle = 0.
-     * HwAudio immediately overrides this from the active mix state. */
-    pcm->quirk_rate = 32768;
-    /* Negative sentinels force the first render sample to populate
-     * held_pcm/held_quirk from ring[0] / pcm head before any output
-     * is produced.  Without this, the read-on-integer-crossing model
-     * would skip index 0 entirely. */
-    hw_pcm_reset_timeline(pcm);
-}
-
-void hw_pcm_set_render_rate(HwPcm* pcm, float render_rate)
-{
-    pcm->render_rate = render_rate;
-}
-
-void hw_pcm_set_quirk_rate(HwPcm* pcm, int quirk_rate)
-{
-    if (quirk_rate <= 0)
+    (void)unused_render_rate_hz;
+    if (!pcm)
         return;
-    pcm->quirk_rate = quirk_rate;
+    memset(pcm, 0, sizeof(*pcm));
+    pcm->route_a = true;
+    pcm->route_b = true;
+    pcm->master_enabled = true;
+}
+
+void hw_pcm_fifo_write_word(HwPcmFifo* fifo, uint32_t word)
+{
+    if (!fifo)
+        return;
+    fifo->words[fifo->write_index] = word;
+    fifo->write_index = (uint8_t)((fifo->write_index + 1u) % HW_PCM_FIFO_WORDS);
+}
+
+static void hw_pcm_clock_fifo(HwPcmFifo* fifo)
+{
+    if (!fifo->internal_remaining && fifo->read_index != fifo->write_index)
+    {
+        fifo->internal_sample = fifo->words[fifo->read_index];
+        fifo->read_index = (uint8_t)((fifo->read_index + 1u) % HW_PCM_FIFO_WORDS);
+        fifo->internal_remaining = 4;
+    }
+
+    /* mGBA exposes the low byte, then shifts the little-endian word.  Once
+     * four bytes drain, an empty timer leaves the zeroed shift register
+     * audible rather than retaining a GBATEK-style last-byte hold. */
+    fifo->held_sample = (int8_t)fifo->internal_sample;
+    if (fifo->internal_remaining)
+    {
+        fifo->internal_sample >>= 8u;
+        fifo->internal_remaining--;
+    }
+}
+
+void hw_pcm_clock_timer(HwPcm* pcm, uint8_t timer)
+{
+    if (!pcm || timer > 1u || !pcm->master_enabled)
+        return;
+    if (pcm->route_a && pcm->timer_a == timer)
+        hw_pcm_clock_fifo(&pcm->fifo_a);
+    if (pcm->route_b && pcm->timer_b == timer)
+        hw_pcm_clock_fifo(&pcm->fifo_b);
 }
 
 void hw_pcm_apply_event(HwPcm* pcm, const M4ARegWrite* ev)
 {
     if (!pcm || !ev)
         return;
-    /* PCM_PUBLISH advances the publish gate by this vblank's active ring
-     * sample count.  Older producers use zero, which retains the canonical
-     * default geometry. */
-    if (ev->reg == M4A_REG_PCM_PUBLISH)
+
+    switch (ev->reg)
     {
-        uint32_t samples = ev->value ? ev->value : M4A_PCM_SAMPLES_PER_VBLANK;
-        pcm->pcm_published_through += samples;
-        pcm->publish_seen = true;
-    }
-    if (ev->reg == M4A_REG_PCM_RESET)
-        hw_pcm_reset_timeline(pcm);
-    if (ev->reg == M4A_REG_SOUNDCNT_H)
-    {
+    case M4A_REG_FIFO_A:
+        hw_pcm_fifo_write_word(&pcm->fifo_a, ev->value);
+        break;
+    case M4A_REG_FIFO_B:
+        hw_pcm_fifo_write_word(&pcm->fifo_b, ev->value);
+        break;
+    case M4A_REG_TIMER_0:
+        hw_pcm_clock_timer(pcm, 0);
+        break;
+    case M4A_REG_TIMER_1:
+        hw_pcm_clock_timer(pcm, 1);
+        break;
+    case M4A_REG_SOUNDCNT_H:
+        pcm->timer_a = (uint8_t)((ev->value >> 10u) & 1u);
+        pcm->timer_b = (uint8_t)((ev->value >> 14u) & 1u);
+        pcm->route_a = (ev->value & 0x0300u) != 0;
+        pcm->route_b = (ev->value & 0x3000u) != 0;
         if (ev->value & HW_PCM_SOUND_A_FIFO_RESET)
-        {
-            pcm->held_pcm_a = 0;
-            pcm->held_quirk_a = 0;
-            pcm->pcm_last_int_a = (int64_t)pcm->pcm_pos;
-            pcm->quirk_last_int_a = (int64_t)pcm->quirk_pos;
-        }
+            hw_pcm_fifo_reset(&pcm->fifo_a);
         if (ev->value & HW_PCM_SOUND_B_FIFO_RESET)
-        {
-            pcm->held_pcm_b = 0;
-            pcm->held_quirk_b = 0;
-            pcm->pcm_last_int_b = (int64_t)pcm->pcm_pos;
-            pcm->quirk_last_int_b = (int64_t)pcm->quirk_pos;
-        }
+            hw_pcm_fifo_reset(&pcm->fifo_b);
+        break;
+    case M4A_REG_NR52:
+        pcm->master_enabled = (ev->value & 0x80u) != 0;
+        break;
+    default:
+        break;
     }
-    /* SOUNDCNT_H DMA routing/vol bits land on HwMixBus, not here. */
 }
 
-void hw_pcm_render(HwPcm* pcm, const M4APcmRing* ring, float* out_a, float* out_b, int frames)
+void hw_pcm_render(const HwPcm* pcm, int8_t* out_a, int8_t* out_b, int frames)
 {
-    if (frames <= 0 || !ring)
-    {
-        if (out_a)
-            memset(out_a, 0, (size_t)frames * sizeof(float));
-        if (out_b)
-            memset(out_b, 0, (size_t)frames * sizeof(float));
+    if (frames <= 0)
         return;
-    }
-    /* Sanity gate: only bail when rates are unusable.  Notably do NOT
-     * bail on `ring->write_cursor == 0` — the per-sample loop is the
-     * single source of truth for advancing pcm_pos and quirk_pos, and
-     * skipping it here on the first few render calls (before the
-     * driver's first vblank fires) leaves the clocks out of sync with
-     * the cumulative input/output count and breaks chunk-size
-     * invariance.  When write_cursor is 0 the publish gate naturally
-     * blocks every read (pcm_published_through is also 0), so output
-     * stays silent through the loop without an early return. */
-    if (pcm->render_rate <= 0.0f || pcm->quirk_rate <= 0)
-    {
-        if (out_a)
-            memset(out_a, 0, (size_t)frames * sizeof(float));
-        if (out_b)
-            memset(out_b, 0, (size_t)frames * sizeof(float));
-        return;
-    }
-
-    /* Two-stage drain (§12 step 5, plan §6b):
-     *
-     *   M4APcmRing  ──[pcm_rate]──▶  held_pcm   (HwDmaToFifo head byte)
-     *                                   │
-     *                              ──[quirk_rate]──▶  held_quirk  (HwFifoDrain
-     *                                                              quirk-rate
-     *                                                              snapshot)
-     *                                                     │
-     *                                                ──[render_rate]──▶ output
-     *
-     * Per render sample: snapshot the CURRENT integer position of
-     * each clock and re-populate the held byte if that integer has
-     * advanced since the last sample.  The position then advances
-     * for the next sample.  This "read-at-current-position" model is
-     * what makes the first sample correctly read ring[0] (vs an
-     * "advance-then-check-crossing" model that would skip index 0).
-     *
-     * For Pokemon Emerald (pcm = 13379 Hz, quirk = 32768 Hz) this
-     * collapses behaviorally to a single S&H — the quirk cadence is
-     * far above the pcm cadence, so every quirk tick re-snapshots
-     * essentially the same head byte until pcm advances.  For
-     * ROMhacks pushing pcm above quirk Nyquist, the quirk-rate
-     * S&H acts as a low-pass at quirk/2, matching real DAC cadence. */
-    uint32_t pcm_rate_hz = ring->pcm_rate_hz ? ring->pcm_rate_hz : M4A_PCM_RATE_HZ;
-    uint32_t pcm_dma_buf_size = ring->pcm_dma_buf_size;
-    if (pcm_dma_buf_size == 0 || pcm_dma_buf_size > M4A_PCM_MAX_DMA_BUF_SIZE)
-        pcm_dma_buf_size = M4A_PCM_DMA_BUF_SIZE;
-    double pcm_step = (double)pcm_rate_hz / (double)pcm->render_rate;
-    double quirk_step = (double)pcm->quirk_rate / (double)pcm->render_rate;
-
-    for (int i = 0; i < frames; i++)
-    {
-        /* HwDmaToFifo: read ring[floor(pcm_pos)] when published, then
-         * advance the pcm-rate clock.  When pcm_int catches up to
-         * pcm_published_through (FIFO underrun — driver hasn't
-         * stamped this vblank yet, or its PUBLISH event lands later
-         * within the current render call), hold the last byte AND
-         * pause pcm_pos advancement.  pcm_pos's documented semantics
-         * is "cumulative pcm-samples consumed" (see field doc), so
-         * pausing it during underrun matches reality: when the FIFO
-         * underflows, no new sample is consumed.  The quirk clock
-         * still ticks (DAC keeps drawing at PCM rate) and presents
-         * the held byte — same as real hardware. */
-        int64_t pcm_int = (int64_t)pcm->pcm_pos;
-        bool pcm_published = (uint64_t)pcm_int < pcm->pcm_published_through;
-        if (pcm_published)
-        {
-            size_t idx = (size_t)pcm_int % pcm_dma_buf_size;
-            if (pcm_int != pcm->pcm_last_int_a)
-            {
-                pcm->held_pcm_a = ring->ring_a[idx];
-                pcm->pcm_last_int_a = pcm_int;
-            }
-            if (pcm_int != pcm->pcm_last_int_b)
-            {
-                pcm->held_pcm_b = ring->ring_b[idx];
-                pcm->pcm_last_int_b = pcm_int;
-            }
-        }
-
-        /* HwFifoDrain: snapshot held_pcm into held_quirk at quirk
-         * cadence (whenever the quirk-rate clock's integer advances). */
-        int64_t quirk_int = (int64_t)pcm->quirk_pos;
-        if (quirk_int != pcm->quirk_last_int_a)
-        {
-            pcm->held_quirk_a = pcm->held_pcm_a;
-            pcm->quirk_last_int_a = quirk_int;
-        }
-        if (quirk_int != pcm->quirk_last_int_b)
-        {
-            pcm->held_quirk_b = pcm->held_pcm_b;
-            pcm->quirk_last_int_b = quirk_int;
-        }
-
-        /* Output: sign-extend s8 → float.  ±127 → ±~1.0.  Routing +
-         * volume code applied by HwMixBus, not here. */
-        if (out_a)
-            out_a[i] = (float)pcm->held_quirk_a / 128.0f;
-        if (out_b)
-            out_b[i] = (float)pcm->held_quirk_b / 128.0f;
-
-        /* Advance the quirk (DAC) clock unconditionally.  Advance
-         * the pcm clock only when the FIFO had data to consume —
-         * see comment above. */
-        if (pcm_published)
-            pcm->pcm_pos += pcm_step;
-        pcm->quirk_pos += quirk_step;
-    }
+    const int8_t sample_a = pcm ? pcm->fifo_a.held_sample : 0;
+    const int8_t sample_b = pcm ? pcm->fifo_b.held_sample : 0;
+    if (out_a)
+        for (int i = 0; i < frames; i++)
+            out_a[i] = sample_a;
+    if (out_b)
+        for (int i = 0; i < frames; i++)
+            out_b[i] = sample_b;
 }

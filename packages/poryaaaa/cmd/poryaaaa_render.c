@@ -30,23 +30,25 @@
 #    pragma GCC diagnostic pop
 #endif
 
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <math.h>
+
 #ifdef __linux__
 #    include <dlfcn.h>
 #endif
-#include "m4a_engine.h"
+
 #include "voicegroup/voicegroup_loader.h"
 
 #include "m4a/m4a_driver.h"
+#include "m4a/m4a_pcm_mixer_mode.h"
 #include "hw_audio/hw_audio.h"
 
-static M4ADriver* g_v2_drv;
-static HwAudio* g_v2_hw;
+static M4ADriver* g_driver;
+static HwAudio* g_hw_audio;
 
 /* ========================================================================
  * WAV writing helpers (matching test_wav_export.c)
@@ -845,10 +847,9 @@ static void print_usage(const char* prog)
             "Audio options:\n"
             "  --song-volume <0-127>       Song master volume (default: 127)\n"
             "  --reverb <0-127>            Reverb amount (default: 0)\n"
-            "  --analog-filter             Enable GBA analog low-pass filter (default: off)\n"
+            "  --pcm-mixer <ipatix|sappy>  PCM mixer implementation (default: ipatix)\n"
             "  --polyphony <1-12>          Max simultaneous PCM channels (default: 5)\n"
             "  --cgb-only                  Disable PCM channels; render CGB voices only\n"
-            "  --sample-rate <hz>          Sample rate in Hz (default: 44100)\n"
             "  --tail <seconds>            Silence after last event, no loop markers (default: 3.0)\n"
             "\n"
             "Loop options (when MIDI contains '[' / ']' text events):\n"
@@ -874,8 +875,8 @@ static void print_usage(const char* prog)
             prog);
 }
 
-/* Dispatch one RenderEvent to the engine */
-static void dispatch_event(M4AEngine* engine, const RenderEvent* ev, int useTrackIndex)
+/* Dispatch one RenderEvent to the driver */
+static void dispatch_event(const RenderEvent* ev, int useTrackIndex)
 {
     /* For Type 1 MIDIs, use the SMF track number as the engine track index
      * so that tracks sharing the same MIDI channel get separate engine tracks.
@@ -887,38 +888,32 @@ static void dispatch_event(M4AEngine* engine, const RenderEvent* ev, int useTrac
     case RENDER_EVENT_TEMPO:
     {
         double bpm = (double)((uint16_t)ev->data0 | ((uint16_t)ev->data1 << 8));
-        m4a_engine_set_tempo_bpm(engine, bpm);
-        m4a_set_tempo_bpm(g_v2_drv, bpm);
+        m4a_set_tempo_bpm(g_driver, bpm);
         break;
     }
     case 0x8: /* Note Off */
-        m4a_engine_note_off(engine, trackIdx, ev->data0);
-        m4a_note_off(g_v2_drv, trackIdx, ev->data0);
+        m4a_note_off(g_driver, trackIdx, ev->data0);
         break;
     case 0x9: /* Note On */
-        m4a_engine_note_on(engine, trackIdx, ev->data0, ev->data1);
-        m4a_note_on(g_v2_drv, trackIdx, ev->data0, ev->data1);
+        m4a_note_on(g_driver, trackIdx, ev->data0, ev->data1);
         break;
     case 0xB: /* Control Change */
-        m4a_engine_cc(engine, trackIdx, ev->data0, ev->data1);
-        m4a_cc(g_v2_drv, trackIdx, ev->data0, ev->data1);
+        m4a_cc(g_driver, trackIdx, ev->data0, ev->data1);
         break;
     case 0xC: /* Program Change */
-        m4a_engine_program_change(engine, trackIdx, ev->data0);
-        m4a_program_change(g_v2_drv, trackIdx, ev->data0);
+        m4a_program_change(g_driver, trackIdx, ev->data0);
         break;
     case 0xE: /* Pitch Bend — convert MIDI 14-bit unsigned to signed -8192..+8191 */
     {
         int16_t bend = (int16_t)(((int)(ev->data1 << 7) | ev->data0) - 8192);
-        m4a_engine_pitch_bend(engine, trackIdx, bend);
-        m4a_pitch_bend(g_v2_drv, trackIdx, bend);
+        m4a_pitch_bend(g_driver, trackIdx, bend);
         break;
     }
     }
 }
 
-/* Render a block of frames, chunked to fit in int */
-static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t startSample, uint64_t frameCount)
+/* Render a block of frames, chunked to fit in int. */
+static void render_frames(float* outL, float* outR, uint64_t startSample, uint64_t frameCount)
 {
     uint64_t remaining = frameCount;
     uint64_t pos = startSample;
@@ -929,11 +924,11 @@ static void render_frames(M4AEngine* engine, float* outL, float* outR, uint64_t 
          * overflows — see m4a_driver.h on M4A_RECOMMENDED_MAX_ADVANCE_FRAMES. */
         uint64_t cap = (uint64_t)M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
         int chunk = (remaining > cap) ? (int)cap : (int)remaining;
-        (void)engine;
-        m4a_advance(g_v2_drv, chunk);
-        hw_audio_render_events(
-            g_v2_hw, m4a_get_pending_writes(g_v2_drv), m4a_get_pcm_ring(g_v2_drv), outL + pos, outR + pos, chunk);
-        m4a_consume_writes(g_v2_drv);
+        m4a_advance(g_driver, chunk);
+        const M4ARegWriteBatch* writes = m4a_get_pending_writes(g_driver);
+        if (outL && outR)
+            hw_audio_render_events(g_hw_audio, writes, outL + pos, outR + pos, chunk);
+        m4a_consume_writes(g_driver);
         pos += (uint64_t)chunk;
         remaining -= (uint64_t)chunk;
     }
@@ -954,7 +949,6 @@ int main(int argc, char* argv[])
     bool doPlay = false;
     int songVolume = 127;
     int reverbAmount = 0;
-    bool analogFilter = false;
     int maxChannels = 5;
     bool cgbOnly = false;
     int sampleRateHz = 44100;
@@ -963,6 +957,7 @@ int main(int argc, char* argv[])
     double fadeoutSeconds = 5.0;
     double totalDurSeconds = -1.0; /* -1 = not set */
     const char* soloName = NULL;
+    M4APcmMixerMode pcmMixerMode = M4A_PCM_MIXER_IPATIX;
 
     for (int i = 3; i < argc; i++)
     {
@@ -994,17 +989,25 @@ int main(int argc, char* argv[])
             if (reverbAmount > 127)
                 reverbAmount = 127;
         }
-        else if (strcmp(argv[i], "--analog-filter") == 0)
+        else if (strcmp(argv[i], "--pcm-mixer") == 0)
         {
-            analogFilter = true;
+            const char* value = (i + 1 < argc) ? argv[++i] : "";
+            if (!m4a_pcm_mixer_parse(value, &pcmMixerMode))
+            {
+                char diagnostic[256];
+                m4a_pcm_mixer_format_diagnostic(diagnostic, sizeof(diagnostic), value);
+                fprintf(stderr, "%s\n", diagnostic);
+                print_usage(argv[0]);
+                return 1;
+            }
         }
         else if (strcmp(argv[i], "--polyphony") == 0 && i + 1 < argc)
         {
             maxChannels = atoi(argv[++i]);
             if (maxChannels < 1)
                 maxChannels = 1;
-            if (maxChannels > MAX_PCM_CHANNELS)
-                maxChannels = MAX_PCM_CHANNELS;
+            if (maxChannels > M4A_MAX_PCM_CHANNELS)
+                maxChannels = M4A_MAX_PCM_CHANNELS;
         }
         else if (strcmp(argv[i], "--cgb-only") == 0)
         {
@@ -1248,19 +1251,24 @@ int main(int argc, char* argv[])
     }
     printf("Voicegroup loaded successfully.\n");
 
-    /* ---- Initialize engine ---- */
-    M4AEngine engine;
-    if (!m4a_engine_init(&engine, (float)sampleRate))
+    /* ---- Initialize audio runtime ---- */
+    const bool renderAudio = outputPath || doPlay;
+    g_driver = m4a_driver_create((float)sampleRate);
+    const bool pcmMixerModeSet = g_driver && m4a_driver_set_pcm_mixer_mode(g_driver, pcmMixerMode);
+    g_hw_audio = renderAudio ? hw_audio_create((float)sampleRate) : NULL;
+    if (!g_driver || !pcmMixerModeSet || (renderAudio && !g_hw_audio))
     {
-        fprintf(stderr, "Failed to initialize M4A engine\n");
+        fprintf(stderr, "Failed to initialize M4A audio runtime\n");
+        hw_audio_destroy(g_hw_audio);
+        g_hw_audio = NULL;
+        m4a_driver_destroy(g_driver);
+        g_driver = NULL;
         voicegroup_free(vg);
         free(extEvts);
         free(events->events);
         free(events);
         return 1;
     }
-    g_v2_drv = m4a_driver_create((float)sampleRate);
-    g_v2_hw = hw_audio_create((float)sampleRate);
     if (soloName)
     {
         uint32_t mask = parse_solo_name(soloName);
@@ -1268,41 +1276,52 @@ int main(int argc, char* argv[])
         {
             fprintf(stderr, "Error: --solo: unknown channel name '%s'\n\n", soloName);
             print_usage(argv[0]);
+            hw_audio_destroy(g_hw_audio);
+            g_hw_audio = NULL;
+            m4a_driver_destroy(g_driver);
+            g_driver = NULL;
+            voicegroup_free(vg);
+            free(extEvts);
+            free(events->events);
+            free(events);
             return 1;
         }
-        hw_audio_set_solo_mask(g_v2_hw, mask);
-        printf("Solo mask: %s (0x%02X)\n", soloName, (unsigned)mask);
+        if (g_hw_audio)
+        {
+            hw_audio_set_solo_mask(g_hw_audio, mask);
+            printf("Solo mask: %s (0x%02X)\n", soloName, (unsigned)mask);
+        }
     }
-    m4a_engine_set_voicegroup(&engine, vg->voices);
-    m4a_engine_set_song_volume(&engine, (uint8_t)songVolume);
+    m4a_driver_set_voicegroup(g_driver, vg->voices);
+    m4a_set_song_volume(g_driver, (uint8_t)songVolume);
     /* MIDI default tempo is 120 BPM until a Set Tempo event applies. */
-    m4a_engine_set_tempo_bpm(&engine, 120.0);
-    m4a_driver_set_voicegroup(g_v2_drv, vg->voices);
-    m4a_set_song_volume(g_v2_drv, (uint8_t)songVolume);
-    m4a_set_tempo_bpm(g_v2_drv, 120.0);
-    m4a_engine_set_reverb_amount(&engine, (uint8_t)reverbAmount);
-    m4a_set_reverb_amount(g_v2_drv, (uint8_t)reverbAmount);
-    m4a_set_analog_filter(g_v2_drv, analogFilter);
-    m4a_set_max_pcm_channels(g_v2_drv, cgbOnly ? 0 : (uint8_t)maxChannels);
+    m4a_set_tempo_bpm(g_driver, 120.0);
+    m4a_set_reverb_amount(g_driver, (uint8_t)reverbAmount);
+    m4a_set_max_pcm_channels(g_driver, cgbOnly ? 0 : (uint8_t)maxChannels);
 
-    /* ---- Allocate output buffers ---- */
-    float* outL = calloc(totalSamples, sizeof(float));
-    float* outR = calloc(totalSamples, sizeof(float));
-    if (!outL || !outR)
+    /* ---- Allocate output buffers only when audio is requested ---- */
+    float* outL = NULL;
+    float* outR = NULL;
+    if (renderAudio)
     {
-        fprintf(stderr, "Out of memory allocating audio buffers (%llu samples)\n", (unsigned long long)totalSamples);
-        free(outL);
-        free(outR);
-        m4a_engine_destroy(&engine);
-        m4a_driver_destroy(g_v2_drv);
-        g_v2_drv = NULL;
-        hw_audio_destroy(g_v2_hw);
-        g_v2_hw = NULL;
-        voicegroup_free(vg);
-        free(extEvts);
-        free(events->events);
-        free(events);
-        return 1;
+        outL = calloc(totalSamples, sizeof(float));
+        outR = calloc(totalSamples, sizeof(float));
+        if (!outL || !outR)
+        {
+            fprintf(
+                stderr, "Out of memory allocating audio buffers (%llu samples)\n", (unsigned long long)totalSamples);
+            free(outL);
+            free(outR);
+            hw_audio_destroy(g_hw_audio);
+            g_hw_audio = NULL;
+            m4a_driver_destroy(g_driver);
+            g_driver = NULL;
+            voicegroup_free(vg);
+            free(extEvts);
+            free(events->events);
+            free(events);
+            return 1;
+        }
     }
 
     /* ---- Rendering loop ---- */
@@ -1319,18 +1338,18 @@ int main(int argc, char* argv[])
 
         /* Render audio up to this event */
         if (ev->samplePos > samplePos)
-            render_frames(&engine, outL, outR, samplePos, ev->samplePos - samplePos);
+            render_frames(outL, outR, samplePos, ev->samplePos - samplePos);
 
         samplePos = ev->samplePos;
-        dispatch_event(&engine, ev, useTrackIndex);
+        dispatch_event(ev, useTrackIndex);
     }
 
     /* Render remaining frames (tail / fadeout section) */
     if (samplePos < totalSamples)
-        render_frames(&engine, outL, outR, samplePos, totalSamples - samplePos);
+        render_frames(outL, outR, samplePos, totalSamples - samplePos);
 
     /* ---- Apply fadeout envelope ---- */
-    if (fadeStartSample != UINT64_MAX && fadeStartSample < totalSamples)
+    if (outL && outR && fadeStartSample != UINT64_MAX && fadeStartSample < totalSamples)
     {
         uint64_t fadeSamps = totalSamples - fadeStartSample;
         for (uint64_t i = 0; i < fadeSamps; i++)
@@ -1417,11 +1436,10 @@ int main(int argc, char* argv[])
     /* ---- Cleanup ---- */
     free(outL);
     free(outR);
-    m4a_engine_destroy(&engine);
-    m4a_driver_destroy(g_v2_drv);
-    g_v2_drv = NULL;
-    hw_audio_destroy(g_v2_hw);
-    g_v2_hw = NULL;
+    hw_audio_destroy(g_hw_audio);
+    g_hw_audio = NULL;
+    m4a_driver_destroy(g_driver);
+    g_driver = NULL;
     voicegroup_free(vg);
     free(extEvts);
     free(events->events);

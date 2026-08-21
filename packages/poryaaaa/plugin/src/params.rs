@@ -9,11 +9,52 @@ pub const DEFAULT_VOLUME: u8 = 127;
 pub const DEFAULT_REVERB: u8 = 0;
 pub(crate) const DEFAULT_EDITOR_WIDTH: u32 = 525;
 pub(crate) const DEFAULT_EDITOR_HEIGHT: u32 = 420;
+pub(crate) const PCM_MIXER_PARAM_ID: &str = "pcm_mixer";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum MixerMode {
+    #[id = "ipatix"]
+    Ipatix,
+    #[id = "sappy"]
+    Sappy,
+}
+
+// Proc-macro attributes require string literals, so the derive IDs above cannot
+// consume constants. This typed table is the runtime mapping; its test compares
+// every entry with the IDs emitted by the compiled `Enum` derive.
+const MIXER_MODE_STABLE_IDS: [(MixerMode, &str); 2] = [
+    (MixerMode::Ipatix, "ipatix"),
+    (MixerMode::Sappy, "sappy"),
+];
+
+impl MixerMode {
+    pub(crate) fn stable_id(self) -> &'static str {
+        MIXER_MODE_STABLE_IDS
+            .iter()
+            .find_map(|&(mode, id)| (mode == self).then_some(id))
+            .expect("every mixer mode has a stable ID")
+    }
+
+    pub(crate) fn from_stable_id(id: &str) -> Option<Self> {
+        MIXER_MODE_STABLE_IDS
+            .iter()
+            .find_map(|&(mode, stable_id)| (stable_id == id).then_some(mode))
+    }
+
+    pub(crate) fn from_state_integer(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Ipatix),
+            1 => Some(Self::Sappy),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AudioSettings {
     pub volume: u8,
     pub reverb: u8,
+    pub mixer_mode: MixerMode,
 }
 
 /// Carries the latest voicegroup load result shared between the runtime and editor.
@@ -38,6 +79,8 @@ pub struct PoryaaaaParams {
     pub volume: IntParam,
     #[id = "rev"]
     pub reverb: IntParam,
+    #[id = "pcm_mixer"]
+    pub pcm_mixer: EnumParam<MixerMode>,
     #[id = "p00"]
     pub program_00: IntParam,
     #[id = "p01"]
@@ -81,6 +124,15 @@ impl Default for PoryaaaaParams {
 impl PoryaaaaParams {
     /// Builds params with config-seeded audio defaults before host state restore can override them.
     pub(crate) fn with_audio_defaults(volume: u8, reverb: u8) -> Self {
+        Self::with_audio_defaults_and_mixer(volume, reverb, MixerMode::Ipatix)
+    }
+
+    /// Builds params with a configuration-selected mixer before host state restore.
+    pub(crate) fn with_audio_defaults_and_mixer(
+        volume: u8,
+        reverb: u8,
+        mixer_mode: MixerMode,
+    ) -> Self {
         Self {
             window_state: WindowState::from_logical_size(
                 DEFAULT_EDITOR_WIDTH,
@@ -93,6 +145,7 @@ impl PoryaaaaParams {
             midi_activity: Arc::new(MidiActivity::default()),
             volume: audio_control_param("Volume", volume),
             reverb: audio_control_param("Reverb", reverb),
+            pcm_mixer: mixer_mode_param(mixer_mode),
             program_00: channel_program_param(0),
             program_01: channel_program_param(1),
             program_02: channel_program_param(2),
@@ -111,12 +164,12 @@ impl PoryaaaaParams {
             program_15: channel_program_param(15),
         }
     }
-
     /// Reads the host-facing global audio settings as m4a byte values.
     pub(crate) fn audio_settings(&self) -> AudioSettings {
         AudioSettings {
             volume: self.volume.value().clamp(0, 127) as u8,
             reverb: self.reverb.value().clamp(0, 127) as u8,
+            mixer_mode: self.pcm_mixer.value(),
         }
     }
 
@@ -183,6 +236,11 @@ impl PoryaaaaParams {
     }
 }
 
+/// Builds the stepped, global mixer selector used by both the host and editor.
+fn mixer_mode_param(default: MixerMode) -> EnumParam<MixerMode> {
+    EnumParam::new("PCM Mixer", default).non_automatable()
+}
+
 /// Builds one automatable global audio-control parameter with m4a's 0..127 range.
 fn audio_control_param(name: &'static str, default: u8) -> IntParam {
     IntParam::new(
@@ -199,4 +257,42 @@ fn channel_program_param(channel: usize) -> IntParam {
         channel as i32,
         IntRange::Linear { min: 0, max: 127 },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixer_parameter_uses_stable_ids_and_is_non_automatable() {
+        let params = PoryaaaaParams::with_audio_defaults_and_mixer(
+            DEFAULT_VOLUME,
+            DEFAULT_REVERB,
+            MixerMode::Sappy,
+        );
+
+        assert_eq!(params.pcm_mixer.value(), MixerMode::Sappy);
+        assert_eq!(params.pcm_mixer.to_string(), "Sappy");
+        assert!(params
+            .pcm_mixer
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+    }
+
+    #[test]
+    fn mixer_runtime_mapping_matches_derived_stable_ids() {
+        let derived_ids = <MixerMode as Enum>::ids().expect("mixer IDs are derived");
+        assert_eq!(derived_ids.len(), MIXER_MODE_STABLE_IDS.len());
+        for (index, (mode, stable_id)) in MIXER_MODE_STABLE_IDS.iter().copied().enumerate() {
+            assert_eq!(derived_ids[index], stable_id);
+            assert_eq!(mode.to_index(), index);
+            assert_eq!(mode.stable_id(), stable_id);
+            assert_eq!(MixerMode::from_stable_id(stable_id), Some(mode));
+        }
+    }
+
+    #[test]
+    fn fresh_params_seed_ipatix_without_configuration() {
+        assert_eq!(PoryaaaaParams::default().pcm_mixer.value(), MixerMode::Ipatix);
+    }
 }

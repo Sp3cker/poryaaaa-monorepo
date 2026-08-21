@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <clap/clap.h>
-#include "m4a_engine.h"
-#include "voicegroup/voicegroup_loader.h"
+#include "voicegroup/voicegroup_types.h"
 #include "voicegroup/project_asset_index.h"
+#include "m4a/m4a_driver.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -25,6 +25,7 @@ extern "C"
         char voicegroupError[512];
         uint8_t volume;
         uint8_t reverbAmount;
+        M4APcmMixerMode pcmMixerMode;
         bool voicegroupLoaded;
     } M4AGuiSettings;
 
@@ -97,6 +98,12 @@ extern "C"
     void m4a_gui_update_settings(M4AGuiState* gui, const M4AGuiSettings* settings);
 
     /*
+     * Refresh the displayed mixer selector from a host/state event without
+     * creating a new editor change.
+     */
+    void m4a_gui_set_pcm_mixer_mode(M4AGuiState* gui, M4APcmMixerMode mode);
+
+    /*
      * Extend the per-channel MIDI activity indicator pulse for the given MIDI
      * channel (0-15). Must be called from the main thread.
      */
@@ -131,7 +138,7 @@ extern "C"
 
     /*
      * Returns true (and clears) if any voice was edited since the last poll.
-     * The plugin should call m4a_engine_refresh_voices() to propagate changes.
+     * The plugin should refresh voices through its active direct driver.
      */
     bool m4a_gui_poll_voices_dirty(M4AGuiState* gui);
 
