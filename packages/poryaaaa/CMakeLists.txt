@@ -706,6 +706,17 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_audio_bench PRIVATE m)
 endif()
 
+# ---- Sine Purity Capture Harness ----
+add_executable(sine_purity_capture
+    bench/sine_purity_capture.c
+)
+poryaaaa_enable_msvc_c_atomics(sine_purity_capture)
+poryaaaa_enable_project_warnings(sine_purity_capture)
+target_link_libraries(sine_purity_capture PRIVATE m4a_driver hw_audio)
+if(NOT MSVC)
+    target_link_libraries(sine_purity_capture PRIVATE m)
+endif()
+
 # ---- Node N-API voicegroup parser ----
 find_path(NODE_API_INCLUDE_DIR node_api.h
     HINTS /usr/local/include/node /opt/homebrew/include/node)
