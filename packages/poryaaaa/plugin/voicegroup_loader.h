@@ -139,4 +139,12 @@ void voicegroup_free_samples(LoadedSampleSet* set);
  */
 void voicegroup_loader_set_log_path(const char* path);
 
+/*
+ * Force the cross-call project snapshot cache on or off; pass -1 to restore
+ * the default, where the environment variable PORYDAW_DISABLE_INDEX_CACHE=1
+ * disables caching (parity with porydaw's ProjectIndex gate) and it is
+ * otherwise enabled. Re-read on every load.
+ */
+void voicegroup_loader_set_snapshot_cache_enabled(int enabled);
+
 #endif /* VOICEGROUP_LOADER_H */

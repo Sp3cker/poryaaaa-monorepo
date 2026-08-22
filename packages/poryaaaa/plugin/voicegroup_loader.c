@@ -12,8 +12,8 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <pthread.h>
 #endif
-
 #ifdef _WIN32
 #define PATH_SEP '\\'
 #else
@@ -209,19 +209,38 @@ static WaveData *load_wave_data(const char *projectRoot, const char *relativePat
 static uint32_t *load_prog_wave(const char *projectRoot, const char *relativePath);
 /* ---- WaveData deduplication cache ---- */
 
-#define WAVE_CACHE_CAPACITY 128
-
 typedef struct {
     char absPath[MAX_PATH_LEN];
     WaveData *wd;
 } WaveCacheEntry;
 
+/*
+ * Per-load deduplication of decoded sample files. Grows on demand and never
+ * evicts: an evicted entry would let a later resolution of the same file
+ * decode a second WaveData for a symbol that already points at the first,
+ * which voicegroup_free would then double-free. Paths at or above
+ * MAX_PATH_LEN are not cached — truncation would alias distinct files onto
+ * one key. A failed growth simply stops deduplicating; uncached symbols
+ * decode their own copy and register it, so cleanup stays correct.
+ */
 typedef struct WaveCache {
-    WaveCacheEntry entries[WAVE_CACHE_CAPACITY];
+    WaveCacheEntry *entries;
     int count;
+    int capacity;
 } WaveCache;
 
-static void wave_cache_init(WaveCache *cache) { cache->count = 0; }
+static void wave_cache_init(WaveCache *cache)
+{
+    cache->entries = NULL;
+    cache->count = 0;
+    cache->capacity = 0;
+}
+
+static void wave_cache_free(WaveCache *cache)
+{
+    free(cache->entries);
+    wave_cache_init(cache);
+}
 
 static WaveData *wave_cache_find(const WaveCache *cache, const char *absPath)
 {
@@ -233,9 +252,15 @@ static WaveData *wave_cache_find(const WaveCache *cache, const char *absPath)
 
 static void wave_cache_insert(WaveCache *cache, const char *absPath, WaveData *wd)
 {
-    if (cache->count >= WAVE_CACHE_CAPACITY) return;
-    strncpy(cache->entries[cache->count].absPath, absPath, MAX_PATH_LEN - 1);
-    cache->entries[cache->count].absPath[MAX_PATH_LEN - 1] = '\0';
+    if (strlen(absPath) >= MAX_PATH_LEN) return;
+    if (cache->count >= cache->capacity) {
+        int newCapacity = cache->capacity ? cache->capacity * 2 : INITIAL_CAPACITY;
+        WaveCacheEntry *grown = realloc(cache->entries, sizeof(*grown) * (size_t)newCapacity);
+        if (!grown) return;
+        cache->entries = grown;
+        cache->capacity = newCapacity;
+    }
+    strcpy(cache->entries[cache->count].absPath, absPath);
     cache->entries[cache->count].wd = wd;
     cache->count++;
 }
@@ -2606,6 +2631,335 @@ static int parse_voicegroup_file(const char *projectRoot, const char *filePath,
     return voiceIndex;
 }
 
+/* ---- Cross-call project snapshot cache ---- */
+
+/*
+ * Discovery plus the sound-data symbol maps depend only on file contents,
+ * but before caching they were re-derived on every load (~70% of a warm
+ * song-open load measured in porydaw). One snapshot per process caches that
+ * layer, keyed by canonical root plus a fingerprint over everything that
+ * feeds it. Per-call work stays per-call: find_voicegroup scans,
+ * voicegroup-file parsing, and WaveData decodes read fresh bytes every time,
+ * so save/reload flows keep their exact semantics.
+ *
+ * Concurrency: porydaw calls this loader from its UI thread only. The mutex
+ * makes that assumption explicit instead of trusted; a future off-thread
+ * caller should switch to snapshot copies rather than widening the hold.
+ * Switching between projects evicts the single slot (documented tradeoff:
+ * re-switching reparses instead of paying a ring's complexity).
+ */
+
+/* PathList caps each category at MAX_DISCOVERED_PATHS entries, so the
+ * feeding set can never exceed 3 * that plus both index spellings: the cap
+ * below cannot overflow. */
+#define SNAPSHOT_MAX_HASHED (3 * MAX_DISCOVERED_PATHS + 8)
+
+typedef struct {
+    char root[MAX_PATH_LEN];  /* canonical absolute project root */
+    char fingerprint[16 + 1]; /* FNV-1a hex over the cheap signal stream */
+    int valid;
+    ProjectDiscovery disc;
+    SymbolMap dsMap;
+    SymbolMap pwMap;
+    KeySplitMap ksMap;
+    /* Files whose bytes are baked into the maps, content-hashed at rebuild
+     * and re-verified on every hit, so a same-size/same-mtime rewrite (2 s
+     * FAT granularity) can never serve stale maps. */
+    char hashPaths[SNAPSHOT_MAX_HASHED][MAX_PATH_LEN];
+    uint32_t hashValues[SNAPSHOT_MAX_HASHED];
+    int hashCount;
+} ProjectSnapshot;
+
+static ProjectSnapshot g_snapshot;
+
+#ifdef _WIN32
+static INIT_ONCE g_snapshotMutexOnce = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION g_snapshotMutex;
+
+static BOOL CALLBACK snapshot_mutex_init(PINIT_ONCE once, PVOID param, PVOID *context)
+{
+    (void)once; (void)param; (void)context;
+    InitializeCriticalSection(&g_snapshotMutex);
+    return TRUE;
+}
+
+static void snapshot_lock(void)
+{
+    InitOnceExecuteOnce(&g_snapshotMutexOnce, snapshot_mutex_init, NULL, NULL);
+    EnterCriticalSection(&g_snapshotMutex);
+}
+
+static void snapshot_unlock(void)
+{
+    LeaveCriticalSection(&g_snapshotMutex);
+}
+#else
+static pthread_mutex_t g_snapshotMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void snapshot_lock(void) { pthread_mutex_lock(&g_snapshotMutex); }
+static void snapshot_unlock(void) { pthread_mutex_unlock(&g_snapshotMutex); }
+#endif
+
+static int g_snapshotCacheOverride = -1; /* -1 = unset: environment decides */
+
+void voicegroup_loader_set_snapshot_cache_enabled(int enabled)
+{
+    g_snapshotCacheOverride = enabled;
+}
+
+/* Re-checked on every acquire for parity with porydaw's ProjectIndex gate. */
+static int snapshot_cache_enabled(void)
+{
+    if (g_snapshotCacheOverride >= 0)
+        return g_snapshotCacheOverride;
+    const char *disabled = getenv("PORYDAW_DISABLE_INDEX_CACHE");
+    return !(disabled && *disabled && strcmp(disabled, "0") != 0);
+}
+
+#ifdef _WIN32
+static int snapshot_canonical_root(const char *root, char *out, size_t outSize)
+{
+    char resolved[MAX_PATH_LEN * 2];
+    if (!_fullpath(resolved, root, sizeof(resolved))) return 0;
+    if (strlen(resolved) >= outSize) return 0;
+    strcpy(out, resolved);
+    return 1;
+}
+#else
+static int snapshot_canonical_root(const char *root, char *out, size_t outSize)
+{
+    char resolved[MAX_PATH_LEN * 2];
+    if (!realpath(root, resolved)) return 0;
+    if (strlen(resolved) >= outSize) return 0;
+    strcpy(out, resolved);
+    return 1;
+}
+#endif
+
+static uint32_t snapshot_fnv(uint32_t h, const void *data, size_t len)
+{
+    const uint8_t *bytes = data;
+    for (size_t i = 0; i < len; i++) {
+        h ^= bytes[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Includes the terminator so adjacent strings cannot bleed together. */
+static uint32_t snapshot_fnv_str(uint32_t h, const char *s)
+{
+    return snapshot_fnv(h, s, strlen(s) + 1);
+}
+
+static long long snapshot_mtime_ns(const struct stat *st)
+{
+#if defined(_WIN32)
+    return (long long)st->st_mtime; /* coarse but present everywhere */
+#elif defined(__APPLE__)
+    return (long long)st->st_mtimespec.tv_sec * 1000000000ll + st->st_mtimespec.tv_nsec;
+#else
+    return (long long)st->st_mtim.tv_sec * 1000000000ll + st->st_mtim.tv_nsec;
+#endif
+}
+
+/* Feeds a path's presence, mode, size, and mtime into the fingerprint. */
+static void snapshot_feed_stat(uint32_t *h, const char *path)
+{
+    struct stat st;
+    *h = snapshot_fnv_str(*h, path);
+    if (stat(path, &st) != 0 || !(S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))) {
+        *h = snapshot_fnv(*h, "-", 1);
+        return;
+    }
+    char meta[96];
+    snprintf(meta, sizeof(meta), "|%o|%lld|%lld|", (unsigned int)(st.st_mode & S_IFMT),
+             (long long)st.st_size, snapshot_mtime_ns(&st));
+    *h = snapshot_fnv_str(*h, meta);
+}
+
+
+static uint32_t snapshot_file_hash(const char *path, int *ok)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        *ok = 0;
+        return 0;
+    }
+    uint32_t h = 2166136261u;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        h = snapshot_fnv(h, buf, n);
+    fclose(f);
+    *ok = 1;
+    return h;
+}
+
+static void snapshot_record_hash(ProjectSnapshot *snap, const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
+    if (snap->hashCount >= SNAPSHOT_MAX_HASHED) return;
+    if (strlen(path) >= MAX_PATH_LEN) return;
+    int ok = 0;
+    uint32_t value = snapshot_file_hash(path, &ok);
+    if (!ok) return;
+    strcpy(snap->hashPaths[snap->hashCount], path);
+    snap->hashValues[snap->hashCount] = value;
+    snap->hashCount++;
+}
+
+static int snapshot_hashes_unchanged(const ProjectSnapshot *snap)
+{
+    for (int i = 0; i < snap->hashCount; i++) {
+        int ok = 0;
+        uint32_t value = snapshot_file_hash(snap->hashPaths[i], &ok);
+        if (!ok || value != snap->hashValues[i]) return 0;
+    }
+    return 1;
+}
+
+/* Both index spellings matter: one shapes monolithic classification, either
+ * can drive the next_included_voicegroup contiguity chain. */
+static const char *const kSnapshotIndexFiles[] = {
+    "sound/voice_groups.inc",
+    "sound/voicegroups.inc",
+};
+
+static void snapshot_rebuild(ProjectSnapshot *snap, const char *canonRoot,
+                             const char *projectRoot, const VoicegroupLoaderConfig *config)
+{
+    symbol_map_free(&snap->dsMap);
+    symbol_map_free(&snap->pwMap);
+    keysplit_map_free(&snap->ksMap);
+    memset(&snap->disc, 0, sizeof(snap->disc));
+    memset(snap->hashPaths, 0, sizeof(snap->hashPaths));
+    snap->hashCount = 0;
+
+    discover_project(projectRoot, config, &snap->disc);
+    parse_all_direct_sound_data(&snap->disc, projectRoot, &snap->dsMap);
+    parse_all_programmable_wave_data(&snap->disc, projectRoot, &snap->pwMap);
+    parse_all_keysplit_tables(&snap->disc, &snap->ksMap);
+
+    /* Config is borrowed for one call only; nothing downstream reads it
+     * after discovery, so drop the dangling pointer before caching. */
+    snap->disc.cfg = NULL;
+
+    for (int i = 0; i < snap->disc.directSoundDataFiles.count; i++)
+        snapshot_record_hash(snap, snap->disc.directSoundDataFiles.paths[i]);
+    for (int i = 0; i < snap->disc.progWaveDataFiles.count; i++)
+        snapshot_record_hash(snap, snap->disc.progWaveDataFiles.paths[i]);
+    for (int i = 0; i < snap->disc.keySplitTableFiles.count; i++)
+        snapshot_record_hash(snap, snap->disc.keySplitTableFiles.paths[i]);
+    for (int i = 0; i < (int)(sizeof(kSnapshotIndexFiles) / sizeof(*kSnapshotIndexFiles)); i++) {
+        char abs[MAX_PATH_LEN];
+        build_path(abs, sizeof(abs), projectRoot, kSnapshotIndexFiles[i]);
+        snapshot_record_hash(snap, abs);
+    }
+
+    snprintf(snap->root, sizeof(snap->root), "%s", canonRoot);
+    snap->valid = 1;
+}
+
+static int snapshot_build_fingerprint(const char *canonRoot,
+                                      const VoicegroupLoaderConfig *config, char *out,
+                                      size_t outSize)
+{
+    char abs[MAX_PATH_LEN];
+    uint32_t h = 2166136261u;
+
+    h = snapshot_fnv_str(h, canonRoot);
+
+    /* Config identity: the strings themselves and whatever they point at. */
+    if (config) {
+        for (int i = 0; i < config->soundDataPathCount && i < 8; i++) {
+            h = snapshot_fnv_str(h, config->soundDataPaths[i]);
+            build_path(abs, sizeof(abs), canonRoot, config->soundDataPaths[i]);
+            snapshot_feed_stat(&h, abs);
+        }
+        for (int i = 0; i < config->voicegroupPathCount && i < 8; i++) {
+            h = snapshot_fnv_str(h, config->voicegroupPaths[i]);
+            build_path(abs, sizeof(abs), canonRoot, config->voicegroupPaths[i]);
+            snapshot_feed_stat(&h, abs);
+        }
+        for (int i = 0; i < config->sampleDirCount && i < 8; i++) {
+            h = snapshot_fnv_str(h, config->sampleDirs[i]);
+            build_path(abs, sizeof(abs), canonRoot, config->sampleDirs[i]);
+            snapshot_feed_stat(&h, abs);
+        }
+    }
+
+    static const char *const kFixedCandidates[] = {
+        "sound/direct_sound_data.inc",
+        "sound/direct_sound_synth_data.inc",
+        "sound/programmable_wave_data.inc",
+        "sound/keysplit_tables.inc",
+        "sound/keysplit_tables.s",
+        "sound/voice_groups.inc",
+        "sound/voicegroups.inc",
+    };
+    for (int i = 0; i < (int)(sizeof(kFixedCandidates) / sizeof(*kFixedCandidates)); i++) {
+        build_path(abs, sizeof(abs), canonRoot, kFixedCandidates[i]);
+        snapshot_feed_stat(&h, abs);
+    }
+    static const char *const kFixedDirs[] = {
+        "sound",
+        "sound/voicegroups",
+        "sound/voicegroups/keysplits",
+        "sound/voicegroups/drumsets",
+    };
+    for (int i = 0; i < (int)(sizeof(kFixedDirs) / sizeof(*kFixedDirs)); i++) {
+        build_path(abs, sizeof(abs), canonRoot, kFixedDirs[i]);
+        snapshot_feed_stat(&h, abs);
+    }
+
+    snprintf(out, outSize, "%08x", h);
+    return 1;
+}
+
+/*
+ * Returns the live snapshot with the mutex held, or NULL to run uncached.
+ * Callers release via snapshot_unlock() on every path.
+ *
+ * Once a deep scan has run against a project its results live only in this
+ * snapshot, and no cheap fingerprint can vouch for the tree they were
+ * scanned from — so such projects fall back to uncached loads rather than
+ * risk serving a stale directory list. Stock layouts never deep-scan and
+ * always take the cached path.
+ */
+static ProjectSnapshot *snapshot_acquire(const char *projectRoot,
+                                         const VoicegroupLoaderConfig *config)
+{
+    snapshot_lock();
+
+    if (!snapshot_cache_enabled()) goto fail;
+
+    char canon[MAX_PATH_LEN];
+    if (!snapshot_canonical_root(projectRoot, canon, sizeof(canon))) goto fail;
+
+    if (g_snapshot.valid && g_snapshot.disc.deepScanned) goto fail;
+
+    char fingerprint[sizeof(g_snapshot.fingerprint)];
+    if (!snapshot_build_fingerprint(canon, config, fingerprint, sizeof(fingerprint)))
+        goto fail;
+
+    ProjectSnapshot *snap = &g_snapshot;
+    if (snap->valid && strcmp(snap->root, canon) == 0 &&
+        strcmp(snap->fingerprint, fingerprint) == 0 && snapshot_hashes_unchanged(snap))
+        return snap;
+
+    vg_log("snapshot: rebuilding for '%s' (fp %s, prev %s)", canon, fingerprint,
+           snap->valid ? snap->fingerprint : "none");
+    snapshot_rebuild(snap, canon, projectRoot, config);
+    snprintf(snap->fingerprint, sizeof(snap->fingerprint), "%s", fingerprint);
+    return snap;
+
+fail:
+    snapshot_unlock();
+    return NULL;
+}
+
 /*
  * Main entry point: load a voicegroup from a project.
  */
@@ -2617,40 +2971,42 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     LoadedVoiceGroup *vg = calloc(1, sizeof(LoadedVoiceGroup));
     if (!vg) return NULL;
 
-    /* Heap-allocate ProjectDiscovery: ~96 KB on the stack would risk overflow
-     * in Reaper's plugin-load thread (Windows default: 1 MB stack). */
-    ProjectDiscovery *disc = calloc(1, sizeof(ProjectDiscovery));
-    if (!disc) {
-        voicegroup_free(vg);
-        return NULL;
-    }
-
-    /* Discover project structure */
-    vg_log("voicegroup_load: calling discover_project");
-    discover_project(projectRoot, config, disc);
-    vg_log("voicegroup_load: discover done - dsFiles=%d pwFiles=%d ksFiles=%d vgDirs=%d monoFiles=%d wavDirs=%d",
-           disc->directSoundDataFiles.count, disc->progWaveDataFiles.count,
-           disc->keySplitTableFiles.count, disc->voicegroupDirs.count,
-           disc->monolithicVGFiles.count, disc->wavSampleDirs.count);
-
-    /* Per-load WaveData deduplication cache */
+    /* Per-load WaveData deduplication; freed on every exit below. */
     WaveCache waveCache;
     wave_cache_init(&waveCache);
 
-    /* Parse symbol maps from all discovered files */
+    ProjectSnapshot *snap = snapshot_acquire(projectRoot, config);
+    ProjectDiscovery *disc = NULL;
     SymbolMap dsMap, pwMap;
     KeySplitMap ksMap;
-    symbol_map_init(&dsMap);
-    symbol_map_init(&pwMap);
-    keysplit_map_init(&ksMap);
+    SymbolMap *dsMapUsed, *pwMapUsed;
+    KeySplitMap *ksMapUsed;
 
-    vg_log("voicegroup_load: parsing symbol maps");
-    parse_all_direct_sound_data(disc, projectRoot, &dsMap);
-    vg_log("voicegroup_load: dsMap entries=%d", dsMap.count);
-    parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
-    vg_log("voicegroup_load: pwMap entries=%d", pwMap.count);
-    parse_all_keysplit_tables(disc, &ksMap);
-    vg_log("voicegroup_load: ksMap entries=%d", ksMap.count);
+    if (snap) {
+        disc = &snap->disc;
+        dsMapUsed = &snap->dsMap;
+        pwMapUsed = &snap->pwMap;
+        ksMapUsed = &snap->ksMap;
+        vg_log("voicegroup_load: snapshot hit ds=%d pw=%d ks=%d", dsMapUsed->count,
+               pwMapUsed->count, ksMapUsed->count);
+    } else {
+        symbol_map_init(&dsMap);
+        symbol_map_init(&pwMap);
+        keysplit_map_init(&ksMap);
+        /* Heap-allocate ProjectDiscovery: ~96 KB on the stack would risk overflow
+         * in Reaper's plugin-load thread (Windows default: 1 MB stack). */
+        disc = calloc(1, sizeof(ProjectDiscovery));
+        if (!disc) goto fail;
+
+        /* Discover project structure and parse symbol maps fresh. */
+        discover_project(projectRoot, config, disc);
+        parse_all_direct_sound_data(disc, projectRoot, &dsMap);
+        parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
+        parse_all_keysplit_tables(disc, &ksMap);
+        dsMapUsed = &dsMap;
+        pwMapUsed = &pwMap;
+        ksMapUsed = &ksMap;
+    }
 
     /* Find the voicegroup */
     vg_log("voicegroup_load: searching for voicegroup '%s'", voicegroupName);
@@ -2666,24 +3022,34 @@ LoadedVoiceGroup *voicegroup_load(const char *projectRoot, const char *voicegrou
     const char *startLabel = loc.label[0] ? loc.label : NULL;
     vg_log("voicegroup_load: parsing voicegroup file");
     if (parse_voicegroup_file(projectRoot, loc.filePath, startLabel,
-                               vg, &dsMap, &pwMap, &ksMap, disc, &waveCache,
+                               vg, dsMapUsed, pwMapUsed, ksMapUsed, disc, &waveCache,
                                0, 0, 0) < 0) {
         vg_log("voicegroup_load: parse_voicegroup_file failed");
         goto fail;
     }
     vg_log("voicegroup_load: done OK");
 
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
-    keysplit_map_free(&ksMap);
-    free(disc);
+    wave_cache_free(&waveCache);
+    if (snap)
+        snapshot_unlock();
+    else {
+        symbol_map_free(&dsMap);
+        symbol_map_free(&pwMap);
+        keysplit_map_free(&ksMap);
+        free(disc);
+    }
     return vg;
 
 fail:
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
-    keysplit_map_free(&ksMap);
-    free(disc);
+    wave_cache_free(&waveCache);
+    if (snap)
+        snapshot_unlock();
+    else {
+        symbol_map_free(&dsMap);
+        symbol_map_free(&pwMap);
+        keysplit_map_free(&ksMap);
+        free(disc);
+    }
     voicegroup_free(vg);
     return NULL;
 }
@@ -2701,10 +3067,7 @@ LoadedSampleSet *voicegroup_load_samples(
     set->progWaves = calloc(waveCount > 0 ? waveCount : 1, sizeof(uint32_t *));
     set->keysplits =
         calloc(keysplitCount > 0 ? keysplitCount : 1, sizeof(LoadedKeysplit));
-    ProjectDiscovery *disc = calloc(1, sizeof(ProjectDiscovery));
-    if (!set->container || !set->waves || !set->progWaves || !set->keysplits
-        || !disc) {
-        free(disc);
+    if (!set->container || !set->waves || !set->progWaves || !set->keysplits) {
         voicegroup_free_samples(set);
         return NULL;
     }
@@ -2714,32 +3077,45 @@ LoadedSampleSet *voicegroup_load_samples(
 
     vg_log("voicegroup_load_samples: start root='%s' samples=%d waves=%d keysplits=%d",
            projectRoot, sampleCount, waveCount, keysplitCount);
-    discover_project(projectRoot, config, disc);
-
-    /* The dedup cache caps at WAVE_CACHE_CAPACITY entries; past that, symbols
-     * aliasing one file merely load their own copy (each registered in the
-     * container, so cleanup stays correct). */
     WaveCache waveCache;
     wave_cache_init(&waveCache);
 
+    ProjectSnapshot *snap = snapshot_acquire(projectRoot, config);
+    ProjectDiscovery *disc = NULL;
     SymbolMap dsMap, pwMap;
     KeySplitMap ksMap;
-    symbol_map_init(&dsMap);
-    symbol_map_init(&pwMap);
-    keysplit_map_init(&ksMap);
-    parse_all_direct_sound_data(disc, projectRoot, &dsMap);
-    if (waveCount > 0 || keysplitCount > 0)
-        parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
-    if (keysplitCount > 0)
-        parse_all_keysplit_tables(disc, &ksMap);
+    SymbolMap *dsMapUsed, *pwMapUsed;
+    KeySplitMap *ksMapUsed;
+
+    if (snap) {
+        disc = &snap->disc;
+        dsMapUsed = &snap->dsMap;
+        pwMapUsed = &snap->pwMap;
+        ksMapUsed = &snap->ksMap;
+    } else {
+        symbol_map_init(&dsMap);
+        symbol_map_init(&pwMap);
+        keysplit_map_init(&ksMap);
+        disc = calloc(1, sizeof(ProjectDiscovery));
+        if (!disc) goto fail;
+        discover_project(projectRoot, config, disc);
+        parse_all_direct_sound_data(disc, projectRoot, &dsMap);
+        if (waveCount > 0 || keysplitCount > 0)
+            parse_all_programmable_wave_data(disc, projectRoot, &pwMap);
+        if (keysplitCount > 0)
+            parse_all_keysplit_tables(disc, &ksMap);
+        dsMapUsed = &dsMap;
+        pwMapUsed = &pwMap;
+        ksMapUsed = &ksMap;
+    }
 
     for (int i = 0; i < sampleCount; i++)
         set->waves[i] = resolve_and_load_sample(projectRoot, sampleSymbols[i],
-                                                &dsMap, disc, set->container,
+                                                dsMapUsed, disc, set->container,
                                                 &waveCache);
 
     for (int i = 0; i < waveCount; i++) {
-        const char *wavePath = symbol_map_find(&pwMap, waveSymbols[i]);
+        const char *wavePath = symbol_map_find(pwMapUsed, waveSymbols[i]);
         if (!wavePath) continue;
         uint32_t *pw = load_prog_wave(projectRoot, wavePath);
         if (!pw) continue;
@@ -2750,9 +3126,9 @@ LoadedSampleSet *voicegroup_load_samples(
     for (int i = 0; i < keysplitCount; i++) {
         set->keysplits[i].subGroup =
             load_sub_voicegroup(projectRoot, keysplitSymbols[i], set->container,
-                                &dsMap, &pwMap, &ksMap, disc, &waveCache);
+                                dsMapUsed, pwMapUsed, ksMapUsed, disc, &waveCache);
         const KeySplitDef *ksDef =
-            keysplit_map_find_or_rescan(&ksMap, keysplitTableSymbols[i], disc);
+            keysplit_map_find_or_rescan(ksMapUsed, keysplitTableSymbols[i], disc);
         if (ksDef) {
             uint8_t *table = malloc(128);
             if (table) {
@@ -2763,12 +3139,30 @@ LoadedSampleSet *voicegroup_load_samples(
         }
     }
 
-    symbol_map_free(&dsMap);
-    symbol_map_free(&pwMap);
-    keysplit_map_free(&ksMap);
-    free(disc);
+    wave_cache_free(&waveCache);
+    if (snap)
+        snapshot_unlock();
+    else {
+        symbol_map_free(&dsMap);
+        symbol_map_free(&pwMap);
+        keysplit_map_free(&ksMap);
+        free(disc);
+    }
     vg_log("voicegroup_load_samples: done");
     return set;
+
+fail:
+    wave_cache_free(&waveCache);
+    if (snap)
+        snapshot_unlock();
+    else {
+        symbol_map_free(&dsMap);
+        symbol_map_free(&pwMap);
+        keysplit_map_free(&ksMap);
+        free(disc);
+    }
+    voicegroup_free_samples(set);
+    return NULL;
 }
 
 void voicegroup_free_samples(LoadedSampleSet *set)
