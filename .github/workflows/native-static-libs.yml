@@ -1,0 +1,93 @@
+name: Native static libraries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-header:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test voicegroup-core
+        run: cargo test --manifest-path packages/voicegroup-core/Cargo.toml
+      - name: Generate C header
+        run: |
+          cargo install cbindgen --version 0.29.2 --locked
+          cd packages/voicegroup-core
+          cbindgen --config cbindgen.toml --crate voicegroup-core --output include/voicegroup_core.h
+          git diff --exit-code -- include/voicegroup_core.h
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicegroup-core-header
+          path: packages/voicegroup-core/include/voicegroup_core.h
+          if-no-files-found: error
+
+  linux-glibc-baseline:
+    needs: test-and-header
+    runs-on: ubuntu-22.04
+    container: ubuntu:20.04
+    steps:
+      - name: Install baseline build tools
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential ca-certificates curl git
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: actions/download-artifact@v4
+        with:
+          name: voicegroup-core-header
+          path: packages/voicegroup-core/include
+      - name: Build archive
+        run: cargo build --release --target x86_64-unknown-linux-gnu --manifest-path packages/voicegroup-core/Cargo.toml
+      - name: Package archive
+        run: node .github/scripts/package-native-static-lib.mjs x86_64-unknown-linux-gnu packages/voicegroup-core/target/x86_64-unknown-linux-gnu/release/libvoicegroup_core.a ubuntu-20.04-container
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicegroup-core-x86_64-unknown-linux-gnu
+          path: native-static-lib/x86_64-unknown-linux-gnu
+          if-no-files-found: error
+
+  native-hosts:
+    needs: test-and-header
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            library: packages/voicegroup-core/target/x86_64-pc-windows-msvc/release/voicegroup_core.lib
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            library: packages/voicegroup-core/target/aarch64-apple-darwin/release/libvoicegroup_core.a
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            library: packages/voicegroup-core/target/x86_64-apple-darwin/release/libvoicegroup_core.a
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: voicegroup-core-header
+          path: packages/voicegroup-core/include
+      - name: Build archive
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path packages/voicegroup-core/Cargo.toml
+      - name: Package archive
+        run: node .github/scripts/package-native-static-lib.mjs ${{ matrix.target }} ${{ matrix.library }} ${{ matrix.runner }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicegroup-core-${{ matrix.target }}
+          path: native-static-lib/${{ matrix.target }}
+          if-no-files-found: error
