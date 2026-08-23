@@ -16,7 +16,6 @@ endif()
 
 add_library(poryaaaa_engine STATIC
     "${CMAKE_CURRENT_LIST_DIR}/../m4a_engine.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_loader.c"
 )
 add_library(poryaaaa::engine ALIAS poryaaaa_engine)
 
@@ -27,6 +26,9 @@ target_link_libraries(poryaaaa_engine PUBLIC
     m4a_driver
     hw_audio
 )
+if(TARGET voicegroup_loader)
+    target_link_libraries(poryaaaa_engine PUBLIC voicegroup_loader)
+endif()
 if(UNIX)
     target_link_libraries(poryaaaa_engine PUBLIC m)
 endif()
