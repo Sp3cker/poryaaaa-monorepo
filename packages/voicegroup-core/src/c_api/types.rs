@@ -3,7 +3,7 @@ use std::os::raw::c_char;
 use crate::project_index::ProjectIndex;
 
 /// ABI revision consumed by the source-built Pory A C adapter.
-pub const VOICEGROUP_CORE_ABI_VERSION: u32 = 1;
+pub const VOICEGROUP_CORE_ABI_VERSION: u32 = 2;
 
 pub struct VoicegroupCoreProjectIndex {
     /// Owns discovered project symbols and file locations across C ABI calls.
@@ -87,6 +87,16 @@ pub struct VoicegroupCoreCatalogEntry {
     /// Six-byte DirectSound synth descriptor, when this is a synth row.
     pub has_synth: bool,
     pub synth_desc: [u8; 6],
+}
+
+/// Typical ADSR envelope for one catalog voice family.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoicegroupCoreFamilyAdsr {
+    /// Stable family name, owned by the snapshot result.
+    pub family: *const c_char,
+    /// Attack, decay, sustain, and release bytes.
+    pub adsr: [u8; 4],
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

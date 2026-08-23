@@ -275,12 +275,16 @@ pub(super) fn build_catalog(
     .into_iter()
     .filter(|path| index.root.join(path).is_file())
     .map(str::to_string);
-    let watch_paths = content_paths
+    let mut watch_paths = content_paths
         .iter()
         .chain(indexed_source_paths.collect::<BTreeSet<_>>().iter())
         .chain(dependency_paths.iter())
         .cloned()
         .collect::<BTreeSet<_>>();
+    watch_paths.extend(index.synth_macro_paths.iter().cloned());
+    if index.root.join("asm/macros").is_dir() {
+        watch_paths.insert("asm/macros".to_string());
+    }
 
     ProjectCatalog {
         entries,
@@ -289,6 +293,7 @@ pub(super) fn build_catalog(
         watch_paths: watch_paths.into_iter().collect(),
         typical_adsr_by_symbol,
         typical_adsr_by_family,
+        synth_macro_words: index.synth_macro_words.iter().cloned().collect(),
     }
 }
 

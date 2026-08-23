@@ -14,7 +14,7 @@
 /**
  * ABI revision consumed by the source-built Pory A C adapter.
  */
-#define VOICEGROUP_CORE_ABI_VERSION 1
+#define VOICEGROUP_CORE_ABI_VERSION 2
 
 #define VOICEGROUP_CORE_PROGRAM_BANK_SIZE 128
 
@@ -315,6 +315,20 @@ typedef struct VoicegroupCoreCatalogEntry {
   bool has_synth;
   uint8_t synth_desc[6];
 } VoicegroupCoreCatalogEntry;
+
+/**
+ * Typical ADSR envelope for one catalog voice family.
+ */
+typedef struct VoicegroupCoreFamilyAdsr {
+  /**
+   * Stable family name, owned by the snapshot result.
+   */
+  const char *family;
+  /**
+   * Attack, decay, sustain, and release bytes.
+   */
+  uint8_t adsr[4];
+} VoicegroupCoreFamilyAdsr;
 
 #ifdef __cplusplus
 extern "C" {
@@ -703,6 +717,26 @@ const char *const *voicegroup_core_project_snapshot_result_dependency_paths(cons
  */
 const char *const *voicegroup_core_project_snapshot_result_watch_paths(const struct VoicegroupCoreProjectSnapshotResult *result,
                                                                        size_t *out_count);
+
+/**
+ * Returns typical ADSR envelopes grouped by family in lexicographic order.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const struct VoicegroupCoreFamilyAdsr *voicegroup_core_project_snapshot_result_family_adsr(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                                           size_t *out_count);
+
+/**
+ * Returns supported synth macro words in lexicographic order.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const char *const *voicegroup_core_project_snapshot_result_synth_macro_words(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                             size_t *out_count);
 
 /**
  * Loads a project index and writes an opaque handle to `out_index`.

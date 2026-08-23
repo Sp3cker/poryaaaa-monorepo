@@ -51,11 +51,21 @@ extern "C"
 
     typedef struct
     {
+        const char* family;
+        uint8_t adsr[4];
+    } VoicegroupFamilyAdsr;
+
+    typedef struct
+    {
         bool succeeded;
         const VoicegroupDiagnostic* diagnostics;
         size_t diagnostic_count;
         const VoicegroupCatalogEntry* catalog;
         size_t catalog_count;
+        const VoicegroupFamilyAdsr* family_adsr;
+        size_t family_adsr_count;
+        const char* const* synth_macro_words;
+        size_t synth_macro_word_count;
         const char* const* content_paths;
         size_t content_path_count;
         const char* const* dependency_paths;

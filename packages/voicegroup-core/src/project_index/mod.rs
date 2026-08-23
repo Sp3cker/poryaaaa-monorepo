@@ -38,6 +38,10 @@ pub struct ProjectIndex {
     // Physical source files under sound/voicegroups/. These feed include completion only;
     // they deliberately do not make a voicegroup symbol valid for analysis.
     voicegroup_files: BTreeSet<String>,
+    // Assembly macro files are watched independently because definitions can be
+    // added without a synth invocation in any indexed sound data file.
+    synth_macro_paths: BTreeSet<String>,
+    synth_macro_words: BTreeSet<String>,
     direct_sound_assets: BTreeMap<String, ResolvedAsset>,
     programmable_wave_assets: BTreeMap<String, ResolvedAsset>,
     direct_sound_definitions: BTreeMap<String, DefinitionLocation>,
@@ -224,6 +228,12 @@ impl ProjectIndex {
                 .strip_prefix("voicegroup_")
                 .and_then(|stripped| self.voicegroup_definition_location(stripped))
         })
+    }
+
+    /// Iterates supported Golden Sun synth macro aliases found in assembly
+    /// macro definitions, in lexicographic order.
+    pub fn synth_macro_words(&self) -> impl Iterator<Item = &str> {
+        self.synth_macro_words.iter().map(String::as_str)
     }
 
     /// Iterates physical voicegroup source files available for include completions.

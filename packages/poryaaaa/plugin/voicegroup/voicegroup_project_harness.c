@@ -169,21 +169,27 @@ int main(void)
     char sound[1024];
     char direct[1024];
     char prog[1024];
+    char asmRoot[1024];
+    char macros[1024];
     snprintf(sound, sizeof(sound), "%s/sound", root);
     snprintf(direct, sizeof(direct), "%s/sound/direct_sound_samples", root);
     snprintf(prog, sizeof(prog), "%s/sound/programmable_wave_samples", root);
+    snprintf(asmRoot, sizeof(asmRoot), "%s/asm", root);
+    snprintf(macros, sizeof(macros), "%s/asm/macros", root);
     CHECK(mkdir(sound, 0700) == 0);
     CHECK(mkdir(direct, 0700) == 0);
     CHECK(mkdir(prog, 0700) == 0);
+    CHECK(mkdir(asmRoot, 0700) == 0);
+    CHECK(mkdir(macros, 0700) == 0);
 
     const char* voiceGroups = "main::\n"
-                              "\tvoice_directsound 60, 0, DirectSoundWave, 255, 0, 255, 0\n"
+                              "\tvoice_directsound 60, 0, DirectSoundWave, 255, 0, 255, 4\n"
                               "\tvoice_directsound 60, 0, DirectSoundWave, 255, 0, 255, 0\n"
                               "\tvoice_directsound 60, 0, SynthWave, 255, 0, 255, 0\n"
                               "\tvoice_programmable_wave 60, 0, ProgrammableWave, 7, 0, 7, 0\n"
                               "\tvoice_keysplit voicegroup_sub, keysplit_test\n"
                               "sub::\n"
-                              "\tvoice_square_1 60, 0, 0, 0, 0, 0, 0, 0\n";
+                              "\tvoice_square_1 60, 0, 0, 0, 0, 0, 0, 3\n";
     write_text(root, "sound/voice_groups.inc", voiceGroups);
     write_text(root,
                "sound/direct_sound_data.inc",
@@ -194,6 +200,17 @@ int main(void)
                "ZeroWav::\n\t.incbin \"sound/direct_sound_samples/zero_wav.bin\"\n"
                "ZeroAif::\n\t.incbin \"sound/direct_sound_samples/zero_aif.bin\"\n");
     write_text(root, "sound/direct_sound_synth_data.inc", "SynthWave::\n\tset_synth_custom 1, 2, 3, 4\n");
+    write_text(root,
+               "asm/macros/music_voice.inc",
+               ".macro set_synth_custom\n.endm\n"
+               ".macro set_synth_pulse\n.endm\n"
+               ".macro set_synth_25\n.endm\n"
+               ".macro set_synth_saw\n.endm\n"
+               ".macro set_synth_50\n.endm\n"
+               ".macro set_synth_triangle\n.endm\n"
+               "set_synth_pulse 1, 2, 3, 4\n"
+               ".macro set_synth_500\n.endm\n"
+               "@ .macro set_synth_custom_v2\n");
     write_text(root,
                "sound/programmable_wave_data.inc",
                "ProgrammableWave::\n\t.incbin \"sound/programmable_wave_samples/wave.pcm\"\n");
@@ -244,7 +261,14 @@ int main(void)
     CHECK(strcmp(directEntry->symbol, "DirectSoundWave") == 0);
     CHECK(strcmp(progEntry->symbol, "ProgrammableWave") == 0);
     CHECK(strcmp(keysplitEntry->symbol, "keysplit_test") == 0);
-
+    CHECK(snapshot.family_adsr_count == 2 && strcmp(snapshot.family_adsr[0].family, "directsound") == 0 &&
+          snapshot.family_adsr[0].adsr[3] == 4 && strcmp(snapshot.family_adsr[1].family, "square_1") == 0);
+    CHECK(snapshot.synth_macro_word_count == 6 && strcmp(snapshot.synth_macro_words[0], "set_synth_25") == 0 &&
+          strcmp(snapshot.synth_macro_words[5], "set_synth_triangle") == 0);
+    int macroWatch = 0;
+    for (size_t i = 0; i < snapshot.watch_path_count; i++)
+        macroWatch |= strcmp(snapshot.watch_paths[i], "asm/macros") == 0;
+    CHECK(macroWatch);
     VoicegroupAssetResult first =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, directEntry->symbol, strlen(directEntry->symbol));
     VoicegroupAssetResult second =
@@ -309,7 +333,6 @@ int main(void)
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "ZeroAif", strlen("ZeroAif"));
     CHECK(zeroAif.diagnostic_count > 0);
     voicegroup_asset_result_free(&zeroAif);
-
     const char* previewSource = "voice_group preview\n"
                                 "\tvoice_directsound 60, 0, DirectSoundWave, 255, 0, 255, 0\n";
     check_source_preview(project, previewSource, 0x44);
@@ -363,7 +386,6 @@ int main(void)
     CHECK(rearmed.diagnostic_count == 0 && rearmed.payload_len == 3);
     CHECK(((const uint8_t*)rearmed.payload)[0] == 0x44);
     voicegroup_asset_result_free(&rearmed);
-
     write_text(root, "sound/voice_groups.inc", invalidDisk);
     voicegroup_project_mark_stale(project);
     VoicegroupAssetResult failedAgain =
@@ -381,6 +403,7 @@ int main(void)
     CHECK(((const uint8_t*)explicitRetry.payload)[0] == 0x44);
     voicegroup_asset_result_free(&explicitRetry);
     voicegroup_project_result_free(&snapshot);
+    CHECK(!snapshot._private_storage && !snapshot.family_adsr && !snapshot.synth_macro_words);
     voicegroup_project_free(project);
 
     char rootBTemplate[] = "/tmp/voicegroup-project-harness-b-XXXXXX";
@@ -527,7 +550,6 @@ int main(void)
     voicegroup_free(contiguousBank);
     voicegroup_project_result_free(&contiguousSnapshot);
     voicegroup_project_free(contiguousProject);
-
     remove_file(root, "sound/voice_groups.inc");
     remove_file(root, "sound/direct_sound_data.inc");
     remove_file(root, "sound/direct_sound_synth_data.inc");
@@ -543,6 +565,9 @@ int main(void)
     remove_file(root, "sound/direct_sound_samples/zero_wav.wav");
     remove_file(root, "sound/direct_sound_samples/zero_aif.aif");
     remove_file(root, "sound/programmable_wave_samples/wave.pcm");
+    remove_file(root, "asm/macros/music_voice.inc");
+    CHECK(rmdir(macros) == 0);
+    CHECK(rmdir(asmRoot) == 0);
     CHECK(rmdir(direct) == 0);
     CHECK(rmdir(prog) == 0);
     CHECK(rmdir(sound) == 0);

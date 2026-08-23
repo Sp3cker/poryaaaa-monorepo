@@ -397,6 +397,20 @@ pub fn find_macro(name: &str) -> Option<&'static MacroDefinition> {
     MACROS.iter().find(|definition| definition.name == name)
 }
 
+/// Golden Sun synth macro definitions that can be created by the project picker.
+pub(crate) const SYNTH_MACRO_WORDS: &[&str] = &[
+    "set_synth_25",
+    "set_synth_50",
+    "set_synth_custom",
+    "set_synth_pulse",
+    "set_synth_saw",
+    "set_synth_triangle",
+];
+
+pub(crate) fn is_synth_macro_word(name: &str) -> bool {
+    SYNTH_MACRO_WORDS.contains(&name)
+}
+
 /// Parses one Golden Sun `set_synth_*` macro invocation into the six bytes
 /// stored in a zero-length DirectSound descriptor.
 ///
@@ -499,6 +513,7 @@ pub struct ProjectCatalog {
     pub watch_paths: Vec<String>,
     pub typical_adsr_by_symbol: BTreeMap<String, [u8; 4]>,
     pub typical_adsr_by_family: BTreeMap<String, [u8; 4]>,
+    pub synth_macro_words: Vec<String>,
 }
 /// One complete project-index read for the C project adapter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

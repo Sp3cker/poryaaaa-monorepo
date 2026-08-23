@@ -18,7 +18,7 @@ fn generated_c_header_exposes_public_abi_without_rust_layouts() {
     assert!(
         header.contains("typedef struct VoicegroupCoreSynthOverlay VoicegroupCoreSynthOverlay;")
     );
-    assert!(header.contains("#define VOICEGROUP_CORE_ABI_VERSION 1"));
+    assert!(header.contains("#define VOICEGROUP_CORE_ABI_VERSION 2"));
     assert!(header.contains("#define VOICEGROUP_CORE_PROGRAM_BANK_SIZE 128"));
     assert!(header.contains("#ifdef __cplusplus\nextern \"C\" {\n#endif // __cplusplus"));
     assert!(header.contains("#ifdef __cplusplus\n}  // extern \"C\"\n#endif  // __cplusplus"));
@@ -30,6 +30,8 @@ fn generated_c_header_exposes_public_abi_without_rust_layouts() {
     assert!(header.contains("voicegroup_core_project_snapshot_result_content_paths("));
     assert!(header.contains("voicegroup_core_project_snapshot_result_dependency_paths("));
     assert!(header.contains("voicegroup_core_project_snapshot_result_watch_paths("));
+    assert!(header.contains("voicegroup_core_project_snapshot_result_family_adsr("));
+    assert!(header.contains("voicegroup_core_project_snapshot_result_synth_macro_words("));
     assert!(header.contains("voicegroup_core_synth_overlay_add("));
     assert!(header.contains("bool has_synth;"));
     assert!(header.contains("const char *source_path;"));

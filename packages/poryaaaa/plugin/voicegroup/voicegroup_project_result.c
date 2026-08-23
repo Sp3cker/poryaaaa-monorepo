@@ -198,6 +198,28 @@ static bool copy_catalog(ResultArena* arena,
     return true;
 }
 
+static bool copy_family_adsr(ResultArena* arena,
+                             const VoicegroupFamilyAdsr* source,
+                             size_t count,
+                             const VoicegroupFamilyAdsr** destination)
+{
+    *destination = NULL;
+    if (count == 0)
+        return true;
+    VoicegroupFamilyAdsr* entries = arena_alloc(arena, count * sizeof(*entries));
+    if (!entries)
+        return false;
+    for (size_t i = 0; i < count; i++)
+    {
+        entries[i] = source[i];
+        entries[i].family = arena_copy_string(arena, source[i].family);
+        if (!entries[i].family)
+            return false;
+    }
+    *destination = entries;
+    return true;
+}
+
 static bool
 copy_project_arrays(ResultArena* arena, VoicegroupProjectResult* destination, const VoicegroupProjectResult* source)
 {
@@ -207,7 +229,18 @@ copy_project_arrays(ResultArena* arena, VoicegroupProjectResult* destination, co
     destination->catalog = catalog;
     destination->catalog_count = source->catalog_count;
 
+    const VoicegroupFamilyAdsr* familyAdsr = NULL;
+    if (!copy_family_adsr(arena, source->family_adsr, source->family_adsr_count, &familyAdsr))
+        return false;
+    destination->family_adsr = familyAdsr;
+    destination->family_adsr_count = source->family_adsr_count;
+
     const char* const* paths = NULL;
+    if (!copy_string_array(arena, source->synth_macro_words, source->synth_macro_word_count, &paths))
+        return false;
+    destination->synth_macro_words = paths;
+    destination->synth_macro_word_count = source->synth_macro_word_count;
+
     if (!copy_string_array(arena, source->content_paths, source->content_path_count, &paths))
         return false;
     destination->content_paths = paths;
@@ -327,6 +360,29 @@ bool project_storage_copy_core_snapshot(ProjectResultStorage* storage,
     if (!copy_core_catalog(&storage->arena, catalog, count, &copiedCatalog))
         return false;
     storage->view.catalog = copiedCatalog;
+
+    const VoicegroupCoreFamilyAdsr* familyAdsr = voicegroup_core_project_snapshot_result_family_adsr(snapshot, &count);
+    storage->view.family_adsr = NULL;
+    storage->view.family_adsr_count = count;
+    if (count > 0)
+    {
+        VoicegroupFamilyAdsr* copiedFamilyAdsr = arena_alloc(&storage->arena, count * sizeof(*copiedFamilyAdsr));
+        if (!copiedFamilyAdsr)
+            return false;
+        for (size_t i = 0; i < count; i++)
+        {
+            copiedFamilyAdsr[i].family = arena_copy_string(&storage->arena, familyAdsr[i].family);
+            memcpy(copiedFamilyAdsr[i].adsr, familyAdsr[i].adsr, sizeof(copiedFamilyAdsr[i].adsr));
+            if (!copiedFamilyAdsr[i].family)
+                return false;
+        }
+        storage->view.family_adsr = copiedFamilyAdsr;
+    }
+
+    const char* const* macroWords = voicegroup_core_project_snapshot_result_synth_macro_words(snapshot, &count);
+    storage->view.synth_macro_word_count = count;
+    if (!copy_string_array(&storage->arena, macroWords, count, &storage->view.synth_macro_words))
+        return false;
 
     const VoicegroupCoreDiagnostic* diagnostics = voicegroup_core_project_snapshot_result_diagnostics(snapshot, &count);
     storage->view.diagnostic_count = count;

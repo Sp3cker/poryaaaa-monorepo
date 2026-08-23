@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 
 use crate::ast::SourceRange;
-use crate::catalog::synth_descriptor;
+use crate::catalog::{is_synth_macro_word, synth_descriptor};
 use crate::parser::parse_document;
 use crate::program_bank::ResolvedAsset;
 
@@ -22,6 +22,8 @@ pub(super) fn load(root: impl AsRef<std::path::Path>) -> io::Result<ProjectIndex
         root,
         voice_groups: BTreeMap::new(),
         voicegroup_files: BTreeSet::new(),
+        synth_macro_paths: BTreeSet::new(),
+        synth_macro_words: BTreeSet::new(),
         direct_sound_assets: BTreeMap::new(),
         programmable_wave_assets: BTreeMap::new(),
         direct_sound_definitions: BTreeMap::new(),
@@ -34,6 +36,7 @@ pub(super) fn load(root: impl AsRef<std::path::Path>) -> io::Result<ProjectIndex
     // Discover files before declarations so editor features can see un-included
     // source files without changing what counts as a declared voicegroup.
     discover_voicegroup_files(&mut index)?;
+    discover_synth_macro_definitions(&mut index)?;
     discover_monolithic_voicegroups(&mut index)?;
     discover_included_voicegroup_files(&mut index, "sound/voice_groups.inc")?;
     discover_included_voicegroup_files(&mut index, "sound/voicegroups.inc")?;
@@ -41,6 +44,54 @@ pub(super) fn load(root: impl AsRef<std::path::Path>) -> io::Result<ProjectIndex
     index_standard_symbol_files(&mut index)?;
     index_keysplit_tables(&mut index)?;
     Ok(index)
+}
+
+/// Collects supported `.macro` definitions from the Golden Sun macro directory.
+///
+/// This deliberately scans definitions rather than synth data invocations so a
+/// project can advertise a creatable alias before any sound uses it.
+fn discover_synth_macro_definitions(index: &mut ProjectIndex) -> io::Result<()> {
+    let relative_dir = "asm/macros";
+    let dir = index.root.join(relative_dir);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let file_name = match entry.file_name().into_string() {
+            Ok(file_name) => file_name,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() || !file_name.ends_with(".inc") {
+            continue;
+        }
+        let relative_path = format!("{relative_dir}/{file_name}");
+        index.synth_macro_paths.insert(relative_path.clone());
+        let text = fs::read_to_string(index.root.join(&relative_path))?;
+        for line in text.lines() {
+            let source = parsing::strip_comment(line).trim();
+            let Some(rest) = source.strip_prefix(".macro") else {
+                continue;
+            };
+            if !rest
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_whitespace())
+            {
+                continue;
+            }
+            let Some(name) = rest.split_whitespace().next() else {
+                continue;
+            };
+            if is_synth_macro_word(name) {
+                index.synth_macro_words.insert(name.to_string());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Records heuristic legacy layouts that this index deliberately does not ingest.

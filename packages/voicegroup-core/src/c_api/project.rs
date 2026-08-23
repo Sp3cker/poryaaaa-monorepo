@@ -16,6 +16,8 @@ struct VoicegroupCoreSnapshotStorage {
     content_paths: Vec<*const c_char>,
     dependency_paths: Vec<*const c_char>,
     watch_paths: Vec<*const c_char>,
+    family_adsr: Vec<VoicegroupCoreFamilyAdsr>,
+    synth_macro_words: Vec<*const c_char>,
     dependency_views: Vec<Vec<*const c_char>>,
     _strings: Vec<CString>,
 }
@@ -33,6 +35,8 @@ impl VoicegroupCoreProjectSnapshotResult {
             content_paths: Vec::with_capacity(snapshot.catalog.content_paths.len()),
             dependency_paths: Vec::with_capacity(snapshot.catalog.dependency_paths.len()),
             watch_paths: Vec::with_capacity(snapshot.catalog.watch_paths.len()),
+            family_adsr: Vec::with_capacity(snapshot.catalog.typical_adsr_by_family.len()),
+            synth_macro_words: Vec::with_capacity(snapshot.catalog.synth_macro_words.len()),
             dependency_views: Vec::with_capacity(snapshot.catalog.entries.len()),
             _strings: Vec::new(),
         };
@@ -79,6 +83,22 @@ impl VoicegroupCoreProjectSnapshotResult {
             .map(|path| store_string(&mut storage._strings, path))
             .collect();
         storage.watch_paths = watch_paths;
+
+        storage.family_adsr = snapshot
+            .catalog
+            .typical_adsr_by_family
+            .iter()
+            .map(|(family, adsr)| VoicegroupCoreFamilyAdsr {
+                family: store_string(&mut storage._strings, family),
+                adsr: *adsr,
+            })
+            .collect();
+        storage.synth_macro_words = snapshot
+            .catalog
+            .synth_macro_words
+            .iter()
+            .map(|word| store_string(&mut storage._strings, word))
+            .collect();
 
         for entry in &snapshot.catalog.entries {
             let dependency_paths = entry
@@ -247,6 +267,43 @@ pub unsafe extern "C" fn voicegroup_core_project_snapshot_result_watch_paths(
 ) -> *const *const c_char {
     snapshot_path_slice(result, out_count, |result| {
         result.storage.watch_paths.as_slice()
+    })
+}
+
+#[no_mangle]
+/// Returns typical ADSR envelopes grouped by family in lexicographic order.
+///
+/// # Safety
+/// `result` must be null or a valid snapshot result handle. `out_count` may be
+/// null when the caller does not need the count.
+pub unsafe extern "C" fn voicegroup_core_project_snapshot_result_family_adsr(
+    result: *const VoicegroupCoreProjectSnapshotResult,
+    out_count: *mut usize,
+) -> *const VoicegroupCoreFamilyAdsr {
+    let Some(result) = result.as_ref() else {
+        if !out_count.is_null() {
+            *out_count = 0;
+        }
+        return ptr::null();
+    };
+    if !out_count.is_null() {
+        *out_count = result.storage.family_adsr.len();
+    }
+    slice_ptr_or_null(&result.storage.family_adsr)
+}
+
+#[no_mangle]
+/// Returns supported synth macro words in lexicographic order.
+///
+/// # Safety
+/// `result` must be null or a valid snapshot result handle. `out_count` may be
+/// null when the caller does not need the count.
+pub unsafe extern "C" fn voicegroup_core_project_snapshot_result_synth_macro_words(
+    result: *const VoicegroupCoreProjectSnapshotResult,
+    out_count: *mut usize,
+) -> *const *const c_char {
+    snapshot_path_slice(result, out_count, |result| {
+        result.storage.synth_macro_words.as_slice()
     })
 }
 
