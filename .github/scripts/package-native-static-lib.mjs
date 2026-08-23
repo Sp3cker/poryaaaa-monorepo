@@ -29,6 +29,14 @@ mkdirSync(includeDir, { recursive: true });
 mkdirSync(libraryDir, { recursive: true });
 
 const headerSource = join(crateRoot, "include", "voicegroup_core.h");
+const headerText = readFileSync(headerSource, "utf8");
+const abiMatch = headerText.match(
+  /^#define VOICEGROUP_CORE_ABI_VERSION ([1-9][0-9]*)$/m,
+);
+if (!abiMatch) {
+  throw new Error("voicegroup_core.h does not define a valid ABI version");
+}
+const abiVersion = Number(abiMatch[1]);
 const headerDestination = join(includeDir, "voicegroup_core.h");
 const libraryDestination = join(libraryDir, basename(sourceLibrary));
 cpSync(headerSource, headerDestination);
@@ -76,7 +84,7 @@ const manifest = {
   schema_version: 1,
   source_commit: commit,
   crate_version: crate.version,
-  abi_version: 1,
+  abi_version: abiVersion,
   wave_cache: "unbounded-per-load-absolute-path",
   target_triple: target,
   architecture: target.split("-")[0],
