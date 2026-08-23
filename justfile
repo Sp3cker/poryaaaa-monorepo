@@ -141,9 +141,12 @@ test target:
     case "{{target}}" in
       poryaaaa)
         just build vg-core
-        cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release
-        cmake --build packages/poryaaaa/build --config Release --target poryaaaa_unit_tests
+        cmake -S packages/poryaaaa -B packages/poryaaaa/build -DCMAKE_BUILD_TYPE=Release \
+          -DPORYAAAA_BUILD_VOICEGROUP_PROJECT_HARNESS=ON
+        cmake --build packages/poryaaaa/build --config Release --target \
+          poryaaaa_unit_tests voicegroup_project_harness
         packages/poryaaaa/build/poryaaaa_unit_tests
+        packages/poryaaaa/build/plugin/voicegroup/voicegroup_project_harness
         ;;
       ccomidi)
         cmake -S packages/ccomidi -B packages/ccomidi/build -DCMAKE_BUILD_TYPE=Release

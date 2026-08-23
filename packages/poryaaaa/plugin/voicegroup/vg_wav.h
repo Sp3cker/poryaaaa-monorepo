@@ -4,29 +4,30 @@
 #include "voicegroup_types.h" /* WaveData */
 #include "vg_paths.h"         /* VG_MAX_PATH_LEN */
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* ---- Wave dedup cache ---- */
 
 /*
- * Skips reloading the same .wav referenced from multiple voice slots
- * inside one voicegroup. Not persistent across voicegroup_load().
+ * The cache is scoped to one bank materialization.  It owns only its path
+ * keys; WaveData remains owned by LoadedVoiceGroup.
  */
-#define VG_WAVE_CACHE_CAPACITY 128
-
 typedef struct
 {
-    char absPath[VG_MAX_PATH_LEN];
+    char* absPath;
     WaveData* wd;
 } WaveCacheEntry;
 
 typedef struct
 {
-    WaveCacheEntry entries[VG_WAVE_CACHE_CAPACITY];
-    int count;
+    WaveCacheEntry* entries;
+    size_t count;
+    size_t capacity;
 } WaveCache;
 
 void vg_wave_cache_init(WaveCache* cache);
+void vg_wave_cache_free(WaveCache* cache);
 WaveData* vg_wave_cache_find(const WaveCache* cache, const char* absPath);
 void vg_wave_cache_insert(WaveCache* cache, const char* absPath, WaveData* wd);
 
@@ -41,16 +42,21 @@ void vg_wave_cache_insert(WaveCache* cache, const char* absPath, WaveData* wd);
 WaveData* vg_load_wav_file(const char* absoluteWavPath);
 
 /*
+ * Load an AIFF sample from an absolute path. Supports the mono 8/16-bit
+ * forms emitted by the legacy aif2pcm pipeline.
+ */
+WaveData* vg_load_aif_file(const char* absoluteAifPath);
+
+/*
  * Load a raw GBA .bin sample (16-byte header + sample bytes) from a
  * project-relative path. NULL on failure.
  */
 WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativeBinPath);
 
 /*
- * Primary sample loader: given a .bin reference, tries a sibling .wav
- * file first (same basename) and falls back to the .bin loader if the
- * .wav is missing or malformed. This is what voicegroup parsing
- * should call for DirectSound samples.
+ * Primary sample loader: given a .bin reference, tries sibling .wav then
+ * .aif files and finally falls back to the .bin loader. This is what
+ * voicegroup parsing should call for DirectSound samples.
  */
 WaveData* vg_load_sample(const char* projectRoot, const char* relativeBinPath);
 

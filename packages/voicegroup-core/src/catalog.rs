@@ -1,4 +1,6 @@
 //! Canonical voice macro catalog: names, type codes, macro families, and argument schemas.
+use crate::ast::Diagnostic;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
@@ -393,6 +395,117 @@ pub fn all_macros() -> &'static [MacroDefinition] {
 
 pub fn find_macro(name: &str) -> Option<&'static MacroDefinition> {
     MACROS.iter().find(|definition| definition.name == name)
+}
+
+/// Parses one Golden Sun `set_synth_*` macro invocation into the six bytes
+/// stored in a zero-length DirectSound descriptor.
+///
+/// The token boundary check is intentional: aliases such as `set_synth_50`
+/// must not accept a longer symbol that merely starts with the alias.
+pub fn synth_descriptor(line: &str) -> Option<[u8; 6]> {
+    const ALIASES: &[(&str, u8, bool)] = &[
+        ("set_synth_custom", 0, true),
+        ("set_synth_pulse", 0, true),
+        ("set_synth_25", 1, false),
+        ("set_synth_saw", 1, false),
+        ("set_synth_50", 2, false),
+        ("set_synth_triangle", 2, false),
+    ];
+
+    let line = line
+        .split_once('@')
+        .map_or(line, |(source, _)| source)
+        .trim();
+    for &(name, waveform, has_parameters) in ALIASES {
+        let Some(rest) = line.strip_prefix(name) else {
+            continue;
+        };
+        if rest
+            .chars()
+            .next()
+            .is_some_and(|character| !character.is_ascii_whitespace() && character != ',')
+        {
+            continue;
+        }
+
+        let mut descriptor = [0; 6];
+        descriptor[0] = 0x80;
+        descriptor[1] = waveform;
+        if has_parameters {
+            let mut values = rest
+                .split(|character: char| character == ',' || character.is_ascii_whitespace())
+                .filter(|part| !part.is_empty());
+            for byte in &mut descriptor[2..] {
+                *byte = parse_integer(values.next()?)?;
+            }
+            if values.next().is_some() {
+                return None;
+            }
+        }
+        return Some(descriptor);
+    }
+
+    None
+}
+
+fn parse_integer(text: &str) -> Option<u8> {
+    let text = text.trim();
+    let (radix, digits) = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .map_or((10, text), |digits| (16, digits));
+    u8::from_str_radix(digits, radix).ok()
+}
+
+/// The catalog row families crossing the bulk project snapshot seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CatalogEntryKind {
+    VoiceGroup,
+    DirectSound,
+    ProgrammableWave,
+    Keysplit,
+    Drumkit,
+    Synth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeysplitCatalogPair {
+    pub subgroup: String,
+    pub table: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogEntry {
+    pub kind: CatalogEntryKind,
+    pub symbol: String,
+    pub display_name: String,
+    /// The source file that declares this row, never an include-table path for
+    /// voicegroup rows.
+    pub source_path: Option<String>,
+    pub asset_path: Option<String>,
+    pub dependency_paths: Vec<String>,
+    pub keysplit: Option<KeysplitCatalogPair>,
+    pub drumkit: Option<String>,
+    pub typical_adsr: Option<[u8; 4]>,
+    pub synth_desc: Option<[u8; 6]>,
+}
+
+/// Rust-owned bulk catalog and exact watch candidates for one project index.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectCatalog {
+    pub entries: Vec<CatalogEntry>,
+    pub content_paths: Vec<String>,
+    pub dependency_paths: Vec<String>,
+    pub watch_paths: Vec<String>,
+    pub typical_adsr_by_symbol: BTreeMap<String, [u8; 4]>,
+    pub typical_adsr_by_family: BTreeMap<String, [u8; 4]>,
+}
+/// One complete project-index read for the C project adapter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectSnapshot {
+    pub succeeded: bool,
+    pub catalog: ProjectCatalog,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 const fn integer_argument(

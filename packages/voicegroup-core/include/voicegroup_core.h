@@ -11,6 +11,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * ABI revision consumed by the source-built Pory A C adapter.
+ */
+#define VOICEGROUP_CORE_ABI_VERSION 1
+
 #define VOICEGROUP_CORE_PROGRAM_BANK_SIZE 128
 
 typedef enum VoicegroupCoreStatus {
@@ -20,10 +25,11 @@ typedef enum VoicegroupCoreStatus {
   VOICEGROUP_CORE_STATUS_LOAD_FAILED = 3,
 } VoicegroupCoreStatus;
 
-typedef enum VoicegroupCoreDiagnosticSeverity {
-  VOICEGROUP_CORE_DIAGNOSTIC_SEVERITY_ERROR = 0,
-  VOICEGROUP_CORE_DIAGNOSTIC_SEVERITY_WARNING = 1,
-} VoicegroupCoreDiagnosticSeverity;
+typedef enum VoicegroupCoreDiagnosticScope {
+  VOICEGROUP_CORE_DIAGNOSTIC_SCOPE_STRUCTURAL = 0,
+  VOICEGROUP_CORE_DIAGNOSTIC_SCOPE_SLOT = 1,
+  VOICEGROUP_CORE_DIAGNOSTIC_SCOPE_MATERIALIZATION = 2,
+} VoicegroupCoreDiagnosticScope;
 
 typedef enum VoicegroupCoreProgramKind {
   VOICEGROUP_CORE_PROGRAM_KIND_EMPTY = 0,
@@ -37,9 +43,22 @@ typedef enum VoicegroupCoreProgramKind {
   VOICEGROUP_CORE_PROGRAM_KIND_CRY = 8,
 } VoicegroupCoreProgramKind;
 
+typedef enum VoicegroupCoreCatalogEntryKind {
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_VOICE_GROUP = 0,
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_DIRECT_SOUND = 1,
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_PROGRAMMABLE_WAVE = 2,
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_KEYSPLIT = 3,
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_DRUMKIT = 4,
+  VOICEGROUP_CORE_CATALOG_ENTRY_KIND_SYNTH = 5,
+} VoicegroupCoreCatalogEntryKind;
+
 typedef struct VoicegroupCoreBankResult VoicegroupCoreBankResult;
 
 typedef struct VoicegroupCoreProjectIndex VoicegroupCoreProjectIndex;
+
+typedef struct VoicegroupCoreProjectSnapshotResult VoicegroupCoreProjectSnapshotResult;
+
+typedef struct VoicegroupCoreSynthOverlay VoicegroupCoreSynthOverlay;
 
 typedef struct VoicegroupCoreSourcePosition {
   /**
@@ -62,6 +81,42 @@ typedef struct VoicegroupCoreSourceRange {
    */
   struct VoicegroupCoreSourcePosition end;
 } VoicegroupCoreSourceRange;
+
+typedef struct VoicegroupCoreDiagnostic {
+  /**
+   * NUL-terminated UTF-8 stable diagnostic identifier.
+   */
+  const char *code;
+  /**
+   * NUL-terminated UTF-8 human-readable diagnostic message.
+   */
+  const char *message;
+  /**
+   * Layer that owns the diagnostic.
+   */
+  enum VoicegroupCoreDiagnosticScope scope;
+  /**
+   * Actual source file, or NULL when the diagnostic has no source.
+   */
+  const char *source_path;
+  /**
+   * Referenced asset path, or NULL when no asset failed.
+   */
+  const char *asset_path;
+  /**
+   * Full one-based, start-inclusive/end-exclusive source range.
+   */
+  struct VoicegroupCoreSourceRange range;
+  /**
+   * Whether `range` points at a non-empty source span.
+   */
+  bool has_range;
+  /**
+   * Whether `slot` identifies a voicegroup slot.
+   */
+  bool has_slot;
+  size_t slot;
+} VoicegroupCoreDiagnostic;
 
 typedef struct VoicegroupCoreDirectSoundProgram {
   /**
@@ -88,6 +143,14 @@ typedef struct VoicegroupCoreDirectSoundProgram {
    * Envelope release byte used by the poryaaaa engine.
    */
   uint8_t release;
+  /**
+   * Whether this sample resolves to a six-byte DirectSound synth descriptor.
+   */
+  bool has_synth;
+  /**
+   * Six-byte descriptor used by Golden Sun synth aliases.
+   */
+  uint8_t synth_desc[6];
 } VoicegroupCoreDirectSoundProgram;
 
 typedef struct VoicegroupCoreProgrammableWaveProgram {
@@ -206,27 +269,61 @@ typedef struct VoicegroupCoreKeysplitProgram {
   uint8_t table[128];
 } VoicegroupCoreKeysplitProgram;
 
+typedef struct VoicegroupCoreCatalogEntry {
+  /**
+   * Catalog family for this row.
+   */
+  enum VoicegroupCoreCatalogEntryKind kind;
+  /**
+   * Canonical symbol.
+   */
+  const char *symbol;
+  /**
+   * Rust-provided display name.
+   */
+  const char *display_name;
+  /**
+   * Actual indexed source file, or NULL when none exists.
+   */
+  const char *source_path;
+  /**
+   * Direct dependency path, or NULL when this row has no single asset.
+   */
+  const char *asset_path;
+  /**
+   * Every indexed dependency referenced by this row.
+   */
+  const char *const *dependency_paths;
+  size_t dependency_path_count;
+  /**
+   * Keysplit subgroup/table pair, or NULL for non-keysplit rows.
+   */
+  const char *subgroup;
+  const char *table;
+  /**
+   * Drumkit subgroup, or NULL for non-drumkit rows.
+   */
+  const char *drumkit;
+  /**
+   * Typical ADSR envelope, when one was observed.
+   */
+  bool has_adsr;
+  uint8_t adsr[4];
+  /**
+   * Six-byte DirectSound synth descriptor, when this is a synth row.
+   */
+  bool has_synth;
+  uint8_t synth_desc[6];
+} VoicegroupCoreCatalogEntry;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
 
 /**
- * Loads a project index and writes an opaque handle to `out_index`.
- *
- * # Safety
- * `project_root` must be a valid NUL-terminated UTF-8 string. `out_index` must
- * be writable.
+ * Returns the ABI revision expected by the generated C header.
  */
-enum VoicegroupCoreStatus voicegroup_core_project_index_load(const char *project_root,
-                                                             struct VoicegroupCoreProjectIndex **out_index);
-
-/**
- * Frees a project index handle.
- *
- * # Safety
- * `index` must be null or a handle returned by this library that has not been freed.
- */
-void voicegroup_core_project_index_free(struct VoicegroupCoreProjectIndex *index);
+uint32_t voicegroup_core_abi_version(void);
 
 /**
  * Loads one program bank from an existing project index.
@@ -238,6 +335,98 @@ void voicegroup_core_project_index_free(struct VoicegroupCoreProjectIndex *index
 enum VoicegroupCoreStatus voicegroup_core_project_index_load_program_bank(const struct VoicegroupCoreProjectIndex *index,
                                                                           const char *bank_name,
                                                                           struct VoicegroupCoreBankResult **out_result);
+
+/**
+ * Returns the number of source-ordered included banks after `bank_name`.
+ *
+ * This is an internal materializer seam. The order comes from the indexed
+ * include table and never from a C-side directory scan.
+ *
+ * # Safety
+ * `index` must be a valid project index handle and `bank_name` must be a
+ * valid NUL-terminated UTF-8 string.
+ */
+size_t voicegroup_core_project_index_bank_continuation_count(const struct VoicegroupCoreProjectIndex *index,
+                                                             const char *bank_name);
+
+/**
+ * Copies one source-ordered included bank after `bank_name`.
+ *
+ * Empty `bank_buffer` identifies an unresolved indexed successor; its source
+ * path is still copied so the C materializer can retain a structured failure.
+ * Returns false when the ordinal is absent, an input is invalid, or either
+ * caller-owned output buffer is too short. No output is touched on failure.
+ *
+ * # Safety
+ * `index` must be a valid project index handle, `bank_name` must be a valid
+ * NUL-terminated UTF-8 string, and each non-null output buffer must be
+ * writable for its declared length.
+ */
+bool voicegroup_core_project_index_bank_continuation(const struct VoicegroupCoreProjectIndex *index,
+                                                     const char *bank_name,
+                                                     size_t continuation_index,
+                                                     char *bank_buffer,
+                                                     size_t bank_buffer_len,
+                                                     char *path_buffer,
+                                                     size_t path_buffer_len);
+
+/**
+ * Copies one indexed keysplit table into a caller-provided 128-byte buffer.
+ *
+ * # Safety
+ * `index` must be a valid project index handle, `symbol` must be a valid
+ * NUL-terminated UTF-8 string, and `out_table` must point to 128 writable
+ * bytes.
+ */
+bool voicegroup_core_project_index_keysplit_table(const struct VoicegroupCoreProjectIndex *index,
+                                                  const char *symbol,
+                                                  uint8_t *out_table);
+
+/**
+ * Loads one bank from a complete unsaved source file.
+ *
+ * `source_relative_path`, `source_bytes`, and `bank_name` are length-delimited
+ * UTF-8 inputs. The path is retained as the authoritative diagnostic path.
+ *
+ * # Safety
+ * `index` and `overlay` (when non-null) must be valid handles. Every non-empty
+ * input range must point to readable memory. `out_result` must be writable.
+ */
+enum VoicegroupCoreStatus voicegroup_core_project_index_load_program_bank_source(const struct VoicegroupCoreProjectIndex *index,
+                                                                                 const char *source_relative_path,
+                                                                                 size_t source_relative_path_len,
+                                                                                 const char *source_bytes,
+                                                                                 size_t source_len,
+                                                                                 const char *bank_name,
+                                                                                 size_t bank_name_len,
+                                                                                 const struct VoicegroupCoreSynthOverlay *overlay,
+                                                                                 struct VoicegroupCoreBankResult **out_result);
+
+/**
+ * Creates an empty typed DirectSound synth overlay.
+ */
+struct VoicegroupCoreSynthOverlay *voicegroup_core_synth_overlay_create(void);
+
+/**
+ * Adds one six-byte synth definition to an overlay.
+ *
+ * # Safety
+ * `overlay` must be a valid overlay handle. `name` must point to
+ * `name_len` UTF-8 bytes (a null pointer is accepted only for an empty name).
+ * `descriptor` must point to six readable bytes.
+ */
+enum VoicegroupCoreStatus voicegroup_core_synth_overlay_add(struct VoicegroupCoreSynthOverlay *overlay,
+                                                            const char *name,
+                                                            size_t name_len,
+                                                            const uint8_t *descriptor);
+
+/**
+ * Frees a typed synth overlay.
+ *
+ * # Safety
+ * `overlay` must be null or a handle returned by this library.
+ */
+void voicegroup_core_synth_overlay_free(struct VoicegroupCoreSynthOverlay *overlay);
 
 /**
  * Frees a bank result handle.
@@ -288,13 +477,16 @@ size_t voicegroup_core_bank_result_diagnostic_message(const struct VoicegroupCor
                                                       size_t buffer_len);
 
 /**
- * Returns one diagnostic severity.
+ * Writes one complete diagnostic view, including scope, paths, range, and slot.
+ *
+ * The returned pointers remain valid until the matching bank-result free.
  *
  * # Safety
- * `result` must be null or a valid bank result handle.
+ * `result` must be a valid bank result handle. `out_diagnostic` must be writable.
  */
-enum VoicegroupCoreDiagnosticSeverity voicegroup_core_bank_result_diagnostic_severity(const struct VoicegroupCoreBankResult *result,
-                                                                                      size_t index);
+bool voicegroup_core_bank_result_diagnostic(const struct VoicegroupCoreBankResult *result,
+                                            size_t index,
+                                            struct VoicegroupCoreDiagnostic *out_diagnostic);
 
 /**
  * Writes one diagnostic source range.
@@ -431,6 +623,104 @@ bool voicegroup_core_bank_result_program_noise(const struct VoicegroupCoreBankRe
 bool voicegroup_core_bank_result_program_keysplit(const struct VoicegroupCoreBankResult *result,
                                                   size_t slot,
                                                   struct VoicegroupCoreKeysplitProgram *out_program);
+
+/**
+ * Builds one opaque bulk snapshot of the project index.
+ *
+ * # Safety
+ * `index` must be a valid project index handle. `out_result` must be writable.
+ */
+enum VoicegroupCoreStatus voicegroup_core_project_index_snapshot(const struct VoicegroupCoreProjectIndex *index,
+                                                                 struct VoicegroupCoreProjectSnapshotResult **out_result);
+
+/**
+ * Frees an opaque project snapshot result.
+ *
+ * # Safety
+ * `result` must be null or a snapshot result returned by this library.
+ */
+void voicegroup_core_project_snapshot_result_free(struct VoicegroupCoreProjectSnapshotResult *result);
+
+/**
+ * Returns whether the indexed project snapshot completed without diagnostics.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle.
+ */
+bool voicegroup_core_project_snapshot_result_succeeded(const struct VoicegroupCoreProjectSnapshotResult *result);
+
+/**
+ * Returns all catalog rows and optionally writes their count.
+ *
+ * The returned pointer remains valid until the matching snapshot free.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const struct VoicegroupCoreCatalogEntry *voicegroup_core_project_snapshot_result_catalog(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                                         size_t *out_count);
+
+/**
+ * Returns all structured diagnostics and optionally writes their count.
+ *
+ * The returned pointer and every string in each diagnostic remain valid until
+ * the matching snapshot free.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const struct VoicegroupCoreDiagnostic *voicegroup_core_project_snapshot_result_diagnostics(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                                           size_t *out_count);
+
+/**
+ * Returns all actual indexed source paths and optionally writes their count.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const char *const *voicegroup_core_project_snapshot_result_content_paths(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                         size_t *out_count);
+
+/**
+ * Returns all referenced dependency paths and optionally writes their count.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const char *const *voicegroup_core_project_snapshot_result_dependency_paths(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                            size_t *out_count);
+
+/**
+ * Returns all deduplicated watch paths and optionally writes their count.
+ *
+ * # Safety
+ * `result` must be null or a valid snapshot result handle. `out_count` may be
+ * null when the caller does not need the count.
+ */
+const char *const *voicegroup_core_project_snapshot_result_watch_paths(const struct VoicegroupCoreProjectSnapshotResult *result,
+                                                                       size_t *out_count);
+
+/**
+ * Loads a project index and writes an opaque handle to `out_index`.
+ *
+ * # Safety
+ * `project_root` must be a valid NUL-terminated UTF-8 string. `out_index` must
+ * be writable.
+ */
+enum VoicegroupCoreStatus voicegroup_core_project_index_load(const char *project_root,
+                                                             struct VoicegroupCoreProjectIndex **out_index);
+
+/**
+ * Frees a project index handle.
+ *
+ * # Safety
+ * `index` must be null or a handle returned by this library that has not been freed.
+ */
+void voicegroup_core_project_index_free(struct VoicegroupCoreProjectIndex *index);
 
 #ifdef __cplusplus
 }  // extern "C"

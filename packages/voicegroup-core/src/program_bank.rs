@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{Diagnostic, DiagnosticSeverity, ParsedProgram, ParsedVoiceGroup, SourceRange};
+use crate::ast::{Diagnostic, ParsedProgram, ParsedVoiceGroup, SourceRange};
 use crate::catalog::{find_macro, MacroDefinition, MacroKind, VoiceType};
 
 pub const VOICEGROUP_CORE_PROGRAM_BANK_SIZE: usize = 128;
@@ -51,6 +51,7 @@ pub struct DirectSoundProgram {
     pub pan: u8,
     pub sample_symbol: String,
     pub sample_relative_path: String,
+    pub sample_synth_desc: Option<[u8; 6]>,
     pub attack: u8,
     pub decay: u8,
     pub sustain: u8,
@@ -126,7 +127,41 @@ pub struct ResolvedAsset {
     pub symbol: String,
     pub relative_path: String,
     pub display_name: String,
+    pub synth_desc: Option<[u8; 6]>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SynthOverlay {
+    definitions: BTreeMap<String, [u8; 6]>,
+}
+
+impl SynthOverlay {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, symbol: impl Into<String>, descriptor: [u8; 6]) {
+        self.definitions.insert(symbol.into(), descriptor);
+    }
+
+    pub fn with_definition(mut self, symbol: impl Into<String>, descriptor: [u8; 6]) -> Self {
+        self.insert(symbol, descriptor);
+        self
+    }
+
+    pub fn get(&self, symbol: &str) -> Option<&[u8; 6]> {
+        self.definitions.get(symbol)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8; 6])> {
+        self.definitions
+            .iter()
+            .map(|(symbol, descriptor)| (symbol.as_str(), descriptor))
+    }
+}
+
+/// Name used by adapters when passing a transient synth definition set.
+pub type VoicegroupSynthOverlay = SynthOverlay;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProgramBankContext {
@@ -145,6 +180,36 @@ impl ProgramBankContext {
     pub fn with_programmable_wave_asset(mut self, asset: ResolvedAsset) -> Self {
         self.programmable_wave_assets
             .insert(asset.symbol.clone(), asset);
+        self
+    }
+    pub fn with_synth_descriptor(mut self, symbol: impl Into<String>, descriptor: [u8; 6]) -> Self {
+        let symbol = symbol.into();
+        self.direct_sound_assets.insert(
+            symbol.clone(),
+            ResolvedAsset {
+                symbol: symbol.clone(),
+                relative_path: String::new(),
+                display_name: symbol,
+                synth_desc: Some(descriptor),
+            },
+        );
+        self
+    }
+
+    pub fn with_synth_overlay(mut self, overlay: &SynthOverlay) -> Self {
+        for (symbol, descriptor) in overlay.iter() {
+            self = self.with_synth_descriptor(symbol, *descriptor);
+        }
+        self
+    }
+
+    pub fn with_voice_groups<I, S>(mut self, symbols: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.voice_groups
+            .extend(symbols.into_iter().map(|symbol| (symbol.into(), ())));
         self
     }
 
@@ -177,20 +242,26 @@ pub fn build_program_bank(
 
     for program in &voice_group.programs {
         if program.slot >= PROGRAM_BANK_SIZE {
-            diagnostics.push(diagnostic(
-                program.range.clone(),
-                "slot-out-of-range",
-                "voice macro program slot is outside the 0..127 bank range",
-            ));
+            diagnostics.push(
+                diagnostic(
+                    program.range.clone(),
+                    "slot-out-of-range",
+                    "voice macro program slot is outside the 0..127 bank range",
+                )
+                .with_slot(program.slot),
+            );
             continue;
         }
 
         if programs[program.slot].is_some() {
-            diagnostics.push(diagnostic(
-                program.range.clone(),
-                "duplicate-slot",
-                "voice macro populates a slot already used by this voice_group",
-            ));
+            diagnostics.push(
+                diagnostic(
+                    program.range.clone(),
+                    "duplicate-slot",
+                    "voice macro populates a slot already used by this voice_group",
+                )
+                .with_slot(program.slot),
+            );
             continue;
         }
 
@@ -199,7 +270,7 @@ pub fn build_program_bank(
                 let slot = record.slot;
                 programs[slot] = Some(record);
             }
-            Err(diagnostic) => diagnostics.push(diagnostic),
+            Err(diagnostic) => diagnostics.push(diagnostic.with_slot(program.slot)),
         }
     }
 
@@ -260,6 +331,7 @@ fn build_program_data(
                 pan: args.pan,
                 sample_symbol: sample_asset.symbol.clone(),
                 sample_relative_path: sample_asset.relative_path.clone(),
+                sample_synth_desc: sample_asset.synth_desc,
                 attack: args.attack,
                 decay: args.decay,
                 sustain: args.sustain,
@@ -653,10 +725,5 @@ fn asset<'a>(
 }
 
 fn diagnostic(range: SourceRange, code: &'static str, message: &str) -> ProgramBankDiagnostic {
-    ProgramBankDiagnostic {
-        range,
-        severity: DiagnosticSeverity::Error,
-        code: code.to_string(),
-        message: message.to_string(),
-    }
+    Diagnostic::error(range, code, message)
 }

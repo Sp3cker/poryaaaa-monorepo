@@ -682,7 +682,9 @@ int vg_parse_voicegroup(const char* projectRoot,
     };
 
     const char* startLabel = loc.label[0] ? loc.label : NULL;
-    return parse_voicegroup_file(loc.filePath, startLabel, &ctx);
+    int result = parse_voicegroup_file(loc.filePath, startLabel, &ctx);
+    vg_wave_cache_free(&waveCache);
+    return result;
 }
 
 /* ---- Public helpers declared in voicegroup_loader.h ---- */
@@ -693,9 +695,7 @@ int vg_parse_voicegroup(const char* projectRoot,
 WaveData* voicegroup_loader_load_sample(const char* projectRoot, const char* relPath, LoadedVoiceGroup* vg)
 {
     WaveData* wd = vg_load_sample(projectRoot, relPath);
-    if (!wd)
-        wd = vg_load_bin_sample(projectRoot, relPath);
-    if (wd && !register_wavedata(vg, wd))
+    if (wd && vg && !register_wavedata(vg, wd))
     {
         free(wd);
         return NULL;
@@ -706,7 +706,7 @@ WaveData* voicegroup_loader_load_sample(const char* projectRoot, const char* rel
 uint32_t* voicegroup_loader_load_prog_wave(const char* projectRoot, const char* relPath, LoadedVoiceGroup* vg)
 {
     uint32_t* pw = vg_load_prog_wave(projectRoot, relPath);
-    if (pw && !register_progwave(vg, pw))
+    if (pw && vg && !register_progwave(vg, pw))
     {
         free(pw);
         return NULL;

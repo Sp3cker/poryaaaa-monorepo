@@ -5,8 +5,8 @@ use pest::Parser as PestParser;
 use pest_derive::Parser;
 
 pub use crate::ast::{
-    Diagnostic, DiagnosticSeverity, ParsedArgument, ParsedAssemblyLabel, ParsedDocument,
-    ParsedIdentifier, ParsedProgram, ParsedVoiceGroup, SourcePosition, SourceRange,
+    Diagnostic, DiagnosticScope, DiagnosticSeverity, ParsedArgument, ParsedAssemblyLabel,
+    ParsedDocument, ParsedIdentifier, ParsedProgram, ParsedVoiceGroup, SourcePosition, SourceRange,
 };
 
 #[derive(Parser)]
@@ -57,13 +57,11 @@ pub fn parse_document(text: &str) -> ParsedDocument {
                     Some(index) => index,
                     None => {
                         let Some(label) = pending_label.take() else {
-                            document.diagnostics.push(Diagnostic {
-                                range: macro_call.macro_name.range,
-                                severity: DiagnosticSeverity::Error,
-                                code: "macro-outside-voice-group".to_string(),
-                                message: "voice macro appears before a voice_group declaration"
-                                    .to_string(),
-                            });
+                            document.diagnostics.push(Diagnostic::error(
+                                macro_call.macro_name.range,
+                                "macro-outside-voice-group",
+                                "voice macro appears before a voice_group declaration",
+                            ));
                             continue;
                         };
                         document.voice_groups.push(ParsedVoiceGroup {
@@ -195,12 +193,11 @@ fn parse_voice_group_declaration(
             Rule::voice_group_name => name = Some(identifier_from_pair(line_number, pair)),
             Rule::start_slot => match pair.as_str().parse::<usize>() {
                 Ok(parsed) => start_slot = parsed,
-                Err(_) => diagnostics.push(Diagnostic {
-                    range: range_for_span(line_number, pair.as_span()),
-                    severity: DiagnosticSeverity::Error,
-                    code: "invalid-start-slot".to_string(),
-                    message: "voice_group start slot is too large".to_string(),
-                }),
+                Err(_) => diagnostics.push(Diagnostic::error(
+                    range_for_span(line_number, pair.as_span()),
+                    "invalid-start-slot",
+                    "voice_group start slot is too large",
+                )),
             },
             _ => {}
         }
@@ -283,12 +280,11 @@ fn parse_argument(
 
     let Some(value) = value else {
         let range = empty_range_at_span_end(line_number, argument.as_span());
-        diagnostics.push(Diagnostic {
-            range: range.clone(),
-            severity: DiagnosticSeverity::Error,
-            code: "empty-argument".to_string(),
-            message: "voice macro argument is empty".to_string(),
-        });
+        diagnostics.push(Diagnostic::error(
+            range.clone(),
+            "empty-argument",
+            "voice macro argument is empty",
+        ));
         return ParsedArgument {
             text: String::new(),
             range,
@@ -308,12 +304,11 @@ fn parse_invalid_line_diagnostic(line: &str, line_number: usize) -> Option<Diagn
         Rule::invalid_voice_group_line,
         Rule::invalid_voice_group_code,
     ) {
-        return Some(Diagnostic {
+        return Some(Diagnostic::error(
             range,
-            severity: DiagnosticSeverity::Error,
-            code: "invalid-voice-group".to_string(),
-            message: "voice_group declaration could not be parsed".to_string(),
-        });
+            "invalid-voice-group",
+            "voice_group declaration could not be parsed",
+        ));
     }
 
     parse_invalid_range(
@@ -322,12 +317,12 @@ fn parse_invalid_line_diagnostic(line: &str, line_number: usize) -> Option<Diagn
         Rule::invalid_source_line,
         Rule::invalid_code,
     )
-    .map(|range| Diagnostic {
-        range,
-        severity: DiagnosticSeverity::Error,
-        code: "unrecognized-line".to_string(),
-        message: "line is not a voicegroup declaration, label, directive, or voice macro"
-            .to_string(),
+    .map(|range| {
+        Diagnostic::error(
+            range,
+            "unrecognized-line",
+            "line is not a voicegroup declaration, label, directive, or voice macro",
+        )
     })
 }
 

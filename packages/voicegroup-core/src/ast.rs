@@ -36,11 +36,20 @@ impl SourceRange {
         true
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticScope {
+    /// A parser or project-index error that invalidates the source as a whole.
+    Structural,
+    /// An error associated with one voicegroup slot.
+    Slot,
+    /// A runtime/materialization error associated with an external asset.
+    Materialization,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +62,49 @@ pub struct Diagnostic {
     pub code: String,
     // Human-readable explanation shown by tools or loader reporting.
     pub message: String,
+    // Layer that owns the failure, matching the public project seam.
+    pub scope: DiagnosticScope,
+    // Actual voicegroup content file, or the authoritative preview path.
+    pub source_path: Option<String>,
+    // Referenced asset path when materialization reports an external failure.
+    pub asset_path: Option<String>,
+    // Voicegroup slot for slot/materialization diagnostics.
+    pub slot: Option<usize>,
+}
+
+impl Diagnostic {
+    pub fn error(range: SourceRange, code: &str, message: &str) -> Self {
+        Self {
+            range,
+            severity: DiagnosticSeverity::Error,
+            code: code.to_string(),
+            message: message.to_string(),
+            scope: DiagnosticScope::Structural,
+            source_path: None,
+            asset_path: None,
+            slot: None,
+        }
+    }
+
+    pub fn with_source_path(mut self, source_path: impl Into<String>) -> Self {
+        self.source_path = Some(source_path.into());
+        self
+    }
+    pub fn with_asset_path(mut self, asset_path: impl Into<String>) -> Self {
+        self.asset_path = Some(asset_path.into());
+        self.scope = DiagnosticScope::Materialization;
+        self
+    }
+
+    pub fn with_slot(mut self, slot: usize) -> Self {
+        self.scope = DiagnosticScope::Slot;
+        self.slot = Some(slot);
+        self
+    }
+    pub fn set_slot(&mut self, slot: usize) {
+        self.scope = DiagnosticScope::Slot;
+        self.slot = Some(slot);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,12 +4,18 @@
 
 add_library(voicegroup_loader STATIC
     voicegroup_loader.c
+    voicegroup_materializer.c
+    voicegroup_overflow.c
+    voicegroup_project.c
+    voicegroup_project_result.c
+    voicegroup_project_asset.c
     vg_log.c
     vg_paths.c
     vg_discovery.c
     vg_symbols.c
     vg_keysplit.c
     vg_source.c
+    vg_aiff.c
     vg_wav.c
     vg_parser.c
     voicegroup_project_state.c
@@ -27,4 +33,15 @@ target_include_directories(voicegroup_loader PRIVATE
 )
 if(TARGET voicegroup_core_static)
     target_link_libraries(voicegroup_loader PUBLIC voicegroup_core_static)
+endif()
+
+option(PORYAAAA_BUILD_VOICEGROUP_PROJECT_HARNESS
+       "Build the focused VoicegroupProject C harness"
+       OFF)
+if(PORYAAAA_BUILD_VOICEGROUP_PROJECT_HARNESS AND TARGET voicegroup_core_static)
+    add_executable(voicegroup_project_harness voicegroup_project_harness.c)
+    target_link_libraries(voicegroup_project_harness PRIVATE voicegroup_loader)
+    target_include_directories(voicegroup_project_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../../shared
+        "${PORYAAAA_VOICEGROUP_CORE_DIR}/include")
 endif()

@@ -35,16 +35,19 @@ voice_group route104
             symbol: "DirectSoundWaveData_Brass1".to_string(),
             relative_path: "sound/direct_sound_samples/brass_1.bin".to_string(),
             display_name: "brass_1.bin".to_string(),
+            synth_desc: None,
         })
         .with_direct_sound_asset(ResolvedAsset {
             symbol: "DirectSoundWaveData_Cry".to_string(),
             relative_path: "sound/direct_sound_samples/cry.bin".to_string(),
             display_name: "cry.bin".to_string(),
+            synth_desc: None,
         })
         .with_programmable_wave_asset(ResolvedAsset {
             symbol: "ProgrammableWaveData_Pulse1".to_string(),
             relative_path: "sound/programmable_wave_samples/pulse_1.pcm".to_string(),
             display_name: "pulse_1.pcm".to_string(),
+            synth_desc: None,
         })
         .with_keysplit_table("keysplit_strings", [42; 128]);
 
@@ -71,6 +74,7 @@ voice_group route104
             key: 60,
             pan: 0,
             sample_symbol: "DirectSoundWaveData_Brass1".to_string(),
+            sample_synth_desc: None,
             sample_relative_path: "sound/direct_sound_samples/brass_1.bin".to_string(),
             attack: 255,
             decay: 252,
@@ -188,6 +192,7 @@ voice_group rs_drumset, 36
         symbol: "DirectSoundWaveData_Kick".to_string(),
         relative_path: "sound/direct_sound_samples/kick.bin".to_string(),
         display_name: "kick.bin".to_string(),
+        synth_desc: None,
     });
 
     let result = build_program_bank(
@@ -221,11 +226,13 @@ voice_group broken
             symbol: "DirectSoundWaveData_Kick".to_string(),
             relative_path: "sound/direct_sound_samples/kick.bin".to_string(),
             display_name: "kick.bin".to_string(),
+            synth_desc: None,
         })
         .with_direct_sound_asset(ResolvedAsset {
             symbol: "DirectSoundWaveData_Snare".to_string(),
             relative_path: "sound/direct_sound_samples/snare.bin".to_string(),
             display_name: "snare.bin".to_string(),
+            synth_desc: None,
         });
 
     let result = build_program_bank(&voice_group, "sound/voicegroups/broken.inc", &context);

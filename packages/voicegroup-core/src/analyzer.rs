@@ -3,8 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
-    Diagnostic, DiagnosticSeverity, ParsedArgument, ParsedDocument, ParsedProgram,
-    ParsedVoiceGroup, SourceRange,
+    Diagnostic, ParsedArgument, ParsedDocument, ParsedProgram, ParsedVoiceGroup, SourceRange,
 };
 use crate::catalog::{find_macro, ArgumentSchema, MacroArgument, MacroDefinition, SymbolNamespace};
 
@@ -91,11 +90,26 @@ pub fn analyze_semantics(document: &ParsedDocument, context: &AnalysisContext) -
         }
     }
 
+    attach_program_slots(&mut diagnostics, document);
     diagnostics
 }
 
-/// Counts local voice_group declarations so child references can prefer the
-/// current document while still reporting ambiguous duplicate local names.
+fn attach_program_slots(diagnostics: &mut [Diagnostic], document: &ParsedDocument) {
+    for diagnostic in diagnostics {
+        if let Some(slot) = document
+            .voice_groups
+            .iter()
+            .flat_map(|voice_group| voice_group.programs.iter())
+            .find(|program| {
+                program.range.contains(&diagnostic.range.start)
+                    || diagnostic.range.contains(&program.range.start)
+            })
+            .map(|program| program.slot)
+        {
+            diagnostic.set_slot(slot);
+        }
+    }
+}
 fn local_voice_group_symbols(document: &ParsedDocument) -> BTreeMap<String, usize> {
     let mut symbols = BTreeMap::new();
     for voice_group in &document.voice_groups {
@@ -311,10 +325,5 @@ fn unknown_symbol_message(namespace: SymbolNamespace) -> &'static str {
 /// Centralizes diagnostic construction so every analyzer error uses the same
 /// severity and string ownership shape.
 fn error(range: SourceRange, code: &str, message: &str) -> Diagnostic {
-    Diagnostic {
-        range,
-        severity: DiagnosticSeverity::Error,
-        code: code.to_string(),
-        message: message.to_string(),
-    }
+    Diagnostic::error(range, code, message)
 }

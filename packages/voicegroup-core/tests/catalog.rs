@@ -106,3 +106,35 @@ fn catalog_argument_help_carries_symbol_source_and_runtime_semantics() {
         &["two bits", "masked"],
     );
 }
+
+#[test]
+fn synth_descriptor_recognizes_all_aliases_without_prefix_collisions() {
+    use voicegroup_core::catalog::synth_descriptor;
+
+    assert_eq!(
+        synth_descriptor("set_synth_custom 0x12, 0x34, 56, 78"),
+        Some([0x80, 0, 0x12, 0x34, 56, 78])
+    );
+    assert_eq!(
+        synth_descriptor("set_synth_pulse 1, 2, 3, 4 @ pending"),
+        Some([0x80, 0, 1, 2, 3, 4])
+    );
+    assert_eq!(
+        synth_descriptor("set_synth_25"),
+        Some([0x80, 1, 0, 0, 0, 0])
+    );
+    assert_eq!(
+        synth_descriptor("set_synth_saw\t"),
+        Some([0x80, 1, 0, 0, 0, 0])
+    );
+    assert_eq!(
+        synth_descriptor("set_synth_50"),
+        Some([0x80, 2, 0, 0, 0, 0])
+    );
+    assert_eq!(
+        synth_descriptor("set_synth_triangle // not a parser comment"),
+        Some([0x80, 2, 0, 0, 0, 0])
+    );
+    assert_eq!(synth_descriptor("set_synth_50_extra"), None);
+    assert_eq!(synth_descriptor("set_synth_custom 1, 2, 3"), None);
+}

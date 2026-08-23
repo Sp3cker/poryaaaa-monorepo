@@ -7,16 +7,37 @@
 #include <stdlib.h>
 #include <string.h>
 
+static char* duplicate_string(const char* value)
+{
+    size_t length = strlen(value) + 1;
+    char* copy = malloc(length);
+    if (copy)
+        memcpy(copy, value, length);
+    return copy;
+}
+
 /* ---- Wave cache ---- */
 
 void vg_wave_cache_init(WaveCache* cache)
 {
-    cache->count = 0;
+    memset(cache, 0, sizeof(*cache));
+}
+
+void vg_wave_cache_free(WaveCache* cache)
+{
+    if (!cache)
+        return;
+    for (size_t i = 0; i < cache->count; i++)
+        free(cache->entries[i].absPath);
+    free(cache->entries);
+    memset(cache, 0, sizeof(*cache));
 }
 
 WaveData* vg_wave_cache_find(const WaveCache* cache, const char* absPath)
 {
-    for (int i = 0; i < cache->count; i++)
+    if (!cache || !absPath)
+        return NULL;
+    for (size_t i = 0; i < cache->count; i++)
         if (strcmp(cache->entries[i].absPath, absPath) == 0)
             return cache->entries[i].wd;
     return NULL;
@@ -24,16 +45,27 @@ WaveData* vg_wave_cache_find(const WaveCache* cache, const char* absPath)
 
 void vg_wave_cache_insert(WaveCache* cache, const char* absPath, WaveData* wd)
 {
-    if (cache->count >= VG_WAVE_CACHE_CAPACITY)
+    if (!cache || !absPath || !absPath[0] || !wd || vg_wave_cache_find(cache, absPath))
         return;
-    strncpy(cache->entries[cache->count].absPath, absPath, VG_MAX_PATH_LEN - 1);
-    cache->entries[cache->count].absPath[VG_MAX_PATH_LEN - 1] = '\0';
+    if (cache->count >= cache->capacity)
+    {
+        size_t next = cache->capacity ? cache->capacity * 2 : 16;
+        if (next < cache->capacity || next > SIZE_MAX / sizeof(*cache->entries))
+            return;
+        WaveCacheEntry* entries = realloc(cache->entries, next * sizeof(*entries));
+        if (!entries)
+            return;
+        cache->entries = entries;
+        cache->capacity = next;
+    }
+    cache->entries[cache->count].absPath = duplicate_string(absPath);
+    if (!cache->entries[cache->count].absPath)
+        return;
     cache->entries[cache->count].wd = wd;
     cache->count++;
 }
 
 /* ---- Little-endian readers ---- */
-
 static uint32_t read_u32_le(const uint8_t* p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -333,6 +365,11 @@ WaveData* vg_load_wav_file(const char* absoluteWavPath)
     if (c.agbLoopEnd != 0)
         loopEnd = c.agbLoopEnd;
     uint32_t size = loopEnd;
+    if (size == 0)
+    {
+        fclose(f);
+        return NULL;
+    }
 
     uint32_t freq = compute_freq(&c);
 
@@ -400,7 +437,7 @@ WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativePath)
     }
 
     uint8_t header[16];
-    if (fread(header, 1, 16, f) != 16)
+    if (fread(header, 1, sizeof(header), f) != sizeof(header))
     {
         vg_err("short read on header %s", fullPath);
         fclose(f);
@@ -412,8 +449,15 @@ WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativePath)
     uint32_t freq = read_u32_le(header + 4);
     uint32_t loopStart = read_u32_le(header + 8);
     uint32_t size = read_u32_le(header + 12);
+    size_t dataBytes = size > 0 ? size : 16;
+    size_t totalBytes;
+    if (!vg_size_add(sizeof(WaveData), dataBytes, &totalBytes) || !vg_size_add(totalBytes, 1, &totalBytes))
+    {
+        fclose(f);
+        return NULL;
+    }
 
-    WaveData* wd = alloc_wavedata(size);
+    WaveData* wd = malloc(totalBytes);
     if (!wd)
     {
         fclose(f);
@@ -424,11 +468,12 @@ WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativePath)
     wd->freq = freq;
     wd->loopStart = loopStart;
     wd->size = size;
+    wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
 
-    size_t bytesRead = fread(wd->data, 1, size, f);
-    if (bytesRead < size)
-        memset(wd->data + bytesRead, 0, size - bytesRead);
-    wd->data[size] = wd->data[size > 0 ? size - 1 : 0];
+    size_t bytesRead = fread(wd->data, 1, dataBytes, f);
+    if (bytesRead < dataBytes)
+        memset(wd->data + bytesRead, 0, dataBytes - bytesRead);
+    wd->data[dataBytes] = wd->data[dataBytes - 1];
 
     fclose(f);
     return wd;
@@ -436,27 +481,29 @@ WaveData* vg_load_bin_sample(const char* projectRoot, const char* relativePath)
 
 WaveData* vg_load_sample(const char* projectRoot, const char* relativeBinPath)
 {
-    /* Compose a sibling .wav path by swapping the .bin extension. */
-    char relativeWavPath[VG_MAX_PATH_LEN];
-    strncpy(relativeWavPath, relativeBinPath, VG_MAX_PATH_LEN - 1);
-    relativeWavPath[VG_MAX_PATH_LEN - 1] = '\0';
+    /* Compose sibling .wav and .aif paths before falling back to .bin. */
+    char relativeSourcePath[VG_MAX_PATH_LEN];
+    strncpy(relativeSourcePath, relativeBinPath, VG_MAX_PATH_LEN - 1);
+    relativeSourcePath[VG_MAX_PATH_LEN - 1] = '\0';
 
-    size_t pathLen = strlen(relativeWavPath);
-    char* ext = NULL;
-    if (pathLen >= 4 && strcmp(relativeWavPath + pathLen - 4, ".bin") == 0)
-        ext = relativeWavPath + pathLen - 4;
-
-    if (!ext)
+    size_t pathLen = strlen(relativeSourcePath);
+    if (pathLen < 4 || strcmp(relativeSourcePath + pathLen - 4, ".bin") != 0)
         return vg_load_bin_sample(projectRoot, relativeBinPath);
 
-    ext[1] = 'w';
-    ext[2] = 'a';
-    ext[3] = 'v';
-
     char fullPath[VG_MAX_PATH_LEN];
-    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativeWavPath);
-
+    relativeSourcePath[pathLen - 3] = 'w';
+    relativeSourcePath[pathLen - 2] = 'a';
+    relativeSourcePath[pathLen - 1] = 'v';
+    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativeSourcePath);
     WaveData* wd = vg_load_wav_file(fullPath);
+    if (wd)
+        return wd;
+
+    relativeSourcePath[pathLen - 3] = 'a';
+    relativeSourcePath[pathLen - 2] = 'i';
+    relativeSourcePath[pathLen - 1] = 'f';
+    vg_build_path(fullPath, sizeof(fullPath), projectRoot, relativeSourcePath);
+    wd = vg_load_aif_file(fullPath);
     if (wd)
         return wd;
 

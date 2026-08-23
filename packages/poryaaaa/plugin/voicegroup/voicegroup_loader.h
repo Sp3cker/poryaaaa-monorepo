@@ -45,18 +45,37 @@ typedef struct
     int keySplitTableCount;
     int keySplitTableCapacity;
 } LoadedVoiceGroup;
+typedef struct
+{
+    size_t slot;
+    char* assetPath;
+    char* message;
+} VoicegroupMaterializationFailure;
+
+typedef struct
+{
+    VoicegroupMaterializationFailure* failures;
+    size_t count;
+    size_t capacity;
+} VoicegroupMaterializationReport;
+
+struct VoicegroupCoreProjectIndex;
+struct VoicegroupCoreBankResult;
 
 /*
- * Load a voicegroup from a project.
- *
- * projectRoot: path to the project root directory
- * voicegroupName: name of the voicegroup (e.g. "petalburg", "voicegroup000")
- *
- * The loader reads voicegroups from sound/voice_groups.inc and samples from
- * standard project sound data files.
- *
- * Returns a LoadedVoiceGroup on success, or NULL on failure.
- * The caller must free the result with voicegroup_free().
+ * Materialize an already-resolved Rust bank.  The project adapter uses this
+ * seam so loading a bank never rebuilds the project index.
+ */
+bool voicegroup_materialize_core_bank(const char* projectRoot,
+                                      const struct VoicegroupCoreProjectIndex* index,
+                                      const struct VoicegroupCoreBankResult* result,
+                                      LoadedVoiceGroup** out,
+                                      VoicegroupMaterializationReport* report);
+
+void voicegroup_materialization_report_free(VoicegroupMaterializationReport* report);
+/*
+ * Load and materialize one saved bank using a temporary project index.
+ * Long-lived project consumers should use voicegroup_project_load instead.
  */
 LoadedVoiceGroup* voicegroup_load(const char* projectRoot, const char* voicegroupName);
 

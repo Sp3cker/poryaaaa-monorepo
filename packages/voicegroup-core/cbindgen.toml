@@ -14,9 +14,12 @@ rename_variants = "QualifiedScreamingSnakeCase"
 include = [
   "VoicegroupCoreStatus",
   "VoicegroupCoreProgramKind",
-  "VoicegroupCoreDiagnosticSeverity",
+  "VoicegroupCoreDiagnosticScope",
+  "VoicegroupCoreCatalogEntryKind",
   "VoicegroupCoreSourcePosition",
   "VoicegroupCoreSourceRange",
+  "VoicegroupCoreDiagnostic",
+  "VoicegroupCoreCatalogEntry",
   "VoicegroupCoreDirectSoundProgram",
   "VoicegroupCoreProgrammableWaveProgram",
   "VoicegroupCoreSquare1Program",
@@ -24,5 +27,7 @@ include = [
   "VoicegroupCoreNoiseProgram",
   "VoicegroupCoreKeysplitProgram",
   "VoicegroupCoreProjectIndex",
+  "VoicegroupCoreProjectSnapshotResult",
   "VoicegroupCoreBankResult",
+  "VoicegroupCoreSynthOverlay",
 ]

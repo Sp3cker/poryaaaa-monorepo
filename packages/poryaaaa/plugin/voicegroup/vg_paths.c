@@ -70,7 +70,15 @@ int vg_str_ends_with_ci(const char* s, const char* suffix)
 
 void vg_build_path(char* dest, size_t destSize, const char* base, const char* relative)
 {
-    snprintf(dest, destSize, "%s%c%s", base, VG_PATH_SEP, relative);
+    if (!dest || destSize == 0)
+        return;
+    int written = snprintf(dest, destSize, "%s%c%s", base ? base : "", VG_PATH_SEP, relative ? relative : "");
+    if (written < 0 || (size_t)written >= destSize)
+    {
+        /* Legacy build_path returns an empty path on overflow. */
+        dest[0] = '\0';
+        return;
+    }
     for (char* p = dest; *p; p++)
     {
         if (*p == '/' || *p == '\\')
