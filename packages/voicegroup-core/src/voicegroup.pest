@@ -8,7 +8,7 @@ start_slot = @{ ASCII_DIGIT+ }
 comment = { "@" ~ (!("\n" | "\r") ~ ANY)* }
 directive = { "." ~ (!"@" ~ ANY)+ }
 voice_group_declaration = { "voice_group" ~ spacing+ ~ voice_group_name ~ (spacing* ~ "," ~ spacing* ~ start_slot)? }
-assembly_label = { label_name ~ "::" }
+assembly_label = { label_name ~ ":" ~ ":"? }
 
 macro_name = @{ (!("voice_group" ~ (spacing | EOI | ",")) ~ "voice_" ~ ident_char+) | "cry" ~ ("_" ~ ident_char+)* }
 argument_value = @{ (!("," | "@" | spacing) ~ ANY)+ }

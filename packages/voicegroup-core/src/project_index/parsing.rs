@@ -14,7 +14,7 @@ pub(super) fn extract_combined_section_with_map(
     text: &str,
     label: &str,
 ) -> Option<(String, Vec<usize>)> {
-    let search_label = format!("{label}::");
+    let search_labels = [format!("{label}:"), format!("{label}::")];
     let mut in_section = false;
     let mut voices_seen = false;
     let mut has_voice_group_declaration = false;
@@ -26,7 +26,7 @@ pub(super) fn extract_combined_section_with_map(
         let original_line_number = i + 1;
         let trimmed = strip_comment(line).trim();
         if !in_section {
-            if trimmed == search_label {
+            if search_labels.iter().any(|candidate| trimmed == candidate) {
                 in_section = true;
                 label_line = original_line_number;
             }

@@ -373,7 +373,7 @@ fn direct_sound_definition_location_points_to_sample_label() {
         "sound/direct_sound_data.inc",
         "\
 \t.align 2
-DirectSoundWaveData_Kick::
+DirectSoundWaveData_Kick:
 \t.incbin \"sound/direct_sound_samples/kick.bin\"
 ",
     );
@@ -405,7 +405,7 @@ fn programmable_wave_definition_location_points_to_sample_label() {
         "sound/programmable_wave_data.inc",
         "\
 \t.align 2
-ProgrammableWaveData_Pulse::
+ProgrammableWaveData_Pulse:
 \t.incbin \"sound/programmable_wave_samples/pulse.pcm\"
 ",
     );

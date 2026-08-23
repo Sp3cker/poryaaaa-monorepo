@@ -125,7 +125,7 @@ voice_group rs_drumset, 36
 fn parses_assembly_labels_without_turning_them_into_voice_groups() {
     let source = "\
 \t.align 2
-DirectSoundWaveData_sc88pro_glockenspiel::
+DirectSoundWaveData_sc88pro_glockenspiel:
 \t.incbin \"sound/direct_sound_samples/sc88pro_glockenspiel.bin\"
 ";
 
@@ -143,7 +143,7 @@ DirectSoundWaveData_sc88pro_glockenspiel::
     );
     assert_eq!(
         range_text(source, &label.range),
-        "DirectSoundWaveData_sc88pro_glockenspiel::"
+        "DirectSoundWaveData_sc88pro_glockenspiel:"
     );
 }
 

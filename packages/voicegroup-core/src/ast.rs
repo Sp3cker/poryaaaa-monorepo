@@ -153,7 +153,7 @@ pub struct ParsedVoiceGroup {
 pub struct ParsedAssemblyLabel {
     // Assembly label symbol found in symbol-declaring source files.
     pub name: ParsedIdentifier,
-    // Source span of the full label declaration, including the trailing '::'.
+    // Source span of the full label declaration, including its trailing colon(s).
     pub range: SourceRange,
 }
 
