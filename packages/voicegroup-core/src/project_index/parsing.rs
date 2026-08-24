@@ -70,7 +70,8 @@ pub(super) fn extract_combined_section_with_map(
 }
 
 fn is_combined_boundary(trimmed: &str) -> bool {
-    trimmed.starts_with(".align") || !parse_document(trimmed).assembly_labels.is_empty()
+    trimmed.starts_with(".align")
+        || (trimmed.ends_with(':') && !parse_document(trimmed).assembly_labels.is_empty())
 }
 
 pub(super) fn strip_comment(line: &str) -> &str {
