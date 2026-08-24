@@ -133,6 +133,9 @@ fn discover_unsupported_voicegroup_files(
             file_name.ends_with("_keysplit.inc") || file_name.ends_with("_drumset.inc");
         let is_eventide_layout = file_name.starts_with("vg_") && file_name.ends_with(".inc");
         let is_assembly_voicegroup = file_name.ends_with(".s");
+        if !is_suffix_layout && !is_eventide_layout && !is_assembly_voicegroup {
+            continue;
+        }
         let path = index.root.join(&relative_path);
         let text = fs::read_to_string(&path)?;
         if is_suffix_layout {

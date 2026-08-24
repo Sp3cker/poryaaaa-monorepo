@@ -1159,6 +1159,39 @@ fn snapshot_succeeds_in_mixed_health_project_and_loads_healthy_bank() {
     fs::remove_dir_all(root).expect("remove mixed-health project");
 }
 
+#[test]
+fn snapshot_ignores_non_candidate_binary_file_in_voicegroup_directory() {
+    let root = temp_project("catalog-non-candidate-binary");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        ".include \"sound/voicegroups/healthy.inc\"\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/healthy.inc",
+        "voice_group healthy\n\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n",
+    );
+    fs::write(root.join("sound/voicegroups/.DS_Store"), [0xff, 0xfe, 0xfd])
+        .expect("write non-UTF-8 non-candidate file");
+
+    let index = ProjectIndex::load(&root).expect("load project with non-candidate file");
+    let snapshot = index.snapshot();
+
+    assert!(snapshot.succeeded);
+    assert!(snapshot.diagnostics.is_empty());
+    assert!(snapshot.catalog.entries.iter().any(|entry| {
+        entry.kind == voicegroup_core::catalog::CatalogEntryKind::VoiceGroup
+            && entry.symbol == "voicegroup_healthy"
+    }));
+
+    let healthy = index.load_program_bank("healthy");
+    assert!(healthy.bank.is_some());
+    assert!(healthy.diagnostics.is_empty());
+
+    fs::remove_dir_all(root).expect("remove non-candidate binary project");
+}
+
 fn assert_layout_diagnostic(
     root: PathBuf,
     source_path: &str,
