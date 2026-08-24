@@ -51,6 +51,7 @@ static bool project_rebuild(VoicegroupProject* project, VoicegroupProjectResult*
                                   0);
             failure->view.succeeded = false;
         }
+        voicegroup_core_project_snapshot_result_free(snapshot);
         voicegroup_core_project_index_free(index);
         project_storage_dispose(project->failure);
         project->failure = failure;
@@ -67,44 +68,55 @@ static bool project_rebuild(VoicegroupProject* project, VoicegroupProjectResult*
         return false;
     }
 
-    if (voicegroup_core_project_snapshot_result_succeeded(snapshot))
+    /* The index is available; install the generation even with catalog diagnostics. */
+    ProjectGeneration* generation = calloc(1, sizeof(*generation));
+    ProjectResultStorage* storage = project_storage_create();
+    bool ok = generation && storage && project_storage_copy_core_snapshot(storage, snapshot);
+    if (ok)
     {
-        ProjectGeneration* generation = calloc(1, sizeof(*generation));
-        ProjectResultStorage* storage = project_storage_create();
-        bool ok = generation && storage && project_storage_copy_core_snapshot(storage, snapshot);
-        if (ok)
+        generation->index = index;
+        generation->snapshot = storage;
+        generation_free(project->generation);
+        project->generation = generation;
+        project_storage_dispose(project->failure);
+        project->failure = NULL;
+        project->state = PROJECT_FRESH;
+        if (output)
         {
-            generation->index = index;
-            generation->snapshot = storage;
-            generation_free(project->generation);
-            project->generation = generation;
-            project_storage_dispose(project->failure);
-            project->failure = NULL;
-            project->state = PROJECT_FRESH;
-            if (output)
-            {
-                ProjectResultStorage* copy = project_storage_create();
-                if (copy && copy_project_result(copy, &storage->view))
-                    *output = copy->view;
-                else
-                    project_storage_dispose(copy);
-            }
-            voicegroup_core_project_snapshot_result_free(snapshot);
-            return true;
+            ProjectResultStorage* copy = project_storage_create();
+            if (copy && copy_project_result(copy, &storage->view))
+                *output = copy->view;
+            else
+                project_storage_dispose(copy);
         }
-        project_storage_dispose(storage);
-        free(generation);
+        voicegroup_core_project_snapshot_result_free(snapshot);
+        return true;
     }
 
-    ProjectResultStorage* failure = project_storage_create();
-    bool ok = failure && project_storage_copy_failure(failure, snapshot, project->generation);
-    if (!ok)
-    {
-        project_storage_dispose(failure);
-        failure = NULL;
-    }
+    project_storage_dispose(storage);
+    free(generation);
     voicegroup_core_project_snapshot_result_free(snapshot);
     voicegroup_core_project_index_free(index);
+    ProjectResultStorage* failure = project_storage_create();
+    if (failure)
+    {
+        if (!add_simple_diagnostic(&failure->arena,
+                                   (VoicegroupDiagnostic**)&failure->view.diagnostics,
+                                   &failure->view.diagnostic_count,
+                                   "project.out_of_memory",
+                                   "voicegroup project generation could not be installed",
+                                   0,
+                                   project->root,
+                                   NULL,
+                                   false,
+                                   0))
+        {
+            project_storage_dispose(failure);
+            failure = NULL;
+        }
+        else
+            failure->view.succeeded = false;
+    }
     project_storage_dispose(project->failure);
     project->failure = failure;
     project->state = PROJECT_REFRESH_FAILED;

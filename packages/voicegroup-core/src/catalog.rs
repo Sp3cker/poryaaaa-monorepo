@@ -518,6 +518,8 @@ pub struct ProjectCatalog {
 /// One complete project-index read for the C project adapter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectSnapshot {
+    /// Whether the project index was successfully built and is available for loading.
+    /// Always `true` when a snapshot exists; independent of catalog diagnostics.
     pub succeeded: bool,
     pub catalog: ProjectCatalog,
     pub diagnostics: Vec<Diagnostic>,

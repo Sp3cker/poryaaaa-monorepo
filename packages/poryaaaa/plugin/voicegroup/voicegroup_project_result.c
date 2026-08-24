@@ -406,35 +406,6 @@ bool project_storage_copy_core_snapshot(ProjectResultStorage* storage,
     return true;
 }
 
-static bool project_storage_copy_catalog_parts(ProjectResultStorage* storage, const VoicegroupProjectResult* source)
-{
-    return copy_project_arrays(&storage->arena, &storage->view, source);
-}
-
-bool project_storage_copy_failure(ProjectResultStorage* destination,
-                                  const VoicegroupCoreProjectSnapshotResult* snapshot,
-                                  const ProjectGeneration* retained)
-{
-    if (snapshot && !project_storage_copy_core_snapshot(destination, snapshot))
-        return false;
-    if (retained)
-    {
-        if (!project_storage_copy_catalog_parts(destination, &retained->snapshot->view))
-            return false;
-        const VoicegroupCoreDiagnostic* diagnostics = NULL;
-        size_t diagnosticCount = 0;
-        if (snapshot)
-            diagnostics = voicegroup_core_project_snapshot_result_diagnostics(snapshot, &diagnosticCount);
-        VoicegroupDiagnostic* copiedDiagnostics = NULL;
-        if (!copy_core_diagnostics(&destination->arena, diagnostics, diagnosticCount, &copiedDiagnostics))
-            return false;
-        destination->view.diagnostic_count = diagnosticCount;
-        destination->view.diagnostics = copiedDiagnostics;
-    }
-    destination->view.succeeded = false;
-    return true;
-}
-
 bool add_simple_diagnostic(ResultArena* arena,
                            VoicegroupDiagnostic** diagnostics,
                            size_t* count,

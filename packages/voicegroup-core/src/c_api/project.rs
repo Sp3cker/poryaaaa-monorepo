@@ -166,7 +166,9 @@ pub unsafe extern "C" fn voicegroup_core_project_snapshot_result_free(
 }
 
 #[no_mangle]
-/// Returns whether the indexed project snapshot completed without diagnostics.
+/// Returns whether the project index was successfully built and is available
+/// for loading. This is always true when the snapshot handle is valid and does
+/// not reflect catalog diagnostics.
 ///
 /// # Safety
 /// `result` must be null or a valid snapshot result handle.

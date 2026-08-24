@@ -370,28 +370,38 @@ int main(void)
     const char* invalidDisk = "main::\n\tvoice_directsound 60, 0, MissingSample, 255, 0, 255, 0\n";
     write_text(root, "sound/voice_groups.inc", invalidDisk);
     voicegroup_project_mark_stale(project);
-    VoicegroupAssetResult failed =
+    VoicegroupAssetResult invalidGenerationAsset =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
-    CHECK(failed.diagnostic_count > 0);
-    voicegroup_asset_result_free(&failed);
-    check_source_preview(project, previewSource, 0x44);
+    CHECK(invalidGenerationAsset.diagnostic_count == 0 && invalidGenerationAsset.payload_len == 3);
+    CHECK(((const uint8_t*)invalidGenerationAsset.payload)[0] == 0x44);
+    voicegroup_asset_result_free(&invalidGenerationAsset);
+
+    VoicegroupProjectResult invalidSnapshot = {0};
+    voicegroup_project_refresh(project, &invalidSnapshot);
+    CHECK(invalidSnapshot.succeeded && invalidSnapshot.diagnostic_count > 0);
+    voicegroup_project_result_free(&invalidSnapshot);
+
+    VoicegroupLoadResult invalidLoad = voicegroup_project_load(project, &savedRequest);
+    CHECK(!invalidLoad.succeeded && invalidLoad.diagnostic_count > 0 && invalidLoad.diagnostics &&
+          invalidLoad.diagnostics[0].code && invalidLoad.diagnostics[0].message);
+    voicegroup_load_result_free(&invalidLoad);
+
     write_text(root, "sound/voice_groups.inc", voiceGroups);
-    VoicegroupAssetResult cachedFailure =
-        voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
-    CHECK(cachedFailure.diagnostic_count > 0);
-    voicegroup_asset_result_free(&cachedFailure);
     voicegroup_project_mark_stale(project);
-    VoicegroupAssetResult rearmed =
+    VoicegroupAssetResult restoredAsset =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
-    CHECK(rearmed.diagnostic_count == 0 && rearmed.payload_len == 3);
-    CHECK(((const uint8_t*)rearmed.payload)[0] == 0x44);
-    voicegroup_asset_result_free(&rearmed);
+    CHECK(restoredAsset.diagnostic_count == 0 && restoredAsset.payload_len == 3);
+    CHECK(((const uint8_t*)restoredAsset.payload)[0] == 0x44);
+    voicegroup_asset_result_free(&restoredAsset);
+
     write_text(root, "sound/voice_groups.inc", invalidDisk);
     voicegroup_project_mark_stale(project);
-    VoicegroupAssetResult failedAgain =
+    VoicegroupAssetResult secondInvalidAsset =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
-    CHECK(failedAgain.diagnostic_count > 0);
-    voicegroup_asset_result_free(&failedAgain);
+    CHECK(secondInvalidAsset.diagnostic_count == 0 && secondInvalidAsset.payload_len == 3);
+    CHECK(((const uint8_t*)secondInvalidAsset.payload)[0] == 0x44);
+    voicegroup_asset_result_free(&secondInvalidAsset);
+
     write_text(root, "sound/voice_groups.inc", voiceGroups);
     VoicegroupProjectResult recovered = {0};
     voicegroup_project_refresh(project, &recovered);
@@ -402,6 +412,44 @@ int main(void)
     CHECK(explicitRetry.diagnostic_count == 0 && explicitRetry.payload_len == 3);
     CHECK(((const uint8_t*)explicitRetry.payload)[0] == 0x44);
     voicegroup_asset_result_free(&explicitRetry);
+    char voiceGroupsPath[1024];
+    snprintf(voiceGroupsPath, sizeof(voiceGroupsPath), "%s/sound/voice_groups.inc", root);
+    struct stat voiceGroupsStat = {0};
+    CHECK(stat(voiceGroupsPath, &voiceGroupsStat) == 0);
+    mode_t originalVoiceGroupsMode = voiceGroupsStat.st_mode & 07777;
+    CHECK(chmod(voiceGroupsPath, 0000) == 0);
+    voicegroup_project_mark_stale(project);
+    VoicegroupAssetResult unreadableAsset =
+        voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
+    CHECK(unreadableAsset.diagnostic_count > 0 && unreadableAsset.diagnostics);
+    int unreadableAssetIndexLoadFailure = 0;
+    for (size_t i = 0; i < unreadableAsset.diagnostic_count; i++)
+        if (unreadableAsset.diagnostics[i].code &&
+            strcmp(unreadableAsset.diagnostics[i].code, "project.index_load_failed") == 0)
+            unreadableAssetIndexLoadFailure = 1;
+    CHECK(unreadableAssetIndexLoadFailure);
+    voicegroup_asset_result_free(&unreadableAsset);
+
+    VoicegroupProjectResult unreadableSnapshot = {0};
+    voicegroup_project_refresh(project, &unreadableSnapshot);
+    CHECK(!unreadableSnapshot.succeeded && unreadableSnapshot.diagnostic_count > 0 && unreadableSnapshot.diagnostics);
+    int unreadableSnapshotIndexLoadFailure = 0;
+    for (size_t i = 0; i < unreadableSnapshot.diagnostic_count; i++)
+        if (unreadableSnapshot.diagnostics[i].code &&
+            strcmp(unreadableSnapshot.diagnostics[i].code, "project.index_load_failed") == 0)
+            unreadableSnapshotIndexLoadFailure = 1;
+    CHECK(unreadableSnapshotIndexLoadFailure);
+    voicegroup_project_result_free(&unreadableSnapshot);
+    check_source_preview(project, previewSource, 0x44);
+
+    CHECK(chmod(voiceGroupsPath, originalVoiceGroupsMode) == 0);
+    voicegroup_project_mark_stale(project);
+    VoicegroupAssetResult rearmedAsset =
+        voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
+    CHECK(rearmedAsset.diagnostic_count == 0 && rearmedAsset.payload_len == 3);
+    CHECK(((const uint8_t*)rearmedAsset.payload)[0] == 0x44);
+    voicegroup_asset_result_free(&rearmedAsset);
+
     voicegroup_project_result_free(&snapshot);
     CHECK(!snapshot._private_storage && !snapshot.family_adsr && !snapshot.synth_macro_words);
     voicegroup_project_free(project);

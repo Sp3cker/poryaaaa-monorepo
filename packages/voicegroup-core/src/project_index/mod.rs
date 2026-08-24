@@ -251,12 +251,12 @@ impl ProjectIndex {
 
     /// Returns the Rust-owned bulk snapshot consumed by the project adapter.
     /// Invalid banks remain visible in the catalog and contribute structured
-    /// diagnostics; callers install no runtime bank when `succeeded` is false.
+    /// diagnostics; they do not prevent unaffected banks from loading.
     pub fn snapshot(&self) -> ProjectSnapshot {
         let mut diagnostics = self.project_diagnostics.clone();
         let catalog = self.build_catalog(&mut diagnostics);
         ProjectSnapshot {
-            succeeded: diagnostics.is_empty(),
+            succeeded: true,
             catalog,
             diagnostics,
         }

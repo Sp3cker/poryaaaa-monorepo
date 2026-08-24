@@ -1070,7 +1070,7 @@ fn catalog_owns_content_paths_dependencies_metadata_and_synth_aliases() {
 }
 
 #[test]
-fn snapshot_keeps_invalid_bank_visible_and_returns_its_diagnostics() {
+fn snapshot_succeeds_with_diagnostics_and_keeps_invalid_bank_visible() {
     let root = temp_project("catalog-invalid");
     write_file(
         &root,
@@ -1086,7 +1086,7 @@ fn snapshot_keeps_invalid_bank_visible_and_returns_its_diagnostics() {
     let index = ProjectIndex::load(&root).expect("load invalid catalog project");
     let snapshot = index.snapshot();
 
-    assert!(!snapshot.succeeded);
+    assert!(snapshot.succeeded);
     assert!(snapshot.catalog.entries.iter().any(|entry| {
         entry.kind == voicegroup_core::catalog::CatalogEntryKind::VoiceGroup
             && entry.symbol == "voicegroup_broken"
@@ -1098,6 +1098,67 @@ fn snapshot_keeps_invalid_bank_visible_and_returns_its_diagnostics() {
     fs::remove_dir_all(root).expect("remove invalid catalog project");
 }
 
+#[test]
+fn snapshot_succeeds_in_mixed_health_project_and_loads_healthy_bank() {
+    let root = temp_project("catalog-mixed-health");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        ".include \"sound/voicegroups/healthy.inc\"\n\
+.include \"sound/voicegroups/broken.inc\"\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/healthy.inc",
+        "voice_group healthy\n\tvoice_square_1 60, 0, 0, 2, 1, 2, 8, 3\n",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/broken.inc",
+        "voice_group broken\n\tvoice_directsound 60, 0, Missing, 255, 0, 255, 165\n",
+    );
+
+    let index = ProjectIndex::load(&root).expect("load mixed-health project");
+    let snapshot = index.snapshot();
+
+    assert!(snapshot.succeeded);
+    assert!(!snapshot.diagnostics.is_empty());
+    for symbol in ["voicegroup_healthy", "voicegroup_broken"] {
+        assert!(snapshot.catalog.entries.iter().any(|entry| {
+            entry.kind == voicegroup_core::catalog::CatalogEntryKind::VoiceGroup
+                && entry.symbol == symbol
+        }));
+    }
+    assert!(snapshot.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "unknown-directsound-symbol"
+            && diagnostic.source_path.as_deref() == Some("sound/voicegroups/broken.inc")
+    }));
+
+    let healthy = index.load_program_bank("healthy");
+    assert!(healthy.bank.is_some());
+    assert!(healthy.diagnostics.is_empty());
+
+    let broken = index.load_program_bank("broken");
+    let diagnostic = broken
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "unknown-directsound-symbol")
+        .expect("unknown symbol diagnostic");
+    assert_eq!(
+        diagnostic.scope,
+        voicegroup_core::ast::DiagnosticScope::Slot
+    );
+    assert_eq!(diagnostic.slot, Some(0));
+    assert_eq!(
+        diagnostic.source_path.as_deref(),
+        Some("sound/voicegroups/broken.inc")
+    );
+    let broken_bank = broken.bank.expect("broken bank retains a partial bank");
+    assert!(broken_bank.programs[0].is_none());
+
+    fs::remove_dir_all(root).expect("remove mixed-health project");
+}
+
 fn assert_layout_diagnostic(
     root: PathBuf,
     source_path: &str,
@@ -1107,7 +1168,7 @@ fn assert_layout_diagnostic(
     let index = ProjectIndex::load(&root).expect("load layout fixture");
     let snapshot = index.snapshot();
 
-    assert!(!snapshot.succeeded);
+    assert!(snapshot.succeeded);
     assert_eq!(diagnostic_codes(&snapshot.diagnostics), [code]);
     let diagnostic = snapshot.diagnostics.first().expect("layout diagnostic");
     assert_eq!(diagnostic.source_path.as_deref(), Some(source_path));

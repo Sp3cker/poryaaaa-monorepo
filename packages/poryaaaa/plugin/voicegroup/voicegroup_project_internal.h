@@ -91,9 +91,6 @@ extern "C"
     copy_core_diagnostic(ResultArena* arena, VoicegroupDiagnostic* destination, const VoicegroupCoreDiagnostic* source);
     bool project_storage_copy_core_snapshot(ProjectResultStorage* storage,
                                             const VoicegroupCoreProjectSnapshotResult* snapshot);
-    bool project_storage_copy_failure(ProjectResultStorage* destination,
-                                      const VoicegroupCoreProjectSnapshotResult* snapshot,
-                                      const ProjectGeneration* retained);
     bool add_simple_diagnostic(ResultArena* arena,
                                VoicegroupDiagnostic** diagnostics,
                                size_t* count,
