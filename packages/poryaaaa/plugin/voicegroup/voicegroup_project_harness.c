@@ -161,6 +161,14 @@ static void check_source_preview(VoicegroupProject* project, const char* source,
     voicegroup_free(bank);
 }
 
+static int has_diagnostic_code(const VoicegroupDiagnostic* diagnostics, size_t count, const char* code)
+{
+    for (size_t i = 0; i < count; i++)
+        if (diagnostics[i].code && strcmp(diagnostics[i].code, code) == 0)
+            return 1;
+    return 0;
+}
+
 int main(void)
 {
     char rootTemplate[] = "/tmp/voicegroup-project-harness-XXXXXX";
@@ -412,37 +420,27 @@ int main(void)
     CHECK(explicitRetry.diagnostic_count == 0 && explicitRetry.payload_len == 3);
     CHECK(((const uint8_t*)explicitRetry.payload)[0] == 0x44);
     voicegroup_asset_result_free(&explicitRetry);
-    char voiceGroupsPath[1024];
-    snprintf(voiceGroupsPath, sizeof(voiceGroupsPath), "%s/sound/voice_groups.inc", root);
-    struct stat voiceGroupsStat = {0};
-    CHECK(stat(voiceGroupsPath, &voiceGroupsStat) == 0);
-    mode_t originalVoiceGroupsMode = voiceGroupsStat.st_mode & 07777;
-    CHECK(chmod(voiceGroupsPath, 0000) == 0);
+    const uint8_t invalidIndexSource[] = {0xff};
+    write_bytes(root, "sound/voice_groups.inc", invalidIndexSource, sizeof(invalidIndexSource));
     voicegroup_project_mark_stale(project);
-    VoicegroupAssetResult unreadableAsset =
+    VoicegroupAssetResult invalidIndexSourceAsset =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));
-    CHECK(unreadableAsset.diagnostic_count > 0 && unreadableAsset.diagnostics);
-    int unreadableAssetIndexLoadFailure = 0;
-    for (size_t i = 0; i < unreadableAsset.diagnostic_count; i++)
-        if (unreadableAsset.diagnostics[i].code &&
-            strcmp(unreadableAsset.diagnostics[i].code, "project.index_load_failed") == 0)
-            unreadableAssetIndexLoadFailure = 1;
-    CHECK(unreadableAssetIndexLoadFailure);
-    voicegroup_asset_result_free(&unreadableAsset);
+    CHECK(invalidIndexSourceAsset.diagnostic_count > 0 && invalidIndexSourceAsset.diagnostics);
+    CHECK(has_diagnostic_code(
+        invalidIndexSourceAsset.diagnostics, invalidIndexSourceAsset.diagnostic_count, "project.index_load_failed"));
+    voicegroup_asset_result_free(&invalidIndexSourceAsset);
 
-    VoicegroupProjectResult unreadableSnapshot = {0};
-    voicegroup_project_refresh(project, &unreadableSnapshot);
-    CHECK(!unreadableSnapshot.succeeded && unreadableSnapshot.diagnostic_count > 0 && unreadableSnapshot.diagnostics);
-    int unreadableSnapshotIndexLoadFailure = 0;
-    for (size_t i = 0; i < unreadableSnapshot.diagnostic_count; i++)
-        if (unreadableSnapshot.diagnostics[i].code &&
-            strcmp(unreadableSnapshot.diagnostics[i].code, "project.index_load_failed") == 0)
-            unreadableSnapshotIndexLoadFailure = 1;
-    CHECK(unreadableSnapshotIndexLoadFailure);
-    voicegroup_project_result_free(&unreadableSnapshot);
+    VoicegroupProjectResult invalidIndexSourceSnapshot = {0};
+    voicegroup_project_refresh(project, &invalidIndexSourceSnapshot);
+    CHECK(!invalidIndexSourceSnapshot.succeeded && invalidIndexSourceSnapshot.diagnostic_count > 0 &&
+          invalidIndexSourceSnapshot.diagnostics);
+    CHECK(has_diagnostic_code(invalidIndexSourceSnapshot.diagnostics,
+                              invalidIndexSourceSnapshot.diagnostic_count,
+                              "project.index_load_failed"));
+    voicegroup_project_result_free(&invalidIndexSourceSnapshot);
     check_source_preview(project, previewSource, 0x44);
 
-    CHECK(chmod(voiceGroupsPath, originalVoiceGroupsMode) == 0);
+    write_text(root, "sound/voice_groups.inc", voiceGroups);
     voicegroup_project_mark_stale(project);
     VoicegroupAssetResult rearmedAsset =
         voicegroup_project_load_asset(project, VG_ASSET_DIRECT_SOUND, "DirectSoundWave", strlen("DirectSoundWave"));

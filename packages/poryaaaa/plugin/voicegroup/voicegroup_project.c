@@ -25,6 +25,40 @@ static ProjectResultStorage* project_failure_copy(const VoicegroupProject* proje
     }
     return result;
 }
+static bool project_refresh_failed(VoicegroupProject* project,
+                                   VoicegroupProjectResult* output,
+                                   const char* code,
+                                   const char* message)
+{
+    ProjectResultStorage* failure = project_storage_create();
+    if (failure && !add_simple_diagnostic(&failure->arena,
+                                          (VoicegroupDiagnostic**)&failure->view.diagnostics,
+                                          &failure->view.diagnostic_count,
+                                          code,
+                                          message,
+                                          0,
+                                          project->root,
+                                          NULL,
+                                          false,
+                                          0))
+    {
+        project_storage_dispose(failure);
+        failure = NULL;
+    }
+    if (failure)
+        failure->view.succeeded = false;
+    project_storage_dispose(project->failure);
+    project->failure = failure;
+    project->state = PROJECT_REFRESH_FAILED;
+    if (output)
+    {
+        *output = (VoicegroupProjectResult){0};
+        ProjectResultStorage* copy = project_failure_copy(project);
+        if (copy)
+            *output = copy->view;
+    }
+    return false;
+}
 
 static bool project_rebuild(VoicegroupProject* project, VoicegroupProjectResult* output)
 {
@@ -36,36 +70,10 @@ static bool project_rebuild(VoicegroupProject* project, VoicegroupProjectResult*
 
     if (status != VOICEGROUP_CORE_STATUS_OK || !snapshot)
     {
-        ProjectResultStorage* failure = project_storage_create();
-        if (failure)
-        {
-            add_simple_diagnostic(&failure->arena,
-                                  (VoicegroupDiagnostic**)&failure->view.diagnostics,
-                                  &failure->view.diagnostic_count,
-                                  "project.index_load_failed",
-                                  "voicegroup project index could not be loaded",
-                                  0,
-                                  project->root,
-                                  NULL,
-                                  false,
-                                  0);
-            failure->view.succeeded = false;
-        }
         voicegroup_core_project_snapshot_result_free(snapshot);
         voicegroup_core_project_index_free(index);
-        project_storage_dispose(project->failure);
-        project->failure = failure;
-        project->state = PROJECT_REFRESH_FAILED;
-        ProjectResultStorage* copy = project_failure_copy(project);
-        if (output)
-        {
-            *output = (VoicegroupProjectResult){0};
-            if (copy)
-                *output = copy->view;
-        }
-        if (!output || !copy)
-            project_storage_dispose(copy);
-        return false;
+        return project_refresh_failed(
+            project, output, "project.index_load_failed", "voicegroup project index could not be loaded");
     }
 
     /* The index is available; install the generation even with catalog diagnostics. */
@@ -97,39 +105,8 @@ static bool project_rebuild(VoicegroupProject* project, VoicegroupProjectResult*
     free(generation);
     voicegroup_core_project_snapshot_result_free(snapshot);
     voicegroup_core_project_index_free(index);
-    ProjectResultStorage* failure = project_storage_create();
-    if (failure)
-    {
-        if (!add_simple_diagnostic(&failure->arena,
-                                   (VoicegroupDiagnostic**)&failure->view.diagnostics,
-                                   &failure->view.diagnostic_count,
-                                   "project.out_of_memory",
-                                   "voicegroup project generation could not be installed",
-                                   0,
-                                   project->root,
-                                   NULL,
-                                   false,
-                                   0))
-        {
-            project_storage_dispose(failure);
-            failure = NULL;
-        }
-        else
-            failure->view.succeeded = false;
-    }
-    project_storage_dispose(project->failure);
-    project->failure = failure;
-    project->state = PROJECT_REFRESH_FAILED;
-    ProjectResultStorage* copy = project_failure_copy(project);
-    if (output)
-    {
-        *output = (VoicegroupProjectResult){0};
-        if (copy)
-            *output = copy->view;
-    }
-    if (!output || !copy)
-        project_storage_dispose(copy);
-    return false;
+    return project_refresh_failed(
+        project, output, "project.out_of_memory", "voicegroup project generation could not be installed");
 }
 
 bool ensure_generation(VoicegroupProject* project)
