@@ -331,23 +331,30 @@ fn discover_combined_voicegroup_file(
     }
 
     let text = fs::read_to_string(path)?;
-    for label in parse_document(&text).assembly_labels {
-        if parsing::combined_section_has_voice_macro(&text, &label.name.text) {
-            let definition = DefinitionLocation {
-                relative_path: relative_path.to_string(),
-                range: label.name.range.clone(),
-            };
-            index
-                .voice_groups
-                .entry(label.name.text.clone())
-                .or_insert_with(|| ProjectVoiceGroup {
-                    declaration: definition,
-                    contents: VoiceGroupContents::LabeledSubsection {
-                        relative_path: relative_path.to_string(),
-                        label: label.name.text,
-                    },
-                });
+    let document = parse_document(&text);
+    let voice_group_names = document
+        .voice_groups
+        .iter()
+        .map(|voice_group| voice_group.name.text.as_str())
+        .collect::<BTreeSet<_>>();
+    for label in document.assembly_labels {
+        if !voice_group_names.contains(label.name.text.as_str()) {
+            continue;
         }
+        let definition = DefinitionLocation {
+            relative_path: relative_path.to_string(),
+            range: label.name.range.clone(),
+        };
+        index
+            .voice_groups
+            .entry(label.name.text.clone())
+            .or_insert_with(|| ProjectVoiceGroup {
+                declaration: definition,
+                contents: VoiceGroupContents::LabeledSubsection {
+                    relative_path: relative_path.to_string(),
+                    label: label.name.text,
+                },
+            });
     }
 
     Ok(())

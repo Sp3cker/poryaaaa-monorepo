@@ -669,6 +669,137 @@ voicegroup001::
 }
 
 #[test]
+fn indexes_only_combined_voice_labels_and_propagates_child_dependencies() {
+    let root = temp_project("combined-recursive-catalog");
+    write_file(
+        &root,
+        "sound/voice_groups.inc",
+        "\
+.include \"sound/voicegroups/child.inc\"
+.align 2
+NotAVoiceGroup::
+\t.word 0
+
+.align 2
+parent::
+\tvoice_keysplit child, keysplit_parent
+\tvoice_keysplit_all child
+",
+    );
+    write_file(
+        &root,
+        "sound/voicegroups/child.inc",
+        "\
+voice_group child
+\tvoice_directsound 60, 0, DirectSoundWaveData_Child, 255, 0, 255, 242
+",
+    );
+    write_file(
+        &root,
+        "sound/direct_sound_data.inc",
+        "\
+DirectSoundWaveData_Child::
+\t.incbin \"sound/direct_sound_samples/child.bin\"
+",
+    );
+    write_file(
+        &root,
+        "sound/keysplit_tables.inc",
+        "\
+keysplit parent, 0
+split 1, 128
+",
+    );
+
+    let index = ProjectIndex::load(&root).expect("load combined recursive project");
+    assert_eq!(
+        index.voicegroup_names().collect::<Vec<_>>(),
+        vec!["child", "parent"]
+    );
+
+    let parent_location = index
+        .voicegroup_definition_location("parent")
+        .expect("combined parent definition");
+    assert_eq!(parent_location.relative_path, "sound/voice_groups.inc");
+    assert_eq!(
+        parent_location.range,
+        SourceRange {
+            start: SourcePosition { line: 7, column: 1 },
+            end: SourcePosition { line: 7, column: 7 },
+        }
+    );
+
+    let child_location = index
+        .voicegroup_definition_location("child")
+        .expect("included child definition");
+    assert_eq!(child_location.relative_path, "sound/voice_groups.inc");
+    assert_eq!(
+        child_location.range,
+        SourceRange {
+            start: SourcePosition {
+                line: 1,
+                column: 11,
+            },
+            end: SourcePosition {
+                line: 1,
+                column: 38,
+            },
+        }
+    );
+
+    let parent_result = index.load_program_bank("parent");
+    assert!(parent_result.diagnostics.is_empty());
+    let parent = parent_result.bank.expect("combined parent bank");
+    assert_eq!(
+        parent.programs[0].as_ref().expect("keysplit slot").data,
+        ProgramData::Keysplit(voicegroup_core::program_bank::KeysplitProgram {
+            sub_voicegroup: "child".to_string(),
+            table_symbol: "keysplit_parent".to_string(),
+            table: [1; 128],
+        })
+    );
+    assert_eq!(
+        parent.programs[1].as_ref().expect("drumkit slot").data,
+        ProgramData::KeysplitAll(voicegroup_core::program_bank::KeysplitAllProgram {
+            sub_voicegroup: "child".to_string(),
+        })
+    );
+
+    let snapshot = index.snapshot();
+    assert!(snapshot.succeeded);
+    assert!(snapshot.diagnostics.is_empty());
+
+    let parent_entry = snapshot
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.symbol == "voicegroup_parent")
+        .expect("parent catalog row");
+    assert_eq!(
+        parent_entry.source_path.as_deref(),
+        Some("sound/voice_groups.inc")
+    );
+    assert_eq!(
+        parent_entry.keysplit,
+        Some(voicegroup_core::catalog::KeysplitCatalogPair {
+            subgroup: "child".to_string(),
+            table: "keysplit_parent".to_string(),
+        })
+    );
+    assert_eq!(parent_entry.drumkit.as_deref(), Some("child"));
+    assert_eq!(
+        parent_entry.dependency_paths,
+        vec!["sound/direct_sound_samples/child.bin".to_string()]
+    );
+    assert!(snapshot
+        .catalog
+        .dependency_paths
+        .contains(&"sound/direct_sound_samples/child.bin".to_string()));
+
+    fs::remove_dir_all(root).expect("remove combined recursive project");
+}
+
+#[test]
 fn selected_bank_loading_deduplicates_analyzer_and_builder_diagnostics() {
     let root = temp_project("diagnostics");
     write_file(

@@ -4,7 +4,7 @@ use crate::ast::Diagnostic;
 use crate::catalog::{CatalogEntry, CatalogEntryKind, KeysplitCatalogPair, ProjectCatalog};
 use crate::program_bank::{ProgramBank, ProgramData};
 
-use super::{append_unique_diagnostics, ProjectIndex};
+use super::{append_unique_diagnostics, ProgramBankLoadResult, ProjectIndex};
 
 pub(super) fn build_catalog(
     index: &ProjectIndex,
@@ -29,19 +29,21 @@ pub(super) fn build_catalog(
         }
     }
 
+    let mut loaded_banks: BTreeMap<String, ProgramBankLoadResult> = BTreeMap::new();
+    for bank_name in index.voice_groups.keys() {
+        let load_result = index.load_program_bank(bank_name);
+        append_unique_diagnostics(diagnostics, load_result.diagnostics.clone());
+        loaded_banks.insert(bank_name.clone(), load_result);
+    }
+
     let mut bank_records = Vec::new();
     let mut typical_by_symbol: BTreeMap<String, BTreeMap<[u8; 4], usize>> = BTreeMap::new();
     let mut typical_by_family: BTreeMap<String, BTreeMap<[u8; 4], usize>> = BTreeMap::new();
     let mut keysplit_pairs: BTreeMap<String, KeysplitCatalogPair> = BTreeMap::new();
     let mut drumkits = BTreeSet::new();
 
-    for bank_name in index.voice_groups.keys() {
-        let super::ProgramBankLoadResult {
-            bank,
-            diagnostics: bank_diagnostics,
-        } = index.load_program_bank(bank_name);
-        append_unique_diagnostics(diagnostics, bank_diagnostics);
-        let Some(bank) = bank else {
+    for load_result in loaded_banks.values() {
+        let Some(bank) = load_result.bank.as_ref() else {
             continue;
         };
         let mut bank_dependencies = BTreeSet::new();
@@ -145,7 +147,7 @@ pub(super) fn build_catalog(
             }
         }
         let mut visited = BTreeSet::new();
-        append_bank_dependencies(index, &bank, &mut bank_dependencies, &mut visited);
+        append_bank_dependencies(&loaded_banks, bank, &mut bank_dependencies, &mut visited);
         bank_records.push((bank, bank_dependencies));
     }
 
@@ -322,7 +324,7 @@ fn canonical_voicegroup_symbol(name: &str) -> String {
 }
 
 fn append_bank_dependencies(
-    index: &ProjectIndex,
+    loaded_banks: &BTreeMap<String, ProgramBankLoadResult>,
     bank: &ProgramBank,
     dependencies: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
@@ -352,17 +354,13 @@ fn append_bank_dependencies(
             continue;
         };
         let candidate = child_name.strip_prefix("voicegroup_").unwrap_or(child_name);
-        let Some(child_key) = index
-            .voice_groups
+        let Some(child_bank) = loaded_banks
             .get(candidate)
-            .map(|_| candidate)
-            .or_else(|| index.voice_groups.get(child_name).map(|_| child_name))
+            .or_else(|| loaded_banks.get(child_name))
+            .and_then(|result| result.bank.as_ref())
         else {
             continue;
         };
-        let Some(child_bank) = index.load_program_bank(child_key).bank else {
-            continue;
-        };
-        append_bank_dependencies(index, &child_bank, dependencies, visited);
+        append_bank_dependencies(loaded_banks, child_bank, dependencies, visited);
     }
 }
