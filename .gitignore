@@ -3,5 +3,5 @@ build/*
 .cache/*
 packages/poryaaaa/compile_commands.json
 packages/poryaaaa/plugin/target/
-.DS_STORE
+.DS_Store
 .worktrees/
