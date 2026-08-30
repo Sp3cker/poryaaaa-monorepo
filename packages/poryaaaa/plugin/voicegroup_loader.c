@@ -107,7 +107,7 @@ static int closedir(DIR* d)
 #define MAX_LINE 1024
 #define MAX_PATH_LEN 512
 #ifndef MAX_SYMBOL_LEN
-#define MAX_SYMBOL_LEN 256
+#    define MAX_SYMBOL_LEN 256
 #endif
 #define INITIAL_CAPACITY 64
 
@@ -241,26 +241,36 @@ static void strip_comment(char* s);
 static char* ltrim(char* s);
 static void rtrim(char* s);
 static VoicegroupLocation find_voicegroup(const char* projectRoot, const char* vgName, ProjectDiscovery* disc);
-static int next_included_voicegroup(const char* projectRoot, const char* currentFilePath, char* outPath, size_t outSize);
-static int load_sub_voicegroup_session(const char* projectRoot, const char* vgSymbol, LoadedVoiceGroup* vgReg, VgLoadSession* session, const SymbolMap* dsMap, const SymbolMap* pwMap, KeySplitMap* ksMap, ProjectDiscovery* disc, WaveCache* waveCache, ToneData** outSub);
-static int parse_voicegroup_file_session(
-    const char* projectRoot,
-    const char* filePath,
-    const char* startLabel,
-    ToneData* destVoices,
-    char (*destNames)[VG_VOICE_NAME_LEN],
-    LoadedVoiceGroup* vgReg,
-    VgLoadSession* session,
-    const SymbolMap* dsMap,
-    const SymbolMap* pwMap,
-    KeySplitMap* ksMap,
-    ProjectDiscovery* disc,
-    WaveCache* waveCache,
-    int startIndex,
-    int contiguousFill,
-    int noSubRecurse);
+static int
+next_included_voicegroup(const char* projectRoot, const char* currentFilePath, char* outPath, size_t outSize);
+static int load_sub_voicegroup_session(const char* projectRoot,
+                                       const char* vgSymbol,
+                                       LoadedVoiceGroup* vgReg,
+                                       VgLoadSession* session,
+                                       const SymbolMap* dsMap,
+                                       const SymbolMap* pwMap,
+                                       KeySplitMap* ksMap,
+                                       ProjectDiscovery* disc,
+                                       WaveCache* waveCache,
+                                       ToneData** outSub);
+static int parse_voicegroup_file_session(const char* projectRoot,
+                                         const char* filePath,
+                                         const char* startLabel,
+                                         ToneData* destVoices,
+                                         char (*destNames)[VG_VOICE_NAME_LEN],
+                                         LoadedVoiceGroup* vgReg,
+                                         VgLoadSession* session,
+                                         const SymbolMap* dsMap,
+                                         const SymbolMap* pwMap,
+                                         KeySplitMap* ksMap,
+                                         ProjectDiscovery* disc,
+                                         WaveCache* waveCache,
+                                         int startIndex,
+                                         int contiguousFill,
+                                         int noSubRecurse);
 
-static WaveData* build_synth_wavedata(const uint8_t desc[6], const char* symbol, LoadedVoiceGroup* owner, WaveCache* cache)
+static WaveData*
+build_synth_wavedata(const uint8_t desc[6], const char* symbol, LoadedVoiceGroup* owner, WaveCache* cache)
 {
     char cacheKey[MAX_PATH_LEN];
     snprintf(cacheKey, sizeof(cacheKey), "synth-macro:%s", symbol);
@@ -270,7 +280,8 @@ static WaveData* build_synth_wavedata(const uint8_t desc[6], const char* symbol,
         return cached;
     }
     WaveData* wd = (WaveData*)calloc(1, sizeof(WaveData) + 17);
-    if (!wd) return NULL;
+    if (!wd)
+        return NULL;
     wd->type = 0;
     wd->status = 0x4000;
     wd->freq = 0x01058920;
@@ -297,12 +308,7 @@ static void set_voice_display_name(char dest[VG_VOICE_NAME_LEN], const char* sym
         return;
     }
     const char* p = symbol;
-    static const char* prefixes[] =
-    {
-        "DirectSoundWaveData_",
-        "ProgrammableWaveData_",
-        "voicegroup_"
-    };
+    static const char* prefixes[] = {"DirectSoundWaveData_", "ProgrammableWaveData_", "voicegroup_"};
     for (size_t i = 0; i < 3; i++)
     {
         size_t L = strlen(prefixes[i]);
@@ -438,15 +444,13 @@ static bool vg_section_label_valid(const char* label)
     for (size_t i = 0; i < len; i++)
     {
         char c = label[i];
-        if (isspace((unsigned char)c) || c == ':' || c == ',' )
+        if (isspace((unsigned char)c) || c == ':' || c == ',')
         {
             return false;
         }
     }
     return true;
 }
-
-
 
 static bool vg_make_bin_variant(const char* srcPath, const char* newExt, char* dst, size_t dstSize)
 {
@@ -466,7 +470,11 @@ static bool vg_make_bin_variant(const char* srcPath, const char* newExt, char* d
     return true;
 }
 
-static bool build_wave_abs_paths(const char* projectRoot, const char* samplePath, char wavAbs[VG_MAX_PATH_LEN], char aifAbs[VG_MAX_PATH_LEN], char binAbs[VG_MAX_PATH_LEN])
+static bool build_wave_abs_paths(const char* projectRoot,
+                                 const char* samplePath,
+                                 char wavAbs[VG_MAX_PATH_LEN],
+                                 char aifAbs[VG_MAX_PATH_LEN],
+                                 char binAbs[VG_MAX_PATH_LEN])
 {
     char relWav[MAX_PATH_LEN] = {0};
     char relAif[MAX_PATH_LEN] = {0};
@@ -511,7 +519,6 @@ static KeySplitDef* keysplit_map_find(const KeySplitMap* map, const char* name);
 static int parse_direct_sound_data_file(const char* filePath, const char* projectRoot, SymbolMap* map);
 static int parse_programmable_wave_data_file(const char* filePath, const char* projectRoot, SymbolMap* map);
 static int parse_keysplit_tables_file(const char* filePath, KeySplitMap* map);
-
 
 /* Helper: strip trailing whitespace/newline */
 static char* ltrim(char* s)
@@ -639,12 +646,14 @@ static int str_ends_with_ci(const char* str, const char* suffix)
 /* Helper: register a WaveData in the loaded voicegroup for later cleanup */
 static bool vg_register_wavedata(LoadedVoiceGroup* vg, WaveData* wd)
 {
-    if (!vg || !wd) return false;
+    if (!vg || !wd)
+        return false;
     if (vg->waveDataCount >= vg->waveDataCapacity)
     {
         size_t nc = vg->waveDataCapacity ? (size_t)vg->waveDataCapacity * 2 : INITIAL_CAPACITY;
         WaveData** np = (WaveData**)realloc(vg->waveDatas, nc * sizeof(WaveData*));
-        if (!np) return false;
+        if (!np)
+            return false;
         vg->waveDatas = np;
         vg->waveDataCapacity = (int)nc;
     }
@@ -652,15 +661,16 @@ static bool vg_register_wavedata(LoadedVoiceGroup* vg, WaveData* wd)
     return true;
 }
 
-
 static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg)
 {
-    if (!vg || !sg) return false;
+    if (!vg || !sg)
+        return false;
     if (vg->subGroupCount >= vg->subGroupCapacity)
     {
         size_t nc = vg->subGroupCapacity ? (size_t)vg->subGroupCapacity * 2 : INITIAL_CAPACITY;
         ToneData** np = (ToneData**)realloc(vg->subGroups, nc * sizeof(ToneData*));
-        if (!np) return false;
+        if (!np)
+            return false;
         vg->subGroups = np;
         vg->subGroupCapacity = (int)nc;
     }
@@ -670,12 +680,14 @@ static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg)
 
 static bool vg_register_keysplittable(LoadedVoiceGroup* vg, uint8_t* ks)
 {
-    if (!vg || !ks) return false;
+    if (!vg || !ks)
+        return false;
     if (vg->keySplitTableCount >= vg->keySplitTableCapacity)
     {
         size_t nc = vg->keySplitTableCapacity ? (size_t)vg->keySplitTableCapacity * 2 : INITIAL_CAPACITY;
         uint8_t** np = (uint8_t**)realloc(vg->keySplitTables, nc * sizeof(uint8_t*));
-        if (!np) return false;
+        if (!np)
+            return false;
         vg->keySplitTables = np;
         vg->keySplitTableCapacity = (int)nc;
     }
@@ -714,8 +726,7 @@ static bool symbol_map_add(SymbolMap* map, const char* symbol, const char* path)
         {
             return false;
         }
-        SymbolMapping* np =
-            (SymbolMapping*)realloc(map->entries, sizeof(SymbolMapping) * newCap);
+        SymbolMapping* np = (SymbolMapping*)realloc(map->entries, sizeof(SymbolMapping) * newCap);
         if (!np)
         {
             return false;
@@ -892,126 +903,153 @@ typedef struct
  * children's, so PathList ordering matches the old multi-pass scan), then
  * recurse into subdirectories in readdir order.
  */
+static void discover_scan_tree(const char* dirPath, int depth, int maxDepth, ProjectDiscovery* out);
+
+static bool dirfacts_add_subdir(DirFacts* facts, const char* name)
+{
+    if (facts->subdirCount >= facts->subdirCapacity)
+    {
+        size_t newCap = facts->subdirCapacity ? (size_t)facts->subdirCapacity * 2 : INITIAL_CAPACITY;
+        char (*paths)[MAX_DIRENT_NAME] =
+            (char (*)[MAX_DIRENT_NAME])realloc(facts->subdirs, sizeof(*facts->subdirs) * newCap);
+        if (!paths)
+            return false;
+        facts->subdirs = paths;
+        facts->subdirCapacity = (int)newCap;
+    }
+    snprintf(facts->subdirs[facts->subdirCount], sizeof(facts->subdirs[0]), "%s", name);
+    facts->subdirCount++;
+    return true;
+}
+
+static bool collect_dir_fact(DirFacts* facts, const char* dirPath, const struct dirent* ent)
+{
+    if (ent->d_name[0] == '.')
+        return true;
+    if (dirent_is_dir(dirPath, ent))
+    {
+        if (strcmp(ent->d_name, "keysplits") == 0)
+            facts->hasKeysplitsSubdir = 1;
+        return dirfacts_add_subdir(facts, ent->d_name);
+    }
+    if (str_ends_with_ci(ent->d_name, ".wav"))
+        facts->hasWavOrAif = 1;
+    else if (str_ends_with_ci(ent->d_name, ".aif"))
+        facts->hasWavOrAif = 1;
+    if (strcmp(ent->d_name, "keysplit_tables.inc") == 0)
+        facts->hasKeysplitTablesInc = 1;
+    else if (strcmp(ent->d_name, "keysplit_tables.s") == 0)
+        facts->hasKeysplitTablesS = 1;
+    if (facts->macroCandidateCount >= 5)
+        return true;
+    if (!str_ends_with_ci(ent->d_name, ".inc"))
+    {
+        if (!str_ends_with_ci(ent->d_name, ".s"))
+            return true;
+    }
+    snprintf(facts->macroCandidates[facts->macroCandidateCount], sizeof(facts->macroCandidates[0]), "%s", ent->d_name);
+    facts->macroCandidateCount++;
+    return true;
+}
+
+static bool collect_dir_facts(const char* dirPath, DirFacts* facts)
+{
+    DIR* dir = opendir(dirPath);
+    if (!dir)
+        return true;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        if (collect_dir_fact(facts, dirPath, ent))
+            continue;
+        free(facts->subdirs);
+        facts->subdirs = NULL;
+        facts->subdirCapacity = 0;
+        closedir(dir);
+        return false;
+    }
+    closedir(dir);
+    return true;
+}
+
+static void discover_macro_directory(const char* dirPath, const DirFacts* facts, ProjectDiscovery* out)
+{
+    char path[MAX_PATH_LEN];
+    for (int i = 0; i < facts->macroCandidateCount; i++)
+    {
+        build_path(path, sizeof(path), dirPath, facts->macroCandidates[i]);
+        if (!file_has_voice_macros(path))
+            continue;
+        pathlist_add(&out->voicegroupDirs, dirPath);
+        return;
+    }
+}
+
+static void discover_keysplit_subdir(const char* dirPath, ProjectDiscovery* out)
+{
+    char keysplitDir[MAX_PATH_LEN];
+    build_path(keysplitDir, sizeof(keysplitDir), dirPath, "keysplits");
+    DIR* dir = opendir(keysplitDir);
+    if (!dir)
+        return;
+    char path[MAX_PATH_LEN];
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        if (ent->d_name[0] == '.')
+            continue;
+        if (!str_ends_with_ci(ent->d_name, ".s"))
+        {
+            if (!str_ends_with_ci(ent->d_name, ".inc"))
+                continue;
+        }
+        build_path(path, sizeof(path), keysplitDir, ent->d_name);
+        pathlist_add(&out->keySplitTableFiles, path);
+    }
+    closedir(dir);
+}
+
+static void discover_dir_facts(const char* dirPath, const DirFacts* facts, ProjectDiscovery* out)
+{
+    discover_macro_directory(dirPath, facts, out);
+    if (facts->hasWavOrAif)
+        pathlist_add(&out->wavSampleDirs, dirPath);
+    char path[MAX_PATH_LEN];
+    if (facts->hasKeysplitTablesInc)
+    {
+        build_path(path, sizeof(path), dirPath, "keysplit_tables.inc");
+        pathlist_add(&out->keySplitTableFiles, path);
+    }
+    if (facts->hasKeysplitTablesS)
+    {
+        build_path(path, sizeof(path), dirPath, "keysplit_tables.s");
+        pathlist_add(&out->keySplitTableFiles, path);
+    }
+    if (facts->hasKeysplitsSubdir)
+        discover_keysplit_subdir(dirPath, out);
+}
+
+static void
+discover_subdirectories(const char* dirPath, int depth, int maxDepth, const DirFacts* facts, ProjectDiscovery* out)
+{
+    if (depth >= maxDepth)
+        return;
+    for (int i = 0; i < facts->subdirCount; i++)
+    {
+        char subPath[MAX_PATH_LEN];
+        build_path(subPath, sizeof(subPath), dirPath, facts->subdirs[i]);
+        discover_scan_tree(subPath, depth + 1, maxDepth, out);
+    }
+}
+
 static void discover_scan_tree(const char* dirPath, int depth, int maxDepth, ProjectDiscovery* out)
 {
     DirFacts facts;
     memset(&facts, 0, sizeof(facts));
-
-    DIR* d = opendir(dirPath);
-    if (d)
-    {
-        struct dirent* ent;
-        while ((ent = readdir(d)) != NULL)
-        {
-            if (ent->d_name[0] == '.')
-                continue;
-            if (dirent_is_dir(dirPath, ent))
-            {
-                if (strcmp(ent->d_name, "keysplits") == 0)
-                    facts.hasKeysplitsSubdir = 1;
-                if (facts.subdirCount >= facts.subdirCapacity)
-                {
-                    size_t newCap =
-                        facts.subdirCapacity ? (size_t)facts.subdirCapacity * 2 : INITIAL_CAPACITY;
-                    char (*np)[MAX_DIRENT_NAME] = (char(*)[MAX_DIRENT_NAME])realloc(
-                        facts.subdirs, sizeof(*facts.subdirs) * newCap);
-                    if (!np)
-                    {
-                        free(facts.subdirs);
-                        facts.subdirs = NULL;
-                        facts.subdirCapacity = 0;
-                        closedir(d);
-                        return;
-                    }
-                    facts.subdirs = np;
-                    facts.subdirCapacity = (int)newCap;
-                }
-                snprintf(facts.subdirs[facts.subdirCount], sizeof(facts.subdirs[0]), "%s", ent->d_name);
-                facts.subdirCount++;
-            }
-            else
-            {
-                if (str_ends_with_ci(ent->d_name, ".wav") || str_ends_with_ci(ent->d_name, ".aif"))
-                    facts.hasWavOrAif = 1;
-                if (strcmp(ent->d_name, "keysplit_tables.inc") == 0)
-                    facts.hasKeysplitTablesInc = 1;
-                else if (strcmp(ent->d_name, "keysplit_tables.s") == 0)
-                    facts.hasKeysplitTablesS = 1;
-                if (facts.macroCandidateCount < 5 &&
-                    (str_ends_with_ci(ent->d_name, ".inc") || str_ends_with_ci(ent->d_name, ".s")))
-                {
-                    snprintf(facts.macroCandidates[facts.macroCandidateCount],
-                             sizeof(facts.macroCandidates[0]),
-                             "%s",
-                             ent->d_name);
-                    facts.macroCandidateCount++;
-                }
-            }
-        }
-        closedir(d);
-    }
-
-    char p[MAX_PATH_LEN];
-
-    for (int i = 0; i < facts.macroCandidateCount; i++)
-    {
-        build_path(p, sizeof(p), dirPath, facts.macroCandidates[i]);
-        if (file_has_voice_macros(p))
-        {
-            pathlist_add(&out->voicegroupDirs, dirPath);
-            break;
-        }
-    }
-
-    if (facts.hasWavOrAif)
-        pathlist_add(&out->wavSampleDirs, dirPath);
-
-    /* The directory listing already proved these exist; no stat() probes. */
-    if (facts.hasKeysplitTablesInc)
-    {
-        build_path(p, sizeof(p), dirPath, "keysplit_tables.inc");
-        pathlist_add(&out->keySplitTableFiles, p);
-    }
-    if (facts.hasKeysplitTablesS)
-    {
-        build_path(p, sizeof(p), dirPath, "keysplit_tables.s");
-        pathlist_add(&out->keySplitTableFiles, p);
-    }
-
-    if (facts.hasKeysplitsSubdir)
-    {
-        /* Enumerate <dirPath>/keysplits here even though the recursion below
-         * may also visit it: a keysplits/ sitting at depth maxDepth + 1 is out
-         * of the recursion's reach, and pathlist_add dedups the overlap when
-         * it isn't. */
-        char ksDir[MAX_PATH_LEN];
-        build_path(ksDir, sizeof(ksDir), dirPath, "keysplits");
-        DIR* ks = opendir(ksDir);
-        if (ks)
-        {
-            struct dirent* ent;
-            while ((ent = readdir(ks)) != NULL)
-            {
-                if (ent->d_name[0] == '.')
-                    continue;
-                if (!str_ends_with_ci(ent->d_name, ".s") && !str_ends_with_ci(ent->d_name, ".inc"))
-                    continue;
-                build_path(p, sizeof(p), ksDir, ent->d_name);
-                pathlist_add(&out->keySplitTableFiles, p);
-            }
-            closedir(ks);
-        }
-    }
-
-    if (depth < maxDepth)
-    {
-        for (int i = 0; i < facts.subdirCount; i++)
-        {
-            char subPath[MAX_PATH_LEN];
-            build_path(subPath, sizeof(subPath), dirPath, facts.subdirs[i]);
-            discover_scan_tree(subPath, depth + 1, maxDepth, out);
-        }
-    }
+    if (!collect_dir_facts(dirPath, &facts))
+        return;
+    discover_dir_facts(dirPath, &facts, out);
+    discover_subdirectories(dirPath, depth, maxDepth, &facts, out);
     free(facts.subdirs);
 }
 
@@ -1067,113 +1105,135 @@ static int is_monolithic_voicegroup_file(const char* filePath)
 
 /* ---- Project discovery ---- */
 
+static int config_path_count(int count)
+{
+    if (count < 0)
+        return 0;
+    if (count > VG_CONFIG_PATH_CAP)
+        return VG_CONFIG_PATH_CAP;
+    return count;
+}
+
+static void discover_config_monolithic_files(const char* dirPath, ProjectDiscovery* out)
+{
+    DIR* dir = opendir(dirPath);
+    if (!dir)
+        return;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        if (ent->d_name[0] == '.')
+            continue;
+        if (!str_ends_with_ci(ent->d_name, ".inc"))
+        {
+            if (!str_ends_with_ci(ent->d_name, ".s"))
+                continue;
+        }
+        char filePath[MAX_PATH_LEN];
+        build_path(filePath, sizeof(filePath), dirPath, ent->d_name);
+        if (is_monolithic_voicegroup_file(filePath))
+            pathlist_add(&out->monolithicVGFiles, filePath);
+    }
+    closedir(dir);
+}
+
+static void discover_config_voicegroup_path(const char* projectRoot, const char* relativePath, ProjectDiscovery* out)
+{
+    char path[MAX_PATH_LEN];
+    build_path(path, sizeof(path), projectRoot, relativePath);
+    if (is_directory(path))
+    {
+        pathlist_add(&out->voicegroupDirs, path);
+        discover_config_monolithic_files(path, out);
+        probe_keysplit_data_in_dir(path, out);
+        return;
+    }
+    if (file_exists(path))
+    {
+        if (is_monolithic_voicegroup_file(path))
+            pathlist_add(&out->monolithicVGFiles, path);
+    }
+}
+
+static void discover_config_paths(const char* projectRoot, const VoicegroupLoaderConfig* cfg, ProjectDiscovery* out)
+{
+    if (!cfg)
+        return;
+    char path[MAX_PATH_LEN];
+    int count = config_path_count(cfg->soundDataPathCount);
+    for (int i = 0; i < count; i++)
+    {
+        build_path(path, sizeof(path), projectRoot, cfg->soundDataPaths[i]);
+        if (file_exists(path))
+            pathlist_add(&out->directSoundDataFiles, path);
+    }
+    count = config_path_count(cfg->voicegroupPathCount);
+    for (int i = 0; i < count; i++)
+        discover_config_voicegroup_path(projectRoot, cfg->voicegroupPaths[i], out);
+    count = config_path_count(cfg->sampleDirCount);
+    for (int i = 0; i < count; i++)
+    {
+        build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
+        if (is_directory(path))
+            pathlist_add(&out->wavSampleDirs, path);
+    }
+}
+
+static void discover_standard_data_file(const char* projectRoot, const char* relativePath, PathList* files)
+{
+    char path[MAX_PATH_LEN];
+    build_path(path, sizeof(path), projectRoot, relativePath);
+    if (file_exists(path))
+        pathlist_add(files, path);
+}
+
+static void discover_standard_data_files(const char* projectRoot, ProjectDiscovery* out)
+{
+    discover_standard_data_file(projectRoot, "sound/direct_sound_data.inc", &out->directSoundDataFiles);
+    discover_standard_data_file(projectRoot, "sound/direct_sound_synth_data.inc", &out->directSoundDataFiles);
+    discover_standard_data_file(projectRoot, "sound/programmable_wave_data.inc", &out->progWaveDataFiles);
+    discover_standard_data_file(projectRoot, "sound/keysplit_tables.inc", &out->keySplitTableFiles);
+}
+
+static void discover_standard_voicegroup_dirs(const char* projectRoot, ProjectDiscovery* out)
+{
+    char voicegroupDir[MAX_PATH_LEN];
+    build_path(voicegroupDir, sizeof(voicegroupDir), projectRoot, "sound/voicegroups");
+    if (!is_directory(voicegroupDir))
+        return;
+    pathlist_add(&out->voicegroupDirs, voicegroupDir);
+    char subPath[MAX_PATH_LEN];
+    build_path(subPath, sizeof(subPath), voicegroupDir, "keysplits");
+    if (is_directory(subPath))
+        pathlist_add(&out->voicegroupDirs, subPath);
+    build_path(subPath, sizeof(subPath), voicegroupDir, "drumsets");
+    if (is_directory(subPath))
+        pathlist_add(&out->voicegroupDirs, subPath);
+}
+
+static void discover_standard_monolithic_file(const char* projectRoot, ProjectDiscovery* out)
+{
+    char path[MAX_PATH_LEN];
+    build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
+    vg_log("discover_project: checking monolithic '%s' exists=%d", path, file_exists(path));
+    if (!file_exists(path))
+        return;
+    if (is_monolithic_voicegroup_file(path))
+        pathlist_add(&out->monolithicVGFiles, path);
+}
+
 static void discover_project(const char* projectRoot, const VoicegroupLoaderConfig* cfg, ProjectDiscovery* out)
 {
     memset(out, 0, sizeof(ProjectDiscovery));
     snprintf(out->projectRoot, sizeof(out->projectRoot), "%s", projectRoot);
     out->cfg = cfg;
-
-    char path[MAX_PATH_LEN];
     char soundDir[MAX_PATH_LEN];
     build_path(soundDir, sizeof(soundDir), projectRoot, "sound");
     vg_log("discover_project: soundDir='%s' exists=%d", soundDir, is_directory(soundDir));
-
-    /* 1. Config overrides first (prepended) */
-    if (cfg)
-    {
-        for (int i = 0; i < cfg->soundDataPathCount && i < VG_CONFIG_PATH_CAP; i++)
-        {
-            build_path(path, sizeof(path), projectRoot, cfg->soundDataPaths[i]);
-            if (file_exists(path))
-                pathlist_add(&out->directSoundDataFiles, path);
-        }
-        for (int i = 0; i < cfg->voicegroupPathCount && i < VG_CONFIG_PATH_CAP; i++)
-        {
-            build_path(path, sizeof(path), projectRoot, cfg->voicegroupPaths[i]);
-            if (is_directory(path))
-            {
-                /* If it's a directory, add as voicegroup dir and scan for voice macros */
-                pathlist_add(&out->voicegroupDirs, path);
-                /* Also check if files inside are monolithic */
-                DIR* d = opendir(path);
-                if (d)
-                {
-                    struct dirent* ent;
-                    while ((ent = readdir(d)) != NULL)
-                    {
-                        if (ent->d_name[0] == '.')
-                            continue;
-                        if (str_ends_with_ci(ent->d_name, ".inc") || str_ends_with_ci(ent->d_name, ".s"))
-                        {
-                            char fpath[MAX_PATH_LEN];
-                            build_path(fpath, sizeof(fpath), path, ent->d_name);
-                            if (is_monolithic_voicegroup_file(fpath))
-                                pathlist_add(&out->monolithicVGFiles, fpath);
-                        }
-                    }
-                    closedir(d);
-                }
-                probe_keysplit_data_in_dir(path, out);
-            }
-            else if (file_exists(path))
-            {
-                /* It's a file - check if it's monolithic or a voicegroup dir entry */
-                if (is_monolithic_voicegroup_file(path))
-                    pathlist_add(&out->monolithicVGFiles, path);
-            }
-        }
-        for (int i = 0; i < cfg->sampleDirCount && i < VG_CONFIG_PATH_CAP; i++)
-        {
-            build_path(path, sizeof(path), projectRoot, cfg->sampleDirs[i]);
-            if (is_directory(path))
-                pathlist_add(&out->wavSampleDirs, path);
-        }
-    }
-
-    /* 2. Standard direct_sound_data.inc, programmable_wave_data.inc, keysplit_tables.inc */
-    build_path(path, sizeof(path), projectRoot, "sound/direct_sound_data.inc");
-    if (file_exists(path))
-        pathlist_add(&out->directSoundDataFiles, path);
-
-    /* Inline Golden Sun synth definitions (pokeemerald-expansion layout);
-     * parsed by the same direct_sound_data parser, which recognizes the
-     * set_synth_* macros. */
-    build_path(path, sizeof(path), projectRoot, "sound/direct_sound_synth_data.inc");
-    if (file_exists(path))
-        pathlist_add(&out->directSoundDataFiles, path);
-
-    build_path(path, sizeof(path), projectRoot, "sound/programmable_wave_data.inc");
-    if (file_exists(path))
-        pathlist_add(&out->progWaveDataFiles, path);
-
-    build_path(path, sizeof(path), projectRoot, "sound/keysplit_tables.inc");
-    if (file_exists(path))
-        pathlist_add(&out->keySplitTableFiles, path);
-
-    /* 3. Standard voicegroup directories */
-    build_path(path, sizeof(path), projectRoot, "sound/voicegroups");
-    if (is_directory(path))
-    {
-        pathlist_add(&out->voicegroupDirs, path);
-        /* Also add keysplits/ and drumsets/ subdirs */
-        char subPath[MAX_PATH_LEN];
-        build_path(subPath, sizeof(subPath), path, "keysplits");
-        if (is_directory(subPath))
-            pathlist_add(&out->voicegroupDirs, subPath);
-        build_path(subPath, sizeof(subPath), path, "drumsets");
-        if (is_directory(subPath))
-            pathlist_add(&out->voicegroupDirs, subPath);
-    }
-
-    /* 4. The recursive scan under sound/ for voicegroup dirs and wav dirs is
-     * deferred to discovery_ensure_deep_scan(): it runs only when a lookup
-     * misses the eager entries above (stock layouts never need it). */
-
-    /* 5. Check for monolithic voicegroup files */
-    build_path(path, sizeof(path), projectRoot, "sound/voice_groups.inc");
-    vg_log("discover_project: checking monolithic '%s' exists=%d", path, file_exists(path));
-    if (file_exists(path) && is_monolithic_voicegroup_file(path))
-        pathlist_add(&out->monolithicVGFiles, path);
+    discover_config_paths(projectRoot, cfg, out);
+    discover_standard_data_files(projectRoot, out);
+    discover_standard_voicegroup_dirs(projectRoot, out);
+    discover_standard_monolithic_file(projectRoot, out);
 }
 
 /*
@@ -1411,276 +1471,253 @@ static int parse_programmable_wave_data_file(const char* filePath, const char* p
 /*
  * Parse a keysplit_tables .inc file.
  */
+typedef struct
+{
+    KeySplitMap* map;
+    KeySplitDef* current;
+    int lastNote;
+} KeySplitParser;
+
+typedef enum
+{
+    KEYSPLIT_LINE_UNHANDLED,
+    KEYSPLIT_LINE_HANDLED,
+    KEYSPLIT_LINE_INVALID,
+} KeySplitLineResult;
+
+static const char* vg_skip_horizontal_space(const char* p)
+{
+    while (*p == ' ' || *p == '\t')
+        p++;
+    return p;
+}
+
+static bool vg_line_finished(const char* p)
+{
+    return *vg_skip_horizontal_space(p) == '\0';
+}
+
+static KeySplitDef* keysplit_map_next(KeySplitMap* map)
+{
+    if (map->count >= map->capacity)
+    {
+        size_t newCap = map->capacity ? (size_t)map->capacity * 2 : INITIAL_CAPACITY;
+        KeySplitDef* entries = (KeySplitDef*)realloc(map->entries, sizeof(KeySplitDef) * newCap);
+        if (!entries)
+            return NULL;
+        map->entries = entries;
+        map->capacity = (int)newCap;
+    }
+    return &map->entries[map->count];
+}
+
+static bool keysplit_begin_macro(KeySplitParser* parser, char* name, int startNote)
+{
+    if (strlen(name) >= MAX_SYMBOL_LEN - 9)
+        return false;
+    if (startNote < 0)
+        return false;
+    if (startNote > 127)
+        return false;
+    rtrim(name);
+    KeySplitDef* current = keysplit_map_next(parser->map);
+    if (!current)
+        return false;
+    memset(current, 0, sizeof(*current));
+    int written = snprintf(current->name, sizeof(current->name), "keysplit_%s", name);
+    if (written < 0)
+        return false;
+    if (written >= MAX_SYMBOL_LEN)
+        return false;
+    current->startingNote = startNote;
+    parser->current = current;
+    parser->lastNote = startNote;
+    parser->map->count++;
+    return true;
+}
+
+static bool keysplit_begin_set(KeySplitParser* parser, char* name, int startNote)
+{
+    if (strlen(name) >= MAX_SYMBOL_LEN)
+        return false;
+    if (startNote < 0)
+        return false;
+    if (startNote > 127)
+        return false;
+    rtrim(name);
+    KeySplitDef* current = keysplit_map_next(parser->map);
+    if (!current)
+        return false;
+    memset(current, 0, sizeof(*current));
+    strncpy(current->name, name, MAX_SYMBOL_LEN - 1);
+    current->name[MAX_SYMBOL_LEN - 1] = '\0';
+    current->startingNote = startNote;
+    parser->current = current;
+    parser->lastNote = startNote;
+    parser->map->count++;
+    return true;
+}
+
+static KeySplitLineResult parse_keysplit_macro_line(KeySplitParser* parser, const char* trimmed)
+{
+    if (strncmp(trimmed, "keysplit ", 9) != 0)
+        return KEYSPLIT_LINE_UNHANDLED;
+    const char* p = trimmed + 9;
+    char name[MAX_SYMBOL_LEN];
+    if (vg_extract_comma_symbol(&p, name, sizeof(name)) != 0)
+        return KEYSPLIT_LINE_INVALID;
+    int startNote = 0;
+    if (!vg_parse_next_int(&p, &startNote))
+        return KEYSPLIT_LINE_INVALID;
+    if (!vg_line_finished(p))
+        return KEYSPLIT_LINE_INVALID;
+    if (!keysplit_begin_macro(parser, name, startNote))
+        return KEYSPLIT_LINE_INVALID;
+    return KEYSPLIT_LINE_HANDLED;
+}
+
+static bool keysplit_split_values_are_valid(int index, int endNote, int lastNote)
+{
+    if (index < 0)
+        return false;
+    if (index > 127)
+        return false;
+    if (endNote < 0)
+        return false;
+    if (endNote > 128)
+        return false;
+    if (lastNote < 0)
+        return false;
+    if (lastNote > 128)
+        return false;
+    return endNote >= lastNote;
+}
+
+static KeySplitLineResult parse_keysplit_split_line(KeySplitParser* parser, const char* trimmed)
+{
+    if (strncmp(trimmed, "split ", 6) != 0)
+        return KEYSPLIT_LINE_UNHANDLED;
+    if (!parser->current)
+        return KEYSPLIT_LINE_HANDLED;
+    const char* p = trimmed + 6;
+    int index = 0;
+    int endNote = 0;
+    if (!vg_parse_next_int(&p, &index))
+        return KEYSPLIT_LINE_INVALID;
+    if (!vg_expect_comma(&p))
+        return KEYSPLIT_LINE_INVALID;
+    if (!vg_parse_next_int(&p, &endNote))
+        return KEYSPLIT_LINE_INVALID;
+    if (!vg_line_finished(p))
+        return KEYSPLIT_LINE_INVALID;
+    if (!keysplit_split_values_are_valid(index, endNote, parser->lastNote))
+        return KEYSPLIT_LINE_INVALID;
+    for (int note = parser->lastNote; note < endNote; note++)
+        parser->current->table[note] = (uint8_t)index;
+    parser->lastNote = endNote;
+    if (endNote > parser->current->maxNote)
+        parser->current->maxNote = endNote;
+    return KEYSPLIT_LINE_HANDLED;
+}
+
+static KeySplitLineResult parse_keysplit_set_line(KeySplitParser* parser, const char* trimmed)
+{
+    if (strncmp(trimmed, ".set ", 5) != 0)
+        return KEYSPLIT_LINE_UNHANDLED;
+    const char* p = trimmed + 5;
+    char name[MAX_SYMBOL_LEN];
+    if (vg_extract_comma_symbol(&p, name, sizeof(name)) != 0)
+        return KEYSPLIT_LINE_INVALID;
+    p = vg_skip_horizontal_space(p);
+    if (*p != '.')
+        return KEYSPLIT_LINE_INVALID;
+    p = vg_skip_horizontal_space(p + 1);
+    if (*p != '-')
+        return KEYSPLIT_LINE_INVALID;
+    p++;
+    int startNote = 0;
+    if (!vg_parse_next_int(&p, &startNote))
+        return KEYSPLIT_LINE_INVALID;
+    if (!vg_line_finished(p))
+        return KEYSPLIT_LINE_INVALID;
+    if (!keysplit_begin_set(parser, name, startNote))
+        return KEYSPLIT_LINE_INVALID;
+    return KEYSPLIT_LINE_HANDLED;
+}
+
+static KeySplitLineResult parse_keysplit_bytes_line(KeySplitParser* parser, const char* trimmed)
+{
+    if (strncmp(trimmed, ".byte ", 6) != 0)
+        return KEYSPLIT_LINE_UNHANDLED;
+    if (!parser->current)
+        return KEYSPLIT_LINE_HANDLED;
+    const char* p = trimmed + 6;
+    while (*p)
+    {
+        while (*p == ' ' || *p == '\t' || *p == ',')
+            p++;
+        if (*p == '\0')
+            break;
+        int value = 0;
+        if (!vg_parse_next_int(&p, &value))
+            return KEYSPLIT_LINE_INVALID;
+        if (value < 0)
+            return KEYSPLIT_LINE_INVALID;
+        if (value > 127)
+            return KEYSPLIT_LINE_INVALID;
+        if (parser->lastNote < 0)
+            return KEYSPLIT_LINE_INVALID;
+        if (parser->lastNote >= 128)
+            return KEYSPLIT_LINE_INVALID;
+        parser->current->table[parser->lastNote] = (uint8_t)value;
+        if (parser->lastNote > parser->current->maxNote)
+            parser->current->maxNote = parser->lastNote;
+        parser->lastNote++;
+    }
+    return KEYSPLIT_LINE_HANDLED;
+}
+
+static KeySplitLineResult parse_keysplit_line(KeySplitParser* parser, const char* trimmed)
+{
+    KeySplitLineResult result = parse_keysplit_macro_line(parser, trimmed);
+    if (result != KEYSPLIT_LINE_UNHANDLED)
+        return result;
+    result = parse_keysplit_split_line(parser, trimmed);
+    if (result != KEYSPLIT_LINE_UNHANDLED)
+        return result;
+    result = parse_keysplit_set_line(parser, trimmed);
+    if (result != KEYSPLIT_LINE_UNHANDLED)
+        return result;
+    return parse_keysplit_bytes_line(parser, trimmed);
+}
+
 static int parse_keysplit_tables_file(const char* filePath, KeySplitMap* map)
 {
-    FILE* f = fopen(filePath, "r");
-    if (!f)
+    FILE* file = fopen(filePath, "r");
+    if (!file)
     {
         fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
         return -1;
     }
-
+    KeySplitParser parser = {map, NULL, 0};
     char line[MAX_LINE];
-    KeySplitDef* current = NULL;
-    int lastNote = 0;
-
-    while (fgets(line, sizeof(line), f))
+    while (fgets(line, sizeof(line), file))
     {
         strip_comment(line);
         rtrim(line);
-        char* trimmed = ltrim(line);
-
-        if (strncmp(trimmed, "keysplit ", 9) == 0)
-        {
-            const char* q = trimmed + 9;
-            char name[MAX_SYMBOL_LEN];
-            int rc = vg_extract_comma_symbol(&q, name, sizeof(name));
-            if (rc != 0)
-            {
-                fclose(f);
-                return -1;
-            }
-            int startNote = 0;
-            if (!vg_parse_next_int(&q, &startNote))
-            {
-                fclose(f);
-                return -1;
-            }
-            const char* tail = q;
-            while (*tail == ' ' || *tail == '\t')
-            {
-                tail++;
-            }
-            if (*tail != '\0')
-            {
-                fclose(f);
-                return -1;
-            }
-            if (strlen(name) >= MAX_SYMBOL_LEN - 9)
-            {
-                fclose(f);
-                return -1;
-            }
-            rtrim(name);
-            if (startNote < 0 || startNote > 127)
-            {
-                fclose(f);
-                return -1;
-            }
-            if (map->count >= map->capacity)
-            {
-                size_t newCap = map->capacity ? (size_t)map->capacity * 2 : INITIAL_CAPACITY;
-                KeySplitDef* np =
-                    (KeySplitDef*)realloc(map->entries, sizeof(KeySplitDef) * newCap);
-                if (!np)
-                {
-                    fclose(f);
-                    return -1;
-                }
-                map->entries = np;
-                map->capacity = (int)newCap;
-            }
-            current = &map->entries[map->count];
-            memset(current, 0, sizeof(KeySplitDef));
-            {
-                int n = snprintf(current->name, MAX_SYMBOL_LEN, "keysplit_%s", name);
-                if (n < 0 || n >= MAX_SYMBOL_LEN)
-                {
-                    fclose(f);
-                    return -1;
-                }
-            }
-            current->startingNote = startNote;
-            current->maxNote = 0;
-            lastNote = startNote;
-            map->count++;
-        }
-        else if (strncmp(trimmed, "split ", 6) == 0 && current)
-        {
-            const char* q = trimmed + 6;
-            int index = 0;
-            int endNote = 0;
-            if (!vg_parse_next_int(&q, &index))
-            {
-                fclose(f);
-                return -1;
-            }
-            if (!vg_expect_comma(&q))
-            {
-                fclose(f);
-                return -1;
-            }
-            if (!vg_parse_next_int(&q, &endNote))
-            {
-                fclose(f);
-                return -1;
-            }
-            const char* tail = q;
-            while (*tail == ' ' || *tail == '\t')
-            {
-                tail++;
-            }
-            if (*tail != '\0')
-            {
-                fclose(f);
-                return -1;
-            }
-            if (index < 0 || index > 127)
-            {
-                fclose(f);
-                return -1;
-            }
-            if (endNote < 0 || endNote > 128)
-            {
-                fclose(f);
-                return -1;
-            }
-            if (lastNote < 0 || lastNote > 128)
-            {
-                fclose(f);
-                return -1;
-            }
-            if (endNote < lastNote)
-            {
-                fclose(f);
-                return -1;
-            }
-            for (int n = lastNote; n < endNote; n++)
-            {
-                current->table[n] = (uint8_t)index;
-            }
-            lastNote = endNote;
-            if (endNote > current->maxNote)
-            {
-                current->maxNote = endNote;
-            }
-        }
-        else if (strncmp(trimmed, ".set ", 5) == 0)
-        {
-            const char* q = trimmed + 5;
-            char name[MAX_SYMBOL_LEN];
-            int rc = vg_extract_comma_symbol(&q, name, sizeof(name));
-            if (rc != 0)
-            {
-                fclose(f);
-                return -1;
-            }
-            while (*q == ' ' || *q == '\t')
-            {
-                q++;
-            }
-            if (*q != '.')
-            {
-                fclose(f);
-                return -1;
-            }
-            q++;
-            while (*q == ' ' || *q == '\t')
-            {
-                q++;
-            }
-            if (*q != '-')
-            {
-                fclose(f);
-                return -1;
-            }
-            q++;
-            int startNote = 0;
-            if (!vg_parse_next_int(&q, &startNote))
-            {
-                fclose(f);
-                return -1;
-            }
-            const char* tail = q;
-            while (*tail == ' ' || *tail == '\t')
-            {
-                tail++;
-            }
-            if (*tail != '\0')
-            {
-                fclose(f);
-                return -1;
-            }
-            if (strlen(name) >= MAX_SYMBOL_LEN)
-            {
-                fclose(f);
-                return -1;
-            }
-            rtrim(name);
-            if (startNote < 0 || startNote > 127)
-            {
-                fclose(f);
-                return -1;
-            }
-            if (map->count >= map->capacity)
-            {
-                size_t newCap = map->capacity ? (size_t)map->capacity * 2 : INITIAL_CAPACITY;
-                KeySplitDef* np =
-                    (KeySplitDef*)realloc(map->entries, sizeof(KeySplitDef) * newCap);
-                if (!np)
-                {
-                    fclose(f);
-                    return -1;
-                }
-                map->entries = np;
-                map->capacity = (int)newCap;
-            }
-            current = &map->entries[map->count];
-            memset(current, 0, sizeof(KeySplitDef));
-            strncpy(current->name, name, MAX_SYMBOL_LEN - 1);
-            current->name[MAX_SYMBOL_LEN - 1] = '\0';
-            current->startingNote = startNote;
-            current->maxNote = 0;
-            lastNote = startNote;
-            map->count++;
-        }
-        else if (strncmp(trimmed, ".byte ", 6) == 0 && current)
-        {
-            const char* q = trimmed + 6;
-            while (*q)
-            {
-                while (*q == ' ' || *q == '\t' || *q == ',')
-                {
-                    q++;
-                }
-                if (*q == '\0')
-                {
-                    break;
-                }
-                int val = 0;
-                if (!vg_parse_next_int(&q, &val))
-                {
-                    fclose(f);
-                    return -1;
-                }
-                if (val < 0 || val > 127)
-                {
-                    fclose(f);
-                    return -1;
-                }
-                if (lastNote < 0 || lastNote >= 128)
-                {
-                    fclose(f);
-                    return -1;
-                }
-                current->table[lastNote] = (uint8_t)val;
-                if (lastNote > current->maxNote)
-                {
-                    current->maxNote = lastNote;
-                }
-                lastNote++;
-            }
-        }
+        KeySplitLineResult result = parse_keysplit_line(&parser, ltrim(line));
+        if (result != KEYSPLIT_LINE_INVALID)
+            continue;
+        fclose(file);
+        return -1;
     }
-
-    fclose(f);
+    fclose(file);
     return 0;
 }
 
 /* Wrappers that iterate over all discovered paths */
 
-static bool parse_all_direct_sound_data(
-    const ProjectDiscovery* disc, const char* projectRoot, SymbolMap* map)
+static bool parse_all_direct_sound_data(const ProjectDiscovery* disc, const char* projectRoot, SymbolMap* map)
 {
     for (int i = 0; i < disc->directSoundDataFiles.count; i++)
     {
@@ -1692,14 +1729,11 @@ static bool parse_all_direct_sound_data(
     return true;
 }
 
-static bool parse_all_programmable_wave_data(
-    const ProjectDiscovery* disc, const char* projectRoot, SymbolMap* map)
+static bool parse_all_programmable_wave_data(const ProjectDiscovery* disc, const char* projectRoot, SymbolMap* map)
 {
     for (int i = 0; i < disc->progWaveDataFiles.count; i++)
     {
-        if (parse_programmable_wave_data_file(
-                disc->progWaveDataFiles.paths[i], projectRoot, map)
-            != 0)
+        if (parse_programmable_wave_data_file(disc->progWaveDataFiles.paths[i], projectRoot, map) != 0)
         {
             return false;
         }
@@ -1707,8 +1741,7 @@ static bool parse_all_programmable_wave_data(
     return true;
 }
 
-static bool parse_keysplit_tables_range(
-    const ProjectDiscovery* disc, KeySplitMap* map, int fromIndex)
+static bool parse_keysplit_tables_range(const ProjectDiscovery* disc, KeySplitMap* map, int fromIndex)
 {
     for (int i = fromIndex; i < disc->keySplitTableFiles.count; i++)
     {
@@ -1726,9 +1759,8 @@ static bool parse_all_keysplit_tables(const ProjectDiscovery* disc, KeySplitMap*
     return parse_keysplit_tables_range(disc, map, 0);
 }
 
-
-static bool keysplit_map_find_or_rescan_checked(
-    KeySplitMap* map, const char* name, ProjectDiscovery* disc, KeySplitDef** out)
+static bool
+keysplit_map_find_or_rescan_checked(KeySplitMap* map, const char* name, ProjectDiscovery* disc, KeySplitDef** out)
 {
     KeySplitDef* ks = keysplit_map_find(map, name);
     if (ks || !disc)
@@ -1787,6 +1819,72 @@ static WaveData* load_aif_from_path(const char* absoluteAifPath, bool* hardFailu
     return vg_asset_load_aiff_file(absoluteAifPath, hardFailure);
 }
 
+static int resolve_synth_sample(
+    const SymbolMap* dsMap, const char* symbol, LoadedVoiceGroup* vg, WaveCache* waveCache, WaveData** outWd)
+{
+    const uint8_t* synthDesc = symbol_map_find_synth(dsMap, symbol);
+    if (!synthDesc)
+        return 0;
+    WaveData* wave = build_synth_wavedata(synthDesc, symbol, vg, waveCache);
+    if (!wave)
+        return -1;
+    if (outWd)
+        *outWd = wave;
+    return 1;
+}
+
+static int
+load_sample_candidate(const char* path, bool isAif, LoadedVoiceGroup* vg, WaveCache* waveCache, WaveData** outWd)
+{
+    WaveData* cached = wave_cache_find(waveCache, path);
+    if (cached)
+    {
+        if (outWd)
+            *outWd = cached;
+        return 1;
+    }
+    bool hardFailure = false;
+    WaveData* wave = NULL;
+    if (isAif)
+        wave = load_aif_from_path(path, &hardFailure);
+    else
+        wave = load_wav_from_path(path, &hardFailure);
+    if (hardFailure)
+        return -1;
+    if (!wave)
+        return 0;
+    if (!vg_register_wavedata(vg, wave))
+    {
+        free(wave);
+        return -1;
+    }
+    wave_cache_insert(waveCache, path, wave);
+    if (outWd)
+        *outWd = wave;
+    return 1;
+}
+
+static int search_sample_directories(
+    const char* symbol, ProjectDiscovery* disc, LoadedVoiceGroup* vg, WaveCache* waveCache, WaveData** outWd)
+{
+    if (!disc)
+        return 0;
+    if (!disc->deepScanned)
+        discovery_ensure_deep_scan(disc);
+    for (int i = 0; i < disc->wavSampleDirs.count; i++)
+    {
+        char path[MAX_PATH_LEN];
+        snprintf(path, sizeof(path), "%s%c%s.wav", disc->wavSampleDirs.paths[i], PATH_SEP, symbol);
+        int result = load_sample_candidate(path, false, vg, waveCache, outWd);
+        if (result != 0)
+            return result;
+        snprintf(path, sizeof(path), "%s%c%s.aif", disc->wavSampleDirs.paths[i], PATH_SEP, symbol);
+        result = load_sample_candidate(path, true, vg, waveCache, outWd);
+        if (result != 0)
+            return result;
+    }
+    return 0;
+}
 
 static int resolve_and_load_sample_serial(const char* projectRoot,
                                           const char* symbol,
@@ -1796,86 +1894,13 @@ static int resolve_and_load_sample_serial(const char* projectRoot,
                                           WaveCache* waveCache,
                                           WaveData** outWd)
 {
+    (void)projectRoot;
     if (outWd)
         *outWd = NULL;
-    const uint8_t* synthDesc = symbol_map_find_synth(dsMap, symbol);
-    if (synthDesc)
-    {
-        char cacheKey[MAX_PATH_LEN];
-        snprintf(cacheKey, sizeof(cacheKey), "synth-macro:%s", symbol);
-        WaveData* cached = wave_cache_find(waveCache, cacheKey);
-        if (cached)
-        {
-            if (outWd)
-                *outWd = cached;
-            return 1;
-        }
-        uint32_t dataSize = 16;
-        WaveData* wd = calloc(1, sizeof(WaveData) + dataSize + 1);
-        if (!wd)
-            return -1;
-        wd->type = 0;
-        wd->status = 0x4000;
-        wd->freq = 0x01058920;
-        wd->loopStart = 0;
-        wd->size = 0;
-        wd->data = (int8_t*)((uint8_t*)wd + sizeof(WaveData));
-        memcpy(wd->data, synthDesc, 6);
-        if (!vg_register_wavedata(vg, wd))
-        {
-            free(wd);
-            return -1;
-        }
-        wave_cache_insert(waveCache, cacheKey, wd);
-        if (outWd)
-            *outWd = wd;
-        return 1;
-    }
-    /* Fallback: search sample directories (.wav, then .aif) */
-    if (disc)
-    {
-        if (!disc->deepScanned)
-            discovery_ensure_deep_scan(disc);
-        for (int i = 0; i < disc->wavSampleDirs.count; i++)
-        {
-            for (int fmt = 0; fmt < 2; fmt++)
-            {
-                char wavPath[MAX_PATH_LEN];
-                snprintf(wavPath,
-                         sizeof(wavPath),
-                         "%s%c%s.%s",
-                         disc->wavSampleDirs.paths[i],
-                         PATH_SEP,
-                         symbol,
-                         fmt == 0 ? "wav" : "aif");
-                WaveData* cached = wave_cache_find(waveCache, wavPath);
-                if (cached)
-                {
-                    if (outWd)
-                        *outWd = cached;
-                    return 1;
-                }
-                bool hardFailure = false;
-                WaveData* wd = fmt == 0 ? load_wav_from_path(wavPath, &hardFailure)
-                                        : load_aif_from_path(wavPath, &hardFailure);
-                if (hardFailure)
-                    return -1;
-                if (wd)
-                {
-                    if (!vg_register_wavedata(vg, wd))
-                    {
-                        free(wd);
-                        return -1;
-                    }
-                    wave_cache_insert(waveCache, wavPath, wd);
-                    if (outWd)
-                        *outWd = wd;
-                    return 1;
-                }
-            }
-        }
-    }
-    return 0;
+    int result = resolve_synth_sample(dsMap, symbol, vg, waveCache, outWd);
+    if (result != 0)
+        return result;
+    return search_sample_directories(symbol, disc, vg, waveCache, outWd);
 }
 
 /* ---- Flexible voicegroup finding ---- */
@@ -1899,241 +1924,179 @@ static int dir_last_component_is(const char* dirPath, const char* name)
 /*
  * Search for a voicegroup by name across all currently discovered locations.
  */
+static void set_voicegroup_file_location(VoicegroupLocation* location, const char* filePath)
+{
+    memset(location, 0, sizeof(*location));
+    strncpy(location->filePath, filePath, MAX_PATH_LEN - 1);
+    location->found = 1;
+}
+
+static bool find_voicegroup_file(
+    const char* dirPath, const char* subdir, const char* prefix, const char* name, VoicegroupLocation* location)
+{
+    char path[MAX_PATH_LEN];
+    if (subdir)
+        snprintf(path, sizeof(path), "%s%c%s%c%s%s.inc", dirPath, PATH_SEP, subdir, PATH_SEP, prefix, name);
+    else
+        snprintf(path, sizeof(path), "%s%c%s%s.inc", dirPath, PATH_SEP, prefix, name);
+    if (file_exists(path))
+    {
+        set_voicegroup_file_location(location, path);
+        return true;
+    }
+    if (subdir)
+        snprintf(path, sizeof(path), "%s%c%s%c%s%s.s", dirPath, PATH_SEP, subdir, PATH_SEP, prefix, name);
+    else
+        snprintf(path, sizeof(path), "%s%c%s%s.s", dirPath, PATH_SEP, prefix, name);
+    if (!file_exists(path))
+        return false;
+    set_voicegroup_file_location(location, path);
+    return true;
+}
+
+static bool find_voicegroup_in_directories(const PathList* directories,
+                                           const char* prefix,
+                                           const char* name,
+                                           VoicegroupLocation* location)
+{
+    for (int i = 0; i < directories->count; i++)
+    {
+        if (find_voicegroup_file(directories->paths[i], NULL, prefix, name, location))
+            return true;
+    }
+    return false;
+}
+
+static bool find_sub_voicegroup_in_directories(const PathList* directories,
+                                               const char* subdir,
+                                               const char* name,
+                                               VoicegroupLocation* location)
+{
+    for (int i = 0; i < directories->count; i++)
+    {
+        if (find_voicegroup_file(directories->paths[i], subdir, "", name, location))
+            return true;
+    }
+    for (int i = 0; i < directories->count; i++)
+    {
+        if (!dir_last_component_is(directories->paths[i], subdir))
+            continue;
+        if (find_voicegroup_file(directories->paths[i], NULL, "", name, location))
+            return true;
+    }
+    return false;
+}
+
+static bool make_keysplit_voicegroup_name(const char* vgName, char baseName[MAX_SYMBOL_LEN])
+{
+    const char* suffix = strstr(vgName, "_keysplit");
+    if (!suffix)
+        return false;
+    int baseLength = (int)(suffix - vgName);
+    if (baseLength <= 0)
+        return false;
+    if (baseLength >= MAX_SYMBOL_LEN)
+        return false;
+    memcpy(baseName, vgName, (size_t)baseLength);
+    baseName[baseLength] = '\0';
+    return true;
+}
+
+static bool make_drumset_voicegroup_name(const char* vgName, char baseName[MAX_SYMBOL_LEN])
+{
+    const char* suffix = strstr(vgName, "_drumset");
+    if (!suffix)
+        return false;
+    int baseLength = (int)(suffix - vgName);
+    const char* tail = suffix + 8;
+    if (baseLength <= 0)
+        return false;
+    if (baseLength + (int)strlen(tail) >= MAX_SYMBOL_LEN)
+        return false;
+    memcpy(baseName, vgName, (size_t)baseLength);
+    strcpy(baseName + baseLength, tail);
+    return true;
+}
+
+static bool find_keysplit_voicegroup(const ProjectDiscovery* disc, const char* vgName, VoicegroupLocation* location)
+{
+    char baseName[MAX_SYMBOL_LEN];
+    if (!make_keysplit_voicegroup_name(vgName, baseName))
+        return false;
+    return find_sub_voicegroup_in_directories(&disc->voicegroupDirs, "keysplits", baseName, location);
+}
+
+static bool find_drumset_voicegroup(const ProjectDiscovery* disc, const char* vgName, VoicegroupLocation* location)
+{
+    char baseName[MAX_SYMBOL_LEN];
+    if (!make_drumset_voicegroup_name(vgName, baseName))
+        return false;
+    return find_sub_voicegroup_in_directories(&disc->voicegroupDirs, "drumsets", baseName, location);
+}
+
+static bool monolithic_voicegroup_has_label(FILE* file, const char* label, size_t labelLength)
+{
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), file))
+    {
+        strip_comment(line);
+        char* trimmed = ltrim(line);
+        if (strncmp(trimmed, label, labelLength) != 0)
+            continue;
+        char trailing = trimmed[labelLength];
+        if (trailing == '\0')
+            return true;
+        if (isspace((unsigned char)trailing))
+            return true;
+    }
+    return false;
+}
+
+static bool find_monolithic_voicegroup(const PathList* files, const char* vgName, VoicegroupLocation* location)
+{
+    if (strlen(vgName) >= MAX_SYMBOL_LEN)
+        return false;
+    char label[MAX_SYMBOL_LEN + 4];
+    int labelLength = snprintf(label, sizeof(label), "%s::", vgName);
+    if (labelLength < 0)
+        return false;
+    if ((size_t)labelLength >= sizeof(label))
+        return false;
+    for (int i = 0; i < files->count; i++)
+    {
+        FILE* file = fopen(files->paths[i], "r");
+        if (!file)
+            continue;
+        bool found = monolithic_voicegroup_has_label(file, label, (size_t)labelLength);
+        fclose(file);
+        if (!found)
+            continue;
+        set_voicegroup_file_location(location, files->paths[i]);
+        strncpy(location->label, vgName, MAX_SYMBOL_LEN - 1);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Search for a voicegroup by name across all currently discovered locations.
+ */
 static VoicegroupLocation
 find_voicegroup_probe(const char* projectRoot, const char* vgName, const ProjectDiscovery* disc)
 {
-    VoicegroupLocation loc;
-    memset(&loc, 0, sizeof(loc));
-
-    char path[MAX_PATH_LEN];
-
-    /* 1. Individual files in discovered voicegroup directories */
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-    {
-        /* Try <dir>/<name>.inc */
-        snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path))
-        {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-            loc.found = 1;
-            return loc;
-        }
-        /* Try <dir>/<name>.s */
-        snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path))
-        {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-            loc.found = 1;
-            return loc;
-        }
-    }
-
-    /* 2. Keysplit/drumset suffix conventions.
-     *
-     * IMPORTANT: only search inside directories whose last path component is
-     * "keysplits" (or "drumsets"), and also try an explicit
-     * <voicegroupDir>/keysplits/<base>.inc probe.  Searching every voicegroup
-     * dir would find the *main* <base>.inc file (e.g. petalburg.inc) instead
-     * of the keysplit sub-voicegroup, causing infinite recursion.
-     */
-
-    {
-        const char* suffix = strstr(vgName, "_keysplit");
-        if (suffix)
-        {
-            char baseName[MAX_SYMBOL_LEN];
-            int baseLen = (int)(suffix - vgName);
-            if (baseLen > 0 && baseLen < MAX_SYMBOL_LEN)
-            {
-                memcpy(baseName, vgName, baseLen);
-                baseName[baseLen] = '\0';
-                /* Explicit <dir>/keysplits/<base>.inc probe for each voicegroup dir */
-                for (int i = 0; i < disc->voicegroupDirs.count; i++)
-                {
-                    snprintf(path,
-                             sizeof(path),
-                             "%s%ckeysplits%c%s.inc",
-                             disc->voicegroupDirs.paths[i],
-                             PATH_SEP,
-                             PATH_SEP,
-                             baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                    snprintf(path,
-                             sizeof(path),
-                             "%s%ckeysplits%c%s.s",
-                             disc->voicegroupDirs.paths[i],
-                             PATH_SEP,
-                             PATH_SEP,
-                             baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                }
-                /* Also check dirs that are themselves named "keysplits" */
-                for (int i = 0; i < disc->voicegroupDirs.count; i++)
-                {
-                    if (!dir_last_component_is(disc->voicegroupDirs.paths[i], "keysplits"))
-                        continue;
-                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                }
-            }
-        }
-    }
-    {
-        const char* suffix = strstr(vgName, "_drumset");
-        if (suffix)
-        {
-            char baseName[MAX_SYMBOL_LEN];
-            int baseLen = (int)(suffix - vgName);
-            /* The drumset file keeps whatever follows "_drumset" (e.g.
-             * voicegroup_emerald_drumset_1 -> drumsets/emerald_1.inc, and
-             * voicegroup_frlg_drumset -> drumsets/frlg.inc), so splice the
-             * "_drumset" infix out rather than truncating the name at it. */
-            const char* tail = suffix + 8; /* strlen("_drumset") */
-            if (baseLen > 0 && baseLen + (int)strlen(tail) < MAX_SYMBOL_LEN)
-            {
-                memcpy(baseName, vgName, baseLen);
-                strcpy(baseName + baseLen, tail);
-                /* Explicit <dir>/drumsets/<base>.inc probe for each voicegroup dir */
-                for (int i = 0; i < disc->voicegroupDirs.count; i++)
-                {
-                    snprintf(path,
-                             sizeof(path),
-                             "%s%cdrumsets%c%s.inc",
-                             disc->voicegroupDirs.paths[i],
-                             PATH_SEP,
-                             PATH_SEP,
-                             baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                    snprintf(path,
-                             sizeof(path),
-                             "%s%cdrumsets%c%s.s",
-                             disc->voicegroupDirs.paths[i],
-                             PATH_SEP,
-                             PATH_SEP,
-                             baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                }
-                /* Also check dirs that are themselves named "drumsets" */
-                for (int i = 0; i < disc->voicegroupDirs.count; i++)
-                {
-                    if (!dir_last_component_is(disc->voicegroupDirs.paths[i], "drumsets"))
-                        continue;
-                    snprintf(path, sizeof(path), "%s%c%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                    snprintf(path, sizeof(path), "%s%c%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, baseName);
-                    if (file_exists(path))
-                    {
-                        strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-                        loc.found = 1;
-                        return loc;
-                    }
-                }
-            }
-        }
-    }
-
-    /* 3. Also try vg_<name>.s and vg_<name>.inc patterns (eventide convention) */
-    for (int i = 0; i < disc->voicegroupDirs.count; i++)
-    {
-        snprintf(path, sizeof(path), "%s%cvg_%s.inc", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path))
-        {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-            loc.found = 1;
-            return loc;
-        }
-        snprintf(path, sizeof(path), "%s%cvg_%s.s", disc->voicegroupDirs.paths[i], PATH_SEP, vgName);
-        if (file_exists(path))
-        {
-            strncpy(loc.filePath, path, MAX_PATH_LEN - 1);
-            loc.found = 1;
-            return loc;
-        }
-    }
-
-    /* 4. Monolithic files: scan for <name>:: label */
-    for (int i = 0; i < disc->monolithicVGFiles.count; i++)
-    {
-        if (strlen(vgName) >= MAX_SYMBOL_LEN)
-        {
-            continue;
-        }
-        FILE* f = fopen(disc->monolithicVGFiles.paths[i], "r");
-        if (!f)
-        {
-            continue;
-        }
-
-        char searchLabel[MAX_SYMBOL_LEN + 4];
-        int sl = snprintf(searchLabel, sizeof(searchLabel), "%s::", vgName);
-        if (sl < 0 || (size_t)sl >= sizeof(searchLabel))
-        {
-            fclose(f);
-            continue;
-        }
-        size_t searchLen = (size_t)sl;
-
-        char line[MAX_LINE];
-        while (fgets(line, sizeof(line), f))
-        {
-            strip_comment(line);
-            char* trimmed = ltrim(line);
-            if (strncmp(trimmed, searchLabel, searchLen) == 0)
-            {
-                char c = trimmed[searchLen];
-                if (c == '\0' || isspace((unsigned char)c))
-                {
-                    strncpy(loc.filePath, disc->monolithicVGFiles.paths[i], MAX_PATH_LEN - 1);
-                    loc.filePath[MAX_PATH_LEN - 1] = '\0';
-                    strncpy(loc.label, vgName, MAX_SYMBOL_LEN - 1);
-                    loc.label[MAX_SYMBOL_LEN - 1] = '\0';
-                    loc.found = 1;
-                    fclose(f);
-                    return loc;
-                }
-            }
-        }
-        fclose(f);
-    }
-
-    return loc;
+    (void)projectRoot;
+    VoicegroupLocation location;
+    memset(&location, 0, sizeof(location));
+    if (find_voicegroup_in_directories(&disc->voicegroupDirs, "", vgName, &location))
+        return location;
+    if (find_keysplit_voicegroup(disc, vgName, &location))
+        return location;
+    if (find_drumset_voicegroup(disc, vgName, &location))
+        return location;
+    if (find_voicegroup_in_directories(&disc->voicegroupDirs, "vg_", vgName, &location))
+        return location;
+    find_monolithic_voicegroup(&disc->monolithicVGFiles, vgName, &location);
+    return location;
 }
 
 /*
@@ -2218,6 +2181,126 @@ static int next_included_voicegroup(const char* projectRoot, const char* current
     return 0;
 }
 
+typedef struct
+{
+    const char* projectRoot;
+    LoadedVoiceGroup* vgReg;
+    VgLoadSession* session;
+    const SymbolMap* dsMap;
+    const SymbolMap* pwMap;
+    KeySplitMap* ksMap;
+    ProjectDiscovery* disc;
+    WaveCache* waveCache;
+} SubVoicegroupContext;
+
+static int continue_sub_voicegroup(const SubVoicegroupContext* context,
+                                   ToneData* voices,
+                                   char (*names)[VG_VOICE_NAME_LEN],
+                                   int endIndex,
+                                   const char* initialPath)
+{
+    char currentPath[MAX_PATH_LEN];
+    strncpy(currentPath, initialPath, sizeof(currentPath) - 1);
+    currentPath[sizeof(currentPath) - 1] = '\0';
+    for (int hops = 0; hops < VOICEGROUP_SIZE; hops++)
+    {
+        if (endIndex >= VOICEGROUP_SIZE)
+            break;
+        char nextPath[MAX_PATH_LEN];
+        if (!next_included_voicegroup(context->projectRoot, currentPath, nextPath, sizeof(nextPath)))
+            break;
+        int nextIndex = parse_voicegroup_file_session(context->projectRoot,
+                                                      nextPath,
+                                                      NULL,
+                                                      voices,
+                                                      names,
+                                                      context->vgReg,
+                                                      context->session,
+                                                      context->dsMap,
+                                                      context->pwMap,
+                                                      context->ksMap,
+                                                      context->disc,
+                                                      context->waveCache,
+                                                      endIndex,
+                                                      0,
+                                                      1);
+        if (nextIndex < 0)
+            return -1;
+        if (nextIndex <= endIndex)
+            break;
+        endIndex = nextIndex;
+        strncpy(currentPath, nextPath, sizeof(currentPath) - 1);
+        currentPath[sizeof(currentPath) - 1] = '\0';
+    }
+    return endIndex;
+}
+
+static int
+parse_sub_voicegroup(const SubVoicegroupContext* context, const VoicegroupLocation* location, ToneData* voices)
+{
+    const char* startLabel = location->label[0] ? location->label : NULL;
+    char names[VOICEGROUP_SIZE][VG_VOICE_NAME_LEN];
+    memset(names, 0, sizeof(names));
+    int endIndex = parse_voicegroup_file_session(context->projectRoot,
+                                                 location->filePath,
+                                                 startLabel,
+                                                 voices,
+                                                 names,
+                                                 context->vgReg,
+                                                 context->session,
+                                                 context->dsMap,
+                                                 context->pwMap,
+                                                 context->ksMap,
+                                                 context->disc,
+                                                 context->waveCache,
+                                                 0,
+                                                 1,
+                                                 0);
+    if (endIndex <= 0)
+        return endIndex;
+    if (startLabel)
+        return endIndex;
+    return continue_sub_voicegroup(context, voices, names, endIndex, location->filePath);
+}
+
+static int load_sub_voicegroup_location(const SubVoicegroupContext* context,
+                                        const char* symbol,
+                                        const VoicegroupLocation* location,
+                                        ToneData** outSub)
+{
+    const char* startLabel = location->label[0] ? location->label : NULL;
+    if (vg_load_session_is_active(context->session, location->filePath, startLabel))
+    {
+        fprintf(stderr,
+                "voicegroup_loader: cycle detected for sub-voicegroup '%s' at %s:%s\n",
+                symbol,
+                location->filePath,
+                startLabel ? startLabel : "(none)");
+        return -1;
+    }
+    ToneData* subgroup = (ToneData*)calloc(VOICEGROUP_SIZE, sizeof(ToneData));
+    if (!subgroup)
+        return -1;
+    if (!vg_register_subgroup(context->vgReg, subgroup))
+    {
+        free(subgroup);
+        return -1;
+    }
+    if (!vg_load_session_push_location(context->session, location->filePath, startLabel))
+        return -1;
+    VgLoadSessionCheckpoint checkpoint = vg_load_session_checkpoint(context->session);
+    int endIndex = parse_sub_voicegroup(context, location, subgroup);
+    if (endIndex < 0)
+    {
+        vg_load_session_rollback(context->session, checkpoint);
+        vg_load_session_pop_location(context->session);
+        return -1;
+    }
+    vg_load_session_pop_location(context->session);
+    if (outSub)
+        *outSub = subgroup;
+    return 1;
+}
 
 static int load_sub_voicegroup_session(const char* projectRoot,
                                        const char* vgSymbol,
@@ -2235,68 +2318,23 @@ static int load_sub_voicegroup_session(const char* projectRoot,
     const char* name = vgSymbol;
     if (strncmp(name, "voicegroup_", 11) == 0)
         name += 11;
-    VoicegroupLocation loc = find_voicegroup(projectRoot, name, disc);
-    if (!loc.found)
+    VoicegroupLocation location = find_voicegroup(projectRoot, name, disc);
+    if (!location.found)
     {
         fprintf(stderr, "voicegroup_loader: cannot find sub-voicegroup '%s'\n", vgSymbol);
         return 0;
     }
-    const char* startLabel = loc.label[0] ? loc.label : NULL;
-    if (vg_load_session_is_active(session, loc.filePath, startLabel))
-    {
-        fprintf(stderr, "voicegroup_loader: cycle detected for sub-voicegroup '%s' at %s:%s\n", vgSymbol, loc.filePath, startLabel ? startLabel : "(none)");
-        return -1;
-    }
-    ToneData* subVg = (ToneData*)calloc(VOICEGROUP_SIZE, sizeof(ToneData));
-    if (!subVg)
-        return -1;
-    if (!vg_register_subgroup(vgReg, subVg))
-    {
-        free(subVg);
-        return -1;
-    }
-    if (!vg_load_session_push_location(session, loc.filePath, startLabel))
-    {
-        return -1;
-    }
-    VgLoadSessionCheckpoint cp = vg_load_session_checkpoint(session);
-    char dummyNames[VOICEGROUP_SIZE][VG_VOICE_NAME_LEN];
-    memset(dummyNames, 0, sizeof(dummyNames));
-    int endIndex = parse_voicegroup_file_session(projectRoot, loc.filePath, startLabel, subVg, dummyNames, vgReg, session, dsMap, pwMap, ksMap, disc, waveCache, 0, 1, 0);
-    if (endIndex > 0 && !startLabel)
-    {
-        char curPath[MAX_PATH_LEN];
-        strncpy(curPath, loc.filePath, sizeof(curPath) - 1);
-        curPath[sizeof(curPath) - 1] = '\0';
-        for (int hops = 0; endIndex < VOICEGROUP_SIZE && hops < VOICEGROUP_SIZE; hops++)
-        {
-            char nextPath[MAX_PATH_LEN];
-            if (!next_included_voicegroup(projectRoot, curPath, nextPath, sizeof(nextPath)))
-                break;
-            int r = parse_voicegroup_file_session(projectRoot, nextPath, NULL, subVg, dummyNames, vgReg, session, dsMap, pwMap, ksMap, disc, waveCache, endIndex, 0, 1);
-            if (r < 0)
-            {
-                vg_load_session_rollback(session, cp);
-                vg_load_session_pop_location(session);
-                return -1;
-            }
-            if (r <= endIndex)
-                break;
-            endIndex = r;
-            strncpy(curPath, nextPath, sizeof(curPath) - 1);
-            curPath[sizeof(curPath) - 1] = '\0';
-        }
-    }
-    if (endIndex < 0)
-    {
-        vg_load_session_rollback(session, cp);
-        vg_load_session_pop_location(session);
-        return -1;
-    }
-    vg_load_session_pop_location(session);
-    if (outSub)
-        *outSub = subVg;
-    return 1;
+    SubVoicegroupContext context = {
+        projectRoot,
+        vgReg,
+        session,
+        dsMap,
+        pwMap,
+        ksMap,
+        disc,
+        waveCache,
+    };
+    return load_sub_voicegroup_location(&context, vgSymbol, &location, outSub);
 }
 
 /*
@@ -2321,6 +2359,610 @@ static int load_sub_voicegroup_session(const char* projectRoot,
  * into A) from looping forever.
  */
 
+typedef struct
+{
+    const char* projectRoot;
+    ToneData* voices;
+    char (*names)[VG_VOICE_NAME_LEN];
+    LoadedVoiceGroup* registry;
+    VgLoadSession* session;
+    const SymbolMap* directSoundMap;
+    const SymbolMap* programmableWaveMap;
+    KeySplitMap* keysplitMap;
+    ProjectDiscovery* discovery;
+    WaveCache* waveCache;
+    int noSubRecurse;
+} VoiceParseContext;
+
+typedef struct
+{
+    int voiceIndex;
+    int voicesParsedInSection;
+    int inContinuation;
+} VoiceParseProgress;
+
+typedef struct
+{
+    const char* startLabel;
+    char searchLabel[MAX_SYMBOL_LEN + 4];
+    size_t searchLength;
+    int inSection;
+    int labelFound;
+    int contiguousFill;
+} VoicegroupSection;
+
+typedef enum
+{
+    VG_LINE_UNHANDLED,
+    VG_LINE_METADATA,
+    VG_LINE_CONSUMED,
+    VG_LINE_HARD_FAIL,
+    VG_LINE_STOP,
+} VoiceLineResult;
+
+typedef enum
+{
+    VG_ARGUMENTS_SOFT_MISS,
+    VG_ARGUMENTS_VALID,
+    VG_ARGUMENTS_HARD_FAIL,
+} VoiceArgumentsResult;
+
+typedef struct
+{
+    int key;
+    int pan;
+    int attack;
+    int decay;
+    int sustain;
+    int release;
+    char symbol[MAX_SYMBOL_LEN];
+} SampleVoiceArguments;
+
+static void set_parsed_voice_name(const VoiceParseContext* context, int voiceIndex, const char* symbol)
+{
+    if (!context->names)
+        return;
+    if (voiceIndex < 0)
+        return;
+    if (voiceIndex >= VOICEGROUP_SIZE)
+        return;
+    set_voice_display_name(context->names[voiceIndex], symbol);
+}
+
+static bool vg_parse_int_list(const char** p, int* values, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (!vg_parse_next_int(p, &values[i]))
+            return false;
+        if (i + 1 == count)
+            continue;
+        if (!vg_expect_comma(p))
+            return false;
+    }
+    return true;
+}
+
+static VoiceArgumentsResult parse_sample_voice_arguments(const char* p, SampleVoiceArguments* arguments)
+{
+    if (!vg_parse_next_int(&p, &arguments->key))
+        return VG_ARGUMENTS_SOFT_MISS;
+    if (!vg_expect_comma(&p))
+        return VG_ARGUMENTS_SOFT_MISS;
+    if (!vg_parse_next_int(&p, &arguments->pan))
+        return VG_ARGUMENTS_SOFT_MISS;
+    if (!vg_expect_comma(&p))
+        return VG_ARGUMENTS_SOFT_MISS;
+    int symbolResult = vg_extract_comma_symbol(&p, arguments->symbol, sizeof(arguments->symbol));
+    if (symbolResult == -1)
+        return VG_ARGUMENTS_HARD_FAIL;
+    if (symbolResult != 0)
+        return VG_ARGUMENTS_SOFT_MISS;
+    int envelope[4];
+    if (!vg_parse_int_list(&p, envelope, 4))
+        return VG_ARGUMENTS_SOFT_MISS;
+    arguments->attack = envelope[0];
+    arguments->decay = envelope[1];
+    arguments->sustain = envelope[2];
+    arguments->release = envelope[3];
+    return VG_ARGUMENTS_VALID;
+}
+
+static bool resolve_directsound_wave(const VoiceParseContext* context, ToneData* tone, const char* symbol)
+{
+    const uint8_t* synthDesc = symbol_map_find_synth(context->directSoundMap, symbol);
+    if (synthDesc)
+    {
+        tone->wav = build_synth_wavedata(synthDesc, symbol, context->registry, context->waveCache);
+        return tone->wav != NULL;
+    }
+    const char* samplePath = symbol_map_find(context->directSoundMap, symbol);
+    if (samplePath)
+    {
+        char wavPath[VG_MAX_PATH_LEN];
+        char aifPath[VG_MAX_PATH_LEN];
+        char binPath[VG_MAX_PATH_LEN];
+        if (!build_wave_abs_paths(context->projectRoot, samplePath, wavPath, aifPath, binPath))
+            return false;
+        const char* wav = NULL;
+        const char* aif = NULL;
+        if (wavPath[0])
+            wav = wavPath;
+        if (aifPath[0])
+            aif = aifPath;
+        return vg_load_session_add_wave(context->session, &tone->wav, wav, aif, binPath);
+    }
+    WaveData* wave = NULL;
+    int result = resolve_and_load_sample_serial(context->projectRoot,
+                                                symbol,
+                                                context->directSoundMap,
+                                                context->discovery,
+                                                context->registry,
+                                                context->waveCache,
+                                                &wave);
+    if (result == -1)
+        return false;
+    if (result == 1)
+        tone->wav = wave;
+    return true;
+}
+
+static VoiceLineResult parse_directsound_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex)
+{
+    const char* p = NULL;
+    uint8_t type = VOICE_DIRECTSOUND;
+    if (strncmp(trimmed, "voice_directsound_no_resample ", 30) == 0)
+    {
+        p = trimmed + 30;
+        type = VOICE_DIRECTSOUND_NO_RESAMPLE;
+    }
+    else if (strncmp(trimmed, "voice_directsound_alt ", 22) == 0)
+    {
+        p = trimmed + 22;
+        type = VOICE_DIRECTSOUND_ALT;
+    }
+    else if (strncmp(trimmed, "voice_directsound ", 18) == 0)
+    {
+        p = trimmed + 18;
+    }
+    else
+    {
+        return VG_LINE_UNHANDLED;
+    }
+    SampleVoiceArguments arguments;
+    VoiceArgumentsResult argumentsResult = parse_sample_voice_arguments(p, &arguments);
+    if (argumentsResult == VG_ARGUMENTS_HARD_FAIL)
+        return VG_LINE_HARD_FAIL;
+    if (argumentsResult != VG_ARGUMENTS_VALID)
+        return VG_LINE_CONSUMED;
+    set_parsed_voice_name(context, voiceIndex, arguments.symbol);
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = type;
+    tone->key = (uint8_t)arguments.key;
+    tone->panSweep = arguments.pan ? (0x80 | arguments.pan) : 0;
+    tone->attack = (uint8_t)arguments.attack;
+    tone->decay = (uint8_t)arguments.decay;
+    tone->sustain = (uint8_t)arguments.sustain;
+    tone->release = (uint8_t)arguments.release;
+    if (!resolve_directsound_wave(context, tone, arguments.symbol))
+        return VG_LINE_HARD_FAIL;
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult
+populate_square_voice(const VoiceParseContext* context, const char* p, int voiceIndex, uint8_t type, bool isSquareOne)
+{
+    int values[8];
+    int valueCount = 7;
+    if (isSquareOne)
+        valueCount = 8;
+    if (!vg_parse_int_list(&p, values, valueCount))
+        return VG_LINE_CONSUMED;
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = type;
+    tone->key = (uint8_t)values[0];
+    if (isSquareOne)
+    {
+        tone->panSweep = (uint8_t)values[2];
+        tone->wavePointer = (uint32_t*)(uintptr_t)(values[3] & 0x03);
+        tone->attack = (uint8_t)(values[4] & 0x07);
+        tone->decay = (uint8_t)(values[5] & 0x07);
+        tone->sustain = (uint8_t)(values[6] & 0x0F);
+        tone->release = (uint8_t)(values[7] & 0x07);
+        return VG_LINE_CONSUMED;
+    }
+    tone->panSweep = 0;
+    tone->wavePointer = (uint32_t*)(uintptr_t)(values[2] & 0x03);
+    tone->attack = (uint8_t)(values[3] & 0x07);
+    tone->decay = (uint8_t)(values[4] & 0x07);
+    tone->sustain = (uint8_t)(values[5] & 0x0F);
+    tone->release = (uint8_t)(values[6] & 0x07);
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult parse_square_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex)
+{
+    if (strncmp(trimmed, "voice_square_1_alt ", 19) == 0)
+        return populate_square_voice(context, trimmed + 19, voiceIndex, VOICE_SQUARE_1_ALT, true);
+    if (strncmp(trimmed, "voice_square_1 ", 15) == 0)
+        return populate_square_voice(context, trimmed + 15, voiceIndex, VOICE_SQUARE_1, true);
+    if (strncmp(trimmed, "voice_square_2_alt ", 19) == 0)
+        return populate_square_voice(context, trimmed + 19, voiceIndex, VOICE_SQUARE_2_ALT, false);
+    if (strncmp(trimmed, "voice_square_2 ", 15) == 0)
+        return populate_square_voice(context, trimmed + 15, voiceIndex, VOICE_SQUARE_2, false);
+    return VG_LINE_UNHANDLED;
+}
+
+static bool resolve_programmable_wave(const VoiceParseContext* context, ToneData* tone, const char* symbol)
+{
+    const char* wavePath = symbol_map_find(context->programmableWaveMap, symbol);
+    if (!wavePath)
+        return true;
+    char absolutePath[VG_MAX_PATH_LEN];
+    if (!build_path(absolutePath, sizeof(absolutePath), context->projectRoot, wavePath))
+        return false;
+    return vg_load_session_add_prog(context->session, &tone->wavePointer, absolutePath);
+}
+
+static VoiceLineResult
+parse_programmable_wave_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex)
+{
+    const char* p = NULL;
+    uint8_t type = VOICE_PROGRAMMABLE_WAVE;
+    if (strncmp(trimmed, "voice_programmable_wave_alt ", 27) == 0)
+    {
+        p = trimmed + 27;
+        type = VOICE_PROGRAMMABLE_WAVE_ALT;
+    }
+    else if (strncmp(trimmed, "voice_programmable_wave ", 23) == 0)
+    {
+        p = trimmed + 23;
+    }
+    else
+    {
+        return VG_LINE_UNHANDLED;
+    }
+    SampleVoiceArguments arguments;
+    VoiceArgumentsResult argumentsResult = parse_sample_voice_arguments(p, &arguments);
+    if (argumentsResult == VG_ARGUMENTS_HARD_FAIL)
+        return VG_LINE_HARD_FAIL;
+    if (argumentsResult != VG_ARGUMENTS_VALID)
+        return VG_LINE_CONSUMED;
+    set_parsed_voice_name(context, voiceIndex, arguments.symbol);
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = type;
+    tone->key = (uint8_t)arguments.key;
+    tone->attack = (uint8_t)(arguments.attack & 0x07);
+    tone->decay = (uint8_t)(arguments.decay & 0x07);
+    tone->sustain = (uint8_t)(arguments.sustain & 0x0F);
+    tone->release = (uint8_t)(arguments.release & 0x07);
+    if (!resolve_programmable_wave(context, tone, arguments.symbol))
+        return VG_LINE_HARD_FAIL;
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult
+populate_noise_voice(const VoiceParseContext* context, const char* p, int voiceIndex, uint8_t type)
+{
+    int values[7];
+    if (!vg_parse_int_list(&p, values, 7))
+        return VG_LINE_CONSUMED;
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = type;
+    tone->key = (uint8_t)values[0];
+    tone->wavePointer = (uint32_t*)(uintptr_t)(values[2] & 0x01);
+    tone->attack = (uint8_t)(values[3] & 0x07);
+    tone->decay = (uint8_t)(values[4] & 0x07);
+    tone->sustain = (uint8_t)(values[5] & 0x0F);
+    tone->release = (uint8_t)(values[6] & 0x07);
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult parse_noise_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex)
+{
+    if (strncmp(trimmed, "voice_noise_alt ", 16) == 0)
+        return populate_noise_voice(context, trimmed + 16, voiceIndex, VOICE_NOISE_ALT);
+    if (strncmp(trimmed, "voice_noise ", 12) == 0)
+        return populate_noise_voice(context, trimmed + 12, voiceIndex, VOICE_NOISE);
+    return VG_LINE_UNHANDLED;
+}
+
+static bool
+load_keysplit_subgroup(const VoiceParseContext* context, ToneData* tone, const char* symbol, int inContinuation)
+{
+    if (context->noSubRecurse)
+        return true;
+    if (inContinuation)
+        return true;
+    ToneData* subgroup = NULL;
+    int result = load_sub_voicegroup_session(context->projectRoot,
+                                             symbol,
+                                             context->registry,
+                                             context->session,
+                                             context->directSoundMap,
+                                             context->programmableWaveMap,
+                                             context->keysplitMap,
+                                             context->discovery,
+                                             context->waveCache,
+                                             &subgroup);
+    if (result == -1)
+        return false;
+    tone->subGroup = subgroup;
+    return true;
+}
+
+static bool copy_keysplit_table(const VoiceParseContext* context, ToneData* tone, const char* symbol)
+{
+    KeySplitDef* definition = NULL;
+    if (!keysplit_map_find_or_rescan_checked(context->keysplitMap, symbol, context->discovery, &definition))
+        return false;
+    if (!definition)
+        return true;
+    uint8_t* table = (uint8_t*)malloc(128);
+    if (!table)
+        return false;
+    memcpy(table, definition->table, 128);
+    if (!vg_register_keysplittable(context->registry, table))
+    {
+        free(table);
+        return false;
+    }
+    tone->keySplitTable = table;
+    return true;
+}
+
+static VoiceLineResult
+parse_keysplit_all_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex, int inContinuation)
+{
+    if (strncmp(trimmed, "voice_keysplit_all ", 19) != 0)
+        return VG_LINE_UNHANDLED;
+    const char* p = trimmed + 19;
+    char symbol[MAX_SYMBOL_LEN];
+    int symbolResult = vg_extract_eol_symbol(&p, symbol, sizeof(symbol));
+    if (symbolResult == -1)
+        return VG_LINE_HARD_FAIL;
+    if (symbolResult != 0)
+        return VG_LINE_CONSUMED;
+    set_parsed_voice_name(context, voiceIndex, symbol);
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = VOICE_KEYSPLIT_ALL;
+    if (!load_keysplit_subgroup(context, tone, symbol, inContinuation))
+        return VG_LINE_HARD_FAIL;
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult
+parse_keysplit_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex, int inContinuation)
+{
+    if (strncmp(trimmed, "voice_keysplit ", 15) != 0)
+        return VG_LINE_UNHANDLED;
+    const char* p = trimmed + 15;
+    char subgroupSymbol[MAX_SYMBOL_LEN];
+    int subgroupResult = vg_extract_comma_symbol(&p, subgroupSymbol, sizeof(subgroupSymbol));
+    if (subgroupResult == -1)
+        return VG_LINE_HARD_FAIL;
+    if (subgroupResult != 0)
+        return VG_LINE_CONSUMED;
+    char keysplitSymbol[MAX_SYMBOL_LEN];
+    int keysplitResult = vg_extract_eol_symbol(&p, keysplitSymbol, sizeof(keysplitSymbol));
+    if (keysplitResult == -1)
+        return VG_LINE_HARD_FAIL;
+    if (keysplitResult != 0)
+        return VG_LINE_CONSUMED;
+    set_parsed_voice_name(context, voiceIndex, subgroupSymbol);
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = VOICE_KEYSPLIT;
+    if (!load_keysplit_subgroup(context, tone, subgroupSymbol, inContinuation))
+        return VG_LINE_HARD_FAIL;
+    if (!copy_keysplit_table(context, tone, keysplitSymbol))
+        return VG_LINE_HARD_FAIL;
+    return VG_LINE_CONSUMED;
+}
+
+static bool resolve_cry_wave(const VoiceParseContext* context, ToneData* tone, const char* symbol)
+{
+    const char* samplePath = symbol_map_find(context->directSoundMap, symbol);
+    if (!samplePath)
+        return true;
+    char binPath[VG_MAX_PATH_LEN];
+    if (!build_path(binPath, sizeof(binPath), context->projectRoot, samplePath))
+        return false;
+    return vg_load_session_add_wave(context->session, &tone->wav, NULL, NULL, binPath);
+}
+
+static VoiceLineResult parse_cry_voice(const VoiceParseContext* context, const char* trimmed, int voiceIndex)
+{
+    const char* p = NULL;
+    uint8_t type = VOICE_CRY;
+    if (strncmp(trimmed, "cry_reverse ", 12) == 0)
+    {
+        p = trimmed + 12;
+        type = VOICE_CRY_REVERSE;
+    }
+    else if (strncmp(trimmed, "cry ", 4) == 0)
+    {
+        p = trimmed + 4;
+    }
+    else
+    {
+        return VG_LINE_UNHANDLED;
+    }
+    char symbol[MAX_SYMBOL_LEN];
+    int symbolResult = vg_extract_eol_symbol(&p, symbol, sizeof(symbol));
+    if (symbolResult == -1)
+        return VG_LINE_HARD_FAIL;
+    if (symbolResult != 0)
+        return VG_LINE_CONSUMED;
+    set_parsed_voice_name(context, voiceIndex, symbol);
+    ToneData* tone = &context->voices[voiceIndex];
+    tone->type = type;
+    tone->key = 60;
+    tone->attack = 0xFF;
+    tone->decay = 0;
+    tone->sustain = 0xFF;
+    tone->release = 0;
+    if (!resolve_cry_wave(context, tone, symbol))
+        return VG_LINE_HARD_FAIL;
+    return VG_LINE_CONSUMED;
+}
+
+static VoiceLineResult
+parse_voice_macro(const VoiceParseContext* context, const char* trimmed, int voiceIndex, int inContinuation)
+{
+    VoiceLineResult result = parse_directsound_voice(context, trimmed, voiceIndex);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    result = parse_square_voice(context, trimmed, voiceIndex);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    result = parse_programmable_wave_voice(context, trimmed, voiceIndex);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    result = parse_noise_voice(context, trimmed, voiceIndex);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    result = parse_keysplit_all_voice(context, trimmed, voiceIndex, inContinuation);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    result = parse_keysplit_voice(context, trimmed, voiceIndex, inContinuation);
+    if (result != VG_LINE_UNHANDLED)
+        return result;
+    return parse_cry_voice(context, trimmed, voiceIndex);
+}
+
+static VoiceLineResult
+parse_voice_group_metadata(const VoiceParseContext* context, const char* trimmed, VoiceParseProgress* progress)
+{
+    if (strncmp(trimmed, "voice_group ", 12) != 0)
+        return VG_LINE_UNHANDLED;
+    if (progress->inContinuation)
+        return VG_LINE_STOP;
+    if (context->noSubRecurse)
+        return VG_LINE_STOP;
+    const char* p = trimmed + 12;
+    char name[MAX_SYMBOL_LEN];
+    int symbolResult = vg_extract_comma_symbol(&p, name, sizeof(name));
+    if (symbolResult == -1)
+        return VG_LINE_HARD_FAIL;
+    if (symbolResult == 0)
+    {
+        int startingNote = 0;
+        if (vg_parse_next_int(&p, &startingNote))
+        {
+            if (startingNote > 0)
+            {
+                if (startingNote < VOICEGROUP_SIZE)
+                    progress->voiceIndex = startingNote;
+            }
+        }
+    }
+    return VG_LINE_METADATA;
+}
+
+static bool initialize_voicegroup_section(VoicegroupSection* section, const char* startLabel, int contiguousFill)
+{
+    memset(section, 0, sizeof(*section));
+    section->startLabel = startLabel;
+    section->contiguousFill = contiguousFill;
+    if (!startLabel)
+    {
+        section->inSection = 1;
+        section->labelFound = 1;
+        return true;
+    }
+    if (!vg_section_label_valid(startLabel))
+        return false;
+    int length = snprintf(section->searchLabel, sizeof(section->searchLabel), "%s::", startLabel);
+    if (length < 0)
+        return false;
+    if ((size_t)length >= sizeof(section->searchLabel))
+        return false;
+    section->searchLength = (size_t)length;
+    return true;
+}
+
+static bool voicegroup_line_is_section_label(const VoicegroupSection* section, const char* trimmed)
+{
+    if (section->searchLength == 0)
+        return false;
+    if (strncmp(trimmed, section->searchLabel, section->searchLength) != 0)
+        return false;
+    char trailing = trimmed[section->searchLength];
+    if (trailing == '\0')
+        return true;
+    return isspace((unsigned char)trailing);
+}
+
+static bool voicegroup_line_is_section_boundary(const char* trimmed)
+{
+    char* separator = strstr(trimmed, "::");
+    if (separator)
+    {
+        if (separator > trimmed)
+        {
+            if (!isspace((unsigned char)trimmed[0]))
+                return true;
+        }
+    }
+    return strncmp(trimmed, ".align", 6) == 0;
+}
+
+static VoiceLineResult
+advance_voicegroup_section(VoicegroupSection* section, VoiceParseProgress* progress, const char* trimmed)
+{
+    if (!section->startLabel)
+        return VG_LINE_METADATA;
+    if (!section->inSection)
+    {
+        if (voicegroup_line_is_section_label(section, trimmed))
+        {
+            section->inSection = 1;
+            section->labelFound = 1;
+        }
+        return VG_LINE_UNHANDLED;
+    }
+    if (progress->voicesParsedInSection <= 0)
+        return VG_LINE_METADATA;
+    if (progress->inContinuation)
+        return VG_LINE_METADATA;
+    if (!voicegroup_line_is_section_boundary(trimmed))
+        return VG_LINE_METADATA;
+    if (!section->contiguousFill)
+        return VG_LINE_STOP;
+    progress->inContinuation = 1;
+    return VG_LINE_METADATA;
+}
+static VoiceLineResult parse_voicegroup_content_line(const VoiceParseContext* context,
+                                                     VoicegroupSection* section,
+                                                     VoiceParseProgress* progress,
+                                                     const char* trimmed)
+{
+    VoiceLineResult sectionResult = advance_voicegroup_section(section, progress, trimmed);
+    if (sectionResult == VG_LINE_UNHANDLED)
+        return VG_LINE_UNHANDLED;
+    if (sectionResult == VG_LINE_STOP)
+        return VG_LINE_STOP;
+    VoiceLineResult metadataResult = parse_voice_group_metadata(context, trimmed, progress);
+    if (metadataResult != VG_LINE_UNHANDLED)
+        return metadataResult;
+    VoiceLineResult voiceResult = parse_voice_macro(context, trimmed, progress->voiceIndex, progress->inContinuation);
+    if (voiceResult == VG_LINE_HARD_FAIL)
+        return VG_LINE_HARD_FAIL;
+    if (voiceResult == VG_LINE_CONSUMED)
+    {
+        progress->voiceIndex++;
+        progress->voicesParsedInSection++;
+    }
+    return VG_LINE_UNHANDLED;
+}
+
+static bool voicegroup_section_is_missing(const VoicegroupSection* section)
+{
+    if (!section->startLabel)
+        return false;
+    return !section->labelFound;
+}
+
 static int parse_voicegroup_file_session(const char* projectRoot,
                                          const char* filePath,
                                          const char* startLabel,
@@ -2337,767 +2979,66 @@ static int parse_voicegroup_file_session(const char* projectRoot,
                                          int contiguousFill,
                                          int noSubRecurse)
 {
-    vg_log("parse_voicegroup_file_session: '%s' label='%s' start=%d", filePath, startLabel ? startLabel : "(none)", startIndex);
-    FILE* f = fopen(filePath, "r");
-    if (!f)
+    vg_log("parse_voicegroup_file_session: '%s' label='%s' start=%d",
+           filePath,
+           startLabel ? startLabel : "(none)",
+           startIndex);
+    FILE* file = fopen(filePath, "r");
+    if (!file)
     {
         fprintf(stderr, "voicegroup_loader: cannot open %s\n", filePath);
         return -1;
     }
-    int voiceIndex = startIndex;
-    int inSection = (startLabel == NULL);
-    int labelFound = (startLabel == NULL);
-    int voicesParsedInSection = 0;
-    int inContinuation = 0;
-    char searchLabel[MAX_SYMBOL_LEN + 4];
-    size_t searchLen = 0;
-    if (startLabel)
+    VoicegroupSection section;
+    if (!initialize_voicegroup_section(&section, startLabel, contiguousFill))
     {
-        if (!vg_section_label_valid(startLabel))
-        {
-            fclose(f);
-            return -1;
-        }
-        int sl = snprintf(searchLabel, sizeof(searchLabel), "%s::", startLabel);
-        if (sl < 0 || (size_t)sl >= sizeof(searchLabel))
-        {
-            fclose(f);
-            return -1;
-        }
-        searchLen = (size_t)sl;
+        fclose(file);
+        return -1;
     }
+    VoiceParseContext context = {
+        projectRoot,
+        destVoices,
+        destNames,
+        vgReg,
+        session,
+        dsMap,
+        pwMap,
+        ksMap,
+        disc,
+        waveCache,
+        noSubRecurse,
+    };
+    VoiceParseProgress progress = {startIndex, 0, 0};
     bool hardFail = false;
     char line[MAX_LINE];
-    while (fgets(line, sizeof(line), f) && voiceIndex < VOICEGROUP_SIZE && !hardFail)
+    while (fgets(line, sizeof(line), file))
     {
+        if (progress.voiceIndex >= VOICEGROUP_SIZE)
+            break;
         strip_comment(line);
         rtrim(line);
         char* trimmed = ltrim(line);
         if (trimmed[0] == '\0')
-        {
             continue;
-        }
-        if (startLabel && !inSection)
+        VoiceLineResult result = parse_voicegroup_content_line(&context, &section, &progress, trimmed);
+        if (result == VG_LINE_HARD_FAIL)
         {
-            if (searchLen > 0 && strncmp(trimmed, searchLabel, searchLen) == 0)
-            {
-                char c = trimmed[searchLen];
-                if (c == '\0' || isspace((unsigned char)c))
-                {
-                    inSection = 1;
-                    labelFound = 1;
-                }
-            }
-            continue;
+            hardFail = true;
+            break;
         }
-        if (startLabel && inSection && voicesParsedInSection > 0 && !inContinuation)
-        {
-            char* cc = strstr(trimmed, "::");
-            int boundary = (cc && cc > trimmed && !isspace((unsigned char)trimmed[0])) || strncmp(trimmed, ".align", 6) == 0;
-            if (boundary)
-            {
-                if (!contiguousFill)
-                {
-                    break;
-                }
-                inContinuation = 1;
-            }
-        }
-        if (strncmp(trimmed, "voice_group ", 12) == 0)
-        {
-            if (inContinuation || noSubRecurse)
-            {
-                break;
-            }
-            char vgDeclName[MAX_SYMBOL_LEN];
-            int startingNote = 0;
-            const char* p = trimmed + 12;
-            int rc = vg_extract_comma_symbol(&p, vgDeclName, sizeof(vgDeclName));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc == 0 && vg_parse_next_int(&p, &startingNote))
-            {
-                if (startingNote > 0 && startingNote < VOICEGROUP_SIZE)
-                {
-                    voiceIndex = startingNote;
-                }
-            }
-            continue;
-        }
-        if (strncmp(trimmed, "voice_directsound_no_resample ", 30) == 0 || strncmp(trimmed, "voice_directsound_alt ", 22) == 0 || strncmp(trimmed, "voice_directsound ", 18) == 0)
-        {
-            int off = 0;
-            uint8_t vtype = VOICE_DIRECTSOUND;
-            if (strncmp(trimmed, "voice_directsound_no_resample ", 30) == 0)
-            {
-                off = 30;
-                vtype = VOICE_DIRECTSOUND_NO_RESAMPLE;
-            }
-            else if (strncmp(trimmed, "voice_directsound_alt ", 22) == 0)
-            {
-                off = 22;
-                vtype = VOICE_DIRECTSOUND_ALT;
-            }
-            else
-            {
-                off = 18;
-                vtype = VOICE_DIRECTSOUND;
-            }
-            const char* p = trimmed + off;
-            int key = 0;
-            int pan = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            char sampleSymbol[MAX_SYMBOL_LEN];
-            if (!vg_parse_next_int(&p, &key) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &pan) || !vg_expect_comma(&p))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            int rc = vg_extract_comma_symbol(&p, sampleSymbol, sizeof(sampleSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0 || !vg_parse_next_int(&p, &attack) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &decay) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &sustain) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &release))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], sampleSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = vtype;
-            td->key = (uint8_t)key;
-            td->panSweep = pan ? (0x80 | pan) : 0;
-            td->attack = (uint8_t)attack;
-            td->decay = (uint8_t)decay;
-            td->sustain = (uint8_t)sustain;
-            td->release = (uint8_t)release;
-            const uint8_t* synthDesc = symbol_map_find_synth(dsMap, sampleSymbol);
-            if (synthDesc)
-            {
-                WaveData* wd = build_synth_wavedata(synthDesc, sampleSymbol, vgReg, waveCache);
-                if (!wd)
-                {
-                    hardFail = true;
-                    break;
-                }
-                td->wav = wd;
-            }
-            else
-            {
-                const char* samplePath = symbol_map_find(dsMap, sampleSymbol);
-                if (samplePath)
-                {
-                    char wavAbs[VG_MAX_PATH_LEN];
-                    char aifAbs[VG_MAX_PATH_LEN];
-                    char binAbs[VG_MAX_PATH_LEN];
-                    if (!build_wave_abs_paths(projectRoot, samplePath, wavAbs, aifAbs, binAbs))
-                    {
-                        hardFail = true;
-                        break;
-                    }
-                    const char* w = wavAbs[0] ? wavAbs : NULL;
-                    const char* a = aifAbs[0] ? aifAbs : NULL;
-                    if (!vg_load_session_add_wave(session, &td->wav, w, a, binAbs))
-                    {
-                        hardFail = true;
-                        break;
-                    }
-                }
-                else
-                {
-                    WaveData* wd = NULL;
-                    int res = resolve_and_load_sample_serial(projectRoot, sampleSymbol, dsMap, disc, vgReg, waveCache, &wd);
-                    if (res == -1)
-                    {
-                        hardFail = true;
-                        break;
-                    }
-                    if (res == 1)
-                    {
-                        td->wav = wd;
-                    }
-                }
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_square_1_alt ", 19) == 0)
-        {
-            const char* p = trimmed + 19;
-            int key = 0;
-            int pan = 0;
-            int sweep = 0;
-            int duty = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sweep);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &duty);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_SQUARE_1_ALT;
-                td->key = (uint8_t)key;
-                td->panSweep = (uint8_t)sweep;
-                td->wavePointer = (uint32_t*)(uintptr_t)(duty & 0x03);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_square_1 ", 15) == 0)
-        {
-            const char* p = trimmed + 15;
-            int key = 0;
-            int pan = 0;
-            int sweep = 0;
-            int duty = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sweep);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &duty);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_SQUARE_1;
-                td->key = (uint8_t)key;
-                td->panSweep = (uint8_t)sweep;
-                td->wavePointer = (uint32_t*)(uintptr_t)(duty & 0x03);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_square_2_alt ", 19) == 0)
-        {
-            const char* p = trimmed + 19;
-            int key = 0;
-            int pan = 0;
-            int duty = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &duty);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_SQUARE_2_ALT;
-                td->key = (uint8_t)key;
-                td->panSweep = 0;
-                td->wavePointer = (uint32_t*)(uintptr_t)(duty & 0x03);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_square_2 ", 15) == 0)
-        {
-            const char* p = trimmed + 15;
-            int key = 0;
-            int pan = 0;
-            int duty = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &duty);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_SQUARE_2;
-                td->key = (uint8_t)key;
-                td->panSweep = 0;
-                td->wavePointer = (uint32_t*)(uintptr_t)(duty & 0x03);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_programmable_wave_alt ", 27) == 0)
-        {
-            const char* p = trimmed + 27;
-            int key = 0;
-            int pan = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            char waveSymbol[MAX_SYMBOL_LEN];
-            if (!vg_parse_next_int(&p, &key) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &pan) || !vg_expect_comma(&p))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            int rc = vg_extract_comma_symbol(&p, waveSymbol, sizeof(waveSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0 || !vg_parse_next_int(&p, &attack) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &decay) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &sustain) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &release))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], waveSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_PROGRAMMABLE_WAVE_ALT;
-            td->key = (uint8_t)key;
-            td->attack = (uint8_t)(attack & 0x07);
-            td->decay = (uint8_t)(decay & 0x07);
-            td->sustain = (uint8_t)(sustain & 0x0F);
-            td->release = (uint8_t)(release & 0x07);
-            const char* wavePath = symbol_map_find(pwMap, waveSymbol);
-            if (wavePath)
-            {
-                char absPath[VG_MAX_PATH_LEN];
-                if (!build_path(absPath, sizeof(absPath), projectRoot, wavePath))
-                {
-                    hardFail = true;
-                    break;
-                }
-                if (!vg_load_session_add_prog(session, &td->wavePointer, absPath))
-                {
-                    hardFail = true;
-                    break;
-                }
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_programmable_wave ", 23) == 0)
-        {
-            const char* p = trimmed + 23;
-            int key = 0;
-            int pan = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            char waveSymbol[MAX_SYMBOL_LEN];
-            if (!vg_parse_next_int(&p, &key) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &pan) || !vg_expect_comma(&p))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            int rc = vg_extract_comma_symbol(&p, waveSymbol, sizeof(waveSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0 || !vg_parse_next_int(&p, &attack) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &decay) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &sustain) || !vg_expect_comma(&p) || !vg_parse_next_int(&p, &release))
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], waveSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_PROGRAMMABLE_WAVE;
-            td->key = (uint8_t)key;
-            td->attack = (uint8_t)(attack & 0x07);
-            td->decay = (uint8_t)(decay & 0x07);
-            td->sustain = (uint8_t)(sustain & 0x0F);
-            td->release = (uint8_t)(release & 0x07);
-            const char* wavePath = symbol_map_find(pwMap, waveSymbol);
-            if (wavePath)
-            {
-                char absPath[VG_MAX_PATH_LEN];
-                if (!build_path(absPath, sizeof(absPath), projectRoot, wavePath))
-                {
-                    hardFail = true;
-                    break;
-                }
-                if (!vg_load_session_add_prog(session, &td->wavePointer, absPath))
-                {
-                    hardFail = true;
-                    break;
-                }
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_noise_alt ", 16) == 0)
-        {
-            const char* p = trimmed + 16;
-            int key = 0;
-            int pan = 0;
-            int period = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &period);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_NOISE_ALT;
-                td->key = (uint8_t)key;
-                td->wavePointer = (uint32_t*)(uintptr_t)(period & 0x01);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_noise ", 12) == 0)
-        {
-            const char* p = trimmed + 12;
-            int key = 0;
-            int pan = 0;
-            int period = 0;
-            int attack = 0;
-            int decay = 0;
-            int sustain = 0;
-            int release = 0;
-            bool ok = true;
-            ok = ok && vg_parse_next_int(&p, &key);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &pan);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &period);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &attack);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &decay);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &sustain);
-            ok = ok && vg_expect_comma(&p);
-            ok = ok && vg_parse_next_int(&p, &release);
-            if (ok)
-            {
-                ToneData* td = &destVoices[voiceIndex];
-                td->type = VOICE_NOISE;
-                td->key = (uint8_t)key;
-                td->wavePointer = (uint32_t*)(uintptr_t)(period & 0x01);
-                td->attack = (uint8_t)(attack & 0x07);
-                td->decay = (uint8_t)(decay & 0x07);
-                td->sustain = (uint8_t)(sustain & 0x0F);
-                td->release = (uint8_t)(release & 0x07);
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_keysplit_all ", 19) == 0)
-        {
-            const char* p = trimmed + 19;
-            char vgSymbol[MAX_SYMBOL_LEN];
-            int rc = vg_extract_eol_symbol(&p, vgSymbol, sizeof(vgSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0)
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], vgSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_KEYSPLIT_ALL;
-            if (!noSubRecurse && !inContinuation)
-            {
-                ToneData* subVg = NULL;
-                int subRes = load_sub_voicegroup_session(projectRoot, vgSymbol, vgReg, session, dsMap, pwMap, ksMap, disc, waveCache, &subVg);
-                if (subRes == -1)
-                {
-                    hardFail = true;
-                    break;
-                }
-                td->subGroup = subVg;
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "voice_keysplit ", 15) == 0)
-        {
-            const char* p = trimmed + 15;
-            char vgSymbol[MAX_SYMBOL_LEN];
-            char ksSymbol[MAX_SYMBOL_LEN];
-            int rc1 = vg_extract_comma_symbol(&p, vgSymbol, sizeof(vgSymbol));
-            if (rc1 == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc1 != 0)
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            int rc2 = vg_extract_eol_symbol(&p, ksSymbol, sizeof(ksSymbol));
-            if (rc2 == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc2 != 0)
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], vgSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_KEYSPLIT;
-            if (!noSubRecurse && !inContinuation)
-            {
-                ToneData* subVg = NULL;
-                int subRes = load_sub_voicegroup_session(projectRoot, vgSymbol, vgReg, session, dsMap, pwMap, ksMap, disc, waveCache, &subVg);
-                if (subRes == -1)
-                {
-                    hardFail = true;
-                    break;
-                }
-                td->subGroup = subVg;
-            }
-            KeySplitDef* ksDef = NULL;
-            bool ksOk = keysplit_map_find_or_rescan_checked(
-                ksMap, ksSymbol, disc, &ksDef);
-            if (!ksOk)
-            {
-                hardFail = true;
-                break;
-            }
-            if (ksDef)
-            {
-                uint8_t* table = (uint8_t*)malloc(128);
-                if (!table)
-                {
-                    hardFail = true;
-                    break;
-                }
-                memcpy(table, ksDef->table, 128);
-                if (!vg_register_keysplittable(vgReg, table))
-                {
-                    free(table);
-                    hardFail = true;
-                    break;
-                }
-                td->keySplitTable = table;
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "cry_reverse ", 12) == 0)
-        {
-            const char* p = trimmed + 12;
-            char sampleSymbol[MAX_SYMBOL_LEN];
-            int rc = vg_extract_eol_symbol(&p, sampleSymbol, sizeof(sampleSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0)
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], sampleSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_CRY_REVERSE;
-            td->key = 60;
-            td->attack = 0xFF;
-            td->decay = 0;
-            td->sustain = 0xFF;
-            td->release = 0;
-            const char* samplePath = symbol_map_find(dsMap, sampleSymbol);
-            if (samplePath)
-            {
-                char binAbs[VG_MAX_PATH_LEN];
-                if (!build_path(binAbs, sizeof(binAbs), projectRoot, samplePath))
-                {
-                    hardFail = true;
-                    break;
-                }
-                if (!vg_load_session_add_wave(session, &td->wav, NULL, NULL, binAbs))
-                {
-                    hardFail = true;
-                    break;
-                }
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
-        else if (strncmp(trimmed, "cry ", 4) == 0)
-        {
-            const char* p = trimmed + 4;
-            char sampleSymbol[MAX_SYMBOL_LEN];
-            int rc = vg_extract_eol_symbol(&p, sampleSymbol, sizeof(sampleSymbol));
-            if (rc == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (rc != 0)
-            {
-                voiceIndex++;
-                voicesParsedInSection++;
-                continue;
-            }
-            if (destNames && voiceIndex >= 0 && voiceIndex < VOICEGROUP_SIZE)
-            {
-                set_voice_display_name(destNames[voiceIndex], sampleSymbol);
-            }
-            ToneData* td = &destVoices[voiceIndex];
-            td->type = VOICE_CRY;
-            td->key = 60;
-            td->attack = 0xFF;
-            td->decay = 0;
-            td->sustain = 0xFF;
-            td->release = 0;
-            const char* samplePath = symbol_map_find(dsMap, sampleSymbol);
-            if (samplePath)
-            {
-                char binAbs[VG_MAX_PATH_LEN];
-                if (!build_path(binAbs, sizeof(binAbs), projectRoot, samplePath))
-                {
-                    hardFail = true;
-                    break;
-                }
-                if (!vg_load_session_add_wave(session, &td->wav, NULL, NULL, binAbs))
-                {
-                    hardFail = true;
-                    break;
-                }
-            }
-            voiceIndex++;
-            voicesParsedInSection++;
-        }
+        if (result == VG_LINE_STOP)
+            break;
     }
-    vg_log("parse_voicegroup_file_session: done, voiceIndex=%d hardFail=%d labelFound=%d", voiceIndex, hardFail, labelFound);
-    fclose(f);
+    vg_log("parse_voicegroup_file_session: done, voiceIndex=%d hardFail=%d labelFound=%d",
+           progress.voiceIndex,
+           hardFail,
+           section.labelFound);
+    fclose(file);
     if (hardFail)
-    {
         return -1;
-    }
-    if (startLabel && !labelFound)
-    {
+    if (voicegroup_section_is_missing(&section))
         return -1;
-    }
-    return voiceIndex;
+    return progress.voiceIndex;
 }
 
 /* ---- Project context: open/free, shared load helpers, one-shot delegates ---- */
@@ -3140,100 +3081,136 @@ static int vg_config_is_valid(const VoicegroupLoaderConfig* config)
  * go through this adapter; only mapped sample/programmable-wave asset batches
  * use it.
  */
-static bool vg_stdio_read_batch(
-    void* user, const char* const* paths, size_t count, VoicegroupFileBlob* out, char* error, size_t errorCapacity)
+static void vg_stdio_set_error(char* error, size_t errorCapacity, const char* format, ...)
 {
-    (void)user;
-    if ((!paths && count != 0) || (!out && count != 0))
+    if (!error)
+        return;
+    if (!errorCapacity)
+        return;
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(error, errorCapacity, format, arguments);
+    va_end(arguments);
+}
+
+static bool vg_stdio_prepare_batch(
+    const char* const* paths, size_t count, VoicegroupFileBlob* out, char* error, size_t errorCapacity)
+{
+    if (count != 0)
     {
-        if (error && errorCapacity)
-            snprintf(error, errorCapacity, "vg_stdio: invalid batch");
-        return false;
+        if (!paths)
+        {
+            vg_stdio_set_error(error, errorCapacity, "vg_stdio: invalid batch");
+            return false;
+        }
+        if (!out)
+        {
+            vg_stdio_set_error(error, errorCapacity, "vg_stdio: invalid batch");
+            return false;
+        }
     }
     if (count > (size_t)INT_MAX)
     {
-        if (error && errorCapacity)
-            snprintf(error, errorCapacity, "vg_stdio: batch too large");
+        vg_stdio_set_error(error, errorCapacity, "vg_stdio: batch too large");
         return false;
     }
     for (size_t i = 0; i < count; i++)
         out[i] = (VoicegroupFileBlob){0};
-    if (error && errorCapacity)
-        error[0] = '\0';
+    if (error)
+    {
+        if (errorCapacity)
+            error[0] = '\0';
+    }
+    return true;
+}
 
+static bool vg_stdio_measure_file(FILE* file, const char* path, size_t* size, char* error, size_t errorCapacity)
+{
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "seek failed for %s", path);
+        return false;
+    }
+    long fileSize = ftell(file);
+    if (fileSize < 0)
+    {
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "size probe failed for %s", path);
+        return false;
+    }
+    if ((uint64_t)fileSize > (uint64_t)SIZE_MAX - 1)
+    {
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "file too large: %s", path);
+        return false;
+    }
+    if ((uint64_t)fileSize > (uint64_t)PTRDIFF_MAX)
+    {
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "file too large: %s", path);
+        return false;
+    }
+    rewind(file);
+    *size = (size_t)fileSize;
+    return true;
+}
+
+static bool vg_stdio_read_file(const char* path, VoicegroupFileBlob* blob, char* error, size_t errorCapacity)
+{
+    FILE* file = fopen(path, "rb");
+    if (!file)
+        return true;
+    size_t size = 0;
+    if (!vg_stdio_measure_file(file, path, &size, error, errorCapacity))
+        return false;
+    uint8_t* data = (uint8_t*)malloc(size + 1);
+    if (!data)
+    {
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "out of memory reading %s", path);
+        return false;
+    }
+    size_t got = 0;
+    if (size > 0)
+        got = fread(data, 1, size, file);
+    if (got != size)
+    {
+        free(data);
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "short read on %s", path);
+        return false;
+    }
+    if (ferror(file))
+    {
+        free(data);
+        fclose(file);
+        vg_stdio_set_error(error, errorCapacity, "read error on %s", path);
+        return false;
+    }
+    fclose(file);
+    data[size] = 0;
+    blob->data = data;
+    blob->size = size;
+    blob->found = 1;
+    return true;
+}
+
+static bool vg_stdio_read_batch(
+    void* user, const char* const* paths, size_t count, VoicegroupFileBlob* out, char* error, size_t errorCapacity)
+{
+    (void)user;
+    if (!vg_stdio_prepare_batch(paths, count, out, error, errorCapacity))
+        return false;
     for (size_t i = 0; i < count; i++)
     {
-        const char* path = paths[i];
-        if (!path)
+        if (!paths[i])
         {
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "vg_stdio: null path at %zu", i);
+            vg_stdio_set_error(error, errorCapacity, "vg_stdio: null path at %zu", i);
             return false;
         }
-        FILE* f = fopen(path, "rb");
-        if (!f)
-            continue; /* soft miss: out[i] stays zeroed */
-        if (fseek(f, 0, SEEK_END) != 0)
-        {
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "seek failed for %s", path);
+        if (!vg_stdio_read_file(paths[i], &out[i], error, errorCapacity))
             return false;
-        }
-        long fileSize = ftell(f);
-        if (fileSize < 0)
-        {
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "size probe failed for %s", path);
-            return false;
-        }
-        if ((uint64_t)fileSize > (uint64_t)SIZE_MAX - 1)
-        {
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "file too large: %s", path);
-            return false;
-        }
-        if ((uint64_t)fileSize > (uint64_t)PTRDIFF_MAX)
-        {
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "file too large: %s", path);
-            return false;
-        }
-        rewind(f);
-        size_t usize = (size_t)fileSize;
-        uint8_t* data = (uint8_t*)malloc(usize + 1);
-        if (!data)
-        {
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "out of memory reading %s", path);
-            return false;
-        }
-        size_t got = usize ? fread(data, 1, usize, f) : 0;
-        if (got != usize)
-        {
-            free(data);
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "short read on %s", path);
-            return false;
-        }
-        if (ferror(f))
-        {
-            free(data);
-            fclose(f);
-            if (error && errorCapacity)
-                snprintf(error, errorCapacity, "read error on %s", path);
-            return false;
-        }
-        fclose(f);
-        data[usize] = 0; /* NUL tail so text consumers can walk the blob */
-        out[i].data = data;
-        out[i].size = usize;
-        out[i].found = 1;
     }
     return true;
 }
@@ -3380,7 +3357,21 @@ static LoadedVoiceGroup* project_load_location(VoicegroupProject* project, const
         voicegroup_free(vg);
         return NULL;
     }
-    int r = parse_voicegroup_file_session(project->projectRoot, filePath, startLabel, vg->voices, vg->voiceNames, vg, &session, &project->dsMap, &project->pwMap, &project->ksMap, project->disc, &waveCache, 0, 0, 0);
+    int r = parse_voicegroup_file_session(project->projectRoot,
+                                          filePath,
+                                          startLabel,
+                                          vg->voices,
+                                          vg->voiceNames,
+                                          vg,
+                                          &session,
+                                          &project->dsMap,
+                                          &project->pwMap,
+                                          &project->ksMap,
+                                          project->disc,
+                                          &waveCache,
+                                          0,
+                                          0,
+                                          0);
     vg_load_session_pop_location(&session);
     if (r < 0)
     {
@@ -3428,12 +3419,187 @@ LoadedVoiceGroup* voicegroup_project_load(VoicegroupProject* project, const Voic
     return project_load_location(project, target->filePath, sectionLabel);
 }
 
-
 /*
  * Shared sample-set loader over the context's discovery and maps. Extracted
  * from the original one-shot voicegroup_load_samples body; the maps and
  * discovery arrive pre-built from the context instead of being rebuilt here.
  */
+
+typedef struct
+{
+    VoicegroupProject* project;
+    LoadedSampleSet* set;
+    VgLoadSession* session;
+    WaveCache* waveCache;
+} SampleSetLoadContext;
+
+static size_t sample_set_allocation_count(int count)
+{
+    if (count > 0)
+        return (size_t)count;
+    return 1;
+}
+
+static LoadedSampleSet* allocate_sample_set(int sampleCount, int waveCount, int keysplitCount)
+{
+    LoadedSampleSet* set = (LoadedSampleSet*)calloc(1, sizeof(LoadedSampleSet));
+    if (!set)
+        return NULL;
+    set->container = (LoadedVoiceGroup*)calloc(1, sizeof(LoadedVoiceGroup));
+    set->waves = (WaveData**)calloc(sample_set_allocation_count(sampleCount), sizeof(WaveData*));
+    set->progWaves = (uint32_t**)calloc(sample_set_allocation_count(waveCount), sizeof(uint32_t*));
+    set->keysplits = (LoadedKeysplit*)calloc(sample_set_allocation_count(keysplitCount), sizeof(LoadedKeysplit));
+    if (!set->container)
+    {
+        voicegroup_free_samples(set);
+        return NULL;
+    }
+    if (!set->waves)
+    {
+        voicegroup_free_samples(set);
+        return NULL;
+    }
+    if (!set->progWaves)
+    {
+        voicegroup_free_samples(set);
+        return NULL;
+    }
+    if (!set->keysplits)
+    {
+        voicegroup_free_samples(set);
+        return NULL;
+    }
+    set->count = sampleCount;
+    set->progWaveCount = waveCount;
+    set->keysplitCount = keysplitCount;
+    return set;
+}
+
+static bool populate_sample_set_sample(const SampleSetLoadContext* context, int index, const char* symbol)
+{
+    const uint8_t* synthDesc = symbol_map_find_synth(&context->project->dsMap, symbol);
+    if (synthDesc)
+    {
+        WaveData* wave = build_synth_wavedata(synthDesc, symbol, context->set->container, context->waveCache);
+        if (!wave)
+            return false;
+        context->set->waves[index] = wave;
+        return true;
+    }
+    const char* samplePath = symbol_map_find(&context->project->dsMap, symbol);
+    if (samplePath)
+    {
+        char wavPath[VG_MAX_PATH_LEN];
+        char aifPath[VG_MAX_PATH_LEN];
+        char binPath[VG_MAX_PATH_LEN];
+        if (!build_wave_abs_paths(context->project->projectRoot, samplePath, wavPath, aifPath, binPath))
+            return false;
+        const char* wav = NULL;
+        const char* aif = NULL;
+        if (wavPath[0])
+            wav = wavPath;
+        if (aifPath[0])
+            aif = aifPath;
+        return vg_load_session_add_wave(context->session, &context->set->waves[index], wav, aif, binPath);
+    }
+    WaveData* wave = NULL;
+    int result = resolve_and_load_sample_serial(context->project->projectRoot,
+                                                symbol,
+                                                &context->project->dsMap,
+                                                context->project->disc,
+                                                context->set->container,
+                                                context->waveCache,
+                                                &wave);
+    if (result == -1)
+        return false;
+    if (result == 1)
+        context->set->waves[index] = wave;
+    return true;
+}
+
+static bool populate_sample_set_samples(const SampleSetLoadContext* context, const char* const* symbols, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (!populate_sample_set_sample(context, i, symbols[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool populate_sample_set_wave(const SampleSetLoadContext* context, int index, const char* symbol)
+{
+    const char* wavePath = symbol_map_find(&context->project->pwMap, symbol);
+    if (!wavePath)
+        return true;
+    char absolutePath[VG_MAX_PATH_LEN];
+    if (!build_path(absolutePath, sizeof(absolutePath), context->project->projectRoot, wavePath))
+        return false;
+    return vg_load_session_add_prog(context->session, &context->set->progWaves[index], absolutePath);
+}
+
+static bool populate_sample_set_waves(const SampleSetLoadContext* context, const char* const* symbols, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (!populate_sample_set_wave(context, i, symbols[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool populate_sample_set_keysplit(const SampleSetLoadContext* context,
+                                         int index,
+                                         const char* subgroupSymbol,
+                                         const char* tableSymbol)
+{
+    ToneData* subgroup = NULL;
+    int subgroupResult = load_sub_voicegroup_session(context->project->projectRoot,
+                                                     subgroupSymbol,
+                                                     context->set->container,
+                                                     context->session,
+                                                     &context->project->dsMap,
+                                                     &context->project->pwMap,
+                                                     &context->project->ksMap,
+                                                     context->project->disc,
+                                                     context->waveCache,
+                                                     &subgroup);
+    if (subgroupResult == -1)
+        return false;
+    context->set->keysplits[index].subGroup = subgroup;
+    KeySplitDef* definition = NULL;
+    if (!keysplit_map_find_or_rescan_checked(
+            &context->project->ksMap, tableSymbol, context->project->disc, &definition))
+    {
+        return false;
+    }
+    if (!definition)
+        return true;
+    uint8_t* table = (uint8_t*)malloc(128);
+    if (!table)
+        return false;
+    memcpy(table, definition->table, 128);
+    if (!vg_register_keysplittable(context->set->container, table))
+    {
+        free(table);
+        return false;
+    }
+    context->set->keysplits[index].table = table;
+    return true;
+}
+
+static bool populate_sample_set_keysplits(const SampleSetLoadContext* context,
+                                          const char* const* subgroupSymbols,
+                                          const char* const* tableSymbols,
+                                          int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (!populate_sample_set_keysplit(context, i, subgroupSymbols[i], tableSymbols[i]))
+            return false;
+    }
+    return true;
+}
 
 static LoadedSampleSet* project_load_samples(VoicegroupProject* project,
                                              const char* const* sampleSymbols,
@@ -3444,130 +3610,27 @@ static LoadedSampleSet* project_load_samples(VoicegroupProject* project,
                                              const char* const* keysplitTableSymbols,
                                              int keysplitCount)
 {
-    LoadedSampleSet* set = (LoadedSampleSet*)calloc(1, sizeof(LoadedSampleSet));
-    if (!set) return NULL;
-    set->container = (LoadedVoiceGroup*)calloc(1, sizeof(LoadedVoiceGroup));
-    set->waves = (WaveData**)calloc(sampleCount>0?sampleCount:1, sizeof(WaveData*));
-    set->progWaves = (uint32_t**)calloc(waveCount>0?waveCount:1, sizeof(uint32_t*));
-    set->keysplits = (LoadedKeysplit*)calloc(keysplitCount>0?keysplitCount:1, sizeof(LoadedKeysplit));
-    if (!set->container || !set->waves || !set->progWaves || !set->keysplits)
-    {
-        voicegroup_free_samples(set);
+    LoadedSampleSet* set = allocate_sample_set(sampleCount, waveCount, keysplitCount);
+    if (!set)
         return NULL;
-    }
-    set->count = sampleCount;
-    set->progWaveCount = waveCount;
-    set->keysplitCount = keysplitCount;
     WaveCache waveCache;
     wave_cache_init(&waveCache);
     VgLoadSession session;
     vg_load_session_init(&session, &project->fileIo, set->container, &waveCache);
-    bool hardFail = false;
-    for (int i = 0; i < sampleCount && !hardFail; i++)
+    SampleSetLoadContext context = {project, set, &session, &waveCache};
+    if (!populate_sample_set_samples(&context, sampleSymbols, sampleCount))
     {
-        const char* sym = sampleSymbols[i];
-        const uint8_t* synthDesc = symbol_map_find_synth(&project->dsMap, sym);
-        if (synthDesc)
-        {
-            WaveData* wd = build_synth_wavedata(synthDesc, sym, set->container, &waveCache);
-            if (!wd)
-            {
-                hardFail = true;
-                break;
-            }
-            set->waves[i] = wd;
-            continue;
-        }
-        const char* samplePath = symbol_map_find(&project->dsMap, sym);
-        if (samplePath)
-        {
-            char wavAbs[VG_MAX_PATH_LEN];
-            char aifAbs[VG_MAX_PATH_LEN];
-            char binAbs[VG_MAX_PATH_LEN];
-            if (!build_wave_abs_paths(project->projectRoot, samplePath, wavAbs, aifAbs, binAbs))
-            {
-                hardFail = true;
-                break;
-            }
-            const char* w = wavAbs[0] ? wavAbs : NULL;
-            const char* a = aifAbs[0] ? aifAbs : NULL;
-            if (!vg_load_session_add_wave(&session, &set->waves[i], w, a, binAbs))
-            {
-                hardFail = true;
-                break;
-            }
-        }
-        else
-        {
-            WaveData* wd = NULL;
-            int res = resolve_and_load_sample_serial(project->projectRoot, sym, &project->dsMap, project->disc, set->container, &waveCache, &wd);
-            if (res == -1)
-            {
-                hardFail = true;
-                break;
-            }
-            if (res == 1)
-            {
-                set->waves[i] = wd;
-            }
-        }
+        vg_load_session_deinit(&session);
+        voicegroup_free_samples(set);
+        return NULL;
     }
-    for (int i = 0; i < waveCount && !hardFail; i++)
+    if (!populate_sample_set_waves(&context, waveSymbols, waveCount))
     {
-        const char* wavePath = symbol_map_find(&project->pwMap, waveSymbols[i]);
-        if (!wavePath)
-        {
-            continue;
-        }
-        char absPath[VG_MAX_PATH_LEN];
-        if (!build_path(absPath, sizeof(absPath), project->projectRoot, wavePath))
-        {
-            hardFail = true;
-            break;
-        }
-        if (!vg_load_session_add_prog(&session, &set->progWaves[i], absPath))
-        {
-            hardFail = true;
-            break;
-        }
+        vg_load_session_deinit(&session);
+        voicegroup_free_samples(set);
+        return NULL;
     }
-    for (int i = 0; i < keysplitCount && !hardFail; i++)
-    {
-        ToneData* subVg = NULL;
-        int subRes = load_sub_voicegroup_session(project->projectRoot, keysplitSymbols[i], set->container, &session, &project->dsMap, &project->pwMap, &project->ksMap, project->disc, &waveCache, &subVg);
-        if (subRes == -1)
-        {
-            hardFail = true;
-            break;
-        }
-        set->keysplits[i].subGroup = subVg;
-        const KeySplitDef* ksDef = NULL;
-        bool ksOk = keysplit_map_find_or_rescan_checked(
-            &project->ksMap, keysplitTableSymbols[i], project->disc, (KeySplitDef**)&ksDef);
-        if (!ksOk)
-        {
-            hardFail = true;
-            break;
-        }
-        if (ksDef)
-        {
-            uint8_t* table = (uint8_t*)malloc(128);
-            if (!table)
-            {
-                hardFail = true;
-                break;
-            }
-            memcpy(table, ksDef->table, 128);
-            if (!vg_register_keysplittable(set->container, table))
-            {
-                free(table);
-                hardFail = true;
-                break;
-            }
-            set->keysplits[i].table = table;
-        }
-    }
-    if (hardFail)
+    if (!populate_sample_set_keysplits(&context, keysplitSymbols, keysplitTableSymbols, keysplitCount))
     {
         vg_load_session_deinit(&session);
         voicegroup_free_samples(set);

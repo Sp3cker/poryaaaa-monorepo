@@ -90,170 +90,251 @@ static bool session_register_prog(LoadedVoiceGroup* owner, uint32_t* pw)
 
 /* ---- single parameterized round engine (wav → aif → bin → prog) ---- */
 
-enum { ROUND_WAV = 0, ROUND_AIF = 1, ROUND_BIN = 2, ROUND_PROG = 3 };
+enum
+{
+    ROUND_WAV = 0,
+    ROUND_AIF = 1,
+    ROUND_BIN = 2,
+    ROUND_PROG = 3
+};
+
+typedef struct
+{
+    VoicegroupFileBlob* blobs;
+    void** decoded;
+    void** finalForIdx;
+    size_t count;
+} VgRoundBuffers;
+
+static void session_round_cleanup(const VoicegroupFileIo* io, VgRoundBuffers* round)
+{
+    if (round->decoded)
+    {
+        for (size_t i = 0; i < round->count; i++)
+        {
+            if (round->decoded[i])
+            {
+                free(round->decoded[i]);
+            }
+        }
+    }
+    free(round->decoded);
+    free(round->finalForIdx);
+    if (round->blobs)
+    {
+        vg_batch_release(io, round->blobs, round->count);
+        free(round->blobs);
+    }
+}
+
+static void* session_decode_asset(int kind, const VoicegroupFileBlob* blob, const char* path, bool* hardFailure)
+{
+    switch (kind)
+    {
+    case ROUND_WAV:
+        return vg_asset_decode_wav(blob->data, blob->size, path, hardFailure);
+    case ROUND_AIF:
+        return vg_asset_decode_aiff(blob->data, blob->size, path, hardFailure);
+    case ROUND_BIN:
+        return vg_asset_decode_bin(blob->data, blob->size, path, hardFailure);
+    case ROUND_PROG:
+        return vg_asset_decode_prog(blob->data, blob->size, path, hardFailure);
+    default:
+        return NULL;
+    }
+}
+
+static bool session_round_decode(VgRoundBuffers* round, const VgDedup* dedup, int kind)
+{
+    for (size_t i = 0; i < round->count; i++)
+    {
+        VoicegroupFileBlob* blob = &round->blobs[i];
+        if (!blob->found)
+        {
+            continue;
+        }
+        if (!blob->data)
+        {
+            continue;
+        }
+        bool hardFailure = false;
+        round->decoded[i] = session_decode_asset(kind, blob, dedup->paths[i], &hardFailure);
+        if (hardFailure)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool session_adopt_wave(VgLoadSession* s, const char* path, void** decoded, WaveData** result)
+{
+    WaveData* cached = wave_cache_find(s->cache, path);
+    if (cached)
+    {
+        free(*decoded);
+        *decoded = NULL;
+        *result = cached;
+        return true;
+    }
+
+    WaveData* wd = (WaveData*)*decoded;
+    if (!session_register_wavedata(s->owner, wd))
+    {
+        return false;
+    }
+    wave_cache_insert(s->cache, path, wd);
+    *decoded = NULL;
+    *result = wd;
+    return true;
+}
+
+static bool
+session_bind_wave_round(VgLoadSession* s, const VgDedup* dedup, int kind, bool* waveDone, VgRoundBuffers* round)
+{
+    for (size_t i = 0; i < s->waveCount; i++)
+    {
+        if (waveDone && waveDone[i])
+        {
+            continue;
+        }
+        struct VgWaveBind* binding = &s->waves[i];
+        int index = -1;
+        switch (kind)
+        {
+        case ROUND_WAV:
+            index = binding->wavIdx;
+            break;
+        case ROUND_AIF:
+            index = binding->aifIdx;
+            break;
+        case ROUND_BIN:
+            index = binding->binIdx;
+            break;
+        }
+        if (index < 0 || (size_t)index >= round->count)
+        {
+            continue;
+        }
+        WaveData* wd = (WaveData*)round->finalForIdx[index];
+        if (!wd)
+        {
+            if (!round->decoded[index])
+            {
+                continue;
+            }
+            if (!session_adopt_wave(s, dedup->paths[index], &round->decoded[index], &wd))
+            {
+                return false;
+            }
+            round->finalForIdx[index] = wd;
+        }
+        *binding->slot = wd;
+        if (waveDone)
+        {
+            waveDone[i] = true;
+        }
+    }
+    return true;
+}
+
+static bool session_bind_prog_round(VgLoadSession* s, VgRoundBuffers* round)
+{
+    for (size_t i = 0; i < s->progCount; i++)
+    {
+        struct VgProgBind* binding = &s->progs[i];
+        int index = binding->idx;
+        if (index < 0 || (size_t)index >= round->count)
+        {
+            continue;
+        }
+        if (*binding->slot)
+        {
+            continue;
+        }
+        uint32_t* pw = (uint32_t*)round->finalForIdx[index];
+        if (!pw)
+        {
+            if (!round->decoded[index])
+            {
+                continue;
+            }
+            pw = (uint32_t*)round->decoded[index];
+            if (!session_register_prog(s->owner, pw))
+            {
+                return false;
+            }
+            round->finalForIdx[index] = pw;
+            round->decoded[index] = NULL;
+        }
+        *binding->slot = pw;
+    }
+    return true;
+}
 
 static bool session_run_round(VgLoadSession* s, VgDedup* dedup, int kind, bool* waveDone)
 {
-    if (!s || !dedup)
+    if (!s)
+    {
         return false;
+    }
+    if (!dedup)
+    {
+        return false;
+    }
     if (dedup->count == 0)
+    {
         return true;
-    if (kind < ROUND_WAV || kind > ROUND_PROG)
+    }
+    if (kind < ROUND_WAV)
+    {
         return false;
-
-    bool isProg = (kind == ROUND_PROG);
-    size_t n = dedup->count;
-
-    VoicegroupFileBlob* blobs = (VoicegroupFileBlob*)calloc(n, sizeof(VoicegroupFileBlob));
-    if (!blobs)
+    }
+    if (kind > ROUND_PROG)
+    {
         return false;
+    }
 
+    VgRoundBuffers round = {0};
+    round.count = dedup->count;
+    round.blobs = (VoicegroupFileBlob*)calloc(dedup->count, sizeof(*round.blobs));
+    bool ok = round.blobs != NULL;
     char err[512];
-    bool readOk = vg_batch_read(s->io, dedup, blobs, err, sizeof(err));
-    if (!readOk)
+    if (ok)
     {
-        vg_batch_release(s->io, blobs, n);
-        free(blobs);
-        return false;
+        ok = vg_batch_read(s->io, dedup, round.blobs, err, sizeof(err));
     }
-
-    void** decoded = (void**)calloc(n, sizeof(void*));
-    void** finalForIdx = (void**)calloc(n, sizeof(void*));
-    if (!decoded || !finalForIdx)
+    if (ok)
     {
-        for (size_t i = 0; i < n; i++)
+        round.decoded = (void**)calloc(round.count, sizeof(*round.decoded));
+        if (round.decoded)
         {
-            if (decoded && decoded[i])
-            {
-                free(decoded[i]);
-            }
+            round.finalForIdx = (void**)calloc(round.count, sizeof(*round.finalForIdx));
         }
-        free(decoded);
-        free(finalForIdx);
-        vg_batch_release(s->io, blobs, n);
-        free(blobs);
-        return false;
+        ok = round.finalForIdx != NULL;
     }
-
-    bool ok = true;
-    for (size_t i = 0; i < n && ok; i++)
+    if (ok)
     {
-        if (!blobs[i].found || !blobs[i].data)
-            continue;
-        const char* path = dedup->paths[i];
-        bool hardFailure = false;
-        if (kind == ROUND_WAV)
-            decoded[i] =
-                vg_asset_decode_wav(blobs[i].data, blobs[i].size, path, &hardFailure);
-        else if (kind == ROUND_AIF)
-            decoded[i] =
-                vg_asset_decode_aiff(blobs[i].data, blobs[i].size, path, &hardFailure);
-        else if (kind == ROUND_BIN)
-            decoded[i] =
-                vg_asset_decode_bin(blobs[i].data, blobs[i].size, path, &hardFailure);
+        ok = session_round_decode(&round, dedup, kind);
+    }
+    if (ok)
+    {
+        if (kind == ROUND_PROG)
+        {
+            ok = session_bind_prog_round(s, &round);
+        }
         else
-            decoded[i] =
-                vg_asset_decode_prog(blobs[i].data, blobs[i].size, path, &hardFailure);
-        if (hardFailure)
-            ok = false;
-    }
-
-    if (!isProg)
-    {
-        for (size_t b = 0; b < s->waveCount && ok; b++)
         {
-            if (waveDone && waveDone[b])
-                continue;
-            int idx = -1;
-            if (kind == ROUND_WAV)
-                idx = s->waves[b].wavIdx;
-            else if (kind == ROUND_AIF)
-                idx = s->waves[b].aifIdx;
-            else
-                idx = s->waves[b].binIdx;
-            if (idx < 0 || (size_t)idx >= n)
-                continue;
-            if (finalForIdx[idx])
-            {
-                *s->waves[b].slot = (WaveData*)finalForIdx[idx];
-                if (waveDone)
-                    waveDone[b] = true;
-                continue;
-            }
-            if (!decoded[idx])
-                continue;
-            const char* path = dedup->paths[idx];
-            WaveData* cached = wave_cache_find(s->cache, path);
-            WaveData* wd = NULL;
-            if (cached)
-            {
-                wd = cached;
-                free(decoded[idx]);
-                decoded[idx] = NULL;
-            }
-            else
-            {
-                wd = (WaveData*)decoded[idx];
-                if (!session_register_wavedata(s->owner, wd))
-                {
-                    ok = false;
-                    break;
-                }
-                wave_cache_insert(s->cache, path, wd);
-                decoded[idx] = NULL;
-            }
-            finalForIdx[idx] = wd;
-            *s->waves[b].slot = wd;
-            if (waveDone)
-                waveDone[b] = true;
+            ok = session_bind_wave_round(s, dedup, kind, waveDone, &round);
         }
     }
-    else
-    {
-        for (size_t b = 0; b < s->progCount && ok; b++)
-        {
-            int idx = s->progs[b].idx;
-            if (idx < 0 || (size_t)idx >= n)
-                continue;
-            if (*s->progs[b].slot)
-                continue;
-            if (finalForIdx[idx])
-            {
-                *s->progs[b].slot = (uint32_t*)finalForIdx[idx];
-                continue;
-            }
-            if (!decoded[idx])
-                continue;
-            uint32_t* pw = (uint32_t*)decoded[idx];
-            if (!session_register_prog(s->owner, pw))
-            {
-                ok = false;
-                break;
-            }
-            finalForIdx[idx] = pw;
-            decoded[idx] = NULL;
-            *s->progs[b].slot = pw;
-        }
-    }
-
-    for (size_t i = 0; i < n; i++)
-    {
-        if (decoded[i])
-        {
-            free(decoded[i]);
-        }
-    }
-    free(decoded);
-    free(finalForIdx);
-    vg_batch_release(s->io, blobs, n);
-    free(blobs);
+    session_round_cleanup(s->io, &round);
     return ok;
 }
 
 /* ---- public session API ---- */
 
-void vg_load_session_init(
-    VgLoadSession* s, const VoicegroupFileIo* io, LoadedVoiceGroup* owner, WaveCache* cache)
+void vg_load_session_init(VgLoadSession* s, const VoicegroupFileIo* io, LoadedVoiceGroup* owner, WaveCache* cache)
 {
     if (!s)
     {
@@ -297,12 +378,84 @@ static bool path_valid_len(const char* p)
     return strlen(p) < (size_t)VG_MAX_PATH_LEN;
 }
 
+static bool session_register_dedup_path(VgDedup* dedup, const char* path, int* index)
+{
+    *index = -1;
+    if (!path)
+    {
+        return true;
+    }
+    if (!path[0])
+    {
+        return true;
+    }
+    if (!vg_dedup_add(dedup, path))
+    {
+        return false;
+    }
+    *index = vg_dedup_find(dedup, path);
+    return *index >= 0;
+}
+
+static bool session_register_wave_paths(VgLoadSession* s,
+                                        const char* wavAbs,
+                                        const char* aifAbs,
+                                        const char* binAbs,
+                                        int* wavIndex,
+                                        int* aifIndex,
+                                        int* binIndex)
+{
+    if (!session_register_dedup_path(&s->wavDedup, wavAbs, wavIndex))
+    {
+        return false;
+    }
+    if (!session_register_dedup_path(&s->aifDedup, aifAbs, aifIndex))
+    {
+        return false;
+    }
+    if (!session_register_dedup_path(&s->binDedup, binAbs, binIndex))
+    {
+        return false;
+    }
+    return *wavIndex >= 0 || *aifIndex >= 0 || *binIndex >= 0;
+}
+
+static bool session_ensure_wave_binding_capacity(VgLoadSession* s)
+{
+    if (s->waveCount < s->waveCap)
+    {
+        return true;
+    }
+    size_t newCapacity = s->waveCap ? s->waveCap * 2 : 8;
+    struct VgWaveBind* bindings = (struct VgWaveBind*)realloc(s->waves, newCapacity * sizeof(*bindings));
+    if (!bindings)
+    {
+        return false;
+    }
+    s->waves = bindings;
+    s->waveCap = newCapacity;
+    return true;
+}
+
+static bool session_ensure_prog_binding_capacity(VgLoadSession* s)
+{
+    if (s->progCount < s->progCap)
+    {
+        return true;
+    }
+    size_t newCapacity = s->progCap ? s->progCap * 2 : 8;
+    struct VgProgBind* bindings = (struct VgProgBind*)realloc(s->progs, newCapacity * sizeof(*bindings));
+    if (!bindings)
+    {
+        return false;
+    }
+    s->progs = bindings;
+    s->progCap = newCapacity;
+    return true;
+}
+
 bool vg_load_session_add_wave(
-    VgLoadSession* s,
-    WaveData** slot,
-    const char* wavAbs,
-    const char* aifAbs,
-    const char* binAbs)
+    VgLoadSession* s, WaveData** slot, const char* wavAbs, const char* aifAbs, const char* binAbs)
 {
     if (!s || !slot)
     {
@@ -313,53 +466,27 @@ bool vg_load_session_add_wave(
         return false;
     }
 
-    int wIdx = -1, aIdx = -1, bIdx = -1;
-    if (wavAbs && wavAbs[0])
+    int wavIndex;
+    int aifIndex;
+    int binIndex;
+    if (!session_register_wave_paths(s, wavAbs, aifAbs, binAbs, &wavIndex, &aifIndex, &binIndex))
     {
-        if (!vg_dedup_add(&s->wavDedup, wavAbs))
-            return false;
-        wIdx = vg_dedup_find(&s->wavDedup, wavAbs);
-        if (wIdx < 0)
-            return false;
-    }
-    if (aifAbs && aifAbs[0])
-    {
-        if (!vg_dedup_add(&s->aifDedup, aifAbs))
-            return false;
-        aIdx = vg_dedup_find(&s->aifDedup, aifAbs);
-        if (aIdx < 0)
-            return false;
-    }
-    if (binAbs && binAbs[0])
-    {
-        if (!vg_dedup_add(&s->binDedup, binAbs))
-            return false;
-        bIdx = vg_dedup_find(&s->binDedup, binAbs);
-        if (bIdx < 0)
-            return false;
-    }
-    if (wIdx < 0 && aIdx < 0 && bIdx < 0)
         return false;
-
-    if (s->waveCount >= s->waveCap)
-    {
-        size_t nc = s->waveCap ? s->waveCap * 2 : 8;
-        struct VgWaveBind* np = (struct VgWaveBind*)realloc(s->waves, nc * sizeof(*np));
-        if (!np)
-            return false;
-        s->waves = np;
-        s->waveCap = nc;
     }
-    s->waves[s->waveCount].slot = slot;
-    s->waves[s->waveCount].wavIdx = wIdx;
-    s->waves[s->waveCount].aifIdx = aIdx;
-    s->waves[s->waveCount].binIdx = bIdx;
+    if (!session_ensure_wave_binding_capacity(s))
+    {
+        return false;
+    }
+    struct VgWaveBind* binding = &s->waves[s->waveCount];
+    binding->slot = slot;
+    binding->wavIdx = wavIndex;
+    binding->aifIdx = aifIndex;
+    binding->binIdx = binIndex;
     s->waveCount++;
     return true;
 }
 
-bool vg_load_session_add_prog(
-    VgLoadSession* s, uint32_t** slot, const char* absPath)
+bool vg_load_session_add_prog(VgLoadSession* s, uint32_t** slot, const char* absPath)
 {
     if (!s || !slot || !absPath || !absPath[0])
     {
@@ -369,22 +496,18 @@ bool vg_load_session_add_prog(
     {
         return false;
     }
-    if (!vg_dedup_add(&s->progDedup, absPath))
-        return false;
-    int idx = vg_dedup_find(&s->progDedup, absPath);
-    if (idx < 0)
-        return false;
-    if (s->progCount >= s->progCap)
+    int index;
+    if (!session_register_dedup_path(&s->progDedup, absPath, &index))
     {
-        size_t nc = s->progCap ? s->progCap * 2 : 8;
-        struct VgProgBind* np = (struct VgProgBind*)realloc(s->progs, nc * sizeof(*np));
-        if (!np)
-            return false;
-        s->progs = np;
-        s->progCap = nc;
+        return false;
     }
-    s->progs[s->progCount].slot = slot;
-    s->progs[s->progCount].idx = idx;
+    if (!session_ensure_prog_binding_capacity(s))
+    {
+        return false;
+    }
+    struct VgProgBind* binding = &s->progs[s->progCount];
+    binding->slot = slot;
+    binding->idx = index;
     s->progCount++;
     return true;
 }
@@ -463,8 +586,7 @@ void vg_load_session_rollback(VgLoadSession* s, VgLoadSessionCheckpoint cp)
     vg_dedup_truncate(&s->progDedup, cp.progDedupCount);
 }
 
-bool vg_load_session_push_location(
-    VgLoadSession* s, const char* filePath, const char* label)
+bool vg_load_session_push_location(VgLoadSession* s, const char* filePath, const char* label)
 {
     if (!s || !filePath || s->activeCount >= VG_ACTIVE_LOC_CAP)
     {
@@ -494,8 +616,7 @@ void vg_load_session_pop_location(VgLoadSession* s)
     memset(&s->activeLocs[s->activeCount], 0, sizeof(VgActiveLoc));
 }
 
-bool vg_load_session_is_active(
-    const VgLoadSession* s, const char* filePath, const char* label)
+bool vg_load_session_is_active(const VgLoadSession* s, const char* filePath, const char* label)
 {
     if (!s || !filePath)
     {
