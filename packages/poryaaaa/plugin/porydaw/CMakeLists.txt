@@ -17,6 +17,8 @@ endif()
 add_library(poryaaaa_engine STATIC
     "${CMAKE_CURRENT_LIST_DIR}/../m4a_engine.c"
     "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_loader.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_load_session.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_asset_batch.c"
 )
 add_library(poryaaaa::engine ALIAS poryaaaa_engine)
 
