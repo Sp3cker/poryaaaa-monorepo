@@ -64,6 +64,13 @@ typedef struct
     int subGroupCount;
     int subGroupCapacity;
 
+    /* Per-slot display names for each registered sub-voicegroup, parallel to
+     * subGroups and sharing its count/capacity: element i is a
+     * calloc-zeroed char[VOICEGROUP_SIZE][VG_VOICE_NAME_LEN] table owned by
+     * subGroups[i].  Never NULL while subGroupCount > i - both pointer
+     * arrays grow and append together in vg_register_subgroup. */
+    char (**subGroupVoiceNames)[VG_VOICE_NAME_LEN];
+
     /* Keysplit tables */
     uint8_t** keySplitTables;
     int keySplitTableCount;
@@ -91,6 +98,17 @@ voicegroup_load(const char* projectRoot, const char* voicegroupName, const Voice
  * Free all resources associated with a loaded voicegroup.
  */
 void voicegroup_free(LoadedVoiceGroup* vg);
+
+/*
+ * Borrowed per-slot display name of a registered sub-voicegroup.
+ * Returns NULL when vg or subgroup is NULL, when subgroup is not a
+ * registered member of vg->subGroups, or when slot is outside
+ * [0, VOICEGROUP_SIZE).  Otherwise a non-NULL pointer to a
+ * NUL-terminated string, possibly empty.  Valid until voicegroup_free(vg).
+ */
+const char* voicegroup_subgroup_slot_name(const LoadedVoiceGroup* vg,
+                                          const ToneData* subgroup,
+                                          int slot);
 
 /*
  * A keysplit instrument loaded by symbol: the sub-voicegroup's ToneData

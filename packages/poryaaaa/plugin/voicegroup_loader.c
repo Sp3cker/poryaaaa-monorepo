@@ -229,7 +229,7 @@ struct VoicegroupProject
 
 /* Forward declarations */
 static bool vg_register_wavedata(LoadedVoiceGroup* vg, WaveData* wd);
-static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg);
+static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg, char (*names)[VG_VOICE_NAME_LEN]);
 static bool vg_register_keysplittable(LoadedVoiceGroup* vg, uint8_t* ks);
 static bool build_path(char* dest, size_t destSize, const char* base, const char* relative);
 static const uint8_t* symbol_map_find_synth(const SymbolMap* map, const char* symbol);
@@ -661,20 +661,35 @@ static bool vg_register_wavedata(LoadedVoiceGroup* vg, WaveData* wd)
     return true;
 }
 
-static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg)
+static bool vg_register_subgroup(LoadedVoiceGroup* vg, ToneData* sg, char (*names)[VG_VOICE_NAME_LEN])
 {
-    if (!vg || !sg)
+    if (!vg || !sg || !names)
         return false;
     if (vg->subGroupCount >= vg->subGroupCapacity)
     {
         size_t nc = vg->subGroupCapacity ? (size_t)vg->subGroupCapacity * 2 : INITIAL_CAPACITY;
-        ToneData** np = (ToneData**)realloc(vg->subGroups, nc * sizeof(ToneData*));
-        if (!np)
+        ToneData** nsg = (ToneData**)malloc(nc * sizeof(ToneData*));
+        char (**nnames)[VG_VOICE_NAME_LEN] = (char (**)[VG_VOICE_NAME_LEN])malloc(nc * sizeof(*nnames));
+        if (!nsg || !nnames)
+        {
+            free(nsg);
+            free(nnames);
             return false;
-        vg->subGroups = np;
+        }
+        if (vg->subGroupCount > 0)
+        {
+            memcpy(nsg, vg->subGroups, (size_t)vg->subGroupCount * sizeof(ToneData*));
+            memcpy(nnames, vg->subGroupVoiceNames, (size_t)vg->subGroupCount * sizeof(*nnames));
+        }
+        free(vg->subGroups);
+        free(vg->subGroupVoiceNames);
+        vg->subGroups = nsg;
+        vg->subGroupVoiceNames = nnames;
         vg->subGroupCapacity = (int)nc;
     }
-    vg->subGroups[vg->subGroupCount++] = sg;
+    vg->subGroups[vg->subGroupCount] = sg;
+    vg->subGroupVoiceNames[vg->subGroupCount] = names;
+    vg->subGroupCount++;
     return true;
 }
 
@@ -2235,12 +2250,12 @@ static int continue_sub_voicegroup(const SubVoicegroupContext* context,
     return endIndex;
 }
 
-static int
-parse_sub_voicegroup(const SubVoicegroupContext* context, const VoicegroupLocation* location, ToneData* voices)
+static int parse_sub_voicegroup(const SubVoicegroupContext* context,
+                                const VoicegroupLocation* location,
+                                ToneData* voices,
+                                char (*names)[VG_VOICE_NAME_LEN])
 {
     const char* startLabel = location->label[0] ? location->label : NULL;
-    char names[VOICEGROUP_SIZE][VG_VOICE_NAME_LEN];
-    memset(names, 0, sizeof(names));
     int endIndex = parse_voicegroup_file_session(context->projectRoot,
                                                  location->filePath,
                                                  startLabel,
@@ -2281,15 +2296,22 @@ static int load_sub_voicegroup_location(const SubVoicegroupContext* context,
     ToneData* subgroup = (ToneData*)calloc(VOICEGROUP_SIZE, sizeof(ToneData));
     if (!subgroup)
         return -1;
-    if (!vg_register_subgroup(context->vgReg, subgroup))
+    char (*names)[VG_VOICE_NAME_LEN] = (char (*)[VG_VOICE_NAME_LEN])calloc(VOICEGROUP_SIZE, VG_VOICE_NAME_LEN);
+    if (!names)
     {
         free(subgroup);
+        return -1;
+    }
+    if (!vg_register_subgroup(context->vgReg, subgroup, names))
+    {
+        free(subgroup);
+        free(names);
         return -1;
     }
     if (!vg_load_session_push_location(context->session, location->filePath, startLabel))
         return -1;
     VgLoadSessionCheckpoint checkpoint = vg_load_session_checkpoint(context->session);
-    int endIndex = parse_sub_voicegroup(context, location, subgroup);
+    int endIndex = parse_sub_voicegroup(context, location, subgroup, names);
     if (endIndex < 0)
     {
         vg_load_session_rollback(context->session, checkpoint);
@@ -3775,11 +3797,28 @@ void voicegroup_free(LoadedVoiceGroup* vg)
 
     for (int i = 0; i < vg->subGroupCount; i++)
         free(vg->subGroups[i]);
+    for (int i = 0; i < vg->subGroupCount; i++)
+        free(vg->subGroupVoiceNames[i]);
     free(vg->subGroups);
+    free(vg->subGroupVoiceNames);
 
     for (int i = 0; i < vg->keySplitTableCount; i++)
         free(vg->keySplitTables[i]);
     free(vg->keySplitTables);
 
     free(vg);
+}
+
+const char* voicegroup_subgroup_slot_name(const LoadedVoiceGroup* vg, const ToneData* subgroup, int slot)
+{
+    if (!vg || !subgroup)
+        return NULL;
+    if (slot < 0 || slot >= VOICEGROUP_SIZE)
+        return NULL;
+    for (int i = 0; i < vg->subGroupCount; i++)
+    {
+        if (vg->subGroups[i] == subgroup)
+            return vg->subGroupVoiceNames[i][slot];
+    }
+    return NULL;
 }
