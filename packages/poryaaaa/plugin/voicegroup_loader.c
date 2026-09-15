@@ -3796,9 +3796,10 @@ void voicegroup_free(LoadedVoiceGroup* vg)
     free(vg->progWaves);
 
     for (int i = 0; i < vg->subGroupCount; i++)
+    {
         free(vg->subGroups[i]);
-    for (int i = 0; i < vg->subGroupCount; i++)
         free(vg->subGroupVoiceNames[i]);
+    }
     free(vg->subGroups);
     free(vg->subGroupVoiceNames);
 
@@ -3809,16 +3810,22 @@ void voicegroup_free(LoadedVoiceGroup* vg)
     free(vg);
 }
 
-const char* voicegroup_subgroup_slot_name(const LoadedVoiceGroup* vg, const ToneData* subgroup, int slot)
+const char (*voicegroup_subgroup_names(const LoadedVoiceGroup* vg, const ToneData* subgroup)) [VG_VOICE_NAME_LEN]
 {
-    if (!vg || !subgroup)
-        return NULL;
-    if (slot < 0 || slot >= VOICEGROUP_SIZE)
+    if (!vg || !subgroup || !vg->subGroups || !vg->subGroupVoiceNames)
         return NULL;
     for (int i = 0; i < vg->subGroupCount; i++)
     {
         if (vg->subGroups[i] == subgroup)
-            return vg->subGroupVoiceNames[i][slot];
+            return vg->subGroupVoiceNames[i];
     }
     return NULL;
+}
+
+const char* voicegroup_subgroup_slot_name(const LoadedVoiceGroup* vg, const ToneData* subgroup, int slot)
+{
+    if (slot < 0 || slot >= VOICEGROUP_SIZE)
+        return NULL;
+    const char (*names)[VG_VOICE_NAME_LEN] = voicegroup_subgroup_names(vg, subgroup);
+    return names ? names[slot] : NULL;
 }
