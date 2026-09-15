@@ -2,10 +2,22 @@
 #define VOICEGROUP_LOADER_H
 
 #include "voicegroup/voicegroup_types.h"
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #define VOICEGROUP_SIZE 128
 #define VG_MAX_PATH_LEN 512
 #define VG_VOICE_NAME_LEN 48
+#define VG_CONFIG_PATH_CAP 8
+#define VG_MAX_SYMBOL_LEN 256
+#ifndef MAX_SYMBOL_LEN
+#    define MAX_SYMBOL_LEN VG_MAX_SYMBOL_LEN
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Optional configuration for the voicegroup loader.
@@ -14,11 +26,11 @@
  */
 typedef struct
 {
-    char soundDataPaths[8][VG_MAX_PATH_LEN]; /* extra .inc files with sample symbol definitions */
+    char soundDataPaths[VG_CONFIG_PATH_CAP][VG_MAX_PATH_LEN]; /* extra .inc files with sample symbol definitions */
     int soundDataPathCount;
-    char voicegroupPaths[8][VG_MAX_PATH_LEN]; /* extra voicegroup directories or files */
+    char voicegroupPaths[VG_CONFIG_PATH_CAP][VG_MAX_PATH_LEN]; /* extra voicegroup directories or files */
     int voicegroupPathCount;
-    char sampleDirs[8][VG_MAX_PATH_LEN]; /* extra directories with .wav sample files */
+    char sampleDirs[VG_CONFIG_PATH_CAP][VG_MAX_PATH_LEN]; /* extra directories with .wav sample files */
     int sampleDirCount;
 } VoicegroupLoaderConfig;
 
@@ -139,4 +151,114 @@ void voicegroup_free_samples(LoadedSampleSet* set);
  */
 void voicegroup_loader_set_log_path(const char* path);
 
+/*
+ * Project-scoped loading context.
+ *
+ * A VoicegroupProject owns one project's discovery state plus the parsed
+ * DirectSound, programmable-wave, and keysplit maps. Building it once and
+ * loading many voicegroups from it skips repeated discovery and global-map
+ * parsing. The context is worker-confined: never call it concurrently from
+ * more than one thread.
+ *
+ * Mapped sample and programmable-wave asset reads go through the
+ * caller-supplied VoicegroupFileIo adapter in deduplicated batches;
+ * directory enumeration, discovery, voicegroup text, and global map reads
+ * remain internal. The recursive sound/ deep scan for nonstandard project
+ * layouts stays lazy and runs at most once per context. Banks and sample
+ * sets returned by the context are fully self-contained and stay valid after
+ * the context is freed; free them with voicegroup_free()/voicegroup_free_samples().
+ */
+typedef struct VoicegroupProject VoicegroupProject;
+
+/*
+ * An exact voicegroup location. filePath is used verbatim as the file to
+ * parse (pass an absolute path); find_voicegroup/alias probing is skipped
+ * and the target is attempted exactly once. sectionLabel pins a section
+ * inside a monolithic voicegroup file; NULL or empty means the whole file.
+ */
+typedef struct
+{
+    const char* filePath;
+    const char* sectionLabel;
+} VoicegroupTarget;
+
+/*
+ * One file read produced by the adapter. data/size hold the whole file
+ * content (malloc'd by the adapter); found is 0 for a soft miss (file does
+ * not exist), which callers treat as an empty result, not an error.
+ */
+typedef struct
+{
+    uint8_t* data;
+    size_t size;
+    bool found;
+} VoicegroupFileBlob;
+
+/*
+ * Batch read callback. Performs the count independent file reads and fills
+ * every out[i] (entries not read must stay zeroed). Return true when the
+ * transport itself worked; return false only on a hard adapter failure
+ * (allocation or I/O transport error, described in error). The loader
+ * releases every out entry after either outcome, so a failing batch may
+ * leave earlier entries populated.
+ *
+ * releaseBatch frees the data of every populated blob in the array. Paths
+ * handed to readBatch are independent: no entry depends on another, and the
+ * loader parses/decodes only after the whole batch returns.
+ */
+typedef bool (*VoicegroupReadBatchFn)(
+    void* user, const char* const* paths, size_t count, VoicegroupFileBlob* out, char* error, size_t errorCapacity);
+
+typedef void (*VoicegroupReleaseBatchFn)(void* user, VoicegroupFileBlob* blobs, size_t count);
+
+typedef struct
+{
+    void* user;
+    VoicegroupReadBatchFn readBatch;
+    VoicegroupReleaseBatchFn releaseBatch;
+} VoicegroupFileIo;
+
+/*
+ * Open a project context: discover the project layout and parse the global
+ * DirectSound/programmable-wave/keysplit maps. projectRoot and config (when
+ * non-NULL; NULL means pure auto-discovery, same as voicegroup_load) and the
+ * adapter are copied into the context. Discovery and global-map parsing use
+ * internal stdio; the adapter is only used later for deduplicated asset
+ * batches. Returns NULL on bad arguments or allocation failure.
+ */
+VoicegroupProject* voicegroup_project_open(const char* projectRoot,
+                                           const VoicegroupLoaderConfig* config,
+                                           const VoicegroupFileIo* fileIo);
+
+/*
+ * Load the exact voicegroup named by target. The file at filePath is used
+ * verbatim exactly once; a missing target file or a missing requested
+ * section (when sectionLabel is non-NULL and not present) is a hard failure
+ * and returns NULL. Mapped asset file misses are soft as in voicegroup_load
+ * (unresolved voices keep NULL samples); only allocation or adapter hard
+ * failure returns NULL. The project remains reusable after a hard failure;
+ * the returned bank is self-contained or NULL.
+ */
+LoadedVoiceGroup* voicegroup_project_load(VoicegroupProject* project, const VoicegroupTarget* target);
+
+/*
+ * Context-based counterpart of voicegroup_load_samples: same symbol
+ * resolution and results, reusing the context's discovery and maps.
+ * Returns a self-contained LoadedSampleSet or NULL.
+ */
+LoadedSampleSet* voicegroup_project_load_samples(VoicegroupProject* project,
+                                                 const char* const* sampleSymbols,
+                                                 int sampleCount,
+                                                 const char* const* waveSymbols,
+                                                 int waveCount,
+                                                 const char* const* keysplitSymbols,
+                                                 const char* const* keysplitTableSymbols,
+                                                 int keysplitCount);
+
+/* Free the context. Loaded banks/sample sets remain valid. */
+void voicegroup_project_free(VoicegroupProject* project);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 #endif /* VOICEGROUP_LOADER_H */

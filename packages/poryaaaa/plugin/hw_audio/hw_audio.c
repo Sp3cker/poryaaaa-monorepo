@@ -476,7 +476,8 @@ static void mix_native_chunk(HwAudio* hw, int internal_count)
                   internal_count);
 }
 
-static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host)
+static void render_dac_sample(
+    HwAudio* hw, float* outL, float* outR, int* rendered_host, int target_host, uint32_t cycles_per_dac_sample)
 {
     hw_psg_sample(&hw->psg, &hw->scratch_sq1[0], &hw->scratch_sq2[0], &hw->scratch_wave[0], &hw->scratch_noise[0]);
     hw_pcm_render(&hw->pcm, &hw->scratch_dma_a[0], &hw->scratch_dma_b[0], 1);
@@ -486,8 +487,7 @@ static void render_dac_sample(HwAudio* hw, float* outL, float* outR, int* render
      * after the prior public block was complete. Drain it before adding this
      * observation, then capture again immediately after submission. */
     capture_frontend(hw, outL, outR, rendered_host, target_host);
-    hw_resample_submit(
-        &hw->resample, hw->native_l[0], hw->native_r[0], PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate);
+    hw_resample_submit(&hw->resample, hw->native_l[0], hw->native_r[0], cycles_per_dac_sample);
     capture_frontend(hw, outL, outR, rendered_host, target_host);
     int max_host = target_host - *rendered_host;
     if (max_host < 0)
@@ -526,14 +526,15 @@ static bool render_to_cycle(HwAudio* hw,
     if (target_cycle < hw->live_cycle)
         return false;
 
+    /* Register events cannot change the DAC rate within this render span. */
+    const uint32_t cycles_per_dac_sample = PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate;
     if (hw->live_sample_pending && target_cycle > hw->live_cycle)
     {
         fill_host_through_cycle(hw, outL, outR, rendered_host, target_host, block_begin_cycle);
-        render_dac_sample(hw, outL, outR, rendered_host, target_host);
+        render_dac_sample(hw, outL, outR, rendered_host, target_host, cycles_per_dac_sample);
         hw->live_sample_pending = false;
     }
 
-    const uint32_t cycles_per_dac_sample = PORYAAAA_GBA_CLOCK_HZ / (uint32_t)hw->internal_rate;
     while (hw->live_cycle < target_cycle)
     {
         const uint32_t until_dac = cycles_per_dac_sample - hw->dac_cycle_remainder;
@@ -550,7 +551,7 @@ static bool render_to_cycle(HwAudio* hw,
             else
             {
                 fill_host_through_cycle(hw, outL, outR, rendered_host, target_host, block_begin_cycle);
-                render_dac_sample(hw, outL, outR, rendered_host, target_host);
+                render_dac_sample(hw, outL, outR, rendered_host, target_host, cycles_per_dac_sample);
             }
         }
     }
