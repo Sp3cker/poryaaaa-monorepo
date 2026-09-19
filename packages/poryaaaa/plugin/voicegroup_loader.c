@@ -2094,6 +2094,79 @@ static bool find_monolithic_voicegroup(const PathList* files, const char* vgName
 }
 
 /*
+ * Returns true when the file declares `voice_group <name>` (with or without a
+ * starting note). That macro defines the global symbol `voicegroup_<name>`, so
+ * the assembler resolves the group however the file happens to be named.
+ */
+static bool file_declares_voice_group(FILE* file, const char* name)
+{
+    size_t nameLength = strlen(name);
+    if (nameLength == 0 || nameLength >= MAX_SYMBOL_LEN)
+        return false;
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), file))
+    {
+        strip_comment(line);
+        char* trimmed = ltrim(line);
+        if (strncmp(trimmed, "voice_group", 11) != 0)
+            continue;
+        char after = trimmed[11];
+        if (after != '\0' && !isspace((unsigned char)after))
+            continue; /* a longer macro name, e.g. voice_group_alt */
+        char* declared = ltrim(trimmed + 11);
+        if (strncmp(declared, name, nameLength) != 0)
+            continue;
+        char tail = declared[nameLength];
+        if (tail == '\0' || tail == ',' || isspace((unsigned char)tail))
+            return true;
+    }
+    return false;
+}
+
+/*
+ * Declared-name lookup: a voicegroup file names its group with the
+ * `voice_group` macro, and the file name is only a convention — e.g.
+ * sound/voicegroups/drumsets/vox.inc declares `voice_group vox_melody, 60`,
+ * which the game builds but no file-name rule matches. Reading the
+ * declarations finds any group that assembles. Runs last: a file-name hit
+ * stays authoritative, and this costs one directory read only on a lookup
+ * that every other rule already failed.
+ */
+static bool find_declared_voicegroup(const ProjectDiscovery* disc, const char* vgName, VoicegroupLocation* location)
+{
+    char path[MAX_PATH_LEN];
+    for (int i = 0; i < disc->voicegroupDirs.count; i++)
+    {
+        const char* dirPath = disc->voicegroupDirs.paths[i];
+        DIR* dir = opendir(dirPath);
+        if (!dir)
+            continue;
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != NULL)
+        {
+            if (dirent_is_dir(dirPath, ent))
+                continue;
+            if (!str_ends_with_ci(ent->d_name, ".inc") && !str_ends_with_ci(ent->d_name, ".s"))
+                continue;
+            if (!build_path(path, sizeof(path), dirPath, ent->d_name))
+                continue;
+            FILE* file = fopen(path, "r");
+            if (!file)
+                continue;
+            bool declared = file_declares_voice_group(file, vgName);
+            fclose(file);
+            if (!declared)
+                continue;
+            set_voicegroup_file_location(location, path);
+            closedir(dir);
+            return true;
+        }
+        closedir(dir);
+    }
+    return false;
+}
+
+/*
  * Search for a voicegroup by name across all currently discovered locations.
  */
 static VoicegroupLocation
@@ -2110,7 +2183,9 @@ find_voicegroup_probe(const char* projectRoot, const char* vgName, const Project
         return location;
     if (find_voicegroup_in_directories(&disc->voicegroupDirs, "vg_", vgName, &location))
         return location;
-    find_monolithic_voicegroup(&disc->monolithicVGFiles, vgName, &location);
+    if (find_monolithic_voicegroup(&disc->monolithicVGFiles, vgName, &location))
+        return location;
+    find_declared_voicegroup(disc, vgName, &location);
     return location;
 }
 
