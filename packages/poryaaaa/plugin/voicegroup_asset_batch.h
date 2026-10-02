@@ -15,14 +15,10 @@ extern "C"
     /* ---- Complete-byte-span decoders (single implementation) ----
      * hardFailure distinguishes allocation/size failure from malformed input. */
 
-    WaveData* vg_asset_decode_wav(
-        const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
-    WaveData* vg_asset_decode_aiff(
-        const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
-    WaveData* vg_asset_decode_bin(
-        const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
-    uint32_t* vg_asset_decode_prog(
-        const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
+    WaveData* vg_asset_decode_wav(const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
+    WaveData* vg_asset_decode_aiff(const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
+    WaveData* vg_asset_decode_bin(const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
+    uint32_t* vg_asset_decode_prog(const uint8_t* data, size_t size, const char* debugPath, bool* hardFailure);
 
     /* Serial file helpers that read the whole file then delegate to the decoders.
      * hardFailure distinguishes missing/invalid files from allocation or I/O failure. */
@@ -31,18 +27,25 @@ extern "C"
 
     /* ---- Generic batch helpers ---- */
 
+    /* Append-only candidate indices; offsets survive text-buffer growth. */
     typedef struct
     {
-        char** paths;
+        size_t* offsets;
+        char* text;
         size_t count;
         size_t capacity;
+        size_t textSize;
+        size_t textCapacity;
     } VgDedup;
 
     void vg_dedup_init(VgDedup* d);
     void vg_dedup_deinit(VgDedup* d);
-    bool vg_dedup_add(VgDedup* d, const char* path);
-    int vg_dedup_find(const VgDedup* d, const char* path);
-    bool vg_dedup_contains(const VgDedup* d, const char* path);
+    /* Returns the existing/new index, or -1 on failure without adding an entry. */
+    int vg_dedup_add(VgDedup* d, const char* path);
+    /* Borrowed until the next add/truncate/deinit; NULL for an invalid index. */
+    const char* vg_dedup_path(const VgDedup* d, size_t index);
+    /* Drops the suffix and rewinds its text, retaining capacity for later planning. */
+    void vg_dedup_truncate(VgDedup* d, size_t newCount);
 
     /*
      * Read a borrowed path span through the adapter; no path ownership transfers.

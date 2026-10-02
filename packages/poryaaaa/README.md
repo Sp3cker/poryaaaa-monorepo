@@ -235,16 +235,23 @@ Copy `build-windows/poryaaaa.clap` to your DAW's CLAP plugin directory (e.g. `%A
 ```
 
 On macOS/Linux, check Porydaw's separate native loader through its public project
-interface (sample labels, format precedence, shared samples, failure cleanup,
-retry, and bank lifetime after project teardown) with:
+interface (sample-label boundaries, large mixed symbol maps, duplicate-definition
+precedence, shared samples, failure cleanup, retry, and post-project bank lifetime) with:
 
 ```bash
-cmake --build build --target poryaaaa_native_loader_tests
-ctest --test-dir build --output-on-failure -R '^poryaaaa_native_loader_tests$'
+cmake --build build --target poryaaaa_native_loader_tests poryaaaa_native_allocation_tests
+ctest --test-dir build --output-on-failure -R '^poryaaaa_native_(loader|allocation)_tests$'
 ```
 
-The monorepo's `scripts/test-poryaaaa.sh` builds and runs this CTest gate alongside
-the engine, mixer, state-compatibility, and Rust checks.
+The allocation gate links a separately instrumented engine; production allocation
+functions are unchanged. It checks the one-allocation square-only path, a mixed
+bank budget that rejects per-candidate string allocations, and failure injection
+at every project-open and bank-load allocation request. It also verifies candidate
+growth, rollback/reappend, shared ownership, sparse fallback, and same-context
+retry. Adapter allocations are tracked separately from the engine request budget.
+
+The monorepo's `scripts/test-poryaaaa.sh` builds and runs both native CTest gates
+alongside the engine, mixer, state-compatibility, and Rust checks.
 
 ### Native project-load benchmark
 
@@ -343,6 +350,19 @@ paths are compacted; PCM and programmable-wave results stay typed. The session
 owns candidate paths, the I/O adapter owns returned blobs until release, and the
 bank owns adopted sample allocations. Failed loads discard the whole bank before
 returning to the caller; retries start a fresh session on the same project context.
+Candidate paths use a packed text buffer and an offset table, both grown
+geometrically instead of allocating each string. Planning retains indices, not
+borrowed text pointers. Rollback rewinds both counts without releasing retained
+capacity; batch execution freezes path views beside the transport blob array in
+one allocation.
+
+Native symbol maps own one growable buffer of aligned, variable-length records.
+Names and paths occupy only their actual lengths rather than fixed-size slots;
+file and inline-synth definitions retain insertion order and first-definition
+precedence. Record views are internal borrows invalidated by append to their map
+or its destruction. Existing symbol/path limits are unchanged.
+Loaded samples copy their data into bank-owned allocations, so compact map storage
+does not change bank lifetime or the public loader interface.
 
 ## GBA source reference
 

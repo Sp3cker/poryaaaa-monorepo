@@ -7,10 +7,11 @@ cmake -S "${repo_root}/packages/poryaaaa" -B "${repo_root}/packages/poryaaaa/bui
 cmake --build "${repo_root}/packages/poryaaaa/build" --target \
   poryaaaa_unit_tests \
   poryaaaa_native_loader_tests \
+  poryaaaa_native_allocation_tests \
   poryaaaa_pcm_mixer_oracle_tests \
   poryaaaa_pcm_mixer_no_alloc_tests \
   poryaaaa_m4a_state_compat_tests
 "${repo_root}/packages/poryaaaa/build/poryaaaa_unit_tests"
 ctest --test-dir "${repo_root}/packages/poryaaaa/build" --output-on-failure \
-  -R '^poryaaaa_(native_loader_tests|pcm_mixer_(oracle|no_alloc)|m4a_state_compat)$'
+  -R '^poryaaaa_(native_(loader|allocation)_tests|pcm_mixer_(oracle|no_alloc)|m4a_state_compat)$'
 cargo test --manifest-path "${repo_root}/packages/poryaaaa/plugin/Cargo.toml"

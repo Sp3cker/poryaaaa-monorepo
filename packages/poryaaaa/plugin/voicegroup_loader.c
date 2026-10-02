@@ -172,22 +172,23 @@ typedef struct
 
 /* ---- Symbol maps ---- */
 
+/* Append-only, aligned records keep each name/path at its actual length.
+ * Record views are borrowed until the next append or map destruction. */
 typedef struct
 {
-    char symbol[MAX_SYMBOL_LEN];
-    char filePath[MAX_PATH_LEN];
-    /* Inline Golden Sun synth definition (set_synth_* macros) instead of a
-     * sample file.  synthDesc holds the 6 descriptor bytes that follow a
-     * zero-size WaveData header (0x80, type, then 4 pulse parameters). */
+    size_t recordSize;
+    size_t pathOffset;
     uint8_t isSynth;
     uint8_t synthDesc[6];
+    char text[]; /* NUL-terminated symbol followed by its NUL-terminated path. */
 } SymbolMapping;
 
 typedef struct
 {
-    SymbolMapping* entries;
+    unsigned char* entries;
+    size_t size;
+    size_t capacity;
     int count;
-    int capacity;
 } SymbolMap;
 
 typedef struct
@@ -509,7 +510,6 @@ static bool build_wave_abs_paths(const char* projectRoot,
     return true;
 }
 static void symbol_map_free(SymbolMap* map);
-static bool symbol_map_add(SymbolMap* map, const char* symbol, const char* path);
 static const char* symbol_map_find(const SymbolMap* map, const char* symbol);
 
 static void keysplit_map_init(KeySplitMap* map);
@@ -710,87 +710,108 @@ static bool vg_register_keysplittable(LoadedVoiceGroup* vg, uint8_t* ks)
     return true;
 }
 
-/*
- * Symbol map implementation
- */
+/* Initialize the map's sole owned allocation. */
 static void symbol_map_init(SymbolMap* map)
 {
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
+    *map = (SymbolMap){0};
 }
 
+/* Release all symbol names, paths, and synth descriptors together. */
 static void symbol_map_free(SymbolMap* map)
 {
     free(map->entries);
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
+    *map = (SymbolMap){0};
 }
 
-static bool symbol_map_add(SymbolMap* map, const char* symbol, const char* path)
+/* Append one compact record; publish it only after all required storage exists. */
+static bool symbol_map_append(SymbolMap* map, const char* symbol, const char* path, const uint8_t* synthDesc)
 {
-    if (map->count >= map->capacity)
+    if (map->count == INT_MAX)
+        return false;
+    size_t symbolLength = strlen(symbol);
+    size_t pathLength = strlen(path);
+    if (symbolLength >= MAX_SYMBOL_LEN)
+        symbolLength = MAX_SYMBOL_LEN - 1;
+    if (pathLength >= MAX_PATH_LEN)
+        pathLength = MAX_PATH_LEN - 1;
+    size_t recordSize = sizeof(SymbolMapping) + symbolLength + pathLength + 2;
+    const size_t alignment = _Alignof(SymbolMapping);
+    recordSize += (alignment - recordSize % alignment) % alignment;
+    if (map->size > SIZE_MAX - recordSize)
+        return false;
+    size_t required = map->size + recordSize;
+    if (required > map->capacity)
     {
-        size_t newCap = map->capacity ? (size_t)map->capacity * 2 : INITIAL_CAPACITY;
-        if (newCap > (size_t)INT_MAX)
+        size_t capacity = map->capacity ? map->capacity : 4096;
+        while (capacity < required)
         {
-            return false;
+            if (capacity > SIZE_MAX / 2)
+            {
+                capacity = required;
+                break;
+            }
+            capacity *= 2;
         }
-        if (newCap > SIZE_MAX / sizeof(SymbolMapping))
-        {
+        unsigned char* entries = realloc(map->entries, capacity);
+        if (!entries)
             return false;
-        }
-        SymbolMapping* np = (SymbolMapping*)realloc(map->entries, sizeof(SymbolMapping) * newCap);
-        if (!np)
-        {
-            return false;
-        }
-        map->entries = np;
-        map->capacity = (int)newCap;
+        map->entries = entries;
+        map->capacity = capacity;
     }
-    memset(&map->entries[map->count], 0, sizeof(SymbolMapping));
-    strncpy(map->entries[map->count].symbol, symbol, MAX_SYMBOL_LEN - 1);
-    map->entries[map->count].symbol[MAX_SYMBOL_LEN - 1] = '\0';
-    strncpy(map->entries[map->count].filePath, path, MAX_PATH_LEN - 1);
-    map->entries[map->count].filePath[MAX_PATH_LEN - 1] = '\0';
+    SymbolMapping* entry = (SymbolMapping*)(map->entries + map->size);
+    entry->recordSize = recordSize;
+    entry->pathOffset = symbolLength + 1;
+    entry->isSynth = synthDesc != NULL;
+    if (synthDesc)
+        memcpy(entry->synthDesc, synthDesc, sizeof(entry->synthDesc));
+    memcpy(entry->text, symbol, symbolLength);
+    entry->text[symbolLength] = '\0';
+    memcpy(entry->text + entry->pathOffset, path, pathLength);
+    entry->text[entry->pathOffset + pathLength] = '\0';
+    map->size = required;
     map->count++;
     return true;
 }
 
+/* Record a file-backed symbol without exposing the synth discriminator to parsers. */
+static bool symbol_map_add(SymbolMap* map, const char* symbol, const char* path)
+{
+    return symbol_map_append(map, symbol, path, NULL);
+}
+
+/* Inline synth definitions own a descriptor instead of a sample-file path. */
 static bool symbol_map_add_synth(SymbolMap* map, const char* symbol, const uint8_t desc[6])
 {
-    if (!symbol_map_add(map, symbol, ""))
-    {
-        return false;
-    }
-    map->entries[map->count - 1].isSynth = 1;
-    memcpy(map->entries[map->count - 1].synthDesc, desc, 6);
-    return true;
+    return symbol_map_append(map, symbol, "", desc);
 }
 
-/* Returns the file path for a symbol, or NULL if unknown.  Inline synth
- * entries have no file and are deliberately not returned here; use
- * symbol_map_find_synth for those. */
+/* Preserve first-definition precedence for both file and inline-synth lookups. */
+static const SymbolMapping* symbol_map_find_entry(const SymbolMap* map, const char* symbol)
+{
+    for (size_t offset = 0; offset < map->size;)
+    {
+        const SymbolMapping* entry = (const SymbolMapping*)(map->entries + offset);
+        if (strcmp(entry->text, symbol) == 0)
+            return entry;
+        offset += entry->recordSize;
+    }
+    return NULL;
+}
+
+/* Inline synths have no file. The returned path is valid until the next append
+ * to this map or its destruction; later definitions never replace the first. */
 static const char* symbol_map_find(const SymbolMap* map, const char* symbol)
 {
-    for (int i = 0; i < map->count; i++)
-    {
-        if (strcmp(map->entries[i].symbol, symbol) == 0)
-            return map->entries[i].isSynth ? NULL : map->entries[i].filePath;
-    }
-    return NULL;
+    const SymbolMapping* entry = symbol_map_find_entry(map, symbol);
+    return entry && !entry->isSynth ? entry->text + entry->pathOffset : NULL;
 }
 
-/* Returns the 6 synth descriptor bytes for an inline synth symbol, or NULL. */
+/* Return the first definition's inline descriptor, valid until the next append
+ * to this map or its destruction. File-backed definitions return NULL. */
 static const uint8_t* symbol_map_find_synth(const SymbolMap* map, const char* symbol)
 {
-    for (int i = 0; i < map->count; i++)
-    {
-        if (strcmp(map->entries[i].symbol, symbol) == 0)
-            return map->entries[i].isSynth ? map->entries[i].synthDesc : NULL;
-    }
-    return NULL;
+    const SymbolMapping* entry = symbol_map_find_entry(map, symbol);
+    return entry && entry->isSynth ? entry->synthDesc : NULL;
 }
 
 /*

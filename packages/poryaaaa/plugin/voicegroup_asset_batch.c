@@ -865,68 +865,82 @@ WaveData* vg_asset_load_aiff_file(const char* absolutePath, bool* hardFailure)
 
 void vg_dedup_init(VgDedup* d)
 {
-    if (!d)
-        return;
-    d->paths = NULL;
-    d->count = 0;
-    d->capacity = 0;
+    if (d)
+        *d = (VgDedup){0};
 }
+
 void vg_dedup_deinit(VgDedup* d)
 {
     if (!d)
         return;
-    for (size_t i = 0; i < d->count; i++)
-        free(d->paths[i]);
-    free(d->paths);
-    d->paths = NULL;
-    d->count = d->capacity = 0;
+    free(d->offsets);
+    free(d->text);
+    vg_dedup_init(d);
 }
-bool vg_dedup_add(VgDedup* d, const char* path)
+
+int vg_dedup_add(VgDedup* d, const char* path)
 {
     if (!d || !path || !path[0])
-        return false;
-    for (size_t i = 0; i < d->count; i++)
-        if (strcmp(d->paths[i], path) == 0)
-            return true;
-    if (d->count >= d->capacity)
-    {
-        size_t nc;
-        if (d->capacity == 0)
-            nc = 8;
-        else
-        {
-            if (d->capacity > SIZE_MAX / 2)
-                return false;
-            nc = d->capacity * 2;
-        }
-        if (nc > SIZE_MAX / sizeof(char*))
-            return false;
-        char** np = (char**)realloc(d->paths, nc * sizeof(char*));
-        if (!np)
-            return false;
-        d->paths = np;
-        d->capacity = nc;
-    }
-    size_t len = strlen(path);
-    char* copy = (char*)malloc(len + 1);
-    if (!copy)
-        return false;
-    memcpy(copy, path, len + 1);
-    d->paths[d->count++] = copy;
-    return true;
-}
-int vg_dedup_find(const VgDedup* d, const char* path)
-{
-    if (!d || !path)
         return -1;
     for (size_t i = 0; i < d->count; i++)
-        if (strcmp(d->paths[i], path) == 0)
+        if (strcmp(d->text + d->offsets[i], path) == 0)
             return (int)i;
-    return -1;
+    if (d->count >= (size_t)INT_MAX)
+        return -1;
+    size_t len = strlen(path);
+    if (len == SIZE_MAX || d->textSize > SIZE_MAX - (len + 1))
+        return -1;
+    size_t requiredText = d->textSize + len + 1;
+    if (d->count == d->capacity)
+    {
+        if (d->capacity > SIZE_MAX / 2)
+            return -1;
+        size_t capacity = d->capacity ? d->capacity * 2 : 8;
+        if (capacity > SIZE_MAX / sizeof(*d->offsets))
+            return -1;
+        size_t* offsets = realloc(d->offsets, capacity * sizeof(*offsets));
+        if (!offsets)
+            return -1;
+        d->offsets = offsets;
+        d->capacity = capacity;
+    }
+    if (requiredText > d->textCapacity)
+    {
+        size_t capacity = d->textCapacity ? d->textCapacity : requiredText;
+        while (capacity < requiredText)
+        {
+            if (capacity > SIZE_MAX / 2)
+            {
+                capacity = requiredText;
+                break;
+            }
+            capacity *= 2;
+        }
+        char* text = realloc(d->text, capacity);
+        if (!text)
+            return -1;
+        d->text = text;
+        d->textCapacity = capacity;
+    }
+    memcpy(d->text + d->textSize, path, len + 1);
+    d->offsets[d->count] = d->textSize;
+    d->textSize = requiredText;
+    return (int)d->count++;
 }
-bool vg_dedup_contains(const VgDedup* d, const char* path)
+
+const char* vg_dedup_path(const VgDedup* d, size_t index)
 {
-    return vg_dedup_find(d, path) >= 0;
+    if (!d || index >= d->count)
+        return NULL;
+    return d->text + d->offsets[index];
+}
+
+void vg_dedup_truncate(VgDedup* d, size_t newCount)
+{
+    if (!d || newCount >= d->count)
+        return;
+    d->textSize = d->offsets[newCount];
+    d->count = newCount;
 }
 
 /* ---- Batch read ---- */

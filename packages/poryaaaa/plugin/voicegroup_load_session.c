@@ -103,9 +103,9 @@ typedef struct
 {
     bool* needed; /* Source-indexed mask, frozen before reading; NULL only when no paths are requested. */
     size_t sourceCount;
-    const char** selectedPaths; /* Owned sparse span; strings remain session-owned. */
-    VoicegroupFileBlob* blobs;
-    size_t readCount; /* Number of set mask entries; blobs follow their ascending source order. */
+    const char** selectedPaths; /* Tail of the blobs allocation; strings remain session-owned. */
+    VoicegroupFileBlob* blobs;  /* Owns the blob array and the borrowed-path span. */
+    size_t readCount;           /* Number of set mask entries; blobs follow their ascending source order. */
 } VgAssetReads;
 
 /* Release every adapter blob, including partially populated failed batches. */
@@ -116,7 +116,6 @@ static void session_reads_cleanup(const VoicegroupFileIo* io, VgAssetReads* read
         vg_batch_release(io, reads->blobs, reads->readCount);
         free(reads->blobs);
     }
-    free(reads->selectedPaths);
     free(reads->needed);
 }
 
@@ -144,29 +143,28 @@ static bool session_read_assets(const VoicegroupFileIo* io, const VgDedup* sourc
 {
     assert(source->count == reads->sourceCount);
     assert(reads->needed && reads->readCount && reads->readCount <= reads->sourceCount);
-    const char* const* paths = (const char* const*)source->paths;
-    if (reads->readCount != reads->sourceCount)
-    {
-        reads->selectedPaths = malloc(reads->readCount * sizeof(*reads->selectedPaths));
-        if (!reads->selectedPaths)
-            return false;
-        size_t next = 0;
-        for (size_t i = 0; i < reads->sourceCount; i++)
-        {
-            if (reads->needed[i])
-            {
-                assert(next < reads->readCount);
-                reads->selectedPaths[next++] = source->paths[i];
-            }
-        }
-        assert(next == reads->readCount);
-        paths = reads->selectedPaths;
-    }
-    reads->blobs = calloc(reads->readCount, sizeof(*reads->blobs));
+    const size_t bytesPerRead = sizeof(*reads->blobs) + sizeof(*reads->selectedPaths);
+    if (reads->readCount > SIZE_MAX / bytesPerRead)
+        return false;
+    /* The blob array already needs storage; append the path span in that same allocation. */
+    _Static_assert(sizeof(VoicegroupFileBlob) % _Alignof(const char*) == 0,
+                   "the blob-array tail must align the path span");
+    reads->blobs = calloc(reads->readCount, bytesPerRead);
     if (!reads->blobs)
         return false;
+    reads->selectedPaths = (const char**)(reads->blobs + reads->readCount);
+    size_t next = 0;
+    for (size_t i = 0; i < reads->sourceCount; i++)
+    {
+        if (reads->needed[i])
+        {
+            assert(next < reads->readCount);
+            reads->selectedPaths[next++] = vg_dedup_path(source, i);
+        }
+    }
+    assert(next == reads->readCount);
     char error[512];
-    return vg_batch_read(io, paths, reads->readCount, reads->blobs, error, sizeof(error));
+    return vg_batch_read(io, reads->selectedPaths, reads->readCount, reads->blobs, error, sizeof(error));
 }
 
 /* Keep PCM format-to-candidate selection identical during planning and binding. */
@@ -198,18 +196,19 @@ static bool session_decode_waves(
         const VoicegroupFileBlob* blob = &reads->blobs[next++];
         if (!blob->found || !blob->data)
             continue;
+        const char* path = vg_dedup_path(source, i);
         bool hardFailure = false;
         WaveData* wave = NULL;
         switch (format)
         {
         case ROUND_WAV:
-            wave = vg_asset_decode_wav(blob->data, blob->size, source->paths[i], &hardFailure);
+            wave = vg_asset_decode_wav(blob->data, blob->size, path, &hardFailure);
             break;
         case ROUND_AIF:
-            wave = vg_asset_decode_aiff(blob->data, blob->size, source->paths[i], &hardFailure);
+            wave = vg_asset_decode_aiff(blob->data, blob->size, path, &hardFailure);
             break;
         case ROUND_BIN:
-            wave = vg_asset_decode_bin(blob->data, blob->size, source->paths[i], &hardFailure);
+            wave = vg_asset_decode_bin(blob->data, blob->size, path, &hardFailure);
             break;
         }
         if (hardFailure)
@@ -219,7 +218,7 @@ static bool session_decode_waves(
         }
         if (!wave)
             continue;
-        WaveData* cached = wave_cache_find(s->cache, source->paths[i]);
+        WaveData* cached = wave_cache_find(s->cache, path);
         if (cached)
         {
             free(wave);
@@ -232,7 +231,7 @@ static bool session_decode_waves(
                 free(wave);
                 return false;
             }
-            wave_cache_insert(s->cache, source->paths[i], wave);
+            wave_cache_insert(s->cache, path, wave);
             waves[i] = wave;
         }
     }
@@ -302,7 +301,7 @@ static bool session_run_prog_round(VgLoadSession* s)
             if (!blob->found || !blob->data)
                 continue;
             bool hardFailure = false;
-            decoded[i] = vg_asset_decode_prog(blob->data, blob->size, source->paths[i], &hardFailure);
+            decoded[i] = vg_asset_decode_prog(blob->data, blob->size, vg_dedup_path(source, i), &hardFailure);
             ok = !hardFailure;
         }
         assert(!ok || next == reads.readCount);
@@ -391,11 +390,7 @@ static bool session_register_dedup_path(VgDedup* dedup, const char* path, int* i
     {
         return true;
     }
-    if (!vg_dedup_add(dedup, path))
-    {
-        return false;
-    }
-    *index = vg_dedup_find(dedup, path);
+    *index = vg_dedup_add(dedup, path);
     return *index >= 0;
 }
 
@@ -539,19 +534,6 @@ bool vg_load_session_execute(VgLoadSession* s)
 
     free(waveDone);
     return ok;
-}
-
-static void vg_dedup_truncate(VgDedup* d, size_t newCount)
-{
-    if (!d || newCount >= d->count)
-    {
-        return;
-    }
-    for (size_t i = newCount; i < d->count; i++)
-    {
-        free(d->paths[i]);
-    }
-    d->count = newCount;
 }
 
 VgLoadSessionCheckpoint vg_load_session_checkpoint(const VgLoadSession* s)

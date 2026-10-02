@@ -121,6 +121,78 @@ int test_native_sample_labels(void)
             voicegroup_free_samples(set);
         }
     }
+    /* Mixed record lengths must survive map growth without changing first-definition precedence. */
+    char otherSample[512], otherWave[512];
+    snprintf(otherSample, sizeof(otherSample), "%s/other.bin", root);
+    snprintf(otherWave, sizeof(otherWave), "%s/other.pcm", root);
+    unsigned char otherSampleBytes[sizeof(sampleBytes)];
+    memcpy(otherSampleBytes, sampleBytes, sizeof(sampleBytes));
+    otherSampleBytes[16] = 91;
+    const unsigned char otherWaveBytes[16] = {0xfe, 0xdc, 0xba, 0x98};
+    ASSERT(write_fixture(otherSample, otherSampleBytes, sizeof(otherSampleBytes)), "write distinct late PCM fixture");
+    ASSERT(write_fixture(otherWave, otherWaveBytes, sizeof(otherWaveBytes)), "write distinct late wave fixture");
+    FILE* dsFile = fopen(dsMap, "w");
+    FILE* pwFile = fopen(pwMap, "w");
+    bool written = dsFile && pwFile;
+    if (written)
+    {
+        fprintf(dsFile, "FirstFile::\n.incbin \"sample.bin\"\nFirstSynth::\nset_synth_25\n");
+        fprintf(pwFile, "FirstFile::\n.incbin \"wave.pcm\"\n");
+        for (int i = 0; i < 1536; i++)
+        {
+            char padding[64];
+            size_t length = (size_t)i % (sizeof(padding) - 1);
+            memset(padding, 'x', length);
+            padding[length] = '\0';
+            fprintf(dsFile, "Unused%d%s::\n", i, padding);
+            if (i % 3 == 0)
+                fprintf(dsFile, "set_synth_custom 1, 2, 3, 4\n");
+            else
+                fprintf(dsFile, ".incbin \"unused/%s%d.bin\"\n", padding, i);
+            fprintf(pwFile, "Unused%d%s::\n.incbin \"unused/%s%d.pcm\"\n", i, padding, padding, i);
+        }
+        fprintf(dsFile,
+                "LastFile::\n.incbin \"other.bin\"\nLastSynth::\nset_synth_custom 5, 6, 7, 8\n"
+                "FirstFile::\nset_synth_50\nFirstSynth::\n.incbin \"other.bin\"\n");
+        fprintf(pwFile, "LastWave::\n.incbin \"other.pcm\"\nFirstFile::\n.incbin \"other.pcm\"\n");
+        written = !ferror(dsFile) && !ferror(pwFile);
+    }
+    if (dsFile)
+        written = fclose(dsFile) == 0 && written;
+    if (pwFile)
+        written = fclose(pwFile) == 0 && written;
+    ASSERT(written, "write large mixed symbol maps");
+    if (written)
+    {
+        const char* samples[] = {"FirstFile", "FirstSynth", "LastFile", "LastSynth"};
+        const char* waves[] = {"FirstFile", "LastWave"};
+        /* This public convenience call destroys its project context before returning. */
+        LoadedSampleSet* set = voicegroup_load_samples(root, samples, 4, waves, 2, NULL, NULL, 0, NULL);
+        ASSERT(set != NULL, "load early and late definitions through the public interface");
+        if (set)
+        {
+            const unsigned char firstSynth[] = {0x80, 1, 0, 0, 0, 0};
+            const unsigned char lastSynth[] = {0x80, 0, 5, 6, 7, 8};
+            ASSERT(set->waves[0] && set->waves[0]->size == 4 && memcmp(set->waves[0]->data, sampleBytes + 16, 4) == 0,
+                   "first file definition wins over a later synth after map growth and teardown");
+            ASSERT(set->waves[1] && set->waves[1]->size == 0 &&
+                       memcmp(set->waves[1]->data, firstSynth, sizeof(firstSynth)) == 0,
+                   "first synth definition wins over a later file after map growth and teardown");
+            ASSERT(set->waves[2] && set->waves[2]->size == 4 &&
+                       memcmp(set->waves[2]->data, otherSampleBytes + 16, 4) == 0,
+                   "late PCM record resolves its own path after map growth and teardown");
+            ASSERT(set->waves[3] && set->waves[3]->size == 0 &&
+                       memcmp(set->waves[3]->data, lastSynth, sizeof(lastSynth)) == 0,
+                   "late synth retains its parameters after map growth and teardown");
+            ASSERT(set->progWaves[0] && memcmp(set->progWaves[0], waveBytes, sizeof(waveBytes)) == 0,
+                   "programmable map has independent names and preserves its first definition");
+            ASSERT(set->progWaves[1] && memcmp(set->progWaves[1], otherWaveBytes, sizeof(otherWaveBytes)) == 0,
+                   "late programmable record resolves its own path after map growth and teardown");
+        }
+        voicegroup_free_samples(set);
+    }
+    remove(otherSample);
+    remove(otherWave);
     remove(dsMap);
     remove(pwMap);
     remove(sample);

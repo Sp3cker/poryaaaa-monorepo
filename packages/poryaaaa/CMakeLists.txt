@@ -795,6 +795,20 @@ if(UNIX)
     target_link_libraries(poryaaaa_native_loader_tests PRIVATE poryaaaa_engine)
     poryaaaa_enable_project_warnings(poryaaaa_native_loader_tests)
     add_test(NAME poryaaaa_native_loader_tests COMMAND poryaaaa_native_loader_tests)
+
+    # Instrument only this engine variant; production allocation paths stay untouched.
+    poryaaaa_add_engine_library(poryaaaa_native_allocation_engine)
+    target_compile_definitions(poryaaaa_native_allocation_engine PRIVATE
+        malloc=poryaaaa_budget_malloc
+        calloc=poryaaaa_budget_calloc
+        realloc=poryaaaa_budget_realloc
+        free=poryaaaa_budget_free)
+    add_executable(poryaaaa_native_allocation_tests
+        test/test_native_allocation_budget.c
+        test/native_budget_allocator.c)
+    target_link_libraries(poryaaaa_native_allocation_tests PRIVATE poryaaaa_native_allocation_engine)
+    poryaaaa_enable_project_warnings(poryaaaa_native_allocation_tests)
+    add_test(NAME poryaaaa_native_allocation_tests COMMAND poryaaaa_native_allocation_tests)
 endif()
 
 # ---- Engine lifecycle/leak harness ----
