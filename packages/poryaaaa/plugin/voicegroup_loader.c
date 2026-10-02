@@ -1344,9 +1344,14 @@ static int parse_synth_macro_line(const char* trimmed, uint8_t desc[6])
  */
 static int parse_sample_label(const char* trimmed, char* out, size_t outSize)
 {
-    size_t nameLen = strspn(trimmed,
-                            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                            "abcdefghijklmnopqrstuvwxyz0123456789_");
+    /* Fixed ASCII grammar avoids rebuilding strspn's accept set on every line. */
+    size_t nameLen = 0;
+    for (;; nameLen++)
+    {
+        unsigned char c = (unsigned char)trimmed[nameLen];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+            break;
+    }
     if (nameLen == 0 || trimmed[nameLen] != ':')
         return 0;
     if (nameLen >= outSize)

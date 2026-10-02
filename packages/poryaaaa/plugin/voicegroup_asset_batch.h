@@ -45,15 +45,16 @@ extern "C"
     bool vg_dedup_contains(const VgDedup* d, const char* path);
 
     /*
-     * Execute one deduped round through the adapter.
-     * - Zeroes every out blob, guards null/size/error buffers and overflow.
-     * - Calls io->readBatch with the deduped paths.
+     * Read a borrowed path span through the adapter; no path ownership transfers.
+     * - Zeroes every out blob and validates the span, adapter, and count.
+     * - Calls io->readBatch with exactly these paths.
      * - On hard failure, leaves every populated blob for the caller to release and
      *   returns false (error optionally filled). On soft miss/success returns true.
      * Caller must release every blob via vg_batch_release regardless of outcome.
      */
     bool vg_batch_read(const VoicegroupFileIo* io,
-                       const VgDedup* dedup,
+                       const char* const* paths,
+                       size_t count,
                        VoicegroupFileBlob* outBlobs,
                        char* error,
                        size_t errorCapacity);

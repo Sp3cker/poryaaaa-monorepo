@@ -938,16 +938,16 @@ static bool batch_report_error(char* error, size_t errorCapacity, const char* me
     return false;
 }
 
-/* Argument and transport checks in reporting order; count==0 is handled by the caller. */
+/* Argument and transport checks in reporting order; vg_batch_read handles count==0. */
 static bool batch_validate_args(const VoicegroupFileIo* io,
-                                const VgDedup* dedup,
+                                const char* const* paths,
                                 const VoicegroupFileBlob* outBlobs,
                                 size_t count,
                                 char* error,
                                 size_t errorCapacity)
 {
-    if (!dedup)
-        return batch_report_error(error, errorCapacity, "vg_batch_read: null dedup");
+    if (!paths && count != 0)
+        return batch_report_error(error, errorCapacity, "vg_batch_read: null paths");
     if (!outBlobs && count != 0)
         return batch_report_error(error, errorCapacity, "vg_batch_read: null out");
     if (!io || !io->readBatch || !io->releaseBatch)
@@ -957,11 +957,15 @@ static bool batch_validate_args(const VoicegroupFileIo* io,
     return true;
 }
 
-bool vg_batch_read(
-    const VoicegroupFileIo* io, const VgDedup* dedup, VoicegroupFileBlob* outBlobs, char* error, size_t errorCapacity)
+/* Transport borrows the path span; the caller releases returned blobs even on failure. */
+bool vg_batch_read(const VoicegroupFileIo* io,
+                   const char* const* paths,
+                   size_t count,
+                   VoicegroupFileBlob* outBlobs,
+                   char* error,
+                   size_t errorCapacity)
 {
-    size_t count = dedup ? dedup->count : 0;
-    if (!batch_validate_args(io, dedup, outBlobs, count, error, errorCapacity))
+    if (!batch_validate_args(io, paths, outBlobs, count, error, errorCapacity))
         return false;
     if (count == 0)
         return true;
@@ -969,7 +973,6 @@ bool vg_batch_read(
         outBlobs[i] = (VoicegroupFileBlob){0};
     if (error && errorCapacity)
         error[0] = '\0';
-    const char* const* paths = (const char* const*)dedup->paths;
     return io->readBatch(io->user, paths, count, outBlobs, error, errorCapacity);
 }
 void vg_batch_release(const VoicegroupFileIo* io, VoicegroupFileBlob* blobs, size_t count)

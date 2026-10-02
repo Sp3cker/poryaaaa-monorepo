@@ -234,6 +234,33 @@ Copy `build-windows/poryaaaa.clap` to your DAW's CLAP plugin directory (e.g. `%A
 ./build/poryaaaa_unit_tests
 ```
 
+On macOS/Linux, check Porydaw's separate native loader through its public project
+interface (sample labels, format precedence, shared samples, failure cleanup,
+retry, and bank lifetime after project teardown) with:
+
+```bash
+cmake --build build --target poryaaaa_native_loader_tests
+ctest --test-dir build --output-on-failure -R '^poryaaaa_native_loader_tests$'
+```
+
+The monorepo's `scripts/test-poryaaaa.sh` builds and runs this CTest gate alongside
+the engine, mixer, state-compatibility, and Rust checks.
+
+### Native project-load benchmark
+
+On macOS/Linux:
+
+```bash
+cmake --build build --target poryaaaa_project_bench
+./build/poryaaaa_project_bench --project /path/to/decomp --runs 101 --bank sound/voicegroups/title.inc
+```
+
+The benchmark links a separate engine variant built with `-O2 -g`. Both engine
+variants use the same CMake function for sources, includes, and link requirements;
+the benchmark does not change the normal engine target's optimization level or
+the build directory's configuration. It measures the native loader, not the full
+Porydaw application. Filesystem caches are not cleared between runs.
+
 ## Architecture
 
 ```
@@ -305,6 +332,17 @@ The loader auto-discovers and parses project assembly source files at runtime:
 5. **Sample loading**: loads `.wav` samples with a deduplication cache. When a sample symbol isn't found in the symbol map, the loader falls back to searching discovered `.wav` directories.
 
 Keysplit and drumset sub-voicegroups are resolved recursively from labels in `sound/voice_groups.inc`.
+
+Porydaw links the separate `poryaaaa_engine` native loader. Its mapped samples
+prefer WAV, then AIFF, then BIN. Each fallback batch contains only paths needed
+by still-unresolved voices; a shared path remains eligible if any voice needs it.
+Missing or malformed assets permit the next format, while transport failures
+on required reads abort the load. Programmable waves use a separate batch.
+The session keeps candidate indices stable throughout loading. Only transport
+paths are compacted; PCM and programmable-wave results stay typed. The session
+owns candidate paths, the I/O adapter owns returned blobs until release, and the
+bank owns adopted sample allocations. Failed loads discard the whole bank before
+returning to the caller; retries start a fresh session on the same project context.
 
 ## GBA source reference
 

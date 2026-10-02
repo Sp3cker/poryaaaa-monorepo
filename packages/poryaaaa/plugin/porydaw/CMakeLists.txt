@@ -14,21 +14,25 @@ if(NOT TARGET hw_audio)
         "${CMAKE_CURRENT_BINARY_DIR}/hw_audio")
 endif()
 
-add_library(poryaaaa_engine STATIC
-    "${CMAKE_CURRENT_LIST_DIR}/../m4a_engine.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_loader.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_load_session.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../voicegroup_asset_batch.c"
-)
-add_library(poryaaaa::engine ALIAS poryaaaa_engine)
+# Keep sources and build requirements together for normal and optimized benchmark variants.
+function(poryaaaa_add_engine_library target_name)
+    add_library(${target_name} STATIC
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../m4a_engine.c"
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../voicegroup_loader.c"
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../voicegroup_load_session.c"
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../voicegroup_asset_batch.c"
+    )
+    target_include_directories(${target_name} PUBLIC
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.."
+    )
+    target_link_libraries(${target_name} PUBLIC
+        m4a_driver
+        hw_audio
+    )
+    if(UNIX)
+        target_link_libraries(${target_name} PUBLIC m)
+    endif()
+endfunction()
 
-target_include_directories(poryaaaa_engine PUBLIC
-    "${CMAKE_CURRENT_LIST_DIR}/.."
-)
-target_link_libraries(poryaaaa_engine PUBLIC
-    m4a_driver
-    hw_audio
-)
-if(UNIX)
-    target_link_libraries(poryaaaa_engine PUBLIC m)
-endif()
+poryaaaa_add_engine_library(poryaaaa_engine)
+add_library(poryaaaa::engine ALIAS poryaaaa_engine)

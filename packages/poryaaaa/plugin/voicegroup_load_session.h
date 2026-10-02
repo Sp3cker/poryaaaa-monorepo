@@ -12,9 +12,8 @@
 extern "C" {
 #endif
 
-/* Owned WaveData deduplication cache — same semantics as the former per-load
- * cache in voicegroup_loader.c. Caps at WAVE_CACHE_CAPACITY; beyond that,
- * entries alias existing files but are not cached. */
+/* Per-load lookup of bank-owned WaveData; the cache never owns sample allocations.
+ * Entries beyond WAVE_CACHE_CAPACITY remain bank-owned but are not cached. */
 #define WAVE_CACHE_CAPACITY 128
 #define WAVE_CACHE_MAX_PATH VG_MAX_PATH_LEN
 
@@ -32,14 +31,12 @@ void wave_cache_init(WaveCache* cache);
 WaveData* wave_cache_find(const WaveCache* cache, const char* absPath);
 void wave_cache_insert(WaveCache* cache, const char* absPath, WaveData* wd);
 
-/* Single unified load session: replaces VgBankSession and VgSampleSession.
- * Records typed bindings to stable destination pointers, owns every dynamic
- * path copy through its VgDedup sets, and runs one parameterized round engine
- * (ordered wav → aif → bin plus prog) over vg_batch_read / vg_asset_decode_*.
- * Bindings map directly to dedup indices — no O(n²) strcmp sweeps — and all
- * duplicated round cleanup is centralized. Used by the bank parser, the
- * sample-set path, and recursive subgroup voices through the same session;
- * no tmpBank migration. */
+/* A load session owns candidate paths and typed destination bindings for one bank
+ * or sample set. Checkpoints roll back planning only, before execution begins.
+ * Candidate indices remain stable during execution. PCM formats run in priority
+ * order; each round requests the union of candidates needed by unresolved bindings.
+ * Transport buffers are transient, while selected samples are owned by the bank.
+ * Programmable waves use a separate typed pass without PCM fallback state. */
 #define VG_ACTIVE_LOC_CAP 32
 typedef struct {
     char filePath[VG_MAX_PATH_LEN];
@@ -111,12 +108,13 @@ bool vg_load_session_add_wave(
 bool vg_load_session_add_prog(
     VgLoadSession* s, uint32_t** slot, const char* absPath);
 
-/* Deduplicated, ordered execution: wav → aif → bin → prog, one parameterized
- * engine. Each non-empty dedup is batched via vg_batch_read, decoded via the
- * single vg_asset_decode_* implementation, transactionally registered exactly
- * once (or freed), and assigned through stored dedup indices. Returns false
- * on any hard failure (allocation or adapter transport); soft asset misses
- * leave the slot NULL and are not failures.
+/* Execute PCM fallback (WAV -> AIFF -> BIN), then programmable-wave reads.
+ * Only needed paths are batched; missing or malformed assets permit fallback.
+ * Decoded samples are registered once with the owner and shared by referring slots.
+ * Returns false on allocation or required transport failure. Earlier rounds may
+ * already have populated the owner: the caller MUST discard the entire bank/set
+ * on failure, never publish partial results or retry this session.
+ * The project context can start a fresh session after failure.
  */
 bool vg_load_session_execute(VgLoadSession* s);
 

@@ -706,6 +706,21 @@ if(NOT MSVC)
     target_link_libraries(poryaaaa_audio_bench PRIVATE m)
 endif()
 
+# ---- Project Scan Benchmark ----
+# Times the native half of Porydaw's project open. The engine variant shares the
+# shipping target's configuration, with -O2 -g applied only to benchmark targets.
+if(UNIX)
+    find_package(Threads REQUIRED)
+    poryaaaa_add_engine_library(poryaaaa_project_bench_engine)
+    target_compile_options(poryaaaa_project_bench_engine PRIVATE -O2 -g)
+    add_executable(poryaaaa_project_bench
+        bench/project_scan_bench.c
+    )
+    poryaaaa_enable_project_source_warnings(bench/project_scan_bench.c)
+    target_link_libraries(poryaaaa_project_bench PRIVATE poryaaaa_project_bench_engine Threads::Threads)
+    target_compile_options(poryaaaa_project_bench PRIVATE -O2 -g)
+endif()
+
 # ---- Node N-API voicegroup parser ----
 find_path(NODE_API_INCLUDE_DIR node_api.h
     HINTS /usr/local/include/node /opt/homebrew/include/node)
@@ -769,6 +784,17 @@ if(TARGET voicegroup_core_static)
 endif()
 if(NOT MSVC)
     target_link_libraries(poryaaaa_unit_tests PRIVATE m)
+endif()
+
+# Native Porydaw loader has a different API from the plugin's voicegroup_loader.
+if(UNIX)
+    add_executable(poryaaaa_native_loader_tests
+        test/test_native_loader_main.c
+        test/test_native_sample_labels.c
+        test/test_native_fallbacks.c)
+    target_link_libraries(poryaaaa_native_loader_tests PRIVATE poryaaaa_engine)
+    poryaaaa_enable_project_warnings(poryaaaa_native_loader_tests)
+    add_test(NAME poryaaaa_native_loader_tests COMMAND poryaaaa_native_loader_tests)
 endif()
 
 # ---- Engine lifecycle/leak harness ----
