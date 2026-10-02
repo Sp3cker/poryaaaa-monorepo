@@ -1,5 +1,7 @@
 src/**
 test/**
-**/*.map
+scripts/**
 tsconfig.json
+*.vsix
 .gitignore
+.DS_Store

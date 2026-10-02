@@ -65,13 +65,16 @@
         "voicegroupLSP.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Optional absolute path to the voicegroup-lsp executable. Empty checks ../target/release/voicegroup-lsp, then ../target/debug/voicegroup-lsp relative to the extension folder."
+          "description": "Optional absolute path to the voicegroup-lsp executable. Empty checks ../target/release/voicegroup-lsp, then ../target/debug/voicegroup-lsp relative to the extension folder, then the server bundled in the extension (macOS arm64)."
         }
       }
     }
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "build:server": "cargo build --release --manifest-path ../Cargo.toml",
+    "prepare:server": "node scripts/prepare-server.js",
+    "package": "npm run compile && npm run build:server && npm run prepare:server && vsce package --out voicegroup-lsp-vscode-0.1.0.vsix",
     "test": "npm run compile && node --test test/*.test.js",
     "watch": "tsc -watch -p ./"
   },
@@ -81,6 +84,7 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^4.0.0",
     "typescript": "^5.4.0"
   }
 }

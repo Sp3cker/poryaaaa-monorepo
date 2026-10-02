@@ -20,16 +20,17 @@ test('uses configured serverPath without probing default candidates', () => {
   });
 });
 
-test('prefers release binary before debug when serverPath is empty', () => {
+test('prefers release binary before debug and bundled server when serverPath is empty', () => {
   const extensionPath = '/repo/packages/voicegroup-lsp/vscode-extension';
   const release = path.resolve(extensionPath, '..', 'target', 'release', 'voicegroup-lsp');
   const debug = path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp');
+  const bundled = path.join(extensionPath, 'server', 'voicegroup-lsp');
 
   const result = resolveServerPath(extensionPath, '', resolver([release, debug]));
 
   assert.deepEqual(result, {
     path: release,
-    checkedPaths: [release, debug],
+    checkedPaths: [release, debug, bundled],
     found: true
   });
 });
@@ -38,26 +39,43 @@ test('uses debug binary when release is missing', () => {
   const extensionPath = '/repo/packages/voicegroup-lsp/vscode-extension';
   const release = path.resolve(extensionPath, '..', 'target', 'release', 'voicegroup-lsp');
   const debug = path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp');
+  const bundled = path.join(extensionPath, 'server', 'voicegroup-lsp');
 
   const result = resolveServerPath(extensionPath, '', resolver([debug]));
 
   assert.deepEqual(result, {
     path: debug,
-    checkedPaths: [release, debug],
+    checkedPaths: [release, debug, bundled],
     found: true
   });
 });
 
-test('reports both default candidates when neither binary exists', () => {
+test('uses bundled server when repo binaries are absent', () => {
   const extensionPath = '/repo/packages/voicegroup-lsp/vscode-extension';
   const release = path.resolve(extensionPath, '..', 'target', 'release', 'voicegroup-lsp');
   const debug = path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp');
+  const bundled = path.join(extensionPath, 'server', 'voicegroup-lsp');
+
+  const result = resolveServerPath(extensionPath, '', resolver([bundled]));
+
+  assert.deepEqual(result, {
+    path: bundled,
+    checkedPaths: [release, debug, bundled],
+    found: true
+  });
+});
+
+test('reports all default candidates when no binary exists', () => {
+  const extensionPath = '/repo/packages/voicegroup-lsp/vscode-extension';
+  const release = path.resolve(extensionPath, '..', 'target', 'release', 'voicegroup-lsp');
+  const debug = path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp');
+  const bundled = path.join(extensionPath, 'server', 'voicegroup-lsp');
 
   const result = resolveServerPath(extensionPath, '', resolver([]));
 
   assert.deepEqual(result, {
     path: release,
-    checkedPaths: [release, debug],
+    checkedPaths: [release, debug, bundled],
     found: false
   });
 });

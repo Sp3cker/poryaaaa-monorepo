@@ -21,9 +21,12 @@ export function resolveServerPath(
     };
   }
 
+  // Prefer freshly built repo binaries during development; fall back to the
+  // server binary bundled into the extension for packaged installs.
   const checkedPaths = [
     path.resolve(extensionPath, '..', 'target', 'release', 'voicegroup-lsp'),
-    path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp')
+    path.resolve(extensionPath, '..', 'target', 'debug', 'voicegroup-lsp'),
+    path.join(extensionPath, 'server', 'voicegroup-lsp')
   ];
   const existingPath = checkedPaths.find(candidate => exists(candidate));
 
