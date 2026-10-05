@@ -20,6 +20,17 @@ extern "C"
 
 #define M4A_MAX_PWM_PATTERN_STEPS 7
 
+    /* Zero identity is ordinary sequencing; owned lifetimes use source + serial. */
+    typedef struct
+    {
+        uint64_t serial;
+        uint8_t source;
+    } M4AAuditionID;
+
+#define M4A_AUDITION_HELD 1
+#define M4A_AUDITION_TIMED 2
+#define M4A_AUDITION_BAND 3
+
     typedef struct
     {
         uint8_t numSteps;
@@ -165,6 +176,8 @@ extern "C"
         uint32_t* loadedWavePointer; /* wave RAM payload last loaded by CgbSound */
 
         int trackIndex;
+        M4AAuditionID auditionID;
+        uint64_t auditionSamplesRemaining; /* UINT64_MAX is unbounded; zero is exhausted. */
 
         /* Set by m4a_drv_cgb_start and consumed by emit_vol_write.  Wave
          * uses it to limit NR34 trigger to fresh notes; square and noise
@@ -198,6 +211,8 @@ extern "C"
         WaveData* wav;
         uint32_t frequency;
         int trackIndex;
+        M4AAuditionID auditionID;
+        uint64_t auditionSamplesRemaining;
         union
         {
             M4APcmIpatixChannelState ipatix;
@@ -298,6 +313,13 @@ extern "C"
         M4ARegisterFile regs;
         M4APcmRing pcm;
     };
+
+    /* Shares the ordinary/timed allocator. Returns the accepted PCM or CGB
+     * index for the resolved voice type, or -1 without claiming a voice. */
+    int m4a_internal_note_on_owned(
+        M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime, M4AAuditionID owner,
+        uint64_t durationSamples);
+    void m4a_internal_audition_note_off(M4ADriver* drv, M4AAuditionID owner);
 
     /* Recomputes the integer host-rate divisor used by m4a_advance. */
     void m4a_internal_recompute_host_timing(M4ADriver* drv);

@@ -398,17 +398,21 @@ void m4a_program_change(M4ADriver* drv, int track, uint8_t program)
         memset(&t->currentVoice, 0, sizeof(t->currentVoice));
 }
 
-void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime)
+int m4a_internal_note_on_owned(
+    M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime, M4AAuditionID owner,
+    uint64_t durationSamples)
 {
-    if (!drv)
-        return;
+    if (!drv || durationSamples == 0)
+        return -1;
     if (track < 0 || track >= M4A_MAX_TRACKS)
-        return;
+        return -1;
+    if (owner.serial == 0 || owner.source == 0)
+        owner = (M4AAuditionID){0};
 
     M4ADriverTrack* t = &drv->tracks[track];
     ToneData* voice = resolve_voice(&t->currentVoice, key);
     if (!voice)
-        return;
+        return -1;
 
     uint8_t voiceType = voice->type & VOICE_TYPE_CGB_MASK;
     int8_t rhythmPan = 0;
@@ -448,9 +452,9 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
         if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP))
         {
             if (ch->priority > combinedPriority)
-                return;
+                return -1;
             if (ch->priority == combinedPriority && ch->trackIndex < track)
-                return;
+                return -1;
         }
 
         const bool portamentoInherit = drv->portamento_enabled && t->portamentoDuration != 0 &&
@@ -462,6 +466,8 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
         ch->velocity = velocity;
         ch->priority = combinedPriority;
         ch->trackIndex = track;
+        ch->auditionID = owner;
+        ch->auditionSamplesRemaining = durationSamples;
         ch->voiceType = voice->type;
         ch->rhythmPan = rhythmPan;
         ch->attack = voice->attack;
@@ -539,6 +545,7 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
             clear_mod_m(drv, track);
 
         portamento_note_started(drv, t, track, ch->key);
+        return cgbIdx;
     }
     else
     {
@@ -546,7 +553,7 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
          * envelope/freq state.  SoundMainRAM (m4a_pcm.c) does the per-
          * vblank mix into M4APcmRing. */
         if (!voice->wav)
-            return;
+            return -1;
 
         M4ADriverPcmChan* ch = NULL;
         M4ADriverPcmChan* bestSteal = NULL;
@@ -607,9 +614,9 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
         if (!ch)
         {
             if (!bestSteal)
-                return;
+                return -1;
             if (!bestIsStopping && combinedPriority < bestPriority)
-                return;
+                return -1;
             ch = bestSteal;
         }
 
@@ -679,12 +686,23 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
                 ch->envelopeVolume = previous->envelopeVolume > ch->sustain ? previous->envelopeVolume : ch->sustain;
                 ch->status = M4A_CHN_ENV_SUSTAIN | (previous->status & M4A_CHN_LOOP);
                 previous->status = 0;
+                previous->auditionID = (M4AAuditionID){0};
+                previous->auditionSamplesRemaining = 0;
                 break;
             }
         }
 
         portamento_note_started(drv, t, track, ch->key);
+        const bool accepted = (ch->status & M4A_CHN_ON) != 0;
+        ch->auditionID = accepted ? owner : (M4AAuditionID){0};
+        ch->auditionSamplesRemaining = accepted ? durationSamples : 0;
+        return accepted ? (int)(ch - drv->pcmChans) : -1;
     }
+}
+
+void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity, uint8_t gateTime)
+{
+    m4a_internal_note_on_owned(drv, track, key, velocity, gateTime, (M4AAuditionID){0}, UINT64_MAX);
 }
 
 void m4a_note_on(M4ADriver* drv, int track, uint8_t key, uint8_t velocity)
@@ -702,7 +720,8 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
         M4ADriverCgbChan* ch = &drv->cgb[i];
-        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
+        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->auditionID.serial == 0 &&
+            ch->trackIndex == track && ch->midiKey == key)
         {
             ch->status |= M4A_CHN_STOP;
             return;
@@ -711,11 +730,32 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
     {
         M4ADriverPcmChan* ch = &drv->pcmChans[i];
-        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->trackIndex == track && ch->midiKey == key)
+        if ((ch->status & M4A_CHN_ON) && !(ch->status & M4A_CHN_STOP) && ch->auditionID.serial == 0 &&
+            ch->trackIndex == track && ch->midiKey == key)
         {
             ch->status |= M4A_CHN_STOP;
             return;
         }
+    }
+}
+
+void m4a_internal_audition_note_off(M4ADriver* drv, M4AAuditionID owner)
+{
+    if (!drv || owner.serial == 0 || owner.source == 0)
+        return;
+    for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
+    {
+        M4ADriverCgbChan* ch = &drv->cgb[i];
+        if ((ch->status & M4A_CHN_ON) && ch->auditionID.serial == owner.serial &&
+            ch->auditionID.source == owner.source)
+            ch->status |= M4A_CHN_STOP;
+    }
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if ((ch->status & M4A_CHN_ON) && ch->auditionID.serial == owner.serial &&
+            ch->auditionID.source == owner.source)
+            ch->status |= M4A_CHN_STOP;
     }
 }
 
@@ -1202,6 +1242,8 @@ void m4a_all_sound_off(M4ADriver* drv)
     {
         M4ADriverCgbChan* ch = &drv->cgb[i];
         ch->status = 0;
+        ch->auditionID = (M4AAuditionID){0};
+        ch->auditionSamplesRemaining = 0;
         ch->modify = 0;
         m4a_drv_cgb_disable(drv, ch, i);
     }
@@ -1209,6 +1251,8 @@ void m4a_all_sound_off(M4ADriver* drv)
     {
         M4ADriverPcmChan* ch = &drv->pcmChans[i];
         ch->status = 0;
+        ch->auditionID = (M4AAuditionID){0};
+        ch->auditionSamplesRemaining = 0;
         ch->envelopeVolume = 0;
         ch->envelopeVolumeLeft = 0;
         ch->envelopeVolumeRight = 0;

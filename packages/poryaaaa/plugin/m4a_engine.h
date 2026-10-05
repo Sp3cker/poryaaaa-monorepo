@@ -244,6 +244,11 @@ extern "C"
     void m4a_engine_refresh_voices(M4AEngine* engine);
     void m4a_engine_note_on(M4AEngine* engine, int trackIndex, uint8_t key, uint8_t velocity);
     void m4a_engine_note_off(M4AEngine* engine, int trackIndex, uint8_t key);
+    /* Occurrence ownership never exposes a physical slot. UINT64_MAX is an
+     * unbounded gate; zero duration has no allocation or stealing effects. */
+    void m4a_engine_audition_note_on(
+        M4AEngine* engine, M4AAuditionID owner, int track, uint8_t key, uint8_t velocity, uint64_t durationSamples);
+    void m4a_engine_audition_note_off(M4AEngine* engine, M4AAuditionID owner);
     void m4a_engine_program_change(M4AEngine* engine, int trackIndex, uint8_t program);
     void m4a_engine_cc(M4AEngine* engine, int trackIndex, uint8_t cc, uint8_t value);
     void m4a_engine_pitch_bend(M4AEngine* engine, int trackIndex, int16_t bend);
