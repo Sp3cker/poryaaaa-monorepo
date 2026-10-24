@@ -104,10 +104,13 @@ static void sappy_seed_output(M4ADriver* drv, const M4APcmBlockGeometry* geometr
         memset(global->output_right, 0, geometry->frame_size);
         return;
     }
+    /* The last DMA segment wraps before unused bytes at the lane's tail. */
+    const uint32_t reverb_base =
+        drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
     for (uint32_t i = 0; i < geometry->frame_size; i++)
     {
         const uint32_t current = (geometry->ring_base + i) % geometry->dma_buf_size;
-        const uint32_t previous = (current + geometry->frame_size) % geometry->dma_buf_size;
+        const uint32_t previous = (reverb_base + i) % geometry->dma_buf_size;
         const int32_t sum = (int32_t)drv->pcm.ring_a[current] + drv->pcm.ring_b[current] + drv->pcm.ring_a[previous] +
                             drv->pcm.ring_b[previous];
         int32_t wet = sappy_arshift((int64_t)sum * drv->reverb_amount, 9);

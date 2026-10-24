@@ -324,6 +324,11 @@ ring and hardware cadence. Frequency is computed using `MidiKeyToFreq` with
 the exact scale/frequency table lookups, and the resulting DirectSound samples
 are held through the SOUNDBIAS DAC cadence before entering the hardware mix.
 
+Reverb history follows the next DMA segment, wrapping before unused lane
+padding. At the default rate, seven 224-sample segments occupy 1568 samples
+inside each 1584-byte lane; both mixers skip the remaining 16 bytes when
+reading feedback, without changing the physical DMA buffer layout.
+
 **CGB channels** are synthesized in software: square duty steps advance on integer GBA CPU-cycle deadlines, programmable wave reads 4-bit nibbles from 16-byte waveforms, and noise follows mGBA's 7-bit or 15-bit LFSR behavior.
 
 **`poryaaaa_render`** pre-renders the entire song to float stereo buffers before writing or playing back. For looping songs it builds an extended event timeline by repeating the loop body events with increasing sample offsets, then applies a linear fadeout envelope in place over the final window.

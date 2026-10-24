@@ -502,12 +502,11 @@ static int32_t ipatix_clamp_lane(uint32_t sum)
 /* Recreate both source halfword tap sums before multiplying/storing seeds. */
 static void ipatix_reverb_seeds(const M4ADriver* drv,
                                 uint32_t position,
-                                uint32_t frame_size,
+                                uint32_t future,
                                 uint32_t buf_size,
                                 uint32_t* seed_low,
                                 uint32_t* seed_high)
 {
-    const uint32_t future = (position + frame_size) % buf_size;
     const uint32_t next_position = (position + 1u) % buf_size;
     const uint32_t next_future = (future + 1u) % buf_size;
     const int32_t low_sum = (int32_t)drv->pcm.ring_a[future] + (int32_t)drv->pcm.ring_b[future] +
@@ -529,6 +528,9 @@ static void ipatix_downsample(M4ADriver* drv, const M4APcmBlockGeometry* geometr
     M4APcmIpatixGlobalState* global = &drv->pcmMixerState.ipatix;
     uint8_t remainder_left = global->discarded_left;
     uint8_t remainder_right = global->discarded_right;
+    /* The last DMA segment wraps before unused bytes at the lane's tail. */
+    const uint32_t reverb_base =
+        drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
     for (uint32_t i = 0; i < geometry->frame_size; i += 2)
     {
         const uint32_t packed = global->packed_mix[i];
@@ -545,7 +547,12 @@ static void ipatix_downsample(M4ADriver* drv, const M4APcmBlockGeometry* geometr
         uint32_t seed_low = 0;
         uint32_t seed_high = 0;
         if (drv->reverb_amount != 0)
-            ipatix_reverb_seeds(drv, position, geometry->frame_size, geometry->dma_buf_size, &seed_low, &seed_high);
+            ipatix_reverb_seeds(drv,
+                               position,
+                               (reverb_base + i) % geometry->dma_buf_size,
+                               geometry->dma_buf_size,
+                               &seed_low,
+                               &seed_high);
         global->packed_mix[i] = drv->reverb_amount != 0 ? seed_low : 0;
 
         if (i + 1u < geometry->frame_size)
