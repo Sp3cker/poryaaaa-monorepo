@@ -70,3 +70,10 @@ that layout.
 Read root `AGENTS.md` first, then the nearest package `AGENTS.md` before
 editing package code. Cross-package work should preserve package boundaries and
 verify every affected package.
+
+## CI artifact retention
+
+Native static library workflow artifacts expire after one day. The artifact retention
+workflow runs after that workflow completes, hourly, and on manual dispatch. It
+keeps artifacts from the newest successful, nonexpired artifact-bearing run per
+workflow and from unfinished runs; it deletes older or failed completed-run artifacts.
