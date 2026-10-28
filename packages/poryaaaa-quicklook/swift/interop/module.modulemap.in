@@ -1,0 +1,6 @@
+module QuickLookEngine {
+    header "@PQL_BANK_HEADER@"
+    header "@PQL_BLOB_HEADER@"
+    header "@PQL_ENGINE_HEADER@"
+    export *
+}

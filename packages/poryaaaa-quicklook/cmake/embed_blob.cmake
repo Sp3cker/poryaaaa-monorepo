@@ -1,0 +1,6 @@
+if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
+    message(FATAL_ERROR "embed_blob.cmake requires INPUT and OUTPUT")
+endif()
+file(READ "${INPUT}" blob HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," bytes "${blob}")
+file(WRITE "${OUTPUT}" "#include \"embedded_hanabi.h\"\nstatic const uint8_t hanabi[] = {${bytes}};\nconst uint8_t* pql_embedded_hanabi(size_t* outSize) {\n    if (outSize) *outSize = sizeof(hanabi);\n    return hanabi;\n}\n")
