@@ -143,31 +143,38 @@ void m4a_internal_recompute_host_timing(M4ADriver* drv)
     drv->host_rate_hz = new_rate;
 }
 
-M4ADriver* m4a_driver_create(float host_sample_rate)
+/* Fresh playback runtime shared by create and reset; configuration, geometry and PCM storage are left
+ * to their owners.  Never allocates; event storage is reused and only its count is cleared. */
+static void m4a_driver_init_runtime(M4ADriver* drv)
 {
-    M4ADriver* drv = (M4ADriver*)calloc(1, sizeof(*drv));
-    if (!drv)
-        return NULL;
-    drv->host_rate = host_sample_rate;
-    /* calloc currently gives the same values, but make the fresh-driver
-     * contract explicit so future initialization changes cannot select Sappy. */
-    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
-    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
-    m4a_internal_recompute_host_timing(drv);
+    /* Commit the requested mixer now: iPatix on creation, the configured mode on reset, so a reset
+     * driver's first notes are not cut by a deferred SoundMain mode switch. */
+    drv->active_pcm_mode = drv->requested_pcm_mode;
+    drv->pwm_active = false;
+    drv->c15 = 0;
+
+    /* m4a tempo defaults: ply_tempo defaults to 75, and the doubling step
+     * (D = ply_tempo*2) is canonical from MPlayMain. */
+    drv->tempo_bpm = 120.0;
+    drv->tempoD = 150;
+    drv->tempoU = 0x100;
+    drv->tempoI = drv->tempoD;
+    drv->tempoC = 0;
+
+    drv->host_cycle_remainder = 0;
+    drv->current_cycle = 0;
     drv->next_vblank_cycle = M4A_VBLANK_CYCLES;
     drv->next_vcount_cycle = M4A_VBLANK_CYCLES - M4A_VCOUNT_TO_VBLANK_CYCLES;
     drv->event_range_begin_cycle = 0;
     drv->event_cycle = 0;
-    m4a_driver_configure_pcm(drv, (float)M4A_PCM_RATE_HZ, false);
-    drv->song_volume = 127;
-    drv->master_volume = 12;
-    drv->tempo_bpm = 120.0;
-    drv->c15 = 0;
-    /* Hearth SOUND_MODE_MAXCHN keeps three of the 15 PCM slots reserved. */
-    drv->max_pcm_channels = 12;
-    drv->player_priority = 0;
-    drv->portamento_enabled = false;
-    drv->pwm_enabled = false;
+    drv->event_next_order = 0;
+    drv->event_count = 0;
+    drv->events_dropped = 0;
+    memset(&drv->event_batch, 0, sizeof(drv->event_batch));
+
+    memset(drv->tracks, 0, sizeof(drv->tracks));
+    memset(drv->cgb, 0, sizeof(drv->cgb));
+    memset(&drv->regs, 0, sizeof(drv->regs));
 
     /* Register-file defaults match what real m4a writes during init —
      * NR50/NR51/SOUNDCNT_H/SOUNDBIAS  See
@@ -187,13 +194,6 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
     drv->regs.bias_level = 0x200;
     drv->regs.bias_sampling_cycle = 1; /* m4a_init selects the 65536 Hz DAC rate */
 
-    /* m4a tempo defaults: ply_tempo defaults to 75, and the doubling step
-     * (D = ply_tempo*2) is canonical from MPlayMain. */
-    drv->tempoD = 150;
-    drv->tempoU = 0x100;
-    drv->tempoI = drv->tempoD;
-    drv->tempoC = 0;
-
     /* CGB channel masks match the ROM's per-channel left/right routing bits. */
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
@@ -212,13 +212,46 @@ M4ADriver* m4a_driver_create(float host_sample_rate)
         drv->tracks[i].bendRange = 2;
         drv->tracks[i].lfoSpeed = 22;
     }
+}
 
+M4ADriver* m4a_driver_create(float host_sample_rate)
+{
+    M4ADriver* drv = (M4ADriver*)calloc(1, sizeof(*drv));
+    if (!drv)
+        return NULL;
+    drv->host_rate = host_sample_rate;
+    /* calloc currently gives the same value, but make the fresh-driver
+     * contract explicit so future initialization changes cannot select Sappy. */
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    m4a_internal_recompute_host_timing(drv);
+    m4a_driver_init_runtime(drv);
+    /* The first geometry change clears PCM output and FIFO state for the committed mode. */
+    m4a_driver_configure_pcm(drv, (float)M4A_PCM_RATE_HZ, false);
+    drv->song_volume = 127;
+    drv->master_volume = 12;
+    /* Hearth SOUND_MODE_MAXCHN keeps three of the 15 PCM slots reserved. */
+    drv->max_pcm_channels = 12;
+    drv->player_priority = 0;
+    drv->portamento_enabled = false;
+    drv->pwm_enabled = false;
     return drv;
 }
 
 void m4a_driver_destroy(M4ADriver* drv)
 {
     free(drv);
+}
+
+void m4a_driver_reset_playback(M4ADriver* drv)
+{
+    if (!drv)
+        return;
+    m4a_driver_init_runtime(drv);
+    /* Creation gets this clearing from its first geometry change; mirror a mode commit's PCM cut. */
+    memset(drv->pcmChans, 0, sizeof(drv->pcmChans));
+    memset(&drv->pcmMixerState, 0, sizeof(drv->pcmMixerState));
+    m4a_reset_pcm_output_state(drv);
+    m4a_reset_pcm_fifo_scheduler(drv);
 }
 
 int m4a_driver_recommended_max_advance_frames(void)

@@ -234,7 +234,11 @@ extern "C"
     M4AEngine* m4a_engine_create(float sampleRate);
     void m4a_engine_free(M4AEngine* engine);
     void m4a_engine_destroy(M4AEngine* engine);
+    /* Cold lifecycle reset: reallocates; a mixer mode queued afterwards commits at the first SoundMain. */
     bool m4a_engine_reset(M4AEngine* engine);
+    /* Exclusive-owner, allocation-free m4a_driver_reset_playback for all drivers plus chips, reverb and mirrors;
+     * keeps bank/settings/invert/xCmd and commits the configured mixer before new notes.  Null is a no-op. */
+    void m4a_engine_reset_playback(M4AEngine* engine);
     void m4a_engine_set_xcmd_callback(M4AEngine* engine, M4AEngineXcmdFn xcmd_fn, void* xcmd_ctx);
 
     void m4a_engine_set_pcm_mix_rate(M4AEngine* engine, float rate);

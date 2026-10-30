@@ -110,6 +110,9 @@ extern "C"
     /* Lifecycle */
     M4ADriver* m4a_driver_create(float host_sample_rate);
     void m4a_driver_destroy(M4ADriver* drv);
+    /* Exclusive-owner, allocation-free reset of voices, controls, queues, PCM and clocks; configuration is kept.
+     * Unlike creation, whose requested mode commits at the first SoundMain, the requested mode commits now. */
+    void m4a_driver_reset_playback(M4ADriver* drv);
     void m4a_driver_set_host_rate(M4ADriver* drv, float hz);
     /* `rate == 0` follows the driver's host rate.  The active geometry is
      * bounded by the static PCM ring capacity. */

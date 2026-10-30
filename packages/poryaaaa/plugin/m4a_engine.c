@@ -396,6 +396,31 @@ static void xcmd_adapter(void* context, int track, uint8_t selector, uint32_t va
         engine->xcmd_fn(engine->xcmd_ctx, track, selector, value);
 }
 
+/* Clean mirrors, poly statistics and audition/sidecar bookkeeping shared by init and playback reset.
+ * Configuration and owned storage are untouched; never allocates. */
+static void init_engine_runtime(M4AEngine* engine)
+{
+    memset(engine->tracks, 0, sizeof(engine->tracks));
+    for (int i = 0; i < MAX_TRACKS; ++i)
+    {
+        engine->tracks[i].bendRange = 2;
+        engine->tracks[i].volX = 64;
+        engine->tracks[i].rawVolume = 127;
+        engine->tracks[i].volume = 127;
+        engine->tracks[i].lfoSpeed = 22;
+    }
+    memset(engine->pcmChannels, 0, sizeof(engine->pcmChannels));
+    memset(engine->cgbChannels, 0, sizeof(engine->cgbChannels));
+    engine->polyEventClock = M4A_POLY_TICK_NONE;
+    engine->auditionNote = false;
+    m4a_engine_reset_poly_stats(engine);
+    memset(engine->primaryPcmAudition, 0, sizeof(engine->primaryPcmAudition));
+    memset(engine->primaryCgbAudition, 0, sizeof(engine->primaryCgbAudition));
+    memset(engine->primaryPcmAuditionSlot, 0, sizeof(engine->primaryPcmAuditionSlot));
+    memset(engine->shadowPcmAudition, 0, sizeof(engine->shadowPcmAudition));
+    memset(engine->shadowCgbAudition, 0, sizeof(engine->shadowCgbAudition));
+}
+
 bool m4a_engine_init(M4AEngine* engine, float sampleRate)
 {
     if (!engine)
@@ -408,15 +433,7 @@ bool m4a_engine_init(M4AEngine* engine, float sampleRate)
     engine->songMasterVolume = MAX_SONG_VOLUME;
     engine->volume = MAX_SONG_VOLUME;
     engine->maxPcmChannels = 12;
-    engine->polyEventClock = M4A_POLY_TICK_NONE;
-    for (int i = 0; i < MAX_TRACKS; ++i)
-    {
-        engine->tracks[i].bendRange = 2;
-        engine->tracks[i].volX = 64;
-        engine->tracks[i].rawVolume = 127;
-        engine->tracks[i].volume = 127;
-        engine->tracks[i].lfoSpeed = 22;
-    }
+    init_engine_runtime(engine);
     m4a_reverb_init(&engine->reverb, engine->pcmMixRate, 0);
     engine->driver = m4a_driver_create(sampleRate);
     engine->hw = hw_audio_create(sampleRate);
@@ -477,6 +494,23 @@ bool m4a_engine_reset(M4AEngine* engine)
     const float sampleRate = engine->sampleRate;
     m4a_engine_destroy(engine);
     return m4a_engine_init(engine, sampleRate);
+}
+
+void m4a_engine_reset_playback(M4AEngine* engine)
+{
+    if (!engine)
+        return;
+    m4a_driver_reset_playback(engine->driver);
+    m4a_driver_reset_playback(engine->shadowDriver);
+    m4a_driver_reset_playback(engine->auditionDriver);
+    hw_audio_reset(engine->hw);
+    hw_audio_reset(engine->shadowHw);
+    hw_audio_reset(engine->auditionHw);
+    m4a_reverb_reset(&engine->reverb);
+    init_engine_runtime(engine);
+    /* Every driver is at cycle zero, so enabled invert sidecars stay aligned. */
+    apply_public_state(engine);
+    sync_public_state(engine);
 }
 
 void m4a_engine_set_xcmd_callback(M4AEngine* engine, M4AEngineXcmdFn callback, void* context)

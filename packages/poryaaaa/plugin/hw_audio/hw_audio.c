@@ -295,6 +295,9 @@ void hw_audio_reset(HwAudio* hw)
     hw_psg_init(&hw->psg, (float)hw->internal_rate);
     hw_pcm_init(&hw->pcm, (uint32_t)hw->internal_rate);
     reset_frontend(hw);
+    /* blip_clear keeps the last submitted pair; a reset DAC timeline starts from creation's zero history. */
+    hw->resample.last_l = 0;
+    hw->resample.last_r = 0;
     hw->live_cycle = 0;
     hw->dac_cycle_remainder = 0;
     hw->host_cycle_remainder = 0;
