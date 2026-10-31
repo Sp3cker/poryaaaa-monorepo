@@ -531,8 +531,7 @@ static int cgb_start_cost(const M4ADriverCgbChan* ch)
         break;
     case 3:
         if (ch->wavePointer && ch->wavePointer != ch->loadedWavePointer)
-            cycles += CGB_CYC_MODVOL_NR30_UPLOAD + CGB_CYC_NR30_WAVE + 3 * CGB_CYC_WAVE_WAVE +
-                      CGB_CYC_WAVE_NR30;
+            cycles += CGB_CYC_MODVOL_NR30_UPLOAD + CGB_CYC_NR30_WAVE + 3 * CGB_CYC_WAVE_WAVE + CGB_CYC_WAVE_NR30;
         else
             cycles += CGB_CYC_MODVOL_NR30;
         cycles += CGB_CYC_NR30_NR31;
@@ -602,8 +601,7 @@ static int cgb_output_cost(const M4ADriver* drv, const M4ADriverCgbChan* ch)
         cycles = CGB_CYC_ENVDONE_PIT;
         if ((ch->voiceType & VOICE_TYPE_FIX) && ch->type != 4)
             cycles += CGB_CYC_PIT_FIX;
-        cycles += ch->type == 4 ? CGB_CYC_PIT_NR43 + CGB_CYC_NR43_NR44
-                                : CGB_CYC_PIT_NRX3 + CGB_CYC_NRX3_NRX4;
+        cycles += ch->type == 4 ? CGB_CYC_PIT_NR43 + CGB_CYC_NR43_NR44 : CGB_CYC_PIT_NRX3 + CGB_CYC_NRX3_NRX4;
         cycles += volume ? CGB_CYC_NRX4_VOL : CGB_CYC_NRX4_DONE;
     }
     else
@@ -615,15 +613,14 @@ static int cgb_output_cost(const M4ADriver* drv, const M4ADriverCgbChan* ch)
         if (ch->type == 3)
         {
             cycles += CGB_CYC_NR51_NR32;
-            cycles += ch->freshStart ? CGB_CYC_NR32_NR30 + CGB_CYC_NR30_NR34 + CGB_CYC_NR34_DONE_VOL
-                                     : CGB_CYC_NR32_DONE;
+            cycles +=
+                ch->freshStart ? CGB_CYC_NR32_NR30 + CGB_CYC_NR30_NR34 + CGB_CYC_NR34_DONE_VOL : CGB_CYC_NR32_DONE;
         }
         else
         {
             cycles += CGB_CYC_NR51_NRX2 + CGB_CYC_NRX2_NRX4;
             if (ch->type == 1)
-                cycles += drv->regs.sq1_sweep_dir < 0 ? CGB_CYC_NRX4_DONE_SQ1
-                                                      : CGB_CYC_NR14_NR14 + CGB_CYC_NR14_DONE;
+                cycles += drv->regs.sq1_sweep_dir < 0 ? CGB_CYC_NRX4_DONE_SQ1 : CGB_CYC_NR14_NR14 + CGB_CYC_NR14_DONE;
             else
                 cycles += CGB_CYC_NRX4_DONE_OTHER;
         }
@@ -655,10 +652,10 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
         return;
     }
 
-    CGB_CHARGE(CGB_CYC_LOOP_ACTIVE +
-               (ch->type == 1 ? CGB_CYC_ACTIVE_STEP2_SQ1
-                              : ch->type == 2 ? CGB_CYC_ACTIVE_STEP2_SQ2
-                                              : ch->type == 3 ? CGB_CYC_ACTIVE_STEP2_WAVE : CGB_CYC_ACTIVE_STEP2_NOISE));
+    CGB_CHARGE(CGB_CYC_LOOP_ACTIVE + (ch->type == 1   ? CGB_CYC_ACTIVE_STEP2_SQ1
+                                      : ch->type == 2 ? CGB_CYC_ACTIVE_STEP2_SQ2
+                                      : ch->type == 3 ? CGB_CYC_ACTIVE_STEP2_WAVE
+                                                      : CGB_CYC_ACTIVE_STEP2_NOISE));
 
     if (ch->freshStart && (ch->status & M4A_CHN_STOP))
     {

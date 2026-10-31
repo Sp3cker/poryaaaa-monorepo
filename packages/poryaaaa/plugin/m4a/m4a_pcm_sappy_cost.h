@@ -152,8 +152,8 @@ static bool sappy_cost_fixed_begin(SappyCost* cost, int32_t count, uint32_t left
             const uint32_t words = samples / 4u;
             const uint32_t remainder = samples & 3u;
             cost->cycles += inside ? M4A_MIX_FIX_BLOCK : M4A_MIX_FIX_BLOCK_END;
-            cost->cycles += (int64_t)words * (M4A_MIX_WORD_LOAD + 4 * M4A_MIX_FIX_SAMPLE +
-                                              3 * M4A_MIX_NEXT_SAMPLE + M4A_MIX_WORD_STORE + M4A_MIX_NEXT_WORD);
+            cost->cycles += (int64_t)words * (M4A_MIX_WORD_LOAD + 4 * M4A_MIX_FIX_SAMPLE + 3 * M4A_MIX_NEXT_SAMPLE +
+                                              M4A_MIX_WORD_STORE + M4A_MIX_NEXT_WORD);
             if (words)
                 cost->cycles += M4A_MIX_LOOP_LAST;
             if (remainder)
@@ -222,8 +222,8 @@ static int64_t sappy_frame_cycles(const M4ADriver* drv, uint32_t frame_size)
     {
         const uint32_t passes = (frame_size >> 4) ? frame_size >> 4 : 1u;
         cycles = M4A_MIX_ENTRY + M4A_MIX_NOREVERB + ((frame_size & 4u) ? M4A_MIX_NOREVERB_4 : 0) +
-                 ((frame_size & 8u) ? M4A_MIX_NOREVERB_8 : 0) +
-                 (int64_t)passes * M4A_MIX_NOREVERB_LOOP + M4A_MIX_LOOP_LAST;
+                 ((frame_size & 8u) ? M4A_MIX_NOREVERB_8 : 0) + (int64_t)passes * M4A_MIX_NOREVERB_LOOP +
+                 M4A_MIX_LOOP_LAST;
     }
     return cycles + M4A_MIX_CHAN_SETUP + M4A_MIX_SLOT_LAST + M4A_MIX_EXIT + M4A_MIX_EPILOGUE;
 }

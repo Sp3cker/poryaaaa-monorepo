@@ -279,8 +279,7 @@ void m4a_driver_cpu_set_enabled(M4ADriver* drv, bool enabled)
     {
         M4ADriverPcmChan* ch = &drv->pcmChans[i];
         ch->cpu_raw_frequency_valid = false;
-        if (!(ch->status & M4A_CHN_ON) || !ch->wav || ch->trackIndex < 0 ||
-            ch->trackIndex >= M4A_MAX_TRACKS)
+        if (!(ch->status & M4A_CHN_ON) || !ch->wav || ch->trackIndex < 0 || ch->trackIndex >= M4A_MAX_TRACKS)
             continue;
         if (ch->type & VOICE_TYPE_FIX)
         {

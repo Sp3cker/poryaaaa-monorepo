@@ -307,8 +307,7 @@ static void assert_same_output(const M4ADriver* enabled, const M4ADriver* disabl
 {
     ASSERT(memcmp(&enabled->regs, &disabled->regs, sizeof(enabled->regs)) == 0,
            "telemetry preserves the register file");
-    ASSERT(memcmp(enabled->cgb, disabled->cgb, sizeof(enabled->cgb)) == 0,
-           "telemetry preserves all CGB channel state");
+    ASSERT(memcmp(enabled->cgb, disabled->cgb, sizeof(enabled->cgb)) == 0, "telemetry preserves all CGB channel state");
     ASSERT_EQ(enabled->event_count, disabled->event_count, "telemetry preserves event count");
     for (size_t i = 0; i < enabled->event_count && i < disabled->event_count; ++i)
     {

@@ -12,7 +12,7 @@ static int failures;
     {                                                                                                                  \
         if (!(condition))                                                                                              \
         {                                                                                                              \
-            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition);                                         \
+            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition);                                            \
             ++failures;                                                                                                \
         }                                                                                                              \
     } while (0)
@@ -155,8 +155,8 @@ static void test_chased_notes(void)
     static int8_t samples[64];
     static ToneData voices[128];
     WaveData wave = {.freq = 22050u << 10, .size = sizeof(samples), .data = samples, .status = 0xC000u};
-    voices[0] = (ToneData){.type = VOICE_DIRECTSOUND, .wav = &wave, .attack = 0xFF,
-                           .decay = 0xFE, .sustain = 0xC0, .release = 0xD0};
+    voices[0] = (ToneData){
+        .type = VOICE_DIRECTSOUND, .wav = &wave, .attack = 0xFF, .decay = 0xFE, .sustain = 0xC0, .release = 0xD0};
     M4ADriver* driver = m4a_driver_create((float)M4A_GBA_CYCLES_PER_SECOND);
     CHECK(driver);
     if (!driver)
@@ -230,8 +230,8 @@ static void test_audio_unchanged_and_preview_invalid(void)
     WaveData wave = {.freq = 22050u << 10, .size = sizeof(samples), .data = samples, .status = 0xC000u};
     for (size_t i = 0; i < sizeof(samples); ++i)
         samples[i] = (int8_t)((i & 1u) ? 96 : -96);
-    voices[0] = (ToneData){.type = VOICE_DIRECTSOUND, .wav = &wave, .attack = 0xFF,
-                           .decay = 0xFE, .sustain = 0xC0, .release = 0xD0};
+    voices[0] = (ToneData){
+        .type = VOICE_DIRECTSOUND, .wav = &wave, .attack = 0xFF, .decay = 0xFE, .sustain = 0xC0, .release = 0xD0};
     M4ADriver* plain = m4a_driver_create((float)M4A_GBA_CYCLES_PER_SECOND);
     M4ADriver* metered = m4a_driver_create((float)M4A_GBA_CYCLES_PER_SECOND);
     CHECK(plain && metered);

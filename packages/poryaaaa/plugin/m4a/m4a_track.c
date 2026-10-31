@@ -1118,11 +1118,11 @@ void m4a_internal_lfo_tick(M4ADriver* drv)
         int8_t newModM = (int8_t)(((int32_t)t->mod * lfoVal) >> 6);
         if (cost)
         {
-            m4a_est_charge(drv, M4A_CYC_LFO_STEP +
-                                    ((int8_t)(lfoPos - 0x40) < 0 ? M4A_CYC_LFO_NEG : M4A_CYC_LFO_POS) +
-                                    (newModM == t->modM ? M4A_CYC_LFO_SAME
-                                     : t->modT == 0      ? M4A_CYC_LFO_PIT
-                                                         : M4A_CYC_LFO_VOL));
+            m4a_est_charge(drv,
+                           M4A_CYC_LFO_STEP + ((int8_t)(lfoPos - 0x40) < 0 ? M4A_CYC_LFO_NEG : M4A_CYC_LFO_POS) +
+                               (newModM == t->modM ? M4A_CYC_LFO_SAME
+                                : t->modT == 0     ? M4A_CYC_LFO_PIT
+                                                   : M4A_CYC_LFO_VOL));
             if (newModM != t->modM)
                 drv->cpu_seq.trackFlags[i] |= t->modT == 0 ? MPT_FLG_PITCHG : MPT_FLG_VOLCHG;
         }

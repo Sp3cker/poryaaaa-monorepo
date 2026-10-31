@@ -106,8 +106,7 @@ static void sappy_seed_output(M4ADriver* drv, const M4APcmBlockGeometry* geometr
         return;
     }
     /* The last DMA segment wraps before unused bytes at the lane's tail. */
-    const uint32_t reverb_base =
-        drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
+    const uint32_t reverb_base = drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
     for (uint32_t i = 0; i < geometry->frame_size; i++)
     {
         const uint32_t current = (geometry->ring_base + i) % geometry->dma_buf_size;
@@ -413,8 +412,8 @@ static void sappy_render_reverse(M4ADriver* drv, M4ADriverPcmChan* channel, uint
         }
         count = (int32_t)remaining;
         if (cost)
-            cost->cycles += cost->compressed ? (advance == 1 ? M4A_MIX_CMP_STEP1 : M4A_MIX_CMP_STEPN)
-                                             : M4A_MIX_REV_STEP;
+            cost->cycles +=
+                cost->compressed ? (advance == 1 ? M4A_MIX_CMP_STEP1 : M4A_MIX_CMP_STEPN) : M4A_MIX_REV_STEP;
         base -= (int32_t)advance;
         if (cost)
         {

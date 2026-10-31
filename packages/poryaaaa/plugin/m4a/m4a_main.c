@@ -10,8 +10,8 @@ extern void m4a_sound_main_ram(M4ADriver* drv);
 /* Predict the next paired FIFO refill from the actual timer and queue state. */
 static int64_t cpu_first_fifo_refill(const M4ADriver* drv, int64_t* period)
 {
-    const uint32_t samples = drv->pcm_max_samples_per_vblank ? drv->pcm_max_samples_per_vblank
-                                                              : M4A_PCM_SAMPLES_PER_VBLANK;
+    const uint32_t samples =
+        drv->pcm_max_samples_per_vblank ? drv->pcm_max_samples_per_vblank : M4A_PCM_SAMPLES_PER_VBLANK;
     const int64_t timer = M4A_VBLANK_CYCLES / samples;
     unsigned queued = (drv->pcm_fifo_a_write + 8u - drv->pcm_fifo_a_read) % 8u;
     unsigned remaining = drv->pcm_fifo_a_internal_remaining;
@@ -90,9 +90,8 @@ static bool cpu_frame_has_unmodelled_channels(const M4ADriver* drv)
         const M4ADriverPcmChan* ch = &drv->pcmChans[i];
         if (!(ch->status & M4A_CHN_ON))
             continue;
-        if (ch->cpu_audition ||
-            (drv->active_pcm_mode == M4A_PCM_MIXER_SAPPY && !(ch->type & VOICE_TYPE_FIX) &&
-             !ch->cpu_raw_frequency_valid))
+        if (ch->cpu_audition || (drv->active_pcm_mode == M4A_PCM_MIXER_SAPPY && !(ch->type & VOICE_TYPE_FIX) &&
+                                 !ch->cpu_raw_frequency_valid))
             return true;
     }
     return false;
@@ -107,9 +106,8 @@ static bool cpu_pcm_geometry_supported(const M4ADriver* drv)
         const uint32_t rate = (597275u * samples + 5000u) / 10000u;
         if (drv->pcm_rate_hz != rate)
             continue;
-        const uint32_t ring_size = drv->active_pcm_mode == M4A_PCM_MIXER_SAPPY || mode == 3
-                                       ? M4A_PCM_DMA_BUF_SIZE
-                                       : 7u * samples;
+        const uint32_t ring_size =
+            drv->active_pcm_mode == M4A_PCM_MIXER_SAPPY || mode == 3 ? M4A_PCM_DMA_BUF_SIZE : 7u * samples;
         return drv->pcm_max_samples_per_vblank == samples && drv->pcm.pcm_samples_per_vblank == samples &&
                drv->pcm_dma_buf_size == ring_size;
     }
@@ -126,8 +124,7 @@ static void cpu_publish_frame(M4ADriver* drv, int counter)
     int64_t seq = m4a_est_publish(drv);
     seq += cpu_fifo_stall(first, period, player, sm + seq - player);
     const int64_t cgb_start = sm + seq;
-    int64_t cgb = drv->cpu_cgb_cycles + M4A_CYC_CGB_TAIL +
-                  (counter <= 1 ? M4A_CYC_SM_TO_RAM_FIRST : M4A_CYC_SM_TO_RAM);
+    int64_t cgb = drv->cpu_cgb_cycles + M4A_CYC_CGB_TAIL + (counter <= 1 ? M4A_CYC_SM_TO_RAM_FIRST : M4A_CYC_SM_TO_RAM);
     cgb += cpu_fifo_stall(first, period, cgb_start, cgb);
     const int64_t ram = cgb_start + cgb;
     int64_t mixer = drv->cpu_mix_cycles;
@@ -137,8 +134,8 @@ static void cpu_publish_frame(M4ADriver* drv, int counter)
         .cgb = (int32_t)cgb,
         .mixer = (int32_t)mixer,
         .total = (int32_t)(seq + cgb + mixer),
-        .valid = cpu_pcm_geometry_supported(drv) && !drv->cpu_frame_contaminated &&
-                 !cpu_frame_has_unmodelled_channels(drv),
+        .valid =
+            cpu_pcm_geometry_supported(drv) && !drv->cpu_frame_contaminated && !cpu_frame_has_unmodelled_channels(drv),
         .sequencerEstimated = true,
         .cycle = drv->current_cycle,
     };

@@ -1364,8 +1364,7 @@ static void test_pcm_cost_sappy_paths(void)
     drv->cpu_mix_cycles = 0;
     m4a_drv_pcm_render(drv, 8);
     ASSERT_EQ(drv->cpu_mix_cycles,
-              562 + M4A_MIX_ENV_START_LOOP + M4A_MIX_VOL_LOOP +
-                  3 * (M4A_MIX_INTERP_WRAP - M4A_MIX_INTERP_STEP1),
+              562 + M4A_MIX_ENV_START_LOOP + M4A_MIX_VOL_LOOP + 3 * (M4A_MIX_INTERP_WRAP - M4A_MIX_INTERP_STEP1),
               "Sappy charges all three real wraps");
 
     wav.status = 0;
@@ -1475,11 +1474,15 @@ static void test_pcm_cost_preserves_audio(void)
             ASSERT(metered->cpu_mix_cycles > 0, "enabled counting records the rendered frame");
             ASSERT_EQ(plain->pcmChans[0].status, metered->pcmChans[0].status, "counting preserves channel status");
             if (cases[c].sappy)
-                ASSERT(memcmp(&plain->pcmChans[0].sappy, &metered->pcmChans[0].sappy,
-                              sizeof(plain->pcmChans[0].sappy)) == 0, "counting preserves Sappy cursor state");
+                ASSERT(memcmp(&plain->pcmChans[0].sappy,
+                              &metered->pcmChans[0].sappy,
+                              sizeof(plain->pcmChans[0].sappy)) == 0,
+                       "counting preserves Sappy cursor state");
             else
-                ASSERT(memcmp(&plain->pcmChans[0].ipatix, &metered->pcmChans[0].ipatix,
-                              sizeof(plain->pcmChans[0].ipatix)) == 0, "counting preserves HQ cursor state");
+                ASSERT(memcmp(&plain->pcmChans[0].ipatix,
+                              &metered->pcmChans[0].ipatix,
+                              sizeof(plain->pcmChans[0].ipatix)) == 0,
+                       "counting preserves HQ cursor state");
         }
         m4a_driver_destroy(plain);
         m4a_driver_destroy(metered);
@@ -1562,7 +1565,8 @@ static void test_pcm_cost_hq_fixed_samples(void)
     memset(data, 1, sizeof(data));
     drv->cpu_mix_cycles = 0;
     m4a_drv_pcm_render(drv, 8);
-    ASSERT_EQ(drv->cpu_mix_cycles - zero_cost, 4 * M4A_HQMIX_FIX_NONZERO,
+    ASSERT_EQ(drv->cpu_mix_cycles - zero_cost,
+              4 * M4A_HQMIX_FIX_NONZERO,
               "four HQ word samples each charge their conditional multiply");
     m4a_driver_destroy(drv);
 }

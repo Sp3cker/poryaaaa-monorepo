@@ -313,15 +313,14 @@ static void ipatix_render_synth(M4ADriver* drv, M4ADriverPcmChan* channel, uint3
         drv->cpu_mix_cycles += M4A_HQMIX_TO_COMP_REV + M4A_HQMIX_SETUP_SYNTH + m4a_pcm_cost_mul(div) + M4A_HQMIX_END;
         if (state->synth_type == 1)
             drv->cpu_mix_cycles += M4A_HQMIX_SYNTH + M4A_HQMIX_PULSE_SETUP +
-                                   (int64_t)((frame_size + 7u) / 8u) * M4A_HQMIX_PULSE_ITER +
-                                   M4A_HQMIX_LOOP_LAST + M4A_HQMIX_PULSE_EXIT;
+                                   (int64_t)((frame_size + 7u) / 8u) * M4A_HQMIX_PULSE_ITER + M4A_HQMIX_LOOP_LAST +
+                                   M4A_HQMIX_PULSE_EXIT;
         else
-            drv->cpu_mix_cycles += (state->synth_type == 2 ? M4A_HQMIX_SAW : M4A_HQMIX_TRI) +
-                                   (int64_t)((frame_size + 3u) / 4u) *
-                                       (state->synth_type == 2 ? M4A_HQMIX_SAW_ITER : M4A_HQMIX_TRI_ITER) +
-                                   (int64_t)frame_size *
-                                       (state->synth_type == 2 ? M4A_HQMIX_SAW_SAMPLE : M4A_HQMIX_TRI_SAMPLE) +
-                                   M4A_HQMIX_LOOP_LAST + M4A_HQMIX_SYNTH_EXIT;
+            drv->cpu_mix_cycles +=
+                (state->synth_type == 2 ? M4A_HQMIX_SAW : M4A_HQMIX_TRI) +
+                (int64_t)((frame_size + 3u) / 4u) * (state->synth_type == 2 ? M4A_HQMIX_SAW_ITER : M4A_HQMIX_TRI_ITER) +
+                (int64_t)frame_size * (state->synth_type == 2 ? M4A_HQMIX_SAW_SAMPLE : M4A_HQMIX_TRI_SAMPLE) +
+                M4A_HQMIX_LOOP_LAST + M4A_HQMIX_SYNTH_EXIT;
     }
 
     for (uint32_t i = 0; i < frame_size; i++)
@@ -382,8 +381,8 @@ static void ipatix_render_channel(M4ADriver* drv, M4ADriverPcmChan* channel, uin
         return;
     if (state->count <= 0)
     {
-        if (drv->cpu_cost_enabled && (channel->type & VOICE_TYPE_FIX) &&
-            !(channel->type & VOICE_TYPE_REV) && !state->compressed)
+        if (drv->cpu_cost_enabled && (channel->type & VOICE_TYPE_FIX) && !(channel->type & VOICE_TYPE_REV) &&
+            !state->compressed)
             drv->cpu_mix_cycles += M4A_HQMIX_TO_FIX + M4A_HQMIX_FIX_SETUP + M4A_HQMIX_END_STOP;
         channel->status = 0;
         return;
@@ -590,12 +589,8 @@ static int32_t ipatix_clamp_lane(uint32_t sum)
     return ipatix_signed_word(sum);
 }
 /* Recreate both source halfword tap sums before multiplying/storing seeds. */
-static void ipatix_reverb_seeds(M4ADriver* drv,
-                                uint32_t position,
-                                uint32_t future,
-                                uint32_t buf_size,
-                                uint32_t* seed_low,
-                                uint32_t* seed_high)
+static void ipatix_reverb_seeds(
+    M4ADriver* drv, uint32_t position, uint32_t future, uint32_t buf_size, uint32_t* seed_low, uint32_t* seed_high)
 {
     const uint32_t next_position = (position + 1u) % buf_size;
     const uint32_t next_future = (future + 1u) % buf_size;
@@ -621,8 +616,7 @@ static void ipatix_downsample(M4ADriver* drv, const M4APcmBlockGeometry* geometr
     uint8_t remainder_left = global->discarded_left;
     uint8_t remainder_right = global->discarded_right;
     /* The last DMA segment wraps before unused bytes at the lane's tail. */
-    const uint32_t reverb_base =
-        drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
+    const uint32_t reverb_base = drv->pcm_dma_counter == 2u ? 0u : geometry->ring_base + geometry->frame_size;
     for (uint32_t i = 0; i < geometry->frame_size; i += 2)
     {
         const uint32_t packed = global->packed_mix[i];
@@ -640,11 +634,11 @@ static void ipatix_downsample(M4ADriver* drv, const M4APcmBlockGeometry* geometr
         uint32_t seed_high = 0;
         if (drv->reverb_amount != 0)
             ipatix_reverb_seeds(drv,
-                               position,
-                               (reverb_base + i) % geometry->dma_buf_size,
-                               geometry->dma_buf_size,
-                               &seed_low,
-                               &seed_high);
+                                position,
+                                (reverb_base + i) % geometry->dma_buf_size,
+                                geometry->dma_buf_size,
+                                &seed_low,
+                                &seed_high);
         global->packed_mix[i] = drv->reverb_amount != 0 ? seed_low : 0;
 
         if (i + 1u < geometry->frame_size)
@@ -904,10 +898,10 @@ M4APcmBlockOutput m4a_pcm_ipatix_render(M4ADriver* drv, const M4APcmBlockGeometr
         {
             drv->cpu_mix_cycles += slot_cycles[i];
             if (slot_was_on[i] && (channel->status & M4A_CHN_ON) && channel->wav)
-                drv->cpu_mix_cycles += M4A_HQMIX_VOL +
-                    ((channel->wav->status & 0xC000u)
-                         ? (channel->ipatix.compressed ? M4A_HQMIX_VOL_LOOP_CMP : M4A_HQMIX_VOL_LOOP)
-                         : 0);
+                drv->cpu_mix_cycles +=
+                    M4A_HQMIX_VOL + ((channel->wav->status & 0xC000u)
+                                         ? (channel->ipatix.compressed ? M4A_HQMIX_VOL_LOOP_CMP : M4A_HQMIX_VOL_LOOP)
+                                         : 0);
         }
         ipatix_render_channel(drv, channel, global->packed_mix, geometry->frame_size);
         if (drv->cpu_cost_enabled)

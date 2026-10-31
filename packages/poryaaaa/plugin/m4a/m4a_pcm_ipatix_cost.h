@@ -15,14 +15,13 @@ static int ipatix_envelope_cycles(const M4ADriverPcmChan* ch)
             return M4A_HQMIX_START_STOP + M4A_HQMIX_STOP;
         const WaveData* wav = ch->wav;
         if (!wav->size)
-            cycles = ch->ipatix.synth_type == 3 ? M4A_HQMIX_INIT_SYNTH_TRI
-                                                : M4A_HQMIX_INIT_SYNTH + M4A_HQMIX_INIT_CHECK;
+            cycles =
+                ch->ipatix.synth_type == 3 ? M4A_HQMIX_INIT_SYNTH_TRI : M4A_HQMIX_INIT_SYNTH + M4A_HQMIX_INIT_CHECK;
         else if (wav->type & 1u)
-            cycles = ((ch->type & VOICE_TYPE_REV) ? M4A_HQMIX_INIT_CMP_REV : M4A_HQMIX_INIT_CMP_FWD) +
-                     M4A_HQMIX_INIT_CHECK;
+            cycles =
+                ((ch->type & VOICE_TYPE_REV) ? M4A_HQMIX_INIT_CMP_REV : M4A_HQMIX_INIT_CMP_FWD) + M4A_HQMIX_INIT_CHECK;
         else
-            cycles = ((ch->type & VOICE_TYPE_REV) ? M4A_HQMIX_INIT_REV : M4A_HQMIX_INIT_FWD) +
-                     M4A_HQMIX_INIT_CHECK;
+            cycles = ((ch->type & VOICE_TYPE_REV) ? M4A_HQMIX_INIT_REV : M4A_HQMIX_INIT_FWD) + M4A_HQMIX_INIT_CHECK;
         cycles += M4A_HQMIX_INIT_FLAGS + ((wav->status & 0xC000u) ? M4A_HQMIX_INIT_FLAGS_LOOP : 0);
         envelope = 0;
         goto attack;
@@ -81,7 +80,6 @@ static int64_t ipatix_clear_cycles(int32_t bytes)
     return cycles + 2 + (bytes / 4) * M4A_HQMIX_CLEAR_WORD + M4A_HQMIX_LOOP_LAST + 10;
 }
 
-
 typedef struct
 {
     int64_t cycles;
@@ -108,8 +106,8 @@ static void ipatix_cost_fixed_sample(IpatixCost* cost, const IpatixSource* sourc
             const uint32_t blocks = (available - 1u) / 4u;
             if (blocks)
             {
-                cost->cycles += M4A_HQMIX_FIX_CHECK + (int64_t)blocks * M4A_HQMIX_FIX_BLOCK +
-                                M4A_HQMIX_LOOP_LAST + M4A_HQMIX_FIX_REWIND;
+                cost->cycles += M4A_HQMIX_FIX_CHECK + (int64_t)blocks * M4A_HQMIX_FIX_BLOCK + M4A_HQMIX_LOOP_LAST +
+                                M4A_HQMIX_FIX_REWIND;
                 cost->fixed_block_left = blocks * 4u;
                 cost->fixed_tail_pending = true;
             }
@@ -151,8 +149,12 @@ static void ipatix_cost_fixed_sample(IpatixCost* cost, const IpatixSource* sourc
 }
 
 /* Reproduce the ROM's copy/decode/fast-path selection before sample mixing. */
-static IpatixCost ipatix_cost_begin(M4ADriver* drv, const M4ADriverPcmChan* ch, const IpatixSource* source,
-                                    uint32_t frame_size, uint32_t frequency, uint32_t fine_position)
+static IpatixCost ipatix_cost_begin(M4ADriver* drv,
+                                    const M4ADriverPcmChan* ch,
+                                    const IpatixSource* source,
+                                    uint32_t frame_size,
+                                    uint32_t frequency,
+                                    uint32_t fine_position)
 {
     IpatixCost cost = {0};
     const bool compressed = source->state->compressed;
@@ -166,16 +168,16 @@ static IpatixCost ipatix_cost_begin(M4ADriver* drv, const M4ADriverPcmChan* ch, 
         cost.fixed = true;
         return cost;
     }
-    const uint32_t div = (M4A_GBA_CYCLES_PER_SECOND / (drv->pcm_rate_hz ? drv->pcm_rate_hz : M4A_PCM_RATE_HZ) + 1u) >> 1;
+    const uint32_t div =
+        (M4A_GBA_CYCLES_PER_SECOND / (drv->pcm_rate_hz ? drv->pcm_rate_hz : M4A_PCM_RATE_HZ) + 1u) >> 1;
     cost.cycles = M4A_HQMIX_TO_COMP_REV + M4A_HQMIX_SETUP + m4a_pcm_cost_mul(div) + m4a_pcm_cost_umul(frame_size);
     const uint32_t step = fixed ? 0x800000u : frequency;
     const uint32_t advance = (uint32_t)(((uint64_t)fine_position + (uint64_t)step * frame_size) >> 23);
     if (compressed || reverse)
     {
-        const int64_t idx = compressed ? source->state->source_position
-                            : source->state->current_pointer
-                                ? source->state->current_pointer - ch->wav->data
-                                : (int64_t)source->position + 1;
+        const int64_t idx = compressed                       ? source->state->source_position
+                            : source->state->current_pointer ? source->state->current_pointer - ch->wav->data
+                                                             : (int64_t)source->position + 1;
         const int64_t align = compressed ? 64 : 4;
         const int64_t high = reverse ? (idx + align - 1) & -align : (idx + advance + align) & -align;
         const int64_t low = reverse ? (idx - advance - 1) & -align : idx & -align;
@@ -218,8 +220,8 @@ static IpatixCost ipatix_cost_begin(M4ADriver* drv, const M4ADriverPcmChan* ch, 
                 bytes -= clear;
                 cost.cycles += M4A_HQMIX_UREV_END - M4A_HQMIX_UREV + ipatix_clear_cycles((int32_t)clear);
             }
-            cost.cycles += (bytes > 0 ? (bytes + 3) / 4 : 1) * M4A_HQMIX_UREV_WORD + M4A_HQMIX_LOOP_LAST +
-                           M4A_HQMIX_UREV_DONE;
+            cost.cycles +=
+                (bytes > 0 ? (bytes + 3) / 4 : 1) * M4A_HQMIX_UREV_WORD + M4A_HQMIX_LOOP_LAST + M4A_HQMIX_UREV_DONE;
         }
         cost.fast = true;
         cost.load = M4A_HQMIX_LOAD_STACK;
