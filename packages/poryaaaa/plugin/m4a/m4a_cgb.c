@@ -2,6 +2,104 @@
 
 #include <string.h>
 
+/* CgbSound segments measured between the upstream mGBA probe labels.
+ * Echo/attack fallthrough paths marked estimated upstream retain those charges. */
+enum
+{
+    CGB_CYC_ENTRY_TO_LOOP = 53,
+    CGB_CYC_ENTRY_RELOAD = 51,
+    CGB_CYC_INACTIVE = 44,
+    CGB_CYC_LOOP_ACTIVE = 26,
+    CGB_CYC_ACTIVE_STEP2_SQ1 = 69,
+    CGB_CYC_ACTIVE_STEP2_SQ2 = 61,
+    CGB_CYC_ACTIVE_STEP2_WAVE = 75,
+    CGB_CYC_ACTIVE_STEP2_NOISE = 69,
+    CGB_CYC_STEP2_START = 24,
+    CGB_CYC_STEP2_NOSTART = 30,
+    CGB_CYC_START_MODVOL = 44,
+    CGB_CYC_START_OSCOFF = 38,
+    CGB_CYC_MODVOL_NR10 = 135,
+    CGB_CYC_MODVOL_NR21 = 131,
+    CGB_CYC_MODVOL_NR30_UPLOAD = 147,
+    CGB_CYC_MODVOL_NR30 = 153,
+    CGB_CYC_MODVOL_NR41 = 141,
+    CGB_CYC_PAN_CR = 0,
+    CGB_CYC_PAN_R = 4,
+    CGB_CYC_PAN_CL = 6,
+    CGB_CYC_PAN_L = 10,
+    CGB_CYC_NR10_NR11 = 10,
+    CGB_CYC_NR30_WAVE = 26,
+    CGB_CYC_WAVE_WAVE = 15,
+    CGB_CYC_WAVE_NR30 = 6,
+    CGB_CYC_NR30_NR31 = 4,
+    CGB_CYC_NR41_NR43 = 8,
+    CGB_CYC_START_STEPDONE_SQ = 70,
+    CGB_CYC_START_STEPDONE_WN = 62,
+    CGB_CYC_START_DECAY = 40,
+    CGB_CYC_START_SUSTAIN = 76,
+    CGB_CYC_NOSTART_STEP = 38,
+    CGB_CYC_NOSTART_STEP_STOP = 46,
+    CGB_CYC_NOSTART_RELEASE = 84,
+    CGB_CYC_NOSTART_RELEASE_W = 78,
+    CGB_CYC_NOSTART_ECHO = 114,
+    CGB_CYC_NOSTART_OFF = 94,
+    CGB_CYC_IEC_CONTINUE = 42,
+    CGB_CYC_IEC_EXPIRED = 40,
+    CGB_CYC_STEP_MODVOL = 18,
+    CGB_CYC_STEP_MODVOL_W = 20,
+    CGB_CYC_MODVOL_CALL = 10,
+    CGB_CYC_STEP_SUSTAIN = 147,
+    CGB_CYC_STEP_RELEASE = 155,
+    CGB_CYC_STEP_ATTACK = 173,
+    CGB_CYC_STEP_DECAY = 179,
+    CGB_CYC_STEP_ATTACK_DECAY = 211,
+    CGB_CYC_STEP_DECAY_SUSTAIN = 219,
+    CGB_CYC_STEP_DECAY_SUSTAIN_W = 213,
+    CGB_CYC_STEP_ECHO = 191,
+    CGB_CYC_STEP_OFF = 165,
+    CGB_CYC_STEP_DECAY_OFF = 211,
+    CGB_CYC_STEP_DECAY_ECHO = 237,
+    CGB_CYC_STEP_ATTACK_SUSTAIN = 229,
+    CGB_CYC_STEP_ATTACK_OFF = 221,
+    CGB_CYC_STEP_ATTACK_ECHO = 247,
+    CGB_CYC_STEP_SKIP = 12,
+    CGB_CYC_STEPDONE_ENVDONE = 18,
+    CGB_CYC_STEPDONE_STEP = 24,
+    CGB_CYC_ENVDONE_PIT = 10,
+    CGB_CYC_ENVDONE_VOL = 26,
+    CGB_CYC_ENVDONE_DONE = 32,
+    CGB_CYC_PIT_NRX3 = 28,
+    CGB_CYC_PIT_NR43 = 32,
+    CGB_CYC_PIT_FIX = 40,
+    CGB_CYC_NRX3_NRX4 = 32,
+    CGB_CYC_NR43_NR44 = 24,
+    CGB_CYC_NRX4_VOL = 12,
+    CGB_CYC_NRX4_DONE = 18,
+    CGB_CYC_VOL_NR51 = 21,
+    CGB_CYC_NR51_NRX2 = 28,
+    CGB_CYC_NR51_NR32 = 32,
+    CGB_CYC_NRX2_NRX4 = 10,
+    CGB_CYC_NR32_NR30 = 16,
+    CGB_CYC_NR30_NR34 = 6,
+    CGB_CYC_NR32_DONE = 20,
+    CGB_CYC_NR34_DONE_VOL = 18,
+    CGB_CYC_NRX4_DONE_SQ1 = 24,
+    CGB_CYC_NR14_NR14 = 24,
+    CGB_CYC_NR14_DONE = 2,
+    CGB_CYC_NRX4_DONE_OTHER = 12,
+    CGB_CYC_OSCOFF_CALL = 14,
+    CGB_CYC_OSC_NR12 = 37,
+    CGB_CYC_OSC_NR22 = 37,
+    CGB_CYC_OSC_NR30 = 51,
+    CGB_CYC_OSC_NR42 = 45,
+    CGB_CYC_OSC_NR12_NR14 = 14,
+    CGB_CYC_OSC_NR22_NR24 = 6,
+    CGB_CYC_OSC_NR42_NR44 = 6,
+    CGB_CYC_OSC_DONE = 22,
+    CGB_CYC_DONE_NEXT = 4,
+    CGB_CYC_NEXT_LOOP = 16,
+};
+
 /* Wave channel volume codes — NR32 byte mapped to gCgb3Vol values via the
  * envelope volume index.  Real m4a writes gCgb3Vol[envVol] into NR32. */
 static const uint8_t gCgb3Vol[] = {
@@ -409,30 +507,182 @@ void m4a_drv_cgb_disable(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
     }
 }
 
-/* Tick one CGB channel's envelope.  c15==0 every 15 vblanks fires a double
- * step, matching m4a's 1/64 s envelope-counter schedule.  At end of tick
- * the `modify` field tells us what to write to the register file. */
+/* Charge the same four CgbPan paths used inside the measured CgbModVol. */
+static int cgb_pan_cost(const M4ADriverCgbChan* ch)
+{
+    unsigned right = ch->rightVolume;
+    unsigned left = ch->leftVolume;
+    if (right >= left)
+        return right / 2 >= left ? CGB_CYC_PAN_R : CGB_CYC_PAN_CR;
+    return left / 2 >= right ? CGB_CYC_PAN_L : CGB_CYC_PAN_CL;
+}
+
+/* Cost a fresh note before the start writes update loadedWavePointer. */
+static int cgb_start_cost(const M4ADriverCgbChan* ch)
+{
+    int cycles = CGB_CYC_STEP2_START + CGB_CYC_START_MODVOL + cgb_pan_cost(ch);
+    switch (ch->type)
+    {
+    case 1:
+        cycles += CGB_CYC_MODVOL_NR10 + CGB_CYC_NR10_NR11;
+        break;
+    case 2:
+        cycles += CGB_CYC_MODVOL_NR21;
+        break;
+    case 3:
+        if (ch->wavePointer && ch->wavePointer != ch->loadedWavePointer)
+            cycles += CGB_CYC_MODVOL_NR30_UPLOAD + CGB_CYC_NR30_WAVE + 3 * CGB_CYC_WAVE_WAVE +
+                      CGB_CYC_WAVE_NR30;
+        else
+            cycles += CGB_CYC_MODVOL_NR30;
+        cycles += CGB_CYC_NR30_NR31;
+        break;
+    case 4:
+        cycles += CGB_CYC_MODVOL_NR41 + CGB_CYC_NR41_NR43;
+        break;
+    }
+
+    cycles += ch->type <= 2 ? CGB_CYC_START_STEPDONE_SQ : CGB_CYC_START_STEPDONE_WN;
+    if (ch->attack == 0)
+    {
+        if (ch->decay != 0)
+            cycles += CGB_CYC_START_DECAY;
+        else
+        {
+            cycles += CGB_CYC_START_SUSTAIN;
+            if (ch->sustain == 0)
+                cycles += ch->envelopeVolume ? CGB_CYC_NOSTART_ECHO : CGB_CYC_NOSTART_OFF;
+        }
+    }
+    return cycles;
+}
+
+/* Cost CgbOscOff only when it is reached from CgbSound. */
+static int cgb_osc_off_cost(uint8_t type)
+{
+    int cycles = CGB_CYC_OSCOFF_CALL + CGB_CYC_OSC_DONE;
+    switch (type)
+    {
+    case 1:
+        return cycles + CGB_CYC_OSC_NR12 + CGB_CYC_OSC_NR12_NR14;
+    case 2:
+        return cycles + CGB_CYC_OSC_NR22 + CGB_CYC_OSC_NR22_NR24;
+    case 3:
+        return cycles + CGB_CYC_OSC_NR30;
+    default:
+        return cycles + CGB_CYC_OSC_NR42 + CGB_CYC_OSC_NR42_NR44;
+    }
+}
+
+/* Select the measured pseudo-echo or oscillator-off path by envelope phase. */
+static int cgb_echo_cost(int from, bool echo, int pan)
+{
+    switch (from)
+    {
+    case 1:
+        return (echo ? CGB_CYC_STEP_ECHO : CGB_CYC_STEP_OFF) + pan;
+    case 2:
+        return (echo ? CGB_CYC_STEP_DECAY_ECHO : CGB_CYC_STEP_DECAY_OFF) + pan;
+    case 3:
+        return (echo ? CGB_CYC_STEP_ATTACK_ECHO : CGB_CYC_STEP_ATTACK_OFF) + pan;
+    default:
+        return echo ? CGB_CYC_NOSTART_ECHO : CGB_CYC_NOSTART_OFF;
+    }
+}
+
+/* Model stock pitch/volume writes, including sq1's extra positive-sweep write.
+ * PWM duty writes are an extension without an upstream calibrated cost. */
+static int cgb_output_cost(const M4ADriver* drv, const M4ADriverCgbChan* ch)
+{
+    const bool pitch = (ch->modify & M4A_MO_PIT) != 0;
+    const bool volume = (ch->modify & M4A_MO_VOL) != 0;
+    int cycles;
+    if (pitch)
+    {
+        cycles = CGB_CYC_ENVDONE_PIT;
+        if ((ch->voiceType & VOICE_TYPE_FIX) && ch->type != 4)
+            cycles += CGB_CYC_PIT_FIX;
+        cycles += ch->type == 4 ? CGB_CYC_PIT_NR43 + CGB_CYC_NR43_NR44
+                                : CGB_CYC_PIT_NRX3 + CGB_CYC_NRX3_NRX4;
+        cycles += volume ? CGB_CYC_NRX4_VOL : CGB_CYC_NRX4_DONE;
+    }
+    else
+        cycles = volume ? CGB_CYC_ENVDONE_VOL : CGB_CYC_ENVDONE_DONE;
+
+    if (volume)
+    {
+        cycles += CGB_CYC_VOL_NR51;
+        if (ch->type == 3)
+        {
+            cycles += CGB_CYC_NR51_NR32;
+            cycles += ch->freshStart ? CGB_CYC_NR32_NR30 + CGB_CYC_NR30_NR34 + CGB_CYC_NR34_DONE_VOL
+                                     : CGB_CYC_NR32_DONE;
+        }
+        else
+        {
+            cycles += CGB_CYC_NR51_NRX2 + CGB_CYC_NRX2_NRX4;
+            if (ch->type == 1)
+                cycles += drv->regs.sq1_sweep_dir < 0 ? CGB_CYC_NRX4_DONE_SQ1
+                                                      : CGB_CYC_NR14_NR14 + CGB_CYC_NR14_DONE;
+            else
+                cycles += CGB_CYC_NRX4_DONE_OTHER;
+        }
+    }
+    return cycles;
+}
+
+/* Tick one CGB channel's envelope. Early phase transitions return without
+ * the stock driver's possible second c15 step. */
 static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
 {
-    if (!(ch->status & M4A_CHN_ON))
-        return;
+    const bool cost_enabled = drv->cpu_cost_enabled;
+    int cycles = 0;
+    int echo_from = 0;
+    int pan_cost = 0;
+    bool first_start_step = ch->freshStart;
+    bool charge_step = false;
+#define CGB_CHARGE(amount)                                                                                             \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (cost_enabled)                                                                                              \
+            cycles += (amount);                                                                                        \
+    } while (0)
 
-    if (ch->freshStart && (ch->status & M4A_CHN_STOP))
+    if (!(ch->status & M4A_CHN_ON))
     {
-        ch->status = 0;
-        m4a_drv_cgb_disable(drv, ch, idx);
+        if (cost_enabled)
+            drv->cpu_cgb_cycles += CGB_CYC_INACTIVE;
         return;
     }
 
+    CGB_CHARGE(CGB_CYC_LOOP_ACTIVE +
+               (ch->type == 1 ? CGB_CYC_ACTIVE_STEP2_SQ1
+                              : ch->type == 2 ? CGB_CYC_ACTIVE_STEP2_SQ2
+                                              : ch->type == 3 ? CGB_CYC_ACTIVE_STEP2_WAVE : CGB_CYC_ACTIVE_STEP2_NOISE));
+
+    if (ch->freshStart && (ch->status & M4A_CHN_STOP))
+    {
+        CGB_CHARGE(CGB_CYC_START_OSCOFF + cgb_osc_off_cost(ch->type));
+        ch->status = 0;
+        m4a_drv_cgb_disable(drv, ch, idx);
+        goto cost_complete;
+    }
+
     if (ch->freshStart)
+    {
+        CGB_CHARGE(cgb_start_cost(ch));
         emit_start_write(drv, ch);
+    }
+    else
+        CGB_CHARGE(CGB_CYC_STEP2_NOSTART);
 
     if (ch->freshStart && ch->envelopeVolume == 0 && !(ch->status & M4A_CHN_IEC) &&
         (ch->status & M4A_CHN_ENV_MASK) == 0)
     {
+        CGB_CHARGE(cgb_osc_off_cost(ch->type));
         ch->status = 0;
         m4a_drv_cgb_disable(drv, ch, idx);
-        return;
+        goto cost_complete;
     }
 
     if (ch->status & M4A_CHN_IEC)
@@ -442,10 +692,12 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
             ch->pseudoEchoLength--;
             if ((int8_t)ch->pseudoEchoLength <= 0)
             {
+                CGB_CHARGE(CGB_CYC_IEC_EXPIRED + cgb_osc_off_cost(ch->type));
                 ch->status = 0;
                 m4a_drv_cgb_disable(drv, ch, idx);
-                return;
+                goto cost_complete;
             }
+            CGB_CHARGE(CGB_CYC_IEC_CONTINUE);
         }
         goto done;
     }
@@ -456,6 +708,8 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
         ch->envelopeCounter = ch->release;
         if (ch->release != 0)
         {
+            CGB_CHARGE((ch->type == 3 ? CGB_CYC_NOSTART_RELEASE_W : CGB_CYC_NOSTART_RELEASE) +
+                       CGB_CYC_STEPDONE_ENVDONE);
             if (ch->type != 3)
                 ch->envelopeStepTimeAndDir = ch->release & 0x07u;
             ch->modify |= M4A_MO_VOL;
@@ -466,15 +720,28 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
             goto pseudo_echo;
         }
     }
+    if (!ch->freshStart)
+        CGB_CHARGE((ch->status & M4A_CHN_STOP) ? CGB_CYC_NOSTART_STEP_STOP : CGB_CYC_NOSTART_STEP);
 
     {
         int doubleStep = (drv->c15 == 0) ? 1 : 0;
         int steps = 0;
 
     step_repeat:
+        if (cost_enabled)
+        {
+            charge_step = !first_start_step;
+            first_start_step = false;
+        }
         if (ch->envelopeCounter == 0)
         {
             m4a_chn_vol_set_cgb(ch, &drv->tracks[ch->trackIndex]);
+            if (charge_step)
+            {
+                cycles += (ch->type == 3 ? CGB_CYC_STEP_MODVOL_W : CGB_CYC_STEP_MODVOL) + CGB_CYC_MODVOL_CALL;
+                pan_cost = cgb_pan_cost(ch);
+                echo_from = 1;
+            }
             uint8_t envState = ch->status & M4A_CHN_ENV_MASK;
             if (ch->type == 3)
                 ch->modify |= M4A_MO_VOL;
@@ -488,6 +755,7 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                     ch->envelopeVolume = ((ch->envelopeGoal * ch->pseudoEchoVolume) + 0xFF) >> 8;
                     if (ch->envelopeVolume)
                     {
+                        CGB_CHARGE(cgb_echo_cost(echo_from, true, pan_cost));
                         ch->status |= M4A_CHN_IEC;
                         ch->modify |= M4A_MO_VOL;
                         if (ch->type != 3)
@@ -496,15 +764,20 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                     }
                     else
                     {
+                        CGB_CHARGE(cgb_echo_cost(echo_from, false, pan_cost) + cgb_osc_off_cost(ch->type));
                         ch->status = 0;
                         m4a_drv_cgb_disable(drv, ch, idx);
-                        return;
+                        goto cost_complete;
                     }
                 }
+                if (charge_step)
+                    CGB_CHARGE(CGB_CYC_STEP_RELEASE + pan_cost);
                 ch->envelopeCounter = ch->release;
             }
             else if (envState == M4A_CHN_ENV_SUSTAIN)
             {
+                if (charge_step)
+                    CGB_CHARGE(CGB_CYC_STEP_SUSTAIN + pan_cost);
                 /* The ROM updates only its software sustain volume here.
                  * A hardware volume transaction requires an independent
                  * modify flag from the track or another envelope phase. */
@@ -518,9 +791,15 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                 {
                     if (ch->sustain == 0)
                     {
+                        if (cost_enabled)
+                            echo_from = 2;
                         ch->status &= ~M4A_CHN_ENV_MASK; /* → RELEASE */
                         goto pseudo_echo;
                     }
+                    if (charge_step)
+                        CGB_CHARGE((ch->type == 3 ? CGB_CYC_STEP_DECAY_SUSTAIN_W : CGB_CYC_STEP_DECAY_SUSTAIN) +
+                                   pan_cost);
+                    CGB_CHARGE(CGB_CYC_STEPDONE_ENVDONE);
                     ch->status--; /* DECAY → SUSTAIN */
                     ch->modify |= M4A_MO_VOL;
                     if (ch->type != 3)
@@ -529,6 +808,8 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                     ch->envelopeCounter = 7;
                     goto done;
                 }
+                if (charge_step)
+                    CGB_CHARGE(CGB_CYC_STEP_DECAY + pan_cost);
                 ch->envelopeCounter = ch->decay;
             }
             else
@@ -540,6 +821,8 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                     ch->envelopeCounter = ch->decay;
                     if (ch->decay != 0)
                     {
+                        if (charge_step)
+                            CGB_CHARGE(CGB_CYC_STEP_ATTACK_DECAY + pan_cost);
                         ch->modify |= M4A_MO_VOL;
                         ch->envelopeVolume = ch->envelopeGoal;
                         if (ch->type != 3)
@@ -549,9 +832,13 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                     {
                         if (ch->sustain == 0)
                         {
+                            if (cost_enabled)
+                                echo_from = 3;
                             ch->status &= ~M4A_CHN_ENV_MASK;
                             goto pseudo_echo;
                         }
+                        if (charge_step)
+                            CGB_CHARGE(CGB_CYC_STEP_ATTACK_SUSTAIN + pan_cost);
                         ch->status--;
                         ch->envelopeVolume = ch->sustainGoal;
                         ch->envelopeCounter = 7;
@@ -559,21 +846,29 @@ static void tick_one(M4ADriver* drv, M4ADriverCgbChan* ch, int idx)
                         if (ch->type != 3)
                             ch->envelopeStepTimeAndDir = 0x08u;
                     }
+                    CGB_CHARGE(CGB_CYC_STEPDONE_ENVDONE);
                     goto done;
                 }
+                if (charge_step)
+                    CGB_CHARGE(CGB_CYC_STEP_ATTACK + pan_cost);
                 ch->envelopeCounter = ch->attack;
             }
         }
+        else if (charge_step)
+            CGB_CHARGE(CGB_CYC_STEP_SKIP);
 
         ch->envelopeCounter--;
         if (doubleStep && steps == 0)
         {
+            CGB_CHARGE(CGB_CYC_STEPDONE_STEP);
             steps = 1;
             goto step_repeat;
         }
+        CGB_CHARGE(CGB_CYC_STEPDONE_ENVDONE);
     }
 
 done:
+    CGB_CHARGE(cgb_output_cost(drv, ch));
     if (ch->modify & M4A_MO_DUTY)
         emit_duty_write(drv, ch);
 
@@ -584,7 +879,11 @@ done:
         emit_vol_write(drv, ch, idx);
     ch->modify = 0;
     ch->freshStart = false;
+cost_complete:
+    if (cost_enabled)
+        drv->cpu_cgb_cycles += cycles + CGB_CYC_DONE_NEXT + CGB_CYC_NEXT_LOOP;
 }
+#undef CGB_CHARGE
 
 /* CgbSound — pokeemerald m4a.c equivalent.  One-shot per-vblank tick of all
  * four CGB channels.  Caller (m4a_advance) maintains drv->c15. */
@@ -592,6 +891,8 @@ void m4a_cgb_sound(M4ADriver* drv)
 {
     if (!drv)
         return;
+    if (drv->cpu_cost_enabled)
+        drv->cpu_cgb_cycles += drv->c15 == 14 ? CGB_CYC_ENTRY_RELOAD : CGB_CYC_ENTRY_TO_LOOP;
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
         M4ADriverCgbChan* ch = &drv->cgb[i];

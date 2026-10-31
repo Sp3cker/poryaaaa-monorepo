@@ -765,6 +765,18 @@ add_executable(poryaaaa_unit_tests
     plugin/m4a_recorder.cpp
     plugin/m4a_gui_font_assets.cpp
 )
+
+# Standalone driver telemetry checks do not require the plugin or GUI.
+foreach(_cpu_test IN ITEMS cpu_meter cgb_cpu)
+    add_executable(poryaaaa_${_cpu_test}_tests test/test_${_cpu_test}.c)
+    target_include_directories(poryaaaa_${_cpu_test}_tests PRIVATE plugin)
+    target_link_libraries(poryaaaa_${_cpu_test}_tests PRIVATE m4a_driver)
+    poryaaaa_enable_project_warnings(poryaaaa_${_cpu_test}_tests)
+    if(NOT MSVC)
+        target_link_libraries(poryaaaa_${_cpu_test}_tests PRIVATE m)
+    endif()
+    add_test(NAME poryaaaa_${_cpu_test}_tests COMMAND poryaaaa_${_cpu_test}_tests)
+endforeach()
 target_compile_features(poryaaaa_unit_tests PRIVATE cxx_std_23)
 poryaaaa_enable_msvc_c_atomics(poryaaaa_unit_tests)
 poryaaaa_enable_project_warnings(poryaaaa_unit_tests)

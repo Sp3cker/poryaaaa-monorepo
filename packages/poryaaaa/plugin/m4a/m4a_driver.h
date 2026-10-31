@@ -40,6 +40,50 @@ extern "C"
 #define M4A_GBA_CYCLES_PER_SECOND PORYAAAA_GBA_CLOCK_HZ
 #define M4A_VBLANK_CYCLES 280896u
 #define M4A_MAX_PCM_CHANNELS 15 /* DirectSound polyphony cap */
+#define M4A_CPU_VBLANK_WINDOW_CYCLES 83776u
+#define M4A_CPU_FRAME_CYCLES 280896u
+#define M4A_CPU_COST_HISTORY 64u
+
+    /* Modeled cycles for a completed SoundMain; cycle is its absolute VBlank. */
+
+    typedef struct
+    {
+        int32_t sequencer, cgb, mixer, total;
+        /* Invalid when previews, missing pitch state, or unsupported PCM geometry prevent a song-only result. */
+        bool valid;
+        bool sequencerEstimated;
+        uint64_t cycle;
+    } M4AFrameCost;
+
+    enum
+    {
+        M4A_PLAYER_BGM = 0,
+        M4A_PLAYER_SE1,
+        M4A_PLAYER_SE2,
+        M4A_PLAYER_SE3,
+        M4A_PLAYER_CRY0,
+        M4A_PLAYER_CRY1,
+        M4A_PLAYER_COUNT
+    };
+
+    /* Render-thread only. Initialize cursor to zero; reads skip overwritten entries.
+     * Disabling preserves unread history; playback reset discards it without rewinding the sequence. */
+    void m4a_driver_cpu_set_enabled(M4ADriver* drv, bool enabled);
+    size_t m4a_driver_cpu_read(M4ADriver* drv, uint64_t* cursor, M4AFrameCost* out, size_t capacity);
+    /* Mask bits identify note-bearing tracks; trackCount declares the modeled player slots. */
+    void m4a_driver_cpu_song_start(M4ADriver* drv, uint32_t trackMask, int player, uint32_t trackCount);
+    void m4a_driver_cpu_song_continue(M4ADriver* drv, uint32_t trackMask, int player, uint32_t trackCount);
+    void m4a_driver_cpu_song_stop(M4ADriver* drv);
+    /* Meter lengths and phases are in 24-PPQN engine ticks, at the coming tick. */
+    void m4a_driver_cpu_time_signature(M4ADriver* drv, uint32_t clocksPerBar);
+    void m4a_driver_cpu_time_signature_phase(M4ADriver* drv, uint32_t clocksPerBar, uint32_t ticksIntoBar);
+    void m4a_driver_cpu_loop_start_meter(M4ADriver* drv, uint32_t clocksPerBar, uint32_t ticksIntoBar);
+    void m4a_driver_cpu_loop_point(M4ADriver* drv, bool loopEnd);
+    /* Optional: after one tick's events and before the next; never advances audio. */
+    void m4a_driver_cpu_tick_boundary(M4ADriver* drv);
+    void m4a_driver_cpu_track_end(M4ADriver* drv, int track);
+    /* Metadata-only note-off for hosts that release the physical slot directly. */
+    void m4a_driver_cpu_note_off(M4ADriver* drv, int track, uint8_t key);
 
     /* ---- Cycle-domain driver→chip event contract ----
      *

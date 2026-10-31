@@ -18,6 +18,8 @@ extern "C"
 #define M4A_MAX_TRACKS 16
 #define M4A_MAX_CGB_CHANNELS 4 /* sq1, sq2, wave, noise */
 
+#include "m4a_seq_estimate.h"
+
 #define M4A_MAX_PWM_PATTERN_STEPS 7
 
     typedef struct
@@ -164,6 +166,8 @@ extern "C"
         uint32_t* wavePointer;       /* programmable wave (32 nibbles, 16 bytes) */
         uint32_t* loadedWavePointer; /* wave RAM payload last loaded by CgbSound */
 
+        bool cpu_audition;
+        uint32_t cpu_note_sequence;
         int trackIndex;
 
         /* Set by m4a_drv_cgb_start and consumed by emit_vol_write.  Wave
@@ -197,6 +201,10 @@ extern "C"
         uint8_t gateTime;
         WaveData* wav;
         uint32_t frequency;
+        uint32_t cpu_raw_frequency;
+        bool cpu_raw_frequency_valid;
+        bool cpu_audition;
+        uint32_t cpu_note_sequence;
         int trackIndex;
         union
         {
@@ -231,6 +239,23 @@ extern "C"
         double tempo_bpm;
         bool portamento_enabled;
         bool pwm_enabled;
+
+        /* Optional render-thread-only cost model and its bounded history. */
+        bool cpu_cost_enabled;
+        int64_t cpu_mix_cycles;
+        int64_t cpu_cgb_cycles;
+        uint8_t cpu_hq_fast_code;
+        int cpu_hq_dma_count;
+        int32_t cpu_hq_dma_start[16];
+        int32_t cpu_hq_dma_len[16];
+        bool cpu_audition_event;
+        bool cpu_frame_contaminated;
+        /* Allocation order persists while metering is off so chased notes can be restored. */
+        uint32_t cpu_note_sequence;
+        M4ASeqEstimate cpu_seq;
+        uint64_t cpu_cost_seq;
+        uint64_t cpu_cost_floor;
+        M4AFrameCost cpu_cost_history[M4A_CPU_COST_HISTORY];
         bool pwm_active;
 
         /* m4a tempo accumulator (vblank-clocked).  Fires LFO ticks when

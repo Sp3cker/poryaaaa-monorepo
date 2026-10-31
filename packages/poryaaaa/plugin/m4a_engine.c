@@ -578,13 +578,17 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
     if (!engine || !engine->driver || track < 0 || track >= MAX_TRACKS || key > 127)
         return;
     apply_public_state(engine);
+    const bool audition = engine->auditionNote;
+    if (audition && engine->driver->cpu_cost_enabled)
+        engine->driver->cpu_frame_contaminated = true;
     ToneData* voice = resolve_voice(&engine->tracks[track].currentVoice, key);
     if (!voice)
     {
+        if (!audition && engine->driver->cpu_cost_enabled)
+            m4a_est_note_on(engine->driver, track, key, velocity, NULL);
         sync_public_state(engine);
         return;
     }
-    const bool audition = engine->auditionNote;
     const uint8_t voiceType = voice->type & VOICE_TYPE_CGB_MASK;
     if (voiceType >= 1 && voiceType <= MAX_CGB_CHANNELS)
     {
@@ -596,6 +600,8 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
                               (victim.priority == engine->tracks[track].priority && victim.trackIndex < track));
         if (dropped)
         {
+            if (!audition && engine->driver->cpu_cost_enabled)
+                m4a_est_note_on(engine->driver, track, key, velocity, voice);
             record_poly_event(engine, M4A_POLY_DROPPED, (uint8_t)track, key, (uint8_t)track);
             if (engine->polyDebugInvert)
             {
@@ -619,7 +625,9 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
                     hw_audio_clone_psg_lane(engine->shadowHw, engine->hw, index);
                 }
             }
+            engine->driver->cpu_audition_event = audition;
             m4a_note_on(engine->driver, track, key, velocity);
+            engine->driver->cpu_audition_event = false;
             engine->primaryCgbAudition[index] = audition;
             if (engine->polyDebugInvert && audition)
                 m4a_note_on(engine->auditionDriver, track, key, velocity);
@@ -629,6 +637,8 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
     {
         if (!voice->wav)
         {
+            if (!audition && engine->driver->cpu_cost_enabled)
+                m4a_est_note_on(engine->driver, track, key, velocity, voice);
             sync_public_state(engine);
             return;
         }
@@ -638,6 +648,8 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
         M4APcmChannelSnapshot victim;
         if (dropped)
         {
+            if (!audition && engine->driver->cpu_cost_enabled)
+                m4a_est_note_on(engine->driver, track, key, velocity, voice);
             record_poly_event(engine, M4A_POLY_DROPPED, (uint8_t)track, key, (uint8_t)track);
             if (engine->polyDebugInvert)
                 m4a_note_on(engine->shadowDriver, track, key, velocity);
@@ -665,7 +677,9 @@ void m4a_engine_note_on(M4AEngine* engine, int track, uint8_t key, uint8_t veloc
                     }
                 }
             }
+            engine->driver->cpu_audition_event = audition;
             m4a_note_on(engine->driver, track, key, velocity);
+            engine->driver->cpu_audition_event = false;
             engine->primaryPcmAudition[index] = audition;
             if (engine->polyDebugInvert && audition)
                 m4a_note_on(engine->auditionDriver, track, key, velocity);

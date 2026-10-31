@@ -1,5 +1,6 @@
 #include "m4a_internal.h"
 #include "m4a_freq.h"
+#include "m4a_cpu_cycles.h"
 
 const M4APulseWidthModPattern gPulseWidthModPatterns[] = {
     {0, {0}},
@@ -137,6 +138,11 @@ static void refresh_pcm_pitches(M4ADriver* drv, int trackIndex)
         if (finalKey > 127)
             finalKey = 127;
         uint32_t f = m4a_midi_key_to_freq(ch->wav, (uint8_t)finalKey, track->pitM);
+        if (drv->cpu_cost_enabled)
+        {
+            ch->cpu_raw_frequency = f;
+            ch->cpu_raw_frequency_valid = true;
+        }
         m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)f * divFreq));
     }
 }
@@ -295,6 +301,11 @@ static void apply_portamento_pitch(M4ADriver* drv, M4ADriverTrack* track, int tr
         if (ch->type & VOICE_TYPE_FIX)
             continue;
         uint32_t frequency = m4a_midi_key_to_freq(ch->wav, (uint8_t)key, fine);
+        if (drv->cpu_cost_enabled)
+        {
+            ch->cpu_raw_frequency = frequency;
+            ch->cpu_raw_frequency_valid = true;
+        }
         m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)frequency * divFreq));
     }
 
@@ -389,6 +400,8 @@ void m4a_program_change(M4ADriver* drv, int track, uint8_t program)
         return;
     if (program >= 128)
         return;
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event)
+        m4a_est_program(drv, track);
 
     M4ADriverTrack* t = &drv->tracks[track];
     t->currentProgram = program;
@@ -407,6 +420,8 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
 
     M4ADriverTrack* t = &drv->tracks[track];
     ToneData* voice = resolve_voice(&t->currentVoice, key);
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event && key < 128)
+        m4a_est_note_on(drv, track, key, velocity, voice);
     if (!voice)
         return;
 
@@ -457,6 +472,10 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
                                        (ch->status & M4A_CHN_ON) && ch->envelopeVolume != 0;
         const uint8_t previousDuty = ch->dutyCycle;
 
+        if (drv->cpu_cost_enabled && ch->cpu_audition && (ch->status & M4A_CHN_ON))
+            drv->cpu_frame_contaminated = true;
+        ch->cpu_audition = drv->cpu_audition_event;
+        ch->cpu_note_sequence = ++drv->cpu_note_sequence;
         ch->midiKey = key;
         ch->key = useKey;
         ch->velocity = velocity;
@@ -613,6 +632,12 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
             ch = bestSteal;
         }
 
+        if (drv->cpu_cost_enabled && ch->cpu_audition && (ch->status & M4A_CHN_ON))
+            drv->cpu_frame_contaminated = true;
+        ch->cpu_audition = drv->cpu_audition_event;
+        ch->cpu_note_sequence = ++drv->cpu_note_sequence;
+        if (drv->cpu_cost_enabled)
+            ch->cpu_raw_frequency_valid = (voice->type & VOICE_TYPE_FIX) != 0;
         ch->midiKey = key;
         ch->key = useKey;
         ch->velocity = velocity;
@@ -655,6 +680,11 @@ void m4a_note_on_timed(M4ADriver* drv, int track, uint8_t key, uint8_t velocity,
         {
             const uint32_t divFreq = pcm_div_freq(drv);
             uint32_t f = m4a_midi_key_to_freq(voice->wav, (uint8_t)pcmFinalKey, t->pitM);
+            if (drv->cpu_cost_enabled)
+            {
+                ch->cpu_raw_frequency = f;
+                ch->cpu_raw_frequency_valid = true;
+            }
             m4a_drv_pcm_update_pitch(drv, ch, (uint32_t)((uint64_t)f * divFreq));
         }
 
@@ -698,6 +728,8 @@ void m4a_note_off(M4ADriver* drv, int track, uint8_t key)
         return;
     if (track < 0 || track >= M4A_MAX_TRACKS)
         return;
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event && key < 128)
+        m4a_est_note_off(drv, track, key);
 
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
@@ -773,6 +805,8 @@ static void xcmd_notify(M4ADriver* drv, int trackIndex, uint8_t selector, uint32
 
 static void xcmd_apply(M4ADriver* drv, int trackIndex, M4ADriverTrack* t)
 {
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event)
+        m4a_est_xcmd(drv, trackIndex, t->extendedCommand);
     switch (t->extendedCommand)
     {
     case 0x01: /* xwave — notify-only; raw u32 is a ROM address, not a host ptr */
@@ -833,6 +867,8 @@ void m4a_cc(M4ADriver* drv, int track, uint8_t cc, uint8_t value)
         return;
     if (track < 0 || track >= M4A_MAX_TRACKS)
         return;
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event)
+        m4a_est_cc(drv, track, cc, value);
     M4ADriverTrack* t = &drv->tracks[track];
 
     switch (cc)
@@ -994,6 +1030,8 @@ void m4a_pitch_bend(M4ADriver* drv, int track, int16_t bend)
         return;
     if (track < 0 || track >= M4A_MAX_TRACKS)
         return;
+    if (drv->cpu_cost_enabled && !drv->cpu_audition_event)
+        m4a_est_bend(drv, track);
     M4ADriverTrack* t = &drv->tracks[track];
     t->bend = (int8_t)(bend >> 7);
     m4a_trk_vol_pit_set(t);
@@ -1045,14 +1083,22 @@ void m4a_internal_lfo_tick(M4ADriver* drv)
 {
     if (!drv)
         return;
+    const uint16_t costMask = drv->cpu_cost_enabled ? m4a_est_lfo_mask(drv) : 0;
     for (int i = 0; i < M4A_MAX_TRACKS; i++)
     {
         M4ADriverTrack* t = &drv->tracks[i];
+        const bool cost = (costMask & (1u << i)) != 0;
         if (t->lfoSpeed == 0 || t->mod == 0)
+        {
+            if (cost)
+                m4a_est_charge(drv, t->lfoSpeed == 0 ? M4A_CYC_WAIT_LFOS0 : M4A_CYC_WAIT_NO_LFO);
             continue;
+        }
 
         if (t->lfoDelayC > 0)
         {
+            if (cost)
+                m4a_est_charge(drv, M4A_CYC_WAIT_LFO_DELAY);
             t->lfoDelayC--;
             continue;
         }
@@ -1070,6 +1116,16 @@ void m4a_internal_lfo_tick(M4ADriver* drv)
             lfoVal = (int8_t)(0x80 - lfoPos);
 
         int8_t newModM = (int8_t)(((int32_t)t->mod * lfoVal) >> 6);
+        if (cost)
+        {
+            m4a_est_charge(drv, M4A_CYC_LFO_STEP +
+                                    ((int8_t)(lfoPos - 0x40) < 0 ? M4A_CYC_LFO_NEG : M4A_CYC_LFO_POS) +
+                                    (newModM == t->modM ? M4A_CYC_LFO_SAME
+                                     : t->modT == 0      ? M4A_CYC_LFO_PIT
+                                                         : M4A_CYC_LFO_VOL));
+            if (newModM != t->modM)
+                drv->cpu_seq.trackFlags[i] |= t->modT == 0 ? MPT_FLG_PITCHG : MPT_FLG_VOLCHG;
+        }
         if (newModM != t->modM)
         {
             t->modM = newModM;
@@ -1195,12 +1251,16 @@ void m4a_all_sound_off(M4ADriver* drv)
 {
     if (!drv)
         return;
+    if (drv->cpu_cost_enabled)
+        m4a_est_sound_off(drv);
     /* CC 0x78 / panic stop: all channels silent immediately, with no envelope
      * release.  The driver writes zero NRx2/NR52 values, matching the ROM
      * behavior. */
     for (int i = 0; i < M4A_MAX_CGB_CHANNELS; i++)
     {
         M4ADriverCgbChan* ch = &drv->cgb[i];
+        if (drv->cpu_cost_enabled && ch->cpu_audition && (ch->status & M4A_CHN_ON))
+            drv->cpu_frame_contaminated = true;
         ch->status = 0;
         ch->modify = 0;
         m4a_drv_cgb_disable(drv, ch, i);
@@ -1208,6 +1268,8 @@ void m4a_all_sound_off(M4ADriver* drv)
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
     {
         M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        if (drv->cpu_cost_enabled && ch->cpu_audition && (ch->status & M4A_CHN_ON))
+            drv->cpu_frame_contaminated = true;
         ch->status = 0;
         ch->envelopeVolume = 0;
         ch->envelopeVolumeLeft = 0;

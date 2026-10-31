@@ -104,6 +104,8 @@ int main(void)
     }
 
     AllocationSnapshot before = allocation_snapshot();
+    m4a_driver_cpu_set_enabled(driver, true);
+    m4a_driver_cpu_song_start(driver, 1u, M4A_PLAYER_BGM, 10);
 
     /* First render, repeated active-mode requests, a real request, its
      * SoundMain/VBlank commit, and the following render are all measured. */
@@ -113,6 +115,10 @@ int main(void)
     ok = ok && m4a_driver_set_pcm_mixer_mode(driver, M4A_PCM_MIXER_SAPPY);
     ok = ok && render_and_consume(driver, 2048);
     ok = ok && render_and_consume(driver, 2048);
+    uint64_t cursor = 0;
+    M4AFrameCost costs[M4A_CPU_COST_HISTORY];
+    (void)m4a_driver_cpu_read(driver, &cursor, costs, M4A_CPU_COST_HISTORY);
+    m4a_driver_reset_playback(driver);
 
     if (!ok || !unchanged(before))
     {

@@ -17,6 +17,7 @@
  * one consumer that has the same compile-time view as plugin/m4a/'s
  * own .c files. */
 #include "m4a/m4a_internal.h"
+#include "m4a/m4a_pcm_cost.h"
 
 extern void m4a_sound_main_ram(M4ADriver* drv);
 extern void m4a_cgb_sound(M4ADriver* drv);
@@ -1305,6 +1306,310 @@ static M4ADriver* create_sappy_test_driver(uint8_t channels)
         m4a_drv_pcm_reset(drv);
     }
     return drv;
+}
+/* Idle frames retain the measured clear/reverb and HQ downsampler costs. */
+static void test_pcm_cost_idle_frames(void)
+{
+    M4ADriver* drv = create_sappy_test_driver(1);
+    if (!drv)
+        return;
+    drv->cpu_cost_enabled = true;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 124, "Sappy idle frame includes clear, slot walk, and exit");
+    drv->reverb_amount = 64;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 321, "Sappy idle reverb follows the per-sample path");
+
+    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->reverb_amount = 0;
+    m4a_drv_pcm_reset(drv);
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 396, "HQ idle frame includes its walk and downsampler");
+    m4a_driver_destroy(drv);
+}
+
+/* The measured vanilla labels distinguish holds, advances, wraps, and stops. */
+static void test_pcm_cost_sappy_paths(void)
+{
+    int8_t data[257];
+    memset(data, 32, sizeof(data));
+    WaveData wav = {0};
+    wav.size = 256;
+    wav.data = data;
+    M4ADriver* drv = create_sappy_test_driver(1);
+    if (!drv)
+        return;
+    drv->cpu_cost_enabled = true;
+    M4ADriverPcmChan* ch = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND, 0);
+    ch->cpu_raw_frequency = 10000;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 474, "Sappy interpolator charges each held sample");
+
+    ch = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND, 0x800000u);
+    ch->cpu_raw_frequency = 10000;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 562, "Sappy interpolator charges each one-sample advance");
+
+    wav.size = 4;
+    wav.loopStart = 2;
+    wav.status = 0xC000;
+    ch = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND, 0x800000u);
+    ch->cpu_raw_frequency = 10000;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles,
+              562 + M4A_MIX_ENV_START_LOOP + M4A_MIX_VOL_LOOP +
+                  3 * (M4A_MIX_INTERP_WRAP - M4A_MIX_INTERP_STEP1),
+              "Sappy charges all three real wraps");
+
+    wav.status = 0;
+    ch = setup_sappy_test_voice(drv, &wav, VOICE_DIRECTSOUND, 0x800000u);
+    ch->cpu_raw_frequency = 10000;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, 431, "Sappy stops at the real source endpoint");
+
+    int8_t encoded[2 * M4A_SAPPY_COMPRESSED_BLOCK_BYTES];
+    memset(encoded, 0, sizeof(encoded));
+    wav.type = 1;
+    wav.size = 128;
+    wav.data = encoded;
+    ch = setup_sappy_test_voice(drv, &wav, VOICE_CRY, 0x800000u);
+    ch->cpu_raw_frequency = 10000;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT(drv->cpu_mix_cycles > 562 + M4A_MIX_UNK2_DECODE,
+           "Sappy compressed source pays its block decode and lookup costs");
+    m4a_driver_destroy(drv);
+}
+
+/* Cost counting must not alter either mixer's samples or private playback state. */
+static void test_pcm_cost_preserves_audio(void)
+{
+    struct Case
+    {
+        bool sappy;
+        uint8_t type;
+        bool compressed;
+        bool synth;
+        bool looped;
+        uint32_t frequency;
+    };
+    const struct Case cases[] = {
+        {true, VOICE_DIRECTSOUND, false, false, false, 0x400000u},
+        {true, VOICE_DIRECTSOUND_NO_RESAMPLE, false, false, false, 0x800000u},
+        {true, VOICE_CRY, true, false, false, 0x800000u},
+        {true, VOICE_CRY_REVERSE, true, false, false, 0x800000u},
+        {true, VOICE_TYPE_REV, false, false, false, 0x400000u},
+        {true, VOICE_DIRECTSOUND, false, false, true, 0x800000u},
+        {true, VOICE_DIRECTSOUND_NO_RESAMPLE, false, false, true, 0x800000u},
+        {false, VOICE_DIRECTSOUND, false, false, false, 0x400000u},
+        {false, VOICE_DIRECTSOUND_NO_RESAMPLE, false, false, false, 0x800000u},
+        {false, VOICE_DIRECTSOUND, true, false, false, 0x800000u},
+        {false, VOICE_CRY_REVERSE, true, false, false, 0x800000u},
+        {false, VOICE_TYPE_REV, false, false, false, 0x400000u},
+        {false, VOICE_DIRECTSOUND, false, false, true, 0x800000u},
+        {false, VOICE_DIRECTSOUND_NO_RESAMPLE, false, false, true, 0x800000u},
+        {false, VOICE_DIRECTSOUND, false, true, false, 0x400000u},
+    };
+    int8_t raw[257];
+    int8_t encoded[4 * M4A_IPATIX_BDPCM_BLOCK_BYTES];
+    int8_t descriptor[6] = {0, 0, 64, 1, 2, 3};
+    for (size_t i = 0; i < sizeof(raw); i++)
+        raw[i] = (int8_t)((int)(i % 201u) - 100);
+    memset(encoded, 0x01, sizeof(encoded));
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++)
+    {
+        WaveData wav = {0};
+        wav.size = cases[c].synth ? 0u : (cases[c].looped ? 8u : 256u);
+        wav.loopStart = cases[c].looped ? 4u : 0u;
+        wav.status = cases[c].looped ? 0xC000u : 0u;
+        wav.type = cases[c].compressed ? 1 : 0;
+        wav.data = cases[c].synth ? descriptor : (cases[c].compressed ? encoded : raw);
+        M4ADriver* plain = m4a_driver_create(44100.0f);
+        M4ADriver* metered = m4a_driver_create(44100.0f);
+        ASSERT(plain && metered, "PCM parity drivers allocate");
+        if (!plain || !metered)
+        {
+            if (plain)
+                m4a_driver_destroy(plain);
+            if (metered)
+                m4a_driver_destroy(metered);
+            return;
+        }
+        M4ADriver* pair[] = {plain, metered};
+        for (size_t n = 0; n < 2; n++)
+        {
+            M4ADriver* drv = pair[n];
+            drv->active_pcm_mode = cases[c].sappy ? M4A_PCM_MIXER_SAPPY : M4A_PCM_MIXER_IPATIX;
+            drv->requested_pcm_mode = drv->active_pcm_mode;
+            drv->max_pcm_channels = 1;
+            drv->master_volume = 15;
+            drv->reverb_amount = 32;
+            m4a_drv_pcm_reset(drv);
+            M4ADriverPcmChan* channel = &drv->pcmChans[0];
+            m4a_drv_pcm_start(drv, channel, &wav, cases[c].type, 0);
+            channel->attack = channel->decay = channel->sustain = channel->release = 0xFF;
+            channel->rightVolume = channel->leftVolume = 0xFF;
+            m4a_drv_pcm_update_pitch(drv, channel, cases[c].frequency);
+            channel->cpu_raw_frequency = 10000;
+            channel->cpu_raw_frequency_valid = true;
+        }
+        plain->cpu_mix_cycles = 12345;
+        metered->cpu_cost_enabled = true;
+        for (int frame = 0; frame < 3; frame++)
+        {
+            metered->cpu_mix_cycles = 0;
+            metered->cpu_hq_dma_count = 0;
+            const M4APcmBlockOutput a = m4a_drv_pcm_render(plain, 8);
+            const M4APcmBlockOutput b = m4a_drv_pcm_render(metered, 8);
+            ASSERT(memcmp(a.left, b.left, 8) == 0 && memcmp(a.right, b.right, 8) == 0,
+                   "PCM output is identical with cycle counting enabled");
+            ASSERT_EQ(plain->cpu_mix_cycles, 12345, "disabled counting leaves the accumulator untouched");
+            ASSERT(metered->cpu_mix_cycles > 0, "enabled counting records the rendered frame");
+            ASSERT_EQ(plain->pcmChans[0].status, metered->pcmChans[0].status, "counting preserves channel status");
+            if (cases[c].sappy)
+                ASSERT(memcmp(&plain->pcmChans[0].sappy, &metered->pcmChans[0].sappy,
+                              sizeof(plain->pcmChans[0].sappy)) == 0, "counting preserves Sappy cursor state");
+            else
+                ASSERT(memcmp(&plain->pcmChans[0].ipatix, &metered->pcmChans[0].ipatix,
+                              sizeof(plain->pcmChans[0].ipatix)) == 0, "counting preserves HQ cursor state");
+        }
+        m4a_driver_destroy(plain);
+        m4a_driver_destroy(metered);
+    }
+}
+
+/* HQ's first fast-block selection pastes code and its copy records DMA3 timing. */
+static void test_pcm_cost_hq_fast_copy(void)
+{
+    int8_t data[2049];
+    memset(data, 37, sizeof(data));
+    WaveData wav = {0};
+    wav.size = 2048;
+    wav.data = data;
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "HQ cost driver allocates");
+    if (!drv)
+        return;
+    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->max_pcm_channels = 1;
+    drv->master_volume = 15;
+    m4a_drv_pcm_reset(drv);
+    M4ADriverPcmChan* ch = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, ch, &wav, VOICE_DIRECTSOUND, 0);
+    ch->status = M4A_CHN_ENV_SUSTAIN;
+    ch->envelopeVolume = ch->leftVolume = ch->rightVolume = 255;
+    ch->frequency = 0x400000u;
+    const M4ADriverPcmChan initial = *ch;
+    drv->cpu_cost_enabled = true;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    const int64_t first = drv->cpu_mix_cycles;
+    ASSERT_EQ(drv->cpu_hq_fast_code, 1, "HQ selects the sub-unity fast block");
+    ASSERT_EQ(drv->cpu_hq_dma_count, 1, "HQ records a fast-path DMA3 copy");
+    ASSERT_EQ(drv->cpu_hq_dma_len[0], 14, "DMA3 copy charges four setup cycles and two words");
+    ASSERT(drv->cpu_hq_dma_start[0] > 0 && drv->cpu_hq_dma_start[0] < first,
+           "DMA3 position is relative to the measured mixer span");
+    *ch = initial;
+    drv->cpu_hq_dma_count = 0;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(first - drv->cpu_mix_cycles, M4A_HQMIX_PASTE, "reusing the fast block avoids its paste cost");
+    *ch = initial;
+    ch->frequency = 0x40000000u;
+    drv->cpu_hq_dma_count = 0;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_hq_fast_code, 3, "HQ selects the high-speed fast block");
+    ASSERT_EQ(drv->cpu_hq_dma_count, 0, "large fast paths read ROM without a DMA3 copy");
+    m4a_driver_destroy(drv);
+}
+
+/* HQ's FIX word path skips multiplications for zero source bytes. */
+static void test_pcm_cost_hq_fixed_samples(void)
+{
+    int8_t data[257] = {0};
+    WaveData wav = {0};
+    wav.size = 256;
+    wav.data = data;
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "HQ FIX cost driver allocates");
+    if (!drv)
+        return;
+    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->max_pcm_channels = 1;
+    drv->master_volume = 15;
+    m4a_drv_pcm_reset(drv);
+    M4ADriverPcmChan* ch = &drv->pcmChans[0];
+    m4a_drv_pcm_start(drv, ch, &wav, VOICE_DIRECTSOUND_NO_RESAMPLE, 0);
+    ch->status = M4A_CHN_ENV_SUSTAIN;
+    ch->envelopeVolume = ch->leftVolume = ch->rightVolume = 255;
+    const M4ADriverPcmChan initial = *ch;
+    drv->cpu_cost_enabled = true;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    const int64_t zero_cost = drv->cpu_mix_cycles;
+    *ch = initial;
+    memset(data, 1, sizeof(data));
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles - zero_cost, 4 * M4A_HQMIX_FIX_NONZERO,
+              "four HQ word samples each charge their conditional multiply");
+    m4a_driver_destroy(drv);
+}
+
+/* The HQ downsampler charges actual tap operands and all three synth paths. */
+static void test_pcm_cost_hq_reverb_and_synth(void)
+{
+    M4ADriver* drv = m4a_driver_create(44100.0f);
+    ASSERT(drv != NULL, "HQ synth cost driver allocates");
+    if (!drv)
+        return;
+    drv->active_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->requested_pcm_mode = M4A_PCM_MIXER_IPATIX;
+    drv->max_pcm_channels = 1;
+    drv->master_volume = 15;
+    drv->reverb_amount = 32;
+    drv->cpu_cost_enabled = true;
+    m4a_drv_pcm_reset(drv);
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    const int64_t zero_taps = drv->cpu_mix_cycles;
+    memset(drv->pcm.ring_a, 127, 16);
+    memset(drv->pcm.ring_b, 127, 16);
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles - zero_taps, 8, "eight large tap sums each add one ARM multiply cycle");
+    drv->reverb_amount = 0;
+    drv->cpu_mix_cycles = 0;
+    m4a_drv_pcm_render(drv, 8);
+    ASSERT_EQ(drv->cpu_mix_cycles, zero_taps, "disabled reverb uses the known baseline without extra tap reads");
+
+    int8_t descriptor[] = {0, 0, 64, 1, 2, 3};
+    WaveData wav = {0};
+    wav.data = descriptor;
+    for (int waveform = 0; waveform < 3; waveform++)
+    {
+        descriptor[1] = (int8_t)waveform;
+        m4a_drv_pcm_reset(drv);
+        M4ADriverPcmChan* ch = &drv->pcmChans[0];
+        m4a_drv_pcm_start(drv, ch, &wav, VOICE_DIRECTSOUND, 0);
+        ch->attack = ch->rightVolume = ch->leftVolume = 255;
+        ch->frequency = 0x400000u;
+        drv->cpu_mix_cycles = 0;
+        m4a_drv_pcm_render(drv, 8);
+        ASSERT(drv->cpu_mix_cycles > zero_taps, "HQ synth incurs its selected oscillator work");
+    }
+    m4a_driver_destroy(drv);
 }
 
 /* SoundMainRAM_Unk2 decodes one predictor, the low nibble of byte 1, then
@@ -7946,6 +8251,12 @@ int main(int argc, char** argv)
     test_v2_song_volume_rescales();
     test_v2_pcm_default_master_volume_matches_rom();
     test_pcm_mixer_mode_switch_transaction();
+    test_pcm_cost_idle_frames();
+    test_pcm_cost_sappy_paths();
+    test_pcm_cost_preserves_audio();
+    test_pcm_cost_hq_fast_copy();
+    test_pcm_cost_hq_fixed_samples();
+    test_pcm_cost_hq_reverb_and_synth();
     run_sappy_tests();
     test_v2_pcm_first_tick_applies_one_attack_step();
     test_v2_pcm_start_stop_stops_immediately();

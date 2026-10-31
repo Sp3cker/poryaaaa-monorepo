@@ -260,6 +260,8 @@ ipatix_source_advance(IpatixSource* source, uint32_t advance, bool fixed, int32_
     return true;
 }
 
+#include "m4a_pcm_ipatix_cost.h"
+
 /* Add one signed sample to the packed 00LL00RR accumulator with ARM wrap. */
 static void ipatix_mix_sample(int32_t sample, uint32_t packed_volume, uint32_t* mix)
 {
@@ -293,7 +295,7 @@ static int8_t ipatix_signed_byte(uint8_t value)
 static int32_t ipatix_signed_word(uint32_t value);
 
 /* Render one zero-length Camelot pulse, pseudo-saw, or triangle descriptor. */
-static void ipatix_render_synth(M4ADriverPcmChan* channel, uint32_t* mix, uint32_t frame_size)
+static void ipatix_render_synth(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t* mix, uint32_t frame_size)
 {
     M4APcmIpatixChannelState* state = &channel->ipatix;
     uint32_t phase = state->fine_position;
@@ -304,6 +306,23 @@ static void ipatix_render_synth(M4ADriverPcmChan* channel, uint32_t* mix, uint32
      * skips that path; only pseudo-saw applies its own unrounded LSR/BIC.
      */
     const uint32_t packed_volume = state->synth_type == 2 ? (base_packed_volume >> 1) & ~0xFF00u : base_packed_volume;
+    if (drv->cpu_cost_enabled)
+    {
+        const uint32_t rate = drv->pcm_rate_hz ? drv->pcm_rate_hz : M4A_PCM_RATE_HZ;
+        const uint32_t div = (M4A_GBA_CYCLES_PER_SECOND / rate + 1u) >> 1;
+        drv->cpu_mix_cycles += M4A_HQMIX_TO_COMP_REV + M4A_HQMIX_SETUP_SYNTH + m4a_pcm_cost_mul(div) + M4A_HQMIX_END;
+        if (state->synth_type == 1)
+            drv->cpu_mix_cycles += M4A_HQMIX_SYNTH + M4A_HQMIX_PULSE_SETUP +
+                                   (int64_t)((frame_size + 7u) / 8u) * M4A_HQMIX_PULSE_ITER +
+                                   M4A_HQMIX_LOOP_LAST + M4A_HQMIX_PULSE_EXIT;
+        else
+            drv->cpu_mix_cycles += (state->synth_type == 2 ? M4A_HQMIX_SAW : M4A_HQMIX_TRI) +
+                                   (int64_t)((frame_size + 3u) / 4u) *
+                                       (state->synth_type == 2 ? M4A_HQMIX_SAW_ITER : M4A_HQMIX_TRI_ITER) +
+                                   (int64_t)frame_size *
+                                       (state->synth_type == 2 ? M4A_HQMIX_SAW_SAMPLE : M4A_HQMIX_TRI_SAMPLE) +
+                                   M4A_HQMIX_LOOP_LAST + M4A_HQMIX_SYNTH_EXIT;
+    }
 
     for (uint32_t i = 0; i < frame_size; i++)
     {
@@ -330,28 +349,42 @@ static void ipatix_render_synth(M4ADriverPcmChan* channel, uint32_t* mix, uint32
             else
                 value = ipatix_arshift32(phase, 23) - 0x80;
         }
+        if (drv->cpu_cost_enabled)
+        {
+            if (state->synth_type == 2 && value != 0)
+                drv->cpu_mix_cycles += M4A_HQMIX_MLA + m4a_pcm_cost_mul((uint32_t)value);
+            else if (state->synth_type == 3)
+                drv->cpu_mix_cycles += m4a_pcm_cost_mul((uint32_t)value);
+        }
         ipatix_mix_sample(value, packed_volume, &mix[i]);
     }
     state->fine_position = phase;
 }
 /* Render one ordinary or BDPCM channel into the persistent HQ work buffer. */
-static void ipatix_render_channel(M4ADriverPcmChan* channel, uint32_t* mix, uint32_t frame_size)
+static void ipatix_render_channel(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t* mix, uint32_t frame_size)
 {
     if (!(channel->status & M4A_CHN_ON) || (channel->status & M4A_CHN_START))
         return;
     M4APcmIpatixChannelState* state = &channel->ipatix;
     if (channel->envelopeVolumeRight == 0 && channel->envelopeVolumeLeft == 0)
+    {
+        if (drv->cpu_cost_enabled)
+            drv->cpu_mix_cycles += M4A_HQMIX_VOL_ZERO;
         return;
+    }
     if (state->synth_type != 0)
     {
         if (channel->wav && channel->wav->data)
-            ipatix_render_synth(channel, mix, frame_size);
+            ipatix_render_synth(drv, channel, mix, frame_size);
         return;
     }
     if (!channel->wav || !channel->wav->data)
         return;
     if (state->count <= 0)
     {
+        if (drv->cpu_cost_enabled && (channel->type & VOICE_TYPE_FIX) &&
+            !(channel->type & VOICE_TYPE_REV) && !state->compressed)
+            drv->cpu_mix_cycles += M4A_HQMIX_TO_FIX + M4A_HQMIX_FIX_SETUP + M4A_HQMIX_END_STOP;
         channel->status = 0;
         return;
     }
@@ -363,6 +396,9 @@ static void ipatix_render_channel(M4ADriverPcmChan* channel, uint32_t* mix, uint
     const uint32_t frequency = channel->frequency;
     uint32_t packed_volume = ((uint32_t)channel->envelopeVolumeLeft << 16) | channel->envelopeVolumeRight;
     const uint64_t required_advance = ((uint64_t)fine_position + (uint64_t)frequency * frame_size) >> 23;
+    IpatixCost cost = {0};
+    if (drv->cpu_cost_enabled)
+        cost = ipatix_cost_begin(drv, channel, &source, frame_size, frequency, fine_position);
     if (!fixed && source.reverse && !source.looped && required_advance >= (uint32_t)source.count)
     {
         /*
@@ -416,6 +452,27 @@ static void ipatix_render_channel(M4ADriverPcmChan* channel, uint32_t* mix, uint
             sample = ipatix_signed_word(base + (uint32_t)fraction);
             interpolation_register = (uint32_t)sample;
         }
+        if (drv->cpu_cost_enabled && !cost.skip)
+        {
+            if (cost.fixed)
+                ipatix_cost_fixed_sample(&cost, &source, frame_size - i, source_sample);
+            else if (cost.fast)
+            {
+                if ((i & 7u) == 0)
+                    cost.cycles += M4A_HQMIX_FAST_ITER;
+                cost.cycles += M4A_HQMIX_FAST_SAMPLE;
+                if (!fast_mixing || (i & 7u) == 0 || force_fast_multiply || difference != 0)
+                    cost.cycles += m4a_pcm_cost_mul((uint32_t)difference);
+                if (sample != 0)
+                    cost.cycles += M4A_HQMIX_MLA + m4a_pcm_cost_mul((uint32_t)sample);
+            }
+            else
+            {
+                cost.cycles += M4A_HQMIX_UNBUF_SAMPLE + m4a_pcm_cost_mul((uint32_t)difference);
+                if (sample != 0)
+                    cost.cycles += M4A_HQMIX_UNBUF_MIX + m4a_pcm_cost_mul((uint32_t)sample);
+            }
+        }
 
         ipatix_mix_sample(sample, packed_volume, &mix[i]);
         if (tail_sample)
@@ -438,6 +495,32 @@ static void ipatix_render_channel(M4ADriverPcmChan* channel, uint32_t* mix, uint
             advance = fine_position >> 23;
             fine_position &= 0x7FFFFFu;
         }
+        if (drv->cpu_cost_enabled && !cost.skip && !cost.fixed)
+        {
+            if (cost.fast)
+            {
+                if (cost.code == 1)
+                    cost.cycles += advance ? cost.load : 0;
+                else if (cost.code == 2)
+                    cost.cycles += cost.load * (advance > 1u ? 2 : 1);
+                else
+                    cost.cycles += 2 * cost.load;
+            }
+            else if (advance != 0)
+            {
+                if ((int64_t)source.count - advance <= 0 && !source.looped)
+                {
+                    cost.cycles += M4A_HQMIX_UNBUF_END + M4A_HQMIX_END_STOP;
+                    cost.ended = true;
+                }
+                else
+                {
+                    if ((int64_t)source.count - advance <= 0)
+                        cost.cycles += M4A_HQMIX_UNBUF_WRAP;
+                    cost.cycles += M4A_HQMIX_UNBUF_ADVANCE + (advance > 1u ? M4A_HQMIX_UNBUF_ADVANCE_N : 0);
+                }
+            }
+        }
         force_fast_multiply = fast_mixing && !high_speed_mixing && advance == 0;
         if (advance != 0)
         {
@@ -446,6 +529,13 @@ static void ipatix_render_channel(M4ADriverPcmChan* channel, uint32_t* mix, uint
             if (very_high_speed_mixing)
                 sample_stored = ipatix_source_current_sample(&source);
         }
+    }
+    if (drv->cpu_cost_enabled)
+    {
+        if (!cost.skip && !cost.fixed && frame_size)
+            cost.cycles += cost.fast ? M4A_HQMIX_LOOP_LAST + M4A_HQMIX_FAST_EXIT + M4A_HQMIX_END
+                                     : (cost.ended ? 0 : M4A_HQMIX_LOOP_LAST + M4A_HQMIX_END);
+        drv->cpu_mix_cycles += cost.cycles;
     }
 
     if (source.terminal_padding)
@@ -500,7 +590,7 @@ static int32_t ipatix_clamp_lane(uint32_t sum)
     return ipatix_signed_word(sum);
 }
 /* Recreate both source halfword tap sums before multiplying/storing seeds. */
-static void ipatix_reverb_seeds(const M4ADriver* drv,
+static void ipatix_reverb_seeds(M4ADriver* drv,
                                 uint32_t position,
                                 uint32_t future,
                                 uint32_t buf_size,
@@ -513,6 +603,8 @@ static void ipatix_reverb_seeds(const M4ADriver* drv,
                             (int32_t)drv->pcm.ring_b[position] + (int32_t)drv->pcm.ring_a[position];
     const int32_t high_sum = (int32_t)drv->pcm.ring_a[next_future] + (int32_t)drv->pcm.ring_b[next_future] +
                              (int32_t)drv->pcm.ring_b[next_position] + (int32_t)drv->pcm.ring_a[next_position];
+    if (drv->cpu_cost_enabled)
+        drv->cpu_mix_cycles += m4a_pcm_cost_mul((uint32_t)low_sum) + m4a_pcm_cost_mul((uint32_t)high_sum) - 2;
     const uint32_t packed_reverb = (uint32_t)(drv->reverb_amount >> 2);
     const uint32_t packed_gain = packed_reverb | (packed_reverb << 16);
     /* The source computes R1 (high) then R0 (low), and stores R0,R1. */
@@ -677,6 +769,7 @@ void m4a_pcm_ipatix_reset(M4ADriver* drv)
 {
     if (!drv)
         return;
+    drv->cpu_hq_fast_code = 0;
     memset(&drv->pcmMixerState.ipatix, 0, sizeof(drv->pcmMixerState.ipatix));
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
         drv->pcmChans[i].ipatix.decoded_block = -1;
@@ -782,9 +875,20 @@ M4APcmBlockOutput m4a_pcm_ipatix_render(M4ADriver* drv, const M4APcmBlockGeometr
     output.kind = M4A_PCM_BLOCK_RENDERED;
 
     M4APcmIpatixGlobalState* global = &drv->pcmMixerState.ipatix;
+    const uint8_t max_channels =
+        drv->max_pcm_channels > M4A_MAX_PCM_CHANNELS ? M4A_MAX_PCM_CHANNELS : drv->max_pcm_channels;
+    int slot_cycles[M4A_MAX_PCM_CHANNELS];
+    bool slot_was_on[M4A_MAX_PCM_CHANNELS];
+    if (drv->cpu_cost_enabled)
+        drv->cpu_mix_cycles += M4A_HQMIX_ENTRY;
     for (int i = 0; i < M4A_MAX_PCM_CHANNELS; i++)
     {
         M4ADriverPcmChan* channel = &drv->pcmChans[i];
+        if (drv->cpu_cost_enabled && i < max_channels)
+        {
+            slot_was_on[i] = (channel->status & M4A_CHN_ON) != 0;
+            slot_cycles[i] = slot_was_on[i] ? ipatix_envelope_cycles(channel) : M4A_HQMIX_SKIP;
+        }
         ipatix_channel_tick(channel, drv->master_volume);
         if (channel->gateTime > 0)
         {
@@ -793,10 +897,30 @@ M4APcmBlockOutput m4a_pcm_ipatix_render(M4ADriver* drv, const M4APcmBlockGeometr
                 channel->status |= M4A_CHN_STOP;
         }
     }
-    const uint8_t max_channels =
-        drv->max_pcm_channels > M4A_MAX_PCM_CHANNELS ? M4A_MAX_PCM_CHANNELS : drv->max_pcm_channels;
     for (uint8_t i = 0; i < max_channels; i++)
-        ipatix_render_channel(&drv->pcmChans[i], global->packed_mix, geometry->frame_size);
+    {
+        M4ADriverPcmChan* channel = &drv->pcmChans[i];
+        if (drv->cpu_cost_enabled)
+        {
+            drv->cpu_mix_cycles += slot_cycles[i];
+            if (slot_was_on[i] && (channel->status & M4A_CHN_ON) && channel->wav)
+                drv->cpu_mix_cycles += M4A_HQMIX_VOL +
+                    ((channel->wav->status & 0xC000u)
+                         ? (channel->ipatix.compressed ? M4A_HQMIX_VOL_LOOP_CMP : M4A_HQMIX_VOL_LOOP)
+                         : 0);
+        }
+        ipatix_render_channel(drv, channel, global->packed_mix, geometry->frame_size);
+        if (drv->cpu_cost_enabled)
+            drv->cpu_mix_cycles += M4A_HQMIX_LOOP_NEXT;
+    }
+    if (drv->cpu_cost_enabled)
+    {
+        drv->cpu_mix_cycles += M4A_HQMIX_LOOP_LAST;
+        if (geometry->frame_size)
+            drv->cpu_mix_cycles += M4A_HQMIX_MAIN_RETURN + M4A_HQMIX_DOWNSAMPLE +
+                                   (int64_t)((geometry->frame_size + 1u) / 2u) * M4A_HQMIX_DOWNSAMPLE_PAIR +
+                                   M4A_HQMIX_RETURN + M4A_MIX_EPILOGUE;
+    }
 
     if (geometry->frame_size != 0)
         ipatix_downsample(drv, geometry);

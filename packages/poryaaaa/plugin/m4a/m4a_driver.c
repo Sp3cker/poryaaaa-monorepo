@@ -1,5 +1,6 @@
 #include "m4a_driver.h"
 #include "m4a_internal.h"
+#include "m4a_freq.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,8 @@ static void m4a_reset_pcm_output_state(M4ADriver* drv)
     drv->pcm.pcm_rate_hz = drv->pcm_rate_hz;
     drv->pcm.pcm_dma_buf_size = drv->pcm_dma_buf_size;
     drv->pcm_dma_counter = 0;
+    drv->cpu_hq_fast_code = 0;
+    drv->cpu_hq_dma_count = 0;
 }
 
 static void m4a_driver_configure_pcm(M4ADriver* drv, float requested_rate, bool emit_fifo_reset)
@@ -152,6 +155,15 @@ static void m4a_driver_init_runtime(M4ADriver* drv)
     drv->active_pcm_mode = drv->requested_pcm_mode;
     drv->pwm_active = false;
     drv->c15 = 0;
+    drv->cpu_mix_cycles = 0;
+    drv->cpu_cgb_cycles = 0;
+    drv->cpu_hq_fast_code = 0;
+    drv->cpu_hq_dma_count = 0;
+    drv->cpu_audition_event = false;
+    drv->cpu_frame_contaminated = false;
+    drv->cpu_note_sequence = 0;
+    drv->cpu_cost_floor = drv->cpu_cost_seq;
+    m4a_est_init(drv);
 
     /* m4a tempo defaults: ply_tempo defaults to 75, and the doubling step
      * (D = ply_tempo*2) is canonical from MPlayMain. */
@@ -254,6 +266,85 @@ void m4a_driver_reset_playback(M4ADriver* drv)
     m4a_reset_pcm_fifo_scheduler(drv);
 }
 
+/* Enable render-thread telemetry without discarding unread frames or song state. */
+void m4a_driver_cpu_set_enabled(M4ADriver* drv, bool enabled)
+{
+    if (!drv || drv->cpu_cost_enabled == enabled)
+        return;
+    drv->cpu_cost_enabled = enabled;
+    if (!enabled)
+        return;
+    drv->cpu_hq_fast_code = 0;
+    for (int i = 0; i < M4A_MAX_PCM_CHANNELS; ++i)
+    {
+        M4ADriverPcmChan* ch = &drv->pcmChans[i];
+        ch->cpu_raw_frequency_valid = false;
+        if (!(ch->status & M4A_CHN_ON) || !ch->wav || ch->trackIndex < 0 ||
+            ch->trackIndex >= M4A_MAX_TRACKS)
+            continue;
+        if (ch->type & VOICE_TYPE_FIX)
+        {
+            ch->cpu_raw_frequency_valid = true;
+            continue;
+        }
+        const M4ADriverTrack* track = &drv->tracks[ch->trackIndex];
+        if (track->portamentoGliding)
+            continue;
+        int key = (int)ch->key + track->keyM;
+        if (key < 0)
+            key = 0;
+        if (key > 127)
+            key = 127;
+        ch->cpu_raw_frequency = m4a_midi_key_to_freq(ch->wav, (uint8_t)key, track->pitM);
+        ch->cpu_raw_frequency_valid = true;
+    }
+}
+
+/* Copy only retained frames; this ring is read on the same thread as SoundMain. */
+size_t m4a_driver_cpu_read(M4ADriver* drv, uint64_t* cursor, M4AFrameCost* out, size_t capacity)
+{
+    if (!drv || !cursor || !out || capacity == 0)
+        return 0;
+    const uint64_t end = drv->cpu_cost_seq;
+    uint64_t from = *cursor;
+    uint64_t oldest = end > M4A_CPU_COST_HISTORY ? end - M4A_CPU_COST_HISTORY : 0;
+    if (oldest < drv->cpu_cost_floor)
+        oldest = drv->cpu_cost_floor;
+    if (from < oldest)
+        from = oldest;
+    if (from > end)
+        from = end;
+    size_t count = 0;
+    while (from < end && count < capacity)
+    {
+        out[count++] = drv->cpu_cost_history[from % M4A_CPU_COST_HISTORY];
+        ++from;
+    }
+    *cursor = from;
+    return count;
+}
+
+/* A host tick advances estimate bookkeeping only, never the driver's LFO. */
+void m4a_driver_cpu_tick_boundary(M4ADriver* drv)
+{
+    if (drv && drv->cpu_cost_enabled)
+        m4a_est_tick_boundary(drv);
+}
+
+/* A host-known track end contributes the ROM's FINE path. */
+void m4a_driver_cpu_track_end(M4ADriver* drv, int track)
+{
+    if (drv && drv->cpu_cost_enabled && track >= 0 && track < M4A_MAX_TRACKS)
+        m4a_est_track_end(drv, track);
+}
+
+/* Direct slot releases still report their song event to the estimate. */
+void m4a_driver_cpu_note_off(M4ADriver* drv, int track, uint8_t key)
+{
+    if (drv && drv->cpu_cost_enabled && track >= 0 && track < M4A_MAX_TRACKS && key < 128)
+        m4a_est_note_off(drv, track, key);
+}
+
 int m4a_driver_recommended_max_advance_frames(void)
 {
     return M4A_RECOMMENDED_MAX_ADVANCE_FRAMES;
@@ -304,6 +395,8 @@ void m4a_driver_set_voicegroup(M4ADriver* drv, ToneData* vg)
 {
     if (!drv)
         return;
+    if (drv->cpu_cost_enabled && drv->voicegroup != vg)
+        m4a_est_reset(drv);
     drv->voicegroup = vg;
 }
 
@@ -380,6 +473,7 @@ void m4a_set_tempo_bpm(M4ADriver* drv, double bpm)
 {
     if (!drv)
         return;
+    const uint16_t previous_tempo = drv->tempoI;
     drv->tempo_bpm = bpm;
     /* MPlayMain: tempoI = (tempoD * tempoU) >> 8.  We map bpm → tempoU as
      * (bpm/120)*256, keeping tempoD at its 150 default. */
@@ -393,6 +487,8 @@ void m4a_set_tempo_bpm(M4ADriver* drv, double bpm)
         drv->tempoU = (uint16_t)(scale * 256.0 + 0.5);
         drv->tempoI = (uint16_t)(((uint32_t)drv->tempoD * drv->tempoU) >> 8);
     }
+    if (drv->cpu_cost_enabled && drv->tempoI != previous_tempo)
+        m4a_est_tempo(drv);
 }
 
 const M4ARegisterFile* m4a_get_register_file(const M4ADriver* drv)

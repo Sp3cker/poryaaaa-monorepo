@@ -1,5 +1,6 @@
 #include "m4a_internal.h"
 #include "m4a_pcm_internal.h"
+#include "m4a_pcm_sappy_cost.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -216,7 +217,7 @@ static void sappy_channel_tick(M4ADriverPcmChan* channel, uint8_t master_volume)
 }
 
 /* Render the pinned 1:1 ordinary forward path. */
-static void sappy_render_fixed(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size)
+static void sappy_render_fixed(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size, SappyCost* cost)
 {
     M4APcmSappyChannelState* state = &channel->sappy;
     int32_t position = state->source_position;
@@ -232,6 +233,7 @@ static void sappy_render_fixed(M4ADriver* drv, M4ADriverPcmChan* channel, uint32
             channel->status = 0;
             return;
         }
+        const bool cost_tail = cost && sappy_cost_fixed_begin(cost, count, frame_size - i);
         const int32_t sample = sappy_source_sample(drv, channel, position);
         sappy_mix_sample(sample,
                          channel->envelopeVolumeRight,
@@ -240,6 +242,8 @@ static void sappy_render_fixed(M4ADriver* drv, M4ADriverPcmChan* channel, uint32
                          &drv->pcmMixerState.sappy.output_left[i]);
         position++;
         count--;
+        if (cost)
+            sappy_cost_fixed_done(cost, cost_tail, count, loop_length, frame_size - i);
         if (count == 0)
         {
             if (loop_length == 0)
@@ -256,14 +260,18 @@ static void sappy_render_fixed(M4ADriver* drv, M4ADriverPcmChan* channel, uint32
 }
 
 /* Render vanilla forward interpolation and its loop-entry label. */
-static void sappy_render_forward(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size)
+static void sappy_render_forward(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size, SappyCost* cost)
 {
     M4APcmSappyChannelState* state = &channel->sappy;
     int32_t cursor = state->source_position;
     int32_t count = state->count;
     uint32_t phase = state->fractional_position;
+    if (cost)
+        sappy_cost_decode(cost, cursor);
     int32_t sample0 = sappy_source_sample(drv, channel, cursor);
     cursor++;
+    if (cost)
+        sappy_cost_decode(cost, cursor);
     int32_t sample1 = sappy_source_sample(drv, channel, cursor);
     const uint32_t step = (channel->type & VOICE_TYPE_FIX) != 0 ? 0x800000u : channel->frequency;
     const int32_t loop_start = (int32_t)channel->wav->loopStart;
@@ -272,6 +280,8 @@ static void sappy_render_forward(M4ADriver* drv, M4ADriverPcmChan* channel, uint
                                     : 0;
     for (uint32_t i = 0; i < frame_size; i++)
     {
+        if (cost)
+            sappy_cost_sample_begin(cost, i);
         const int32_t difference = sample1 - sample0;
         const int32_t interpolated = sample0 + sappy_arshift((int64_t)phase * difference, 23);
         sappy_mix_sample(interpolated,
@@ -283,61 +293,98 @@ static void sappy_render_forward(M4ADriver* drv, M4ADriverPcmChan* channel, uint
         const uint32_t advance = phase >> 23;
         phase &= 0x7FFFFFu;
         if (advance == 0)
+        {
+            if (cost)
+            {
+                cost->cycles += M4A_MIX_HOLD;
+                sappy_cost_sample_done(cost, i, frame_size);
+            }
             continue;
+        }
         int64_t remaining = (int64_t)count - advance;
         if (remaining <= 0)
         {
             if (loop_length == 0)
             {
+                if (cost)
+                    cost->cycles += cost->special ? M4A_MIX_CMP_END : M4A_MIX_INTERP_END;
                 channel->status = 0;
                 return;
             }
+            if (cost)
+                cost->cycles += cost->compressed ? M4A_MIX_CMP_WRAP : M4A_MIX_INTERP_WRAP;
             int64_t overshoot = -remaining;
             do
             {
                 remaining += loop_length;
                 if (remaining > 0)
                     break;
+                if (cost)
+                    cost->cycles += M4A_MIX_WRAP_ITER;
                 overshoot -= loop_length;
             } while (true);
             cursor = loop_start;
             const int32_t adjustment = (int32_t)overshoot;
             cursor += adjustment;
+            if (cost)
+                sappy_cost_decode(cost, cursor);
             sample0 = sappy_source_sample(drv, channel, cursor);
             cursor++;
+            if (cost)
+                sappy_cost_decode(cost, cursor);
             sample1 = sappy_source_sample(drv, channel, cursor);
             count = (int32_t)remaining;
+            if (cost)
+                sappy_cost_sample_done(cost, i, frame_size);
             continue;
         }
         count = (int32_t)remaining;
         const int32_t adjustment = (int32_t)advance - 1;
+        if (cost)
+            cost->cycles += cost->compressed ? (adjustment == 0 ? M4A_MIX_CMP_STEP1 : M4A_MIX_CMP_STEPN)
+                                             : (adjustment == 0 ? M4A_MIX_INTERP_STEP1 : M4A_MIX_INTERP_STEPN);
         if (adjustment == 0)
             sample0 = sample1;
         else
         {
             cursor += adjustment;
+            if (cost)
+                sappy_cost_decode(cost, cursor);
             sample0 = sappy_source_sample(drv, channel, cursor);
         }
         cursor++;
+        if (cost)
+            sappy_cost_decode(cost, cursor);
         sample1 = sappy_source_sample(drv, channel, cursor);
+        if (cost)
+            sappy_cost_sample_done(cost, i, frame_size);
     }
+    if (cost && frame_size)
+        cost->cycles += M4A_MIX_LOOP_LAST + (cost->special ? M4A_MIX_UNK1_DONE : M4A_MIX_INTERP_DONE);
     state->source_position = cursor - 1;
     state->count = count;
     state->fractional_position = phase;
 }
 
 /* Render the source-defined reverse path and its uncompressed header padding. */
-static void sappy_render_reverse(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size)
+static void sappy_render_reverse(M4ADriver* drv, M4ADriverPcmChan* channel, uint32_t frame_size, SappyCost* cost)
 {
     M4APcmSappyChannelState* state = &channel->sappy;
     int32_t base = state->source_position - 1;
     int32_t count = state->count;
     uint32_t phase = state->fractional_position;
+    if (cost)
+    {
+        sappy_cost_decode(cost, base);
+        sappy_cost_decode(cost, base - 1);
+    }
     int32_t sample0 = sappy_source_sample(drv, channel, base);
     int32_t sample1 = sappy_source_sample(drv, channel, base - 1);
     const uint32_t step = (channel->type & VOICE_TYPE_FIX) != 0 ? 0x800000u : channel->frequency;
     for (uint32_t i = 0; i < frame_size; i++)
     {
+        if (cost)
+            sappy_cost_sample_begin(cost, i);
         const int32_t interpolated = sample0 + sappy_arshift((int64_t)phase * (sample1 - sample0), 23);
         sappy_mix_sample(interpolated,
                          channel->envelopeVolumeRight,
@@ -348,18 +395,40 @@ static void sappy_render_reverse(M4ADriver* drv, M4ADriverPcmChan* channel, uint
         const uint32_t advance = phase >> 23;
         phase &= 0x7FFFFFu;
         if (advance == 0)
+        {
+            if (cost)
+            {
+                cost->cycles += M4A_MIX_HOLD;
+                sappy_cost_sample_done(cost, i, frame_size);
+            }
             continue;
+        }
         const int64_t remaining = (int64_t)count - advance;
         if (remaining <= 0)
         {
+            if (cost)
+                cost->cycles += M4A_MIX_REV_END;
             channel->status = 0;
             return;
         }
         count = (int32_t)remaining;
+        if (cost)
+            cost->cycles += cost->compressed ? (advance == 1 ? M4A_MIX_CMP_STEP1 : M4A_MIX_CMP_STEPN)
+                                             : M4A_MIX_REV_STEP;
         base -= (int32_t)advance;
+        if (cost)
+        {
+            if (advance != 1)
+                sappy_cost_decode(cost, base);
+            sappy_cost_decode(cost, base - 1);
+        }
         sample0 = sappy_source_sample(drv, channel, base);
         sample1 = sappy_source_sample(drv, channel, base - 1);
+        if (cost)
+            sappy_cost_sample_done(cost, i, frame_size);
     }
+    if (cost && frame_size)
+        cost->cycles += M4A_MIX_LOOP_LAST + (cost->compressed ? M4A_MIX_UNK1_DONE : M4A_MIX_UNK1_DONE_RAW);
     state->source_position = base + 1;
     state->count = count;
     state->fractional_position = phase;
@@ -372,9 +441,18 @@ static void sappy_render_channel(M4ADriver* drv, M4ADriverPcmChan* channel, uint
     {
         return;
     }
+    SappyCost cost_state = {0};
+    SappyCost* cost = NULL;
+    if (drv->cpu_cost_enabled)
+    {
+        cost_state = sappy_cost_begin(channel, frame_size);
+        cost = &cost_state;
+    }
     M4APcmSappyChannelState* state = &channel->sappy;
     if (state->count <= 0 || channel->wav->size == 0)
     {
+        if (cost)
+            drv->cpu_mix_cycles += cost->cycles;
         channel->status = 0;
         return;
     }
@@ -382,16 +460,20 @@ static void sappy_render_channel(M4ADriver* drv, M4ADriverPcmChan* channel, uint
         channel->status |= M4A_CHN_SPECIAL;
     if (state->special_initialized && !state->compressed && (channel->type & VOICE_TYPE_REV) == 0)
     {
+        if (cost)
+            drv->cpu_mix_cycles += cost->cycles;
         return;
     }
     if (state->special_initialized && state->compressed)
         state->decoded_block = -1;
     if (!state->special_initialized && (channel->type & VOICE_TYPE_FIX) != 0)
-        sappy_render_fixed(drv, channel, frame_size);
+        sappy_render_fixed(drv, channel, frame_size, cost);
     else if ((channel->type & VOICE_TYPE_REV) != 0)
-        sappy_render_reverse(drv, channel, frame_size);
+        sappy_render_reverse(drv, channel, frame_size, cost);
     else
-        sappy_render_forward(drv, channel, frame_size);
+        sappy_render_forward(drv, channel, frame_size, cost);
+    if (cost)
+        drv->cpu_mix_cycles += cost->cycles;
 }
 
 /* Reset the adapter's DMA output, decoder cache, and private voice state. */
@@ -460,12 +542,19 @@ M4APcmBlockOutput m4a_pcm_sappy_render(M4ADriver* drv, const M4APcmBlockGeometry
     output.right = drv->pcmMixerState.sappy.output_right;
     output.kind = M4A_PCM_BLOCK_RENDERED;
 
+    if (drv->cpu_cost_enabled)
+        drv->cpu_mix_cycles += sappy_frame_cycles(drv, geometry->frame_size);
+
     sappy_seed_output(drv, geometry);
     const uint8_t max_channels =
         drv->max_pcm_channels > M4A_MAX_PCM_CHANNELS ? M4A_MAX_PCM_CHANNELS : drv->max_pcm_channels;
     for (uint8_t i = 0; i < max_channels; i++)
     {
         M4ADriverPcmChan* channel = &drv->pcmChans[i];
+        if (drv->cpu_cost_enabled)
+            drv->cpu_mix_cycles += (channel->status & M4A_CHN_ON)
+                                       ? M4A_MIX_CHAN_ON + M4A_MIX_CHAN_NEXT + sappy_envelope_cycles(channel)
+                                       : M4A_MIX_SLOT_OFF;
         sappy_channel_tick(channel, drv->master_volume);
         if (channel->gateTime > 0)
         {

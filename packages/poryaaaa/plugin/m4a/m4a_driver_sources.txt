@@ -2,6 +2,7 @@
 m4a_driver.c
 m4a_freq.c
 m4a_track.c
+m4a_seq_estimate.c
 m4a_cgb.c
 m4a_pcm.c
 m4a_pcm_ipatix.c
